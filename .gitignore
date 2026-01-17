@@ -1,0 +1,5 @@
+backend/worker/handlers/Qwen3VLEmbeeding2b
+backend/uploads
+.idea
+.jbeval
+.env
