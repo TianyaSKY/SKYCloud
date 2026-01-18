@@ -1,8 +1,9 @@
+import datetime
 import logging
 
 from app.extensions import db
 from app.models.file import File
-from app.services import sys_dict_service, file_service
+from app.services import sys_dict_service, file_service, inbox_service
 from worker.util import desc_file
 
 logger = logging.getLogger(__name__)
@@ -48,3 +49,13 @@ def handle_file_process(file_id):
         if file:
             file.status = 'fail'
             db.session.commit()
+        # 发送信息给用户
+        inbox_service.create_inbox_message({
+            'type': 'system',
+            'user_id': file.uploader_id,
+            'title': '文件处理失败',
+            'content':'处理文件时出现了错误\n'
+            f'时间:{datetime.datetime.now()}\n'
+            f'文件id:{file_id}\n'
+            f'{e}\n'
+        })

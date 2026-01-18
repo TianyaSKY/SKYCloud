@@ -2,7 +2,6 @@ import {reactive, ref} from 'vue'
 import {Message} from '@arco-design/web-vue'
 import {
     batchDeleteFiles,
-    batchUploadFiles,
     createFolder,
     deleteFile,
     deleteFolder,
@@ -62,26 +61,6 @@ export function useFileOperations(
             .catch((error) => {
                 onError(error)
             })
-    }
-
-    const handleBatchUpload = async (files: File[]) => {
-        if (!files || files.length === 0) return
-
-        const formData = new FormData()
-        files.forEach(file => {
-            formData.append('files', file)
-        })
-        if (currentParentId.value) {
-            formData.append('parent_id', currentParentId.value.toString())
-        }
-
-        try {
-            await batchUploadFiles(formData)
-            Message.success('批量上传成功')
-            await fetchFiles()
-        } catch (error) {
-            Message.error('批量上传失败')
-        }
     }
 
     const handleCreateFolder = async () => {
@@ -294,7 +273,6 @@ export function useFileOperations(
         shareUrl,
         shareForm,
         handleUpload,
-        handleBatchUpload,
         handleCreateFolder,
         handleDelete,
         handleBatchDelete,

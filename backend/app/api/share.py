@@ -49,11 +49,11 @@ def access_share(token):
     if not file or not file.file_path or not os.path.exists(file.file_path):
         return jsonify({'error': 'File not found'}), 404
 
-    # 直接下载文件
+    # 直接返回文件流，不强制下载，以便在浏览器中预览（如头像显示）
     abs_path = os.path.abspath(file.file_path)
     return send_file(
         abs_path,
-        as_attachment=True,
+        as_attachment=False,
         download_name=file.name,
         mimetype=file.mime_type
     )

@@ -12,7 +12,7 @@ class User(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(1024), nullable=False)
     role = db.Column(db.Enum('admin', 'common', name='user_roles'), default='common')
-    avatar = db.Column(db.String(255), default="default_avatar.jpg")  # 头像 URL
+    avatar = db.Column(db.String(255), default=None)  # 头像 URL，默认为空
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     def __repr__(self):

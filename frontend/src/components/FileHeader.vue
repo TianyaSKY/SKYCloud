@@ -37,23 +37,15 @@
       <a-dropdown trigger="click">
         <div class="user-info">
           <span class="username">{{ userInfo.username || '未登录' }}</span>
-          <a-avatar
-              :size="32"
+          <div
+              class="custom-avatar"
               :style="{
-              backgroundColor: userInfo.avatar ? 'transparent' : '#165dff',
-              cursor: 'pointer',
-              border: '1px solid var(--color-border-2)'
-            }"
-              shape="circle"
+                backgroundColor: userInfo.avatar ? 'transparent' : '#165dff',
+                backgroundImage: userInfo.avatar ? `url(${userInfo.avatar})` : 'none'
+              }"
           >
-            <img
-                v-if="userInfo.avatar"
-                :src="userInfo.avatar"
-                alt="avatar"
-                class="avatar-image"
-            />
-            <icon-user v-else/>
-          </a-avatar>
+            <icon-user v-if="!userInfo.avatar" style="font-size: 18px; color: #fff;" />
+          </div>
         </div>
         <template #content>
           <a-doption @click="$emit('click-avatar')">修改头像</a-doption>
@@ -185,10 +177,18 @@ const handleToggleSearchType = (type: 'fuzzy' | 'vector') => {
   font-size: 14px;
 }
 
-.avatar-image {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
+.custom-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  border: 1px solid var(--color-border-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
 }
 </style>

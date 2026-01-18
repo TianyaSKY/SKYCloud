@@ -23,7 +23,6 @@
       <FileDragOverlay :is-dragging="isDragging"/>
 
       <FileToolbar
-          :handle-batch-upload="handleBatchUpload"
           :handle-upload="handleUpload"
           @organize="handleOrganize"
           @refresh="fetchFiles"
@@ -146,7 +145,6 @@ const {
   shareUrl,
   shareForm,
   handleUpload,
-  handleBatchUpload,
   handleCreateFolder,
   handleDelete,
   handleBatchDelete,

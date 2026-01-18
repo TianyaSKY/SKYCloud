@@ -23,6 +23,20 @@
         <video :src="url" autoplay controls style="max-width: 100%; max-height: 100%;"></video>
       </div>
 
+      <!-- 音频预览 -->
+      <div v-else-if="type === 'audio'"
+           style="width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #f0f2f5;">
+        <div class="audio-player-container">
+          <div class="audio-icon">
+            <icon-music :style="{ fontSize: '64px', color: '#165dff' }"/>
+          </div>
+          <div class="audio-info">
+            <div class="audio-title">{{ title }}</div>
+          </div>
+          <audio :src="url" autoplay controls style="width: 400px; margin-top: 20px;"></audio>
+        </div>
+      </div>
+
       <!-- Docx 预览 -->
       <vue-office-docx v-else-if="type === 'docx'" :src="url" style="width: 100%; height: 100%;"/>
 
@@ -43,6 +57,7 @@ import VueOfficeExcel from '@vue-office/excel'
 import VueOfficePdf from '@vue-office/pdf'
 import '@vue-office/docx/lib/index.css'
 import '@vue-office/excel/lib/index.css'
+import {IconMusic} from '@arco-design/web-vue/es/icon'
 
 defineProps<{
   visible: boolean
@@ -59,3 +74,33 @@ const handleClose = () => {
   emit('close')
 }
 </script>
+
+<style scoped>
+.audio-player-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.audio-icon {
+  margin-bottom: 20px;
+}
+
+.audio-info {
+  text-align: center;
+}
+
+.audio-title {
+  font-size: 18px;
+  font-weight: bold;
+  color: var(--color-text-1);
+  max-width: 350px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>

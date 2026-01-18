@@ -10,7 +10,7 @@ def create_user(data):
     new_user = User(
         username=data['username'],
         role="common",
-        avatar=data.get('avatar', "")
+        avatar=data.get('avatar')
     )
     if 'password' in data:
         new_user.set_password(data['password'])

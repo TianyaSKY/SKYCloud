@@ -128,7 +128,8 @@ const handleSubmit = async ({values, errors}: { values: any, errors: any }) => {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-  background: #f2f3f5;
+  background: url('@/assets/images/login-bg.jpg') no-repeat center center;
+  background-size: cover;
 }
 
 /* 左侧样式 */
@@ -136,14 +137,14 @@ const handleSubmit = async ({values, errors}: { values: any, errors: any }) => {
   flex: 1;
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 60px;
-  background: url('@/assets/images/login-bg.jpg') no-repeat center center;
-  background-size: cover;
+  justify-content: flex-start;
+  padding: 60px 60px 60px 120px;
+  background: transparent; /* 移除背景 */
 }
 
 .brand-content {
   color: white;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); /* 增加文字阴影提高可读性 */
 }
 
 .brand-title {
@@ -168,18 +169,22 @@ const handleSubmit = async ({values, errors}: { values: any, errors: any }) => {
   margin-top: 20px;
 }
 
-/* 右侧样式 */
 .form-section {
   width: 500px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fff;
+  background: rgba(255, 255, 255, 0.6); /* 半透明白色 */
+  backdrop-filter: blur(5px); /* 模糊核心 */
+  -webkit-backdrop-filter: blur(20px);
+  border-left: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: -10px 0 30px rgba(0, 0, 0, 0.1);
 }
 
 .login-card {
   width: 360px;
   padding: 40px;
+  background: transparent; /* 确保卡片背景透明 */
 }
 
 .login-header {
@@ -195,21 +200,15 @@ const handleSubmit = async ({values, errors}: { values: any, errors: any }) => {
 
 .subtitle {
   font-size: 14px;
-  color: #86909c;
+  color: #4e5969;
   margin-top: 8px;
-}
-
-.form-options {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin: 16px 0 24px;
 }
 
 .login-button {
   height: 44px;
   font-size: 16px;
   border-radius: 6px;
+  margin-top: 8px;
 }
 
 .login-footer {
@@ -227,6 +226,7 @@ const handleSubmit = async ({values, errors}: { values: any, errors: any }) => {
 
   .form-section {
     width: 100%;
+    background: rgba(255, 255, 255, 0.8);
   }
 }
 </style>

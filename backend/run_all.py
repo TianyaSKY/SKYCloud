@@ -8,16 +8,13 @@ def start_services():
     # 获取 run_all.py 所在的绝对路径（即项目根目录）
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # 准备环境变量，将根目录加入 PYTHONPATH
     env = os.environ.copy()
-    # os.pathsep 在 Windows 是 ';'，在 Linux 是 ':'，会自动处理跨平台兼容
     env["PYTHONPATH"] = base_dir + os.pathsep + env.get("PYTHONPATH", "")
 
     # 1. 启动 Worker (假设它在 worker/tasks.py)
     # 使用 os.path.join 确保路径在 Win/Linux 下都正确
     worker_path = os.path.join(base_dir,  "tasks.py")
     print(f"--- 正在启动 Worker: {worker_path} ---")
-    # 关键点：传入 env=env
     worker_proc = subprocess.Popen([sys.executable, worker_path], env=env)
 
     # 2. 启动 Flask APP

@@ -31,6 +31,8 @@ export function useFilePreview() {
                 reader.readAsText(blob as any)
             } else if (['mp4', 'webm', 'ogg'].includes(ext)) {
                 previewType.value = 'video'
+            } else if (['mp3', 'wav', 'aac', 'flac', 'm4a'].includes(ext)) {
+                previewType.value = 'audio'
             } else if (ext === 'docx') {
                 previewType.value = 'docx'
             } else if (ext === 'pdf') {

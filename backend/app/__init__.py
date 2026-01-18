@@ -71,15 +71,6 @@ def create_app():
 
         # 初始化数据
         init_data()
-
-    api = Api(
-        app,
-        title="文件管理系统 API",
-        version="1.0",
-        description="基于 Flask 的文件管理系统接口文档",
-        doc="/swagger"  # 访问地址
-    )
-
     return app
 
 
@@ -104,13 +95,13 @@ def init_data():
 
             {'key': 'emb_api_url', 'value': 'https://api.siliconflow.cn/v1', 'des': "向量嵌入模型 API 地址"},
             {'key': 'emb_api_key', 'value': '', 'des': "向量嵌入模型 API 密钥"},
-            {'key': 'emb_model_name', 'value': 'Qwen/Qwen3-Embedding-8B', 'des': "向量嵌入模型名称"},
+            {'key': 'emb_model_name', 'value': 'Qwen/Qwen3-Embedding-8B', 'des': "向量嵌入模型名称 text-embedding即可"},
 
             {'key': 'chat_api_url', 'value': 'https://api.siliconflow.cn/v1',
              'des': "对话模型 API 地址（建议选择支持高频调用的平台）"},
             {'key': 'chat_api_key', 'value': '', 'des': "对话模型 API 密钥"},
-            {'key': 'chat_model_name', 'value': 'deepseek-ai/DeepSeek-V3.2',
-             'des': "对话模型名称（建议选择具备强大逻辑推理或 Agent 能力的模型）"},
+            {'key': 'chat_api_model', 'value': 'deepseek-ai/DeepSeek-V3.2',
+             'des': "对话模型名称（建议选择具备强大逻辑推理具有工具调用能力的模型以及较为便宜的模型）"},
         ]
 
         for config in default_configs:
