@@ -2,7 +2,6 @@ import logging
 import time
 
 from flask import Flask
-from flask_restx import Api
 from sqlalchemy import text
 
 from app.api import api_bp
@@ -18,7 +17,7 @@ def create_app():
     app = Flask(__name__)
 
     # 配置数据库连接
-    app.config['SQLALCHEMY_DATABASE_URI'] = f'postgresql://tianya:pwd@{DB_HOST}:5432/skycloud_db'
+    app.config['SQLALCHEMY_DATABASE_URI'] = f'postgresql://{POSTGRES_USER}:{POSTGRES_PWD}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = 'sky_cloud_secret_key'
 
@@ -86,22 +85,24 @@ def init_data():
             logger.info("Initialized admin user.")
         # 初始化系统字典配置
         default_configs = [
-            {'key': 'site_name', 'value': 'SKYCloud', 'des': "系统名称"},
+            {'key': 'site_name', 'value': 'SKYCloud', 'des': "站点名称（显示在网页标题与 Logo 旁）"},
 
-            {'key': 'vl_api_url', 'value': 'https://api.siliconflow.cn/v1', 'des': "多模态视觉模型 API 地址"},
-            {'key': 'vl_api_key', 'value': '', 'des': "多模态视觉模型 API 密钥"},
-            {'key': 'vl_api_model', 'value': 'Qwen/Qwen3-VL-30B-A3B-Instruct',
-             'des': "多模态视觉模型名称（需具备图像理解能力）"},
+            {'key': 'vl_api_url', 'value': 'https://api.siliconflow.cn/v1',
+             'des': "Vision 模型 Base URL（用于图像理解与文件描述）"},
+            {'key': 'vl_api_key', 'value': DEFAULT_MODEL_PWD, 'des': "Vision 模型 API 密钥"},
+            {'key': 'vl_api_model', 'value': 'Qwen/Qwen3-VL-30B-A3B-Instruct', 'des': "多模态模型名称（需支持图像输入）"},
 
-            {'key': 'emb_api_url', 'value': 'https://api.siliconflow.cn/v1', 'des': "向量嵌入模型 API 地址"},
-            {'key': 'emb_api_key', 'value': '', 'des': "向量嵌入模型 API 密钥"},
-            {'key': 'emb_model_name', 'value': 'Qwen/Qwen3-Embedding-8B', 'des': "向量嵌入模型名称 text-embedding即可"},
+            {'key': 'emb_api_url', 'value': 'https://api.siliconflow.cn/v1',
+             'des': "Embedding 模型 Base URL（用于 RAG 向量化）"},
+            {'key': 'emb_api_key', 'value': DEFAULT_MODEL_PWD, 'des': "Embedding 模型 API 密钥"},
+            {'key': 'emb_model_name', 'value': 'Qwen/Qwen3-Embedding-8B',
+             'des': "向量嵌入模型名称（推荐维度与 pgvector 匹配 本项目中使用的是1536维度）"},
 
             {'key': 'chat_api_url', 'value': 'https://api.siliconflow.cn/v1',
-             'des': "对话模型 API 地址（建议选择支持高频调用的平台）"},
-            {'key': 'chat_api_key', 'value': '', 'des': "对话模型 API 密钥"},
+             'des': "Chat 模型 Base URL（用于智能对话与任务处理）"},
+            {'key': 'chat_api_key', 'value': DEFAULT_MODEL_PWD, 'des': "Chat 模型 API 密钥"},
             {'key': 'chat_api_model', 'value': 'deepseek-ai/DeepSeek-V3.2',
-             'des': "对话模型名称（建议选择具备强大逻辑推理具有工具调用能力的模型以及较为便宜的模型）"},
+             'des': "对话模型名称（推荐高性价比、支持 Tool Call 的模型）"},
         ]
 
         for config in default_configs:

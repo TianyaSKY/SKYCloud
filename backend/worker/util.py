@@ -28,7 +28,9 @@ def _get_visual_urls(local_path: str) -> list:
     doc_exts = {'.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.pdf'}
     video_exts = {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv'}
     img_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
-
+    radio_exts = {'.mp3', '.wav', '.flac', '.ogg'}
+    if ext in radio_exts:
+        raise ValueError('暂不支持音频文件的解析！！！')
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
             if ext in doc_exts:
@@ -43,7 +45,6 @@ def _get_visual_urls(local_path: str) -> list:
                 for img_path in frames:
                     upload = upload_file(img_path)
                     if upload: image_urls.append(upload)
-
             elif ext in img_exts:
                 # 文件直接上传
                 image_urls.append(upload_file(local_path))
@@ -83,7 +84,10 @@ def desc_file(local_path: str, api: str, key: str, model: str) -> str:
             model=model,
             messages=[{"role": "user", "content": content}]
         )
-        return response.choices[0].message.content
+        ans = response.choices[0].message.content
+        if not ans:
+            raise Exception('未知错误 无法生成文件描述')
+        return ans
     except Exception as e:
         logger.exception(f"LLM API call failed: {e}")
         raise e

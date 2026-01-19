@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from app import create_app
 from app.extensions import redis_client
 from app.services.file_service import FILE_PROCESS_QUEUE, ORGANIZE_FILE_QUEUE
-from worker.chain_handler import handle_organize_process
+from worker.organize_handler import handle_organize_process
 from worker.file_handler import handle_file_process
 
 # 配置日志

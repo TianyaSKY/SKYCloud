@@ -9,6 +9,7 @@
             v-bind="$attrs"
             @logout="handleLogout"
             @click-avatar="showAvatarModal = true"
+            @click-password="showPasswordModal = true"
         />
         <a-layout-content class="content">
           <slot></slot>
@@ -60,11 +61,26 @@
         </div>
       </div>
     </a-modal>
+
+    <!-- 修改密码弹窗 -->
+    <a-modal v-model:visible="showPasswordModal" title="修改密码" @cancel="handleCancelPassword" @ok="handleUpdatePassword">
+      <a-form :model="passwordForm" layout="vertical">
+        <a-form-item field="oldPassword" label="旧密码" required>
+          <a-input-password v-model="passwordForm.oldPassword" placeholder="请输入旧密码" />
+        </a-form-item>
+        <a-form-item field="newPassword" label="新密码" required>
+          <a-input-password v-model="passwordForm.newPassword" placeholder="请输入新密码" />
+        </a-form-item>
+        <a-form-item field="confirmPassword" label="确认新密码" required>
+          <a-input-password v-model="passwordForm.confirmPassword" placeholder="请再次输入新密码" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
 <script lang="ts" setup>
-import {onMounted, ref} from 'vue'
+import {onMounted, ref, reactive} from 'vue'
 import {useRouter} from 'vue-router'
 import {Message} from '@arco-design/web-vue'
 import {IconPlus} from '@arco-design/web-vue/es/icon'
@@ -72,7 +88,7 @@ import 'vue-cropper/dist/index.css'
 import {VueCropper} from "vue-cropper";
 import SideBar from './SideBar.vue'
 import FileHeader from './FileHeader.vue'
-import {getUserInfo, uploadAvatar} from '@/api/user'
+import {getUserInfo, uploadAvatar, updatePassword} from '@/api/user'
 
 defineProps<{
   activeMenu: string
@@ -90,6 +106,14 @@ const userInfo = ref({
 const showAvatarModal = ref(false)
 const imgSrc = ref('')
 const cropper = ref()
+
+// 密码相关
+const showPasswordModal = ref(false)
+const passwordForm = reactive({
+  oldPassword: '',
+  newPassword: '',
+  confirmPassword: ''
+})
 
 const initUserInfo = async () => {
   const userStr = localStorage.getItem('user')
@@ -169,6 +193,36 @@ const handleUploadAvatar = () => {
       Message.error('头像上传失败')
     }
   })
+}
+
+const handleCancelPassword = () => {
+  passwordForm.oldPassword = ''
+  passwordForm.newPassword = ''
+  passwordForm.confirmPassword = ''
+  showPasswordModal.value = false
+}
+
+const handleUpdatePassword = async () => {
+  if (!userInfo.value.id) return
+  if (!passwordForm.oldPassword || !passwordForm.newPassword || !passwordForm.confirmPassword) {
+    Message.warning('请填写完整信息')
+    return
+  }
+  if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+    Message.warning('两次输入的新密码不一致')
+    return
+  }
+
+  try {
+    await updatePassword(userInfo.value.id, {
+      old_password: passwordForm.oldPassword,
+      new_password: passwordForm.newPassword
+    })
+    Message.success('密码修改成功，请重新登录')
+    handleLogout()
+  } catch (error: any) {
+    Message.error(error.response?.data?.message || '密码修改失败')
+  }
 }
 
 onMounted(() => {

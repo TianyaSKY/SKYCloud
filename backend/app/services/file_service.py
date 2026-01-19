@@ -416,7 +416,7 @@ def embedding_desc(desc, api, key, model="Qwen/Qwen3-Embedding-8B"):
     try:
         client = OpenAI(api_key=key, base_url=api, timeout=120)
         resp = client.embeddings.create(model=model, input=desc)
-        return resp.data[0].embedding[:768]
+        return resp.data[0].embedding[:1536]
     except Exception as e:
         logger.exception(f"Embedding failed: {e}")
         return []

@@ -28,7 +28,7 @@ def get_libreoffice_command():
             if os.path.exists(path):
                 return path
 
-    # 3. 默认回退到命令名
+    # 默认回退到命令名
     return 'soffice'
 
 

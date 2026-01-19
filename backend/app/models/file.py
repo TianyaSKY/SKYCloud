@@ -16,7 +16,7 @@ class File(db.Model):
 
     # AI 相关字段
     status = db.Column(db.String(20), default='pending')  # pending, processing, success, fail
-    vector_info = db.Column(Vector(768))
+    vector_info = db.Column(Vector(1536))
     description = db.Column(db.String(4096))  # 对于文件的描述
 
     uploader_id = db.Column(db.Integer, db.ForeignKey('users.id'))

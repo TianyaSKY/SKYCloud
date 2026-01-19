@@ -11,3 +11,7 @@ export const uploadAvatar = (id: number, formData: FormData) => {
         }
     })
 }
+
+export const updatePassword = (id: number, data: any) => {
+    return request.put(`/users/${id}/password`, data)
+}

@@ -49,6 +49,7 @@
         </div>
         <template #content>
           <a-doption @click="$emit('click-avatar')">修改头像</a-doption>
+          <a-doption @click="$emit('click-password')">修改密码</a-doption>
           <a-doption @click="$emit('logout')">退出登录</a-doption>
         </template>
       </a-dropdown>
@@ -92,6 +93,7 @@ const emit = defineEmits([
   'search-clear',
   'logout',
   'click-avatar',
+  'click-password',
   'update:searchType',
   'update:isVectorSearch'
 ])
