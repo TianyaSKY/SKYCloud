@@ -57,14 +57,7 @@
 </template>
 
 <script lang="ts" setup>
-import {
-  IconBulb,
-  IconFolderAdd,
-  IconMore,
-  IconRefresh,
-  IconTool,
-  IconUpload
-} from '@arco-design/web-vue/es/icon'
+import {IconBulb, IconFolderAdd, IconMore, IconRefresh, IconTool, IconUpload} from '@arco-design/web-vue/es/icon'
 
 defineProps<{
   handleUpload: (options: any) => void

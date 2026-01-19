@@ -33,7 +33,9 @@ def handle_file_process(file_id):
         emb_key = sys_dict_service.get_sys_dict_by_key("emb_api_key").value
         emb_model = sys_dict_service.get_sys_dict_by_key("emb_model_name").value
 
-        description = desc_file(file.file_path, vl_url, vl_key, vl_model)
+        # 使用 get_abs_path 获取完整路径
+        abs_path = file.get_abs_path()
+        description = desc_file(abs_path, vl_url, vl_key, vl_model)
         file.description = description
         db.session.commit()
         file.vector_info = file_service.embedding_desc(description, emb_url, emb_key, emb_model)

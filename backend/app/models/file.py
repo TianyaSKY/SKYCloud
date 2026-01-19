@@ -1,5 +1,7 @@
+import os
 from datetime import datetime
 
+from flask import current_app
 from pgvector.sqlalchemy import Vector
 
 from app.extensions import db
@@ -10,7 +12,7 @@ class File(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), nullable=False)
-    file_path = db.Column(db.String(512), nullable=False)
+    file_path = db.Column(db.String(512), nullable=False)  # 现在只保存文件名
     file_size = db.Column(db.BigInteger)  # 使用 BigInteger 存储字节数，方便计算容量
     mime_type = db.Column(db.String(255))  # 如 'image/jpeg', 'application/pdf'
 
@@ -37,6 +39,11 @@ class File(db.Model):
             postgresql_ops={'vector_info': 'vector_l2_ops'}
         ),
     )
+
+    def get_abs_path(self):
+        """获取文件的绝对路径"""
+        upload_folder = current_app.config.get('UPLOAD_FOLDER', '/data/uploads')
+        return os.path.join(upload_folder, self.file_path)
 
     def to_dict(self):
         return {

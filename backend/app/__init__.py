@@ -1,5 +1,6 @@
 import logging
 import time
+import os
 
 from flask import Flask
 from sqlalchemy import text
@@ -17,16 +18,20 @@ def create_app():
     app = Flask(__name__)
 
     # 配置数据库连接
-    app.config['SQLALCHEMY_DATABASE_URI'] = f'postgresql://{POSTGRES_USER}:{POSTGRES_PWD}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
+    app.config['SQLALCHEMY_DATABASE_URI'] = f'postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = 'sky_cloud_secret_key'
 
     # 配置上传文件夹路径
-    app.config['UPLOAD_FOLDER'] = os.getenv("UPLOAD_FOLDER")
+    app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
     # 确保上传目录存在
     if not os.path.exists(app.config['UPLOAD_FOLDER']):
-        os.makedirs(app.config['UPLOAD_FOLDER'])
+        try:
+            os.makedirs(app.config['UPLOAD_FOLDER'])
+            logger.info(f"Created upload directory: {app.config['UPLOAD_FOLDER']}")
+        except Exception as e:
+            logger.error(f"Failed to create upload directory {app.config['UPLOAD_FOLDER']}: {e}")
 
     db.init_app(app)
 
@@ -34,7 +39,7 @@ def create_app():
 
     with app.app_context():
         # 数据库连接重试逻辑
-        max_retries = 5
+        max_retries = 1
         for attempt in range(max_retries):
             try:
                 # 尝试连接数据库

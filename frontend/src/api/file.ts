@@ -96,3 +96,7 @@ export const rebuildFailedIndexes = () => {
 export const organizeFiles = () => {
     return request.post('/folder/organize')
 }
+
+export const getProcessStatus = () => {
+    return request.get('/files/process_status')
+}

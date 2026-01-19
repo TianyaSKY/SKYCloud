@@ -71,8 +71,8 @@
 import {onMounted, reactive, ref} from 'vue'
 import {IconPlus, IconRefresh} from '@arco-design/web-vue/es/icon'
 import {Message} from '@arco-design/web-vue'
+import type {SysDict} from '@/api/sys_dict';
 import {createSysDict, deleteSysDict, getSysDicts, updateSysDict} from '@/api/sys_dict'
-import type { SysDict } from '@/api/sys_dict';
 import MainLayout from '../components/MainLayout.vue'
 
 const dicts = ref<SysDict[]>([])

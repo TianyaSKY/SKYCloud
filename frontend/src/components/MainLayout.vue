@@ -17,6 +17,9 @@
       </a-layout>
     </a-layout>
 
+    <!-- AI 聊天悬浮球，仅在“全部文件”页面显示 -->
+    <ChatWidget :show="activeMenu === 'all'" />
+
     <!-- 头像上传裁切弹窗 -->
     <a-modal v-model:visible="showAvatarModal" title="修改头像" @cancel="handleCancelAvatar" @ok="handleUploadAvatar">
       <div class="avatar-upload-container">
@@ -80,7 +83,7 @@
 </template>
 
 <script lang="ts" setup>
-import {onMounted, ref, reactive} from 'vue'
+import {onMounted, reactive, ref} from 'vue'
 import {useRouter} from 'vue-router'
 import {Message} from '@arco-design/web-vue'
 import {IconPlus} from '@arco-design/web-vue/es/icon'
@@ -88,7 +91,8 @@ import 'vue-cropper/dist/index.css'
 import {VueCropper} from "vue-cropper";
 import SideBar from './SideBar.vue'
 import FileHeader from './FileHeader.vue'
-import {getUserInfo, uploadAvatar, updatePassword} from '@/api/user'
+import ChatWidget from './ChatWidget.vue'
+import {getUserInfo, updatePassword, uploadAvatar} from '@/api/user'
 
 defineProps<{
   activeMenu: string

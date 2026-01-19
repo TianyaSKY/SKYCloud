@@ -1,5 +1,6 @@
 import {onMounted, reactive, ref} from 'vue'
-import {getFiles, getRootFolderId, searchFiles} from '../api/file'
+import {getFiles, getProcessStatus, getRootFolderId, searchFiles} from '../api/file'
+import {Notification} from '@arco-design/web-vue'
 
 export function useFileBrowser() {
     const loading = ref(false)
@@ -54,6 +55,23 @@ export function useFileBrowser() {
         }
     }
 
+    const checkProcessStatus = async () => {
+        try {
+            const res: any = await getProcessStatus()
+            const data = res.data || res
+            if (data['处理中'] > 0 || data['失败'] > 0) {
+                Notification.info({
+                    title: '文件处理状态',
+                    content: `当前有 ${data['处理中']} 个文件正在处理中，${data['失败']} 个文件处理失败。`,
+                    position: 'bottomRight',
+                    duration: 5000
+                })
+            }
+        } catch (error) {
+            console.error('Check process status error:', error)
+        }
+    }
+
     const fetchFiles = async () => {
         loading.value = true
         try {
@@ -104,6 +122,9 @@ export function useFileBrowser() {
 
             fileList.value = [...processedFolders, ...processedFiles]
             pagination.total = total || fileList.value.length
+            
+            // 每次刷新或进入时检查状态
+            await checkProcessStatus()
         } catch (error) {
             console.error('Fetch files error:', error)
         } finally {

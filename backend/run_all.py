@@ -1,7 +1,8 @@
+import os
 import subprocess
 import sys
 import time
-import os
+
 from dotenv import load_dotenv
 
 load_dotenv()

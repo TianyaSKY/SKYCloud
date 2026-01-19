@@ -112,13 +112,11 @@ def delete_file(current_user, id):
 def download_file(current_user, id):
     try:
         file = file_service.get_file(id)
+        abs_path = file.get_abs_path()
 
         # 检查文件是否存在
-        if not file.file_path or not os.path.exists(file.file_path):
+        if not os.path.exists(abs_path):
             return jsonify({'error': 'File not found on server'}), 404
-
-        # 使用绝对路径以防万一
-        abs_path = os.path.abspath(file.file_path)
 
         return send_file(
             abs_path,
@@ -164,3 +162,9 @@ def retry_embedding(current_user):
 def rebuild_failed_indexes(current_user):
     count = file_service.rebuild_failed_indexes(current_user.id)
     return jsonify({'count': count}), 200
+
+
+@api_bp.route('/files/process_status',methods=['GET'])
+@token_required
+def process_status(current_user):
+    return jsonify(file_service.process_status(current_user.id))

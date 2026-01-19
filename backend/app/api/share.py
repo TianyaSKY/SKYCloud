@@ -46,11 +46,14 @@ def access_share(token):
         return jsonify({'error': 'Link invalid or expired'}), 404
 
     file = share.file
-    if not file or not file.file_path or not os.path.exists(file.file_path):
+    if not file:
         return jsonify({'error': 'File not found'}), 404
+        
+    abs_path = file.get_abs_path()
+    if not os.path.exists(abs_path):
+        return jsonify({'error': 'File not found on server'}), 404
 
     # 直接返回文件流，不强制下载，以便在浏览器中预览（如头像显示）
-    abs_path = os.path.abspath(file.file_path)
     return send_file(
         abs_path,
         as_attachment=False,

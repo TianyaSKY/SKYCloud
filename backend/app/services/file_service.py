@@ -3,6 +3,7 @@ import logging
 import mimetypes
 import os
 import uuid
+from collections import defaultdict
 from typing import List
 
 from flask import current_app
@@ -45,19 +46,19 @@ def create_file(file_obj, data):
         # 如果文件名全是中文等特殊字符，safe_base_name 会为空，直接用 UUID + 后缀
         unique_filename = f"{uuid.uuid4().hex}{extension}"
 
-    file_path = os.path.join(upload_folder, unique_filename)
+    full_path = os.path.join(upload_folder, unique_filename)
 
     # 保存文件到本地
-    file_obj.save(file_path)
-    file_size = os.path.getsize(file_path)
+    file_obj.save(full_path)
+    file_size = os.path.getsize(full_path)
     if not file_obj.mimetype:
-        mime_type = mimetypes.guess_type(file_path)[0]
+        mime_type = mimetypes.guess_type(full_path)[0]
     else:
         mime_type = file_obj.mimetype
 
     new_file = File(
         name=original_filename,  # 存入数据库时使用原始文件名
-        file_path=file_path,
+        file_path=unique_filename, # 只存文件名
         file_size=file_size,
         mime_type=mime_type,
         uploader_id=data.get('uploader_id'),
@@ -98,16 +99,16 @@ def batch_create_files(file_objs, data):
         else:
             unique_filename = f"{uuid.uuid4().hex}{extension}"
 
-        file_path = os.path.join(upload_folder, unique_filename)
+        full_path = os.path.join(upload_folder, unique_filename)
 
         # 保存文件到本地
-        file_obj.save(file_path)
-        file_size = os.path.getsize(file_path)
-        mime_type = file_obj.mimetype or mimetypes.guess_type(file_path)[0]
+        file_obj.save(full_path)
+        file_size = os.path.getsize(full_path)
+        mime_type = file_obj.mimetype or mimetypes.guess_type(full_path)[0]
 
         new_file = File(
             name=original_filename,
-            file_path=file_path,
+            file_path=unique_filename, # 只存文件名
             file_size=file_size,
             mime_type=mime_type,
             uploader_id=uploader_id,
@@ -230,11 +231,12 @@ def delete_file(id, commit=True):
     uploader_id = file.uploader_id
 
     # 删除本地文件
-    if file.file_path and os.path.exists(file.file_path):
+    abs_path = file.get_abs_path()
+    if os.path.exists(abs_path):
         try:
-            os.remove(file.file_path)
+            os.remove(abs_path)
         except OSError as e:
-            logger.error(f"Error deleting file {file.file_path}: {e}")
+            logger.error(f"Error deleting file {abs_path}: {e}")
 
     # 数据库记录的删除会由 SQLAlchemy 的 cascade 机制自动处理关联的 Share 记录
     db.session.delete(file)
@@ -469,3 +471,35 @@ def rebuild_failed_indexes(user_id=None):
 
 def get_all_files(user_id):
     return File.query.filter_by(uploader_id=user_id).all()
+
+
+def process_status(id):
+    """获取所有文件的处理状态，使用 Redis 缓存加速"""
+    cache_key = f"file:status:count:{id}"
+
+    try:
+        cached_data = redis_client.get(cache_key)
+        if cached_data:
+            return json.loads(cached_data)
+    except Exception as e:
+        logger.error(f"Redis error in process_status: {e}")
+
+    # 缓存未命中，查询数据库
+    files = get_all_files(id)
+    cnt = defaultdict(int)
+    for file in files:
+        cnt[file.status] += 1
+
+    result = {
+        "处理中": cnt['pending'] + cnt['processing'],
+        "成功": cnt['success'],
+        "失败": cnt['fail'],
+    }
+
+    # 存入 Redis，设置较短的过期时间（如 60 秒）
+    try:
+        redis_client.setex(cache_key, 60, json.dumps(result))
+    except Exception as e:
+        logger.error(f"Redis set error in process_status: {e}")
+
+    return result
