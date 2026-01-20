@@ -92,7 +92,7 @@ def organize_files(user_id: int):
     total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
     current_messages = [("user", prompt)]
-    
+
     # 校验循环：确保满足原则，如果校验失败，最多允许重试 3 次
     for attempt in range(3):
         for chunk in agent_executor.stream({"messages": current_messages}, config):
@@ -112,7 +112,7 @@ def organize_files(user_id: int):
         # 对混合内容和空文件夹进行硬校验
         mixed_info = check_mixed_folders_internal(user_id)
         empty_info = check_empty_folders_internal(user_id)
-        
+
         is_mixed_clean = "未发现" in mixed_info or "not found" in mixed_info.lower()
         is_empty_clean = "未发现" in empty_info or "not found" in empty_info.lower()
 
@@ -125,10 +125,11 @@ def organize_files(user_id: int):
                 error_details += f"\n违反单一内容原则：\n{mixed_info}"
             if not is_empty_clean:
                 error_details += f"\n发现空文件夹：\n{empty_info}"
-                
+
             results.append(f"校验失败，继续处理...{error_details}")
             # 使用英文向代理重新发送发现的具体问题
-            current_messages = [("user", f"Organization is not yet complete. Please resolve the following issues:\n{error_details}\nConfirm again once fixed.")]
+            current_messages = [("user",
+                                 f"Organization is not yet complete. Please resolve the following issues:\n{error_details}\nConfirm again once fixed.")]
 
     return total_usage, "\n\t".join(results)
 

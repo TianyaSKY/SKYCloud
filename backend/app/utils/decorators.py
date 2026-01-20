@@ -24,8 +24,6 @@ def token_required(f):
             data = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=['HS256'])
             cache_key = f"user:profile:{data['sub']}"
             cached_user_json = redis_client.get(cache_key)
-
-            current_user = None
             if cached_user_json:
                 current_user = User.from_cache(json.loads(cached_user_json))
             else:

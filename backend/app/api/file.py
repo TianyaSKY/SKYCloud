@@ -164,7 +164,7 @@ def rebuild_failed_indexes(current_user):
     return jsonify({'count': count}), 200
 
 
-@api_bp.route('/files/process_status',methods=['GET'])
+@api_bp.route('/files/process_status', methods=['GET'])
 @token_required
 def process_status(current_user):
     return jsonify(file_service.process_status(current_user.id))

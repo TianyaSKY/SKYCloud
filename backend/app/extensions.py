@@ -1,8 +1,9 @@
 import os
 import platform
+
+from dotenv import load_dotenv
 from flask_sqlalchemy import SQLAlchemy
 from redis import Redis
-from dotenv import load_dotenv
 
 load_dotenv()
 

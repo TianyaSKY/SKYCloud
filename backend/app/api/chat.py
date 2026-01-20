@@ -26,10 +26,10 @@ def chat(current_user):
         # 在同步 Flask 线程中运行异步生成器
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
+
         # 使用 app_context 运行异步生成器
         with app.app_context():
-            gen = generate_chat_events(current_user.id,query, history)
+            gen = generate_chat_events(current_user.id, query, history)
             try:
                 while True:
                     try:

@@ -1,6 +1,5 @@
 import logging
 import time
-import os
 
 from flask import Flask
 from sqlalchemy import text
@@ -18,7 +17,8 @@ def create_app():
     app = Flask(__name__)
 
     # 配置数据库连接
-    app.config['SQLALCHEMY_DATABASE_URI'] = f'postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}'
+    app.config[
+        'SQLALCHEMY_DATABASE_URI'] = f'postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SECRET_KEY'] = 'sky_cloud_secret_key'
 

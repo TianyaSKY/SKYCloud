@@ -14,7 +14,7 @@ def start_services():
     env = os.environ.copy()
     env["PYTHONPATH"] = base_dir + os.pathsep + env.get("PYTHONPATH", "")
 
-    worker_path = os.path.join(base_dir,  "tasks.py")
+    worker_path = os.path.join(base_dir, "tasks.py")
     print(f"--- 正在启动 Worker: {worker_path} ---")
     worker_proc = subprocess.Popen([sys.executable, worker_path], env=env)
 

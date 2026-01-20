@@ -1,16 +1,20 @@
 import logging
+
 from langchain.tools import tool
 from sqlalchemy.orm import sessionmaker
+
 from app.extensions import db, redis_client
 from app.models.file import File
 from app.models.folder import Folder
 
 logger = logging.getLogger(__name__)
 
+
 def get_session():
     """Create a new independent session for tool execution"""
     SessionLocal = sessionmaker(bind=db.engine)
     return SessionLocal()
+
 
 def clear_user_cache(user_id):
     """Clear user related caches"""
@@ -23,6 +27,7 @@ def clear_user_cache(user_id):
             redis_client.delete(*keys)
     except Exception as e:
         logger.error(f"Error clearing cache for user {user_id}: {e}")
+
 
 def check_mixed_folders_internal(user_id: int) -> str:
     """
@@ -55,6 +60,7 @@ def check_mixed_folders_internal(user_id: int) -> str:
     finally:
         session.close()
 
+
 def check_empty_folders_internal(user_id: int) -> str:
     """
     内部使用的检查逻辑，查找空文件夹。
@@ -80,6 +86,7 @@ def check_empty_folders_internal(user_id: int) -> str:
     finally:
         session.close()
 
+
 @tool
 def get_all_files(user_id: int) -> str:
     """
@@ -100,6 +107,7 @@ def get_all_files(user_id: int) -> str:
     finally:
         session.close()
 
+
 @tool
 def get_folder_tree(user_id: int) -> str:
     """
@@ -116,6 +124,7 @@ def get_folder_tree(user_id: int) -> str:
         return f"获取文件夹结构失败: {str(e)}"
     finally:
         session.close()
+
 
 @tool
 def create_folder(name: str, parent_id: int, user_id: int) -> str:
@@ -147,6 +156,7 @@ def create_folder(name: str, parent_id: int, user_id: int) -> str:
     finally:
         session.close()
 
+
 @tool
 def rename_folder(folder_id: int, new_name: str) -> str:
     """
@@ -177,6 +187,7 @@ def rename_folder(folder_id: int, new_name: str) -> str:
     finally:
         session.close()
 
+
 @tool
 def move_file(file_id: int, target_folder_id: int) -> str:
     """
@@ -198,6 +209,7 @@ def move_file(file_id: int, target_folder_id: int) -> str:
         return f"移动文件失败: {str(e)}"
     finally:
         session.close()
+
 
 @tool
 def get_file_information(file_id: int) -> str:
@@ -228,6 +240,7 @@ def get_file_information(file_id: int) -> str:
     finally:
         session.close()
 
+
 @tool
 def delete_folder(folder_id: int) -> str:
     """
@@ -256,6 +269,7 @@ def delete_folder(folder_id: int) -> str:
         return f"删除失败：{str(e)}"
     finally:
         session.close()
+
 
 @tool
 def merge_folders(source_folder_id: int, target_folder_id: int) -> str:
@@ -298,6 +312,7 @@ def merge_folders(source_folder_id: int, target_folder_id: int) -> str:
     finally:
         session.close()
 
+
 @tool
 def find_duplicate_folders(user_id: int) -> str:
     """
@@ -327,6 +342,7 @@ def find_duplicate_folders(user_id: int) -> str:
         return f"查找重复文件夹失败: {str(e)}"
     finally:
         session.close()
+
 
 @tool
 def move_folder(folder_id: int, target_folder_id: int) -> str:
@@ -371,12 +387,14 @@ def move_folder(folder_id: int, target_folder_id: int) -> str:
     finally:
         session.close()
 
+
 @tool
 def find_mixed_content_folders(user_id: int) -> str:
     """
     查找既包含文件又包含子文件夹的文件夹。
     """
     return check_mixed_folders_internal(user_id)
+
 
 @tool
 def find_empty_folders(user_id: int) -> str:

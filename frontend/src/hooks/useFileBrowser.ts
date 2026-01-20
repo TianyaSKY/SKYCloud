@@ -122,7 +122,7 @@ export function useFileBrowser() {
 
             fileList.value = [...processedFolders, ...processedFiles]
             pagination.total = total || fileList.value.length
-            
+
             // 每次刷新或进入时检查状态
             await checkProcessStatus()
         } catch (error) {

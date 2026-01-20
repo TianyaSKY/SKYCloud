@@ -26,19 +26,23 @@ def handle_file_process(file_id):
         db.session.commit()
 
         # 需要使用VL模型
-        vl_url = sys_dict_service.get_sys_dict_by_key('vl_api_url').value
-        vl_key = sys_dict_service.get_sys_dict_by_key('vl_api_key').value
-        vl_model = sys_dict_service.get_sys_dict_by_key('vl_api_model').value
-        emb_url = sys_dict_service.get_sys_dict_by_key("emb_api_url").value
-        emb_key = sys_dict_service.get_sys_dict_by_key("emb_api_key").value
-        emb_model = sys_dict_service.get_sys_dict_by_key("emb_model_name").value
+        vl_config = {
+            'api': sys_dict_service.get_sys_dict_by_key('vl_api_url').value,
+            'key': sys_dict_service.get_sys_dict_by_key('vl_api_key').value,
+            'model': sys_dict_service.get_sys_dict_by_key('vl_api_model').value
+        }
+        emb_config = {
+            'api': sys_dict_service.get_sys_dict_by_key("emb_api_url").value,
+            'key': sys_dict_service.get_sys_dict_by_key("emb_api_key").value,
+            'model': sys_dict_service.get_sys_dict_by_key("emb_model_name").value
+        }
 
         # 使用 get_abs_path 获取完整路径
         abs_path = file.get_abs_path()
-        description = desc_file(abs_path, vl_url, vl_key, vl_model)
+        description = desc_file(abs_path, vl_config)
         file.description = description
         db.session.commit()
-        file.vector_info = file_service.embedding_desc(description, emb_url, emb_key, emb_model)
+        file.vector_info = file_service.embedding_desc(description, emb_config)
         # 更新状态为成功
         file.status = 'success'
         db.session.commit()
@@ -56,8 +60,8 @@ def handle_file_process(file_id):
             'type': 'system',
             'user_id': file.uploader_id,
             'title': '文件处理失败',
-            'content':'处理文件时出现了错误\n'
-            f'时间:{datetime.datetime.now()}\n'
-            f'文件id:{file_id}\n'
-            f'{e}\n'
+            'content': '处理文件时出现了错误\n'
+                       f'时间:{datetime.datetime.now()}\n'
+                       f'文件id:{file_id}\n'
+                       f'{e}\n'
         })

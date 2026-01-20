@@ -58,7 +58,7 @@ def create_file(file_obj, data):
 
     new_file = File(
         name=original_filename,  # 存入数据库时使用原始文件名
-        file_path=unique_filename, # 只存文件名
+        file_path=unique_filename,  # 只存文件名
         file_size=file_size,
         mime_type=mime_type,
         uploader_id=data.get('uploader_id'),
@@ -108,7 +108,7 @@ def batch_create_files(file_objs, data):
 
         new_file = File(
             name=original_filename,
-            file_path=unique_filename, # 只存文件名
+            file_path=unique_filename,  # 只存文件名
             file_size=file_size,
             mime_type=mime_type,
             uploader_id=uploader_id,
@@ -305,10 +305,12 @@ def _search_files_vector(user_id, query, page, page_size):
     try:
         from app.services import sys_dict_service
         # 调用远程服务获取 embedding
-        emb_url = sys_dict_service.get_sys_dict_by_key("emb_api_url").value
-        emb_key = sys_dict_service.get_sys_dict_by_key("emb_api_key").value
-        emb_model = sys_dict_service.get_sys_dict_by_key("emb_model_name").value
-        embeddings = embedding_desc(query, emb_url, emb_key, emb_model)
+        emb_config = {
+            'api': sys_dict_service.get_sys_dict_by_key("emb_api_url").value,
+            'key': sys_dict_service.get_sys_dict_by_key("emb_api_key").value,
+            'model': sys_dict_service.get_sys_dict_by_key("emb_model_name").value
+        }
+        embeddings = embedding_desc(query, emb_config)
 
         if not embeddings:
             return {'items': [], 'total': 0, 'page': page, 'page_size': page_size, 'error': 'No embeddings returned'}
@@ -414,7 +416,10 @@ def batch_delete_items(items: List[dict]):
     return None
 
 
-def embedding_desc(desc, api, key, model="Qwen/Qwen3-Embedding-8B"):
+def embedding_desc(desc, config: dict):
+    api = config.get('api')
+    key = config.get('key')
+    model = config.get('model', "Qwen/Qwen3-Embedding-8B")
     try:
         client = OpenAI(api_key=key, base_url=api, timeout=120)
         resp = client.embeddings.create(model=model, input=desc)

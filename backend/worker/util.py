@@ -31,10 +31,10 @@ def _get_visual_urls(local_path: str) -> list:
     video_exts = {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv'}
     img_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
     radio_exts = {'.mp3', '.wav', '.flac', '.ogg'}
-    
+
     if ext in radio_exts:
         raise ValueError('暂不支持音频文件的解析！！！')
-        
+
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
             if ext in doc_exts:
@@ -63,16 +63,20 @@ def _get_visual_urls(local_path: str) -> list:
     return image_urls
 
 
-def desc_file(local_path: str, api: str, key: str, model: str) -> str:
+def desc_file(local_path: str, config: dict) -> str:
     """
     生成文件的多模态描述。
     """
+    api = config.get('api')
+    key = config.get('key')
+    model = config.get('model')
+
     image_urls = _get_visual_urls(local_path)
     if not image_urls:
         logger.info(f"No visual content for {local_path}")
 
     client = OpenAI(api_key=key, base_url=api, timeout=120)
-    
+
     # 强制要求最终输出为英文
     prompt = (
         "You are a professional file analysis assistant. Please carefully observe the provided file content "
@@ -86,7 +90,7 @@ def desc_file(local_path: str, api: str, key: str, model: str) -> str:
     for url in image_urls:
         content.append({"type": "image_url", "image_url": {"url": url}})
     content.append({"type": "text", "text": format_data(local_path)})  # 加入文本信息
-    
+
     try:
         response = client.chat.completions.create(
             model=model,

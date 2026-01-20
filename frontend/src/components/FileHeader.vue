@@ -38,13 +38,13 @@
         <div class="user-info">
           <span class="username">{{ userInfo.username || '未登录' }}</span>
           <div
-              class="custom-avatar"
               :style="{
                 backgroundColor: userInfo.avatar ? 'transparent' : '#165dff',
                 backgroundImage: userInfo.avatar ? `url(${userInfo.avatar})` : 'none'
               }"
+              class="custom-avatar"
           >
-            <icon-user v-if="!userInfo.avatar" style="font-size: 18px; color: #fff;" />
+            <icon-user v-if="!userInfo.avatar" style="font-size: 18px; color: #fff;"/>
           </div>
         </div>
         <template #content>

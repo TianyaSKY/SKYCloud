@@ -112,7 +112,7 @@ const internalSelectedKeys = ref([])
 
 const selection = computed({
   get: () => props.selectedKeys || internalSelectedKeys.value,
-  set: (val:any) => {
+  set: (val: any) => {
     internalSelectedKeys.value = val
     emit('update:selectedKeys', val)
   }

@@ -14,11 +14,12 @@ from app.services.sys_dict_service import get_sys_dict_by_key
 
 logger = logging.getLogger(__name__)
 
+
 def get_chat_model():
     api_url = get_sys_dict_by_key('chat_api_url').value
     api_key = get_sys_dict_by_key('chat_api_key').value
     model_name = get_sys_dict_by_key('chat_api_model').value
-    
+
     return ChatOpenAI(
         api_key=api_key,
         base_url=api_url,
@@ -26,41 +27,44 @@ def get_chat_model():
         temperature=0,
     )
 
+
 def get_embeddings_model():
     api_url = get_sys_dict_by_key('emb_api_url').value
     api_key = get_sys_dict_by_key('emb_api_key').value
     model_name = get_sys_dict_by_key('emb_model_name').value
-    
+
     return OpenAIEmbeddings(
         api_key=api_key,
         base_url=api_url,
         model=model_name
     )
 
+
 def custom_db_retriever(query_text: str, user_id: int):
     """自定义检索器，使用 SQLAlchemy 执行向量搜索"""
     embeddings = get_embeddings_model()
     query_vector = embeddings.embed_query(query_text)[:1536]
-    
+
     sql = text("""
-        SELECT id, name, description, mime_type
-        FROM files
-        WHERE description IS NOT NULL
-          AND description != ''
+               SELECT id, name, description, mime_type
+               FROM files
+               WHERE description IS NOT NULL
+                 AND description != ''
           AND uploader_id = :user_id
-        ORDER BY vector_info <=> :vector
-        LIMIT 20
-    """)
-    
+               ORDER BY vector_info <=> :vector
+                   LIMIT 20
+               """)
+
     results = db.session.execute(sql, {"vector": str(query_vector), "user_id": user_id}).fetchall()
     docs = []
     for row in results:
         content = f"文件名: {row[1]}\n描述: {row[2]}"
         metadata = {"id": row[0], "name": row[1], "mime_type": row[3]}
         docs.append(Document(page_content=content, metadata=metadata))
-        
+
     logger.info(f"数据库检索到 {len(docs)} 条结果")
     return docs
+
 
 def format_docs(docs):
     formatted = []
@@ -73,10 +77,12 @@ def format_docs(docs):
         formatted.append(info)
     return "\n\n---\n\n".join(formatted)
 
+
 def format_history(history):
     if isinstance(history, list):
         return "\n".join([f"{h.get('role', 'user')}: {h.get('content', '')}" for h in history])
     return str(history) if history else ""
+
 
 async def generate_chat_events(user_id, query: str, history: list):
     """异步生成器，用于 SSE 流式输出"""
@@ -111,9 +117,10 @@ async def generate_chat_events(user_id, query: str, history: list):
     rag_chain = (
             RunnableParallel({
                 "context": {
-                    "query_text": rewriter,
-                    "user_id": itemgetter("user_id")
-                } | RunnableLambda(lambda x: custom_db_retriever(x["query_text"], x["user_id"])) | format_docs,
+                               "query_text": rewriter,
+                               "user_id": itemgetter("user_id")
+                           } | RunnableLambda(
+                    lambda x: custom_db_retriever(x["query_text"], x["user_id"])) | format_docs,
                 "question": itemgetter("question"),
                 "history": itemgetter("history")
             })
@@ -126,18 +133,18 @@ async def generate_chat_events(user_id, query: str, history: list):
                 version="v2"
         ):
             kind = event["event"]
-            
+
             # 处理关键词生成
             if kind == "on_chain_end" and event["name"] == "keyword_gen":
                 keywords = event["data"]["output"]
                 yield f"data: {json.dumps({'type': 'keywords', 'content': keywords})}\n\n"
-            
+
             # 处理最终回答的流
             elif kind == "on_chat_model_stream":
                 content = event["data"]["chunk"].content
                 if content:
                     yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
-            
+
             # 处理状态
             elif kind == "on_retriever_start" or (kind == "on_chain_start" and event["name"] == "custom_db_retriever"):
                 yield f"data: {json.dumps({'type': 'status', 'content': '🔍 正在检索相关文件...'})}\n\n"

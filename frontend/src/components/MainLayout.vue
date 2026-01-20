@@ -18,7 +18,7 @@
     </a-layout>
 
     <!-- AI 聊天悬浮球，仅在“全部文件”页面显示 -->
-    <ChatWidget :show="activeMenu === 'all'" />
+    <ChatWidget :show="activeMenu === 'all'"/>
 
     <!-- 头像上传裁切弹窗 -->
     <a-modal v-model:visible="showAvatarModal" title="修改头像" @cancel="handleCancelAvatar" @ok="handleUploadAvatar">
@@ -66,16 +66,17 @@
     </a-modal>
 
     <!-- 修改密码弹窗 -->
-    <a-modal v-model:visible="showPasswordModal" title="修改密码" @cancel="handleCancelPassword" @ok="handleUpdatePassword">
+    <a-modal v-model:visible="showPasswordModal" title="修改密码" @cancel="handleCancelPassword"
+             @ok="handleUpdatePassword">
       <a-form :model="passwordForm" layout="vertical">
         <a-form-item field="oldPassword" label="旧密码" required>
-          <a-input-password v-model="passwordForm.oldPassword" placeholder="请输入旧密码" />
+          <a-input-password v-model="passwordForm.oldPassword" placeholder="请输入旧密码"/>
         </a-form-item>
         <a-form-item field="newPassword" label="新密码" required>
-          <a-input-password v-model="passwordForm.newPassword" placeholder="请输入新密码" />
+          <a-input-password v-model="passwordForm.newPassword" placeholder="请输入新密码"/>
         </a-form-item>
         <a-form-item field="confirmPassword" label="确认新密码" required>
-          <a-input-password v-model="passwordForm.confirmPassword" placeholder="请再次输入新密码" />
+          <a-input-password v-model="passwordForm.confirmPassword" placeholder="请再次输入新密码"/>
         </a-form-item>
       </a-form>
     </a-modal>

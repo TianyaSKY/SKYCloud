@@ -1,23 +1,23 @@
 <template>
   <div
-    v-if="show"
-    class="chat-widget"
-    :style="{
+      v-if="show"
+      :style="{
       left: position.x + 'px',
       top: position.y + 'px',
       bottom: 'auto',
       right: 'auto'
     }"
+      class="chat-widget"
   >
     <!-- 悬浮球 -->
     <div
-      class="chat-trigger"
-      @mousedown="handleMouseDown"
-      @click="handleClick"
-      :class="{ 'active': visible }"
+        :class="{ 'active': visible }"
+        class="chat-trigger"
+        @click="handleClick"
+        @mousedown="handleMouseDown"
     >
-      <icon-message v-if="!visible" :size="24" />
-      <icon-close v-else :size="24" />
+      <icon-message v-if="!visible" :size="24"/>
+      <icon-close v-else :size="24"/>
     </div>
 
     <!-- 聊天框 -->
@@ -26,35 +26,38 @@
         <div class="chat-header">
           <div class="title">SKYCloud AI 助手</div>
           <div class="actions">
-            <a-button type="text" size="mini" @click="clearHistory">
-              <template #icon><icon-delete /></template>
+            <a-button size="mini" type="text" @click="clearHistory">
+              <template #icon>
+                <icon-delete/>
+              </template>
             </a-button>
           </div>
         </div>
 
-        <div class="chat-messages" ref="messageContainer">
+        <div ref="messageContainer" class="chat-messages">
           <div
-            v-for="(msg, index) in messages"
-            :key="index"
-            :class="['message-wrapper', msg.role]"
+              v-for="(msg, index) in messages"
+              :key="index"
+              :class="['message-wrapper', msg.role]"
           >
             <div class="avatar">
-              <icon-robot v-if="msg.role === 'assistant'" />
-              <icon-user v-else />
+              <icon-robot v-if="msg.role === 'assistant'"/>
+              <icon-user v-else/>
             </div>
             <div class="message-content">
               <div class="text">
                 <div v-if="msg.role === 'assistant'">
                   <!-- 关键词展示 -->
                   <div v-if="msg.keywords" class="keywords-tag">
-                    <icon-search /> 搜索关键词：{{ msg.keywords }}
+                    <icon-search/>
+                    搜索关键词：{{ msg.keywords }}
                   </div>
-                  <MarkdownRenderer :content="msg.content" />
+                  <MarkdownRenderer :content="msg.content"/>
                 </div>
                 <div v-else class="user-text">{{ msg.content }}</div>
               </div>
               <div v-if="msg.status" class="status-info">
-                <icon-loading v-if="msg.loading" />
+                <icon-loading v-if="msg.loading"/>
                 {{ msg.status }}
               </div>
             </div>
@@ -63,12 +66,12 @@
 
         <div class="chat-input">
           <a-input-search
-            v-model="inputValue"
-            placeholder="问问 AI 关于你的文件..."
-            button-text="发送"
-            :loading="loading"
-            @search="handleSend"
-            @press-enter="handleSend"
+              v-model="inputValue"
+              :loading="loading"
+              button-text="发送"
+              placeholder="问问 AI 关于你的文件..."
+              @search="handleSend"
+              @press-enter="handleSend"
           />
         </div>
       </div>
@@ -101,9 +104,9 @@ const messages = ref<ChatMessage[]>([]);
 const messageContainer = ref<HTMLElement | null>(null);
 
 // 拖拽相关
-const position = ref({ x: window.innerWidth - 86, y: window.innerHeight - 86 });
+const position = ref({x: window.innerWidth - 86, y: window.innerHeight - 86});
 const isDragging = ref(false);
-const dragOffset = ref({ x: 0, y: 0 });
+const dragOffset = ref({x: 0, y: 0});
 let startTime = 0;
 
 interface ChatMessage {
@@ -141,7 +144,7 @@ const handleMouseMove = (e: MouseEvent) => {
   newX = Math.max(padding, Math.min(window.innerWidth - 66, newX));
   newY = Math.max(padding, Math.min(window.innerHeight - 66, newY));
 
-  position.value = { x: newX, y: newY };
+  position.value = {x: newX, y: newY};
 };
 
 const handleMouseUp = () => {
@@ -179,7 +182,7 @@ const handleSend = async () => {
   const query = inputValue.value;
   inputValue.value = '';
 
-  messages.value.push({ role: 'user', content: query });
+  messages.value.push({role: 'user', content: query});
 
   const aiMsg: ChatMessage = {
     role: 'assistant',
@@ -195,8 +198,8 @@ const handleSend = async () => {
 
   try {
     const history = messages.value
-      .slice(0, -1)
-      .map(m => ({ role: m.role, content: m.content }));
+        .slice(0, -1)
+        .map(m => ({role: m.role, content: m.content}));
 
     const token = localStorage.getItem('token');
     const response = await fetch('/api/chat', {
@@ -205,7 +208,7 @@ const handleSend = async () => {
         'Content-Type': 'application/json',
         'Authorization': token ? `Bearer ${token}` : ''
       },
-      body: JSON.stringify({ query, history }),
+      body: JSON.stringify({query, history}),
     });
 
     if (!response.body) throw new Error('No response body');
@@ -217,7 +220,7 @@ const handleSend = async () => {
     aiMsg.loading = false;
 
     while (true) {
-      const { value, done } = await reader.read();
+      const {value, done} = await reader.read();
       if (done) break;
 
       const chunk = decoder.decode(value);

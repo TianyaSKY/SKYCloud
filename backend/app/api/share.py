@@ -48,7 +48,7 @@ def access_share(token):
     file = share.file
     if not file:
         return jsonify({'error': 'File not found'}), 404
-        
+
     abs_path = file.get_abs_path()
     if not os.path.exists(abs_path):
         return jsonify({'error': 'File not found on server'}), 404
