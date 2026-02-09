@@ -1,8 +1,6 @@
-import json
-
 from fastapi import HTTPException
-
 from fastapi_cache.decorator import cache
+
 from app.extensions import db, redis_client
 from app.models.sys_dict import SysDict
 

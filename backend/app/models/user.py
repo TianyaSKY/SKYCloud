@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import Column, Integer, String, DateTime, Enum
-from sqlalchemy.orm import relationship
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from app.extensions import Base, _scoped_session

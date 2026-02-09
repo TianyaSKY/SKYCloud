@@ -1,4 +1,3 @@
-import json
 from typing import List
 
 from fastapi import HTTPException
@@ -92,12 +91,7 @@ def _delete_folder_recursive(folder):
         db.session.delete(subfolder)
 
 
-def _root_folder_key_builder(func, namespace, request, response, *args, **kwargs):
-    user_id = kwargs.get("user_id") or args[0]
-    return f"user:root:folder:{user_id}"
-
-
-@cache(expire=3600, key_builder=_root_folder_key_builder)
+@cache(expire=3600)
 async def get_root_folder_id(user_id) -> int | None:
     root_folder = Folder.query.filter_by(user_id=user_id, parent_id=None).first()
     if root_folder:
@@ -105,12 +99,7 @@ async def get_root_folder_id(user_id) -> int | None:
     return None
 
 
-def _files_root_key_builder(func, namespace, request, response, *args, **kwargs):
-    user_id = kwargs.get("user_id") or args[0]
-    return f"user:files:root:{user_id}"
-
-
-@cache(expire=3600, key_builder=_files_root_key_builder)
+@cache(expire=3600)
 async def get_files_in_root_folder(user_id) -> List[dict]:
     root_folder_id = await get_root_folder_id(user_id)
     if not root_folder_id:
@@ -120,12 +109,7 @@ async def get_files_in_root_folder(user_id) -> List[dict]:
     return [f.to_dict() for f in files]
 
 
-def _folders_key_builder(func, namespace, request, response, *args, **kwargs):
-    user_id = kwargs.get("user_id") or args[0]
-    return f"user:folders:{user_id}"
-
-
-@cache(expire=3600, key_builder=_folders_key_builder)
+@cache(expire=3600)
 async def get_folders(user_id) -> List[dict]:
     folders = Folder.query.filter_by(user_id=user_id).all()
     return [f.to_dict() for f in folders]

@@ -2,6 +2,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -74,6 +75,7 @@ class SysDictPayload(BaseModel):
 class ChatRequest(BaseModel):
     query: str
     history: list[dict[str, Any]] = Field(default_factory=list)
+
 
 class AvatarUploadRequest(BaseModel):
     avatar: str  # Base64 string

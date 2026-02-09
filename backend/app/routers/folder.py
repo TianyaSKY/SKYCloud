@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 
-from app.services import folder_service
 from app.dependencies import get_current_user
 from app.schemas import FolderCreateRequest, FolderUpdateRequest
+from app.services import folder_service
 
 router = APIRouter(tags=["folder"])
 
@@ -25,15 +25,9 @@ def create_folder(payload: FolderCreateRequest, current_user=Depends(get_current
     return JSONResponse(status_code=status.HTTP_201_CREATED, content=folder.to_dict())
 
 
-@router.get("/folder/{id}")
-def get_folder(id: int, current_user=Depends(get_current_user)):
-    folder = _ensure_folder_access(current_user, id)
-    return folder.to_dict()
-
-
 @router.put("/folder/{id}")
 def update_folder(
-    id: int, payload: FolderUpdateRequest, current_user=Depends(get_current_user)
+        id: int, payload: FolderUpdateRequest, current_user=Depends(get_current_user)
 ):
     _ensure_folder_access(current_user, id)
     folder = folder_service.update_folder(id, payload.model_dump(exclude_none=True))
@@ -53,6 +47,12 @@ async def get_root_folder_id(current_user=Depends(get_current_user)):
         "root_folder_id": await folder_service.get_root_folder_id(current_user.id),
         "code": 200,
     }
+
+
+@router.get("/folder/{id}")
+def get_folder(id: int, current_user=Depends(get_current_user)):
+    folder = _ensure_folder_access(current_user, id)
+    return folder.to_dict()
 
 
 @router.get("/folder/all")

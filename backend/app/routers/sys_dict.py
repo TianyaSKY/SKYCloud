@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import JSONResponse
 
-from app.services import sys_dict_service
 from app.dependencies import require_admin
 from app.schemas import SysDictPayload
+from app.services import sys_dict_service
 
 router = APIRouter(tags=["sys_dict"])
 
@@ -22,7 +22,7 @@ async def get_sys_dict(id: int, current_user=Depends(require_admin)):
 
 @router.put("/sys_dicts/{id}")
 def update_sys_dict(
-    id: int, payload: SysDictPayload, current_user=Depends(require_admin)
+        id: int, payload: SysDictPayload, current_user=Depends(require_admin)
 ):
     sys_dict = sys_dict_service.update_sys_dict(id, payload.model_dump())
     return sys_dict.to_dict()

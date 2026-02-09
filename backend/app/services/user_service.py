@@ -1,6 +1,3 @@
-import datetime
-import json
-
 from fastapi import HTTPException
 from fastapi_cache.decorator import cache
 
@@ -23,14 +20,7 @@ def create_user(data):
     return new_user
 
 
-def _user_key_builder(
-    func, namespace: str = "", request=None, response=None, *args, **kwargs
-):
-    id_val = kwargs.get("id") or args[0]
-    return f"user:profile:{id_val}"
-
-
-@cache(expire=3600, key_builder=_user_key_builder)
+@cache(expire=3600)
 async def _get_user_data(id: int) -> dict:
     user = User.query.get(id)
     if not user:

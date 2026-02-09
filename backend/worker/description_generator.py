@@ -7,10 +7,10 @@
 - 生成结构化的英文描述用于后续向量化
 """
 
-import logging
-import tempfile
 import base64
+import logging
 import mimetypes
+import tempfile
 from pathlib import Path
 
 import cv2

@@ -9,12 +9,10 @@ from fastapi import (
     Query,
     Response,
     status,
-    Body,
 )
 from fastapi import UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.services import file_service
 from app.dependencies import ensure_owner_or_admin, get_current_user
 from app.schemas import (
     BatchDeleteRequest,
@@ -22,6 +20,7 @@ from app.schemas import (
     RetryEmbeddingRequest,
     AvatarUploadRequest,
 )
+from app.services import file_service
 from app.upload_adapter import FastAPIUploadAdapter, Base64UploadAdapter
 
 router = APIRouter(tags=["file"])
@@ -38,9 +37,9 @@ def _ensure_file_access(current_user, file_id: int):
 
 @router.post("/files")
 def create_file(
-    current_user=Depends(get_current_user),
-    file: UploadFile = FastAPIFile(...),
-    parent_id: int | None = Form(default=None),
+        current_user=Depends(get_current_user),
+        file: UploadFile = FastAPIFile(...),
+        parent_id: int | None = Form(default=None),
 ):
     if not file.filename:
         raise HTTPException(
@@ -61,9 +60,9 @@ def create_file(
 
 @router.post("/files/batch")
 def batch_upload_files(
-    current_user=Depends(get_current_user),
-    files: list[UploadFile] | None = FastAPIFile(default=None),
-    parent_id: int | None = Form(default=None),
+        current_user=Depends(get_current_user),
+        files: list[UploadFile] | None = FastAPIFile(default=None),
+        parent_id: int | None = Form(default=None),
 ):
     valid_files = [f for f in (files or []) if f and f.filename]
     if not valid_files:
@@ -87,13 +86,13 @@ def batch_upload_files(
 
 @router.get("/files/list")
 def list_files(
-    current_user=Depends(get_current_user),
-    parent_id: int | None = Query(default=None),
-    page: int = Query(default=1),
-    page_size: int = Query(default=10),
-    name: str | None = Query(default=None),
-    sort_by: str = Query(default="created_at"),
-    order: str = Query(default="desc"),
+        current_user=Depends(get_current_user),
+        parent_id: int | None = Query(default=None),
+        page: int = Query(default=1),
+        page_size: int = Query(default=10),
+        name: str | None = Query(default=None),
+        sort_by: str = Query(default="created_at"),
+        order: str = Query(default="desc"),
 ):
     results = file_service.get_files_and_folders(
         current_user.id, parent_id, page, page_size, name, sort_by, order
@@ -103,11 +102,11 @@ def list_files(
 
 @router.get("/files/search")
 async def search_files(
-    current_user=Depends(get_current_user),
-    q: str = Query(default=""),
-    page: int = Query(default=1),
-    page_size: int = Query(default=10),
-    type: str = Query(default="fuzzy"),
+        current_user=Depends(get_current_user),
+        q: str = Query(default=""),
+        page: int = Query(default=1),
+        page_size: int = Query(default=10),
+        type: str = Query(default="fuzzy"),
 ):
     if not q:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
@@ -118,7 +117,7 @@ async def search_files(
 
 @router.put("/files/{id}")
 def update_file(
-    id: int, payload: FileUpdateRequest, current_user=Depends(get_current_user)
+        id: int, payload: FileUpdateRequest, current_user=Depends(get_current_user)
 ):
     _ensure_file_access(current_user, id)
     file_obj = file_service.update_file(id, payload.model_dump(exclude_none=True))
@@ -147,9 +146,9 @@ def download_file(id: int, current_user=Depends(get_current_user)):
 
 @router.post("/files/upload/avatar/{id}")
 def upload_avatar(
-    id: int,
-    payload: AvatarUploadRequest,
-    current_user=Depends(get_current_user),
+        id: int,
+        payload: AvatarUploadRequest,
+        current_user=Depends(get_current_user),
 ):
     ensure_owner_or_admin(current_user, id)
     if not payload.avatar:
@@ -166,7 +165,7 @@ def upload_avatar(
 
 @router.post("/files/batch-delete")
 def batch_delete_files(
-    payload: BatchDeleteRequest, current_user=Depends(get_current_user)
+        payload: BatchDeleteRequest, current_user=Depends(get_current_user)
 ):
     # 权限检查：确保用户有权限删除每个文件
     for item in payload.items:
@@ -178,9 +177,9 @@ def batch_delete_files(
 
             folder = folder_service.get_folder(item.id)
             if (
-                folder
-                and current_user.role != "admin"
-                and folder.user_id != current_user.id
+                    folder
+                    and current_user.role != "admin"
+                    and folder.user_id != current_user.id
             ):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
@@ -192,7 +191,7 @@ def batch_delete_files(
 
 @router.post("/files/retry_embedding")
 def retry_embedding(
-    payload: RetryEmbeddingRequest, current_user=Depends(get_current_user)
+        payload: RetryEmbeddingRequest, current_user=Depends(get_current_user)
 ):
     file_obj = _ensure_file_access(current_user, payload.file_id)
     file_service.retry_embedding(file_obj.id)

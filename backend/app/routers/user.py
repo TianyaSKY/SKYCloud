@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 
-from app.models.user import User
-from app.services import user_service
 from app.dependencies import ensure_owner_or_admin, get_current_user
+from app.models.user import User
 from app.schemas import UserCreateRequest, UserPasswordUpdateRequest, UserUpdateRequest
+from app.services import user_service
 
 router = APIRouter(tags=["user"])
 
@@ -24,7 +24,7 @@ async def get_user(id: int, current_user=Depends(get_current_user)):
 
 @router.put("/users/{id}")
 def update_user(
-    id: int, payload: UserUpdateRequest, current_user=Depends(get_current_user)
+        id: int, payload: UserUpdateRequest, current_user=Depends(get_current_user)
 ):
     ensure_owner_or_admin(current_user, id)
     user = user_service.update_user(id, payload.model_dump(exclude_none=True))
@@ -33,7 +33,7 @@ def update_user(
 
 @router.put("/users/{id}/password")
 def update_user_password(
-    id: int, payload: UserPasswordUpdateRequest, current_user=Depends(get_current_user)
+        id: int, payload: UserPasswordUpdateRequest, current_user=Depends(get_current_user)
 ):
     ensure_owner_or_admin(current_user, id)
 

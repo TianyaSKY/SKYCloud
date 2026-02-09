@@ -1,5 +1,3 @@
-import json
-
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -12,7 +10,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+        credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> User:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
@@ -27,9 +25,8 @@ async def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token!"
             )
-
-        current_user = await user_service.get_user(int(user_id))
-
+        user_id = int(user_id)
+        current_user = await user_service.get_user(user_id)
         if not current_user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found!"
@@ -44,10 +41,9 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token!"
         ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
-        # 这里可能捕获到 user_service 抛出的 HTTPException
-        if isinstance(exc, HTTPException):
-            raise exc
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Token is invalid!"
         ) from exc

@@ -6,8 +6,8 @@ from fastapi_cache.backends.redis import RedisBackend
 from redis import asyncio as aioredis
 
 from app import initialize_application
-from app.extensions import db, REDIS_HOST, REDIS_PORT
 from app.exceptions import register_exception_handlers
+from app.extensions import db, REDIS_HOST, REDIS_PORT
 from app.routers import auth, chat, file, folder, inbox, share, sys_dict, user
 
 
@@ -16,8 +16,9 @@ async def lifespan(_: FastAPI):
     initialize_application()
 
     # Initialize FastAPI Cache with Redis
+    # fastapi-cache expects raw bytes from Redis for its default coder.
     redis = aioredis.from_url(
-        f"redis://{REDIS_HOST}:{REDIS_PORT}", encoding="utf8", decode_responses=True
+        f"redis://{REDIS_HOST}:{REDIS_PORT}", decode_responses=False
     )
     FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
 

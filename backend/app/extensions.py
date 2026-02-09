@@ -1,6 +1,5 @@
 import os
 import platform
-from contextlib import contextmanager
 
 from dotenv import load_dotenv
 from redis import Redis

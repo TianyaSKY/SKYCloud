@@ -1,9 +1,8 @@
-import shutil
 import base64
-import re
 import mimetypes
+import re
+import shutil
 import uuid
-import io
 
 from fastapi import UploadFile
 
@@ -30,7 +29,7 @@ class Base64UploadAdapter:
         self.filename = filename
         self.mimetype = "application/octet-stream"
         self._data = None
-        
+
         # Parse data URI scheme if present
         if "," in base64_str:
             header, data = base64_str.split(",", 1)
@@ -55,14 +54,14 @@ class Base64UploadAdapter:
                     ext = ".bin"
             self.filename = f"upload_{uuid.uuid4().hex[:8]}{ext}"
         elif "." not in self.filename:
-             ext = mimetypes.guess_extension(self.mimetype) or ".bin"
-             self.filename = f"{self.filename}{ext}"
+            ext = mimetypes.guess_extension(self.mimetype) or ".bin"
+            self.filename = f"{self.filename}{ext}"
 
     def save(self, destination: str) -> None:
         file_data = base64.b64decode(self._data)
         with open(destination, "wb") as f:
             f.write(file_data)
-            
+
     @property
     def content_type(self):
         return self.mimetype

@@ -3,9 +3,9 @@ import logging
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import JSONResponse
 
+from app.schemas import LoginRequest, RegisterRequest
 from app.services.auth_service import authenticate_user
 from app.services.user_service import create_user
-from app.schemas import LoginRequest, RegisterRequest
 
 logger = logging.getLogger(__name__)
 

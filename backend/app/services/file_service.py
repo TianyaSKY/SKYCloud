@@ -1,21 +1,14 @@
-from typing import List, Dict, Union, Any, Optional
-
-import json
 import logging
 import mimetypes
 import os
 import uuid
 from collections import defaultdict
-
-from openai import OpenAI
-from werkzeug.utils import secure_filename
-from werkzeug.datastructures import FileStorage
-
-from app.extensions import db, redis_client, UPLOAD_FOLDER
-from app.models.file import File
-from app.models.folder import Folder
+from typing import List, Dict, Union, Any, Optional
 
 from fastapi_cache.decorator import cache
+from openai import OpenAI
+from werkzeug.datastructures import FileStorage
+from werkzeug.utils import secure_filename
 
 from app.extensions import db, redis_client, UPLOAD_FOLDER
 from app.models.file import File
@@ -91,7 +84,7 @@ def create_file(file_obj: Union[FileStorage, Any], data: Dict[str, Any]) -> File
 
 
 def batch_create_files(
-    file_objs: List[Union[FileStorage, Any]], data: Dict[str, Any]
+        file_objs: List[Union[FileStorage, Any]], data: Dict[str, Any]
 ) -> List[File]:
     """
     批量创建文件，优化数据库事务和Redis操作
@@ -160,13 +153,13 @@ def get_file(id: int) -> File:
 
 
 def get_files_and_folders(
-    user_id: int,
-    parent_id: Optional[int],
-    page: int = 1,
-    page_size: int = 10,
-    name: Optional[str] = None,
-    sort_by: str = "created_at",
-    order: str = "desc",
+        user_id: int,
+        parent_id: Optional[int],
+        page: int = 1,
+        page_size: int = 10,
+        name: Optional[str] = None,
+        sort_by: str = "created_at",
+        order: str = "desc",
 ) -> Dict[str, Any]:
     # 确保 page 至少为 1
     if page < 1:
@@ -284,11 +277,11 @@ def delete_file(id: int, commit: bool = True) -> None:
 
 
 async def search_files(
-    user_id: int,
-    query: str,
-    page: int = 1,
-    page_size: int = 10,
-    search_type: str = "fuzzy",
+        user_id: int,
+        query: str,
+        page: int = 1,
+        page_size: int = 10,
+        search_type: str = "fuzzy",
 ) -> Dict[str, Any]:
     """
     搜索文件，支持模糊搜索和向量搜索
@@ -302,24 +295,9 @@ async def search_files(
         return await _search_files_fuzzy(user_id, query, page, page_size)
 
 
-def _search_files_fuzzy_key_builder(
-    func,
-    namespace: str = "",
-    request=None,
-    response=None,
-    *args,
-    **kwargs,
-):
-    user_id = kwargs.get("user_id") or args[0]
-    query = kwargs.get("query") or args[1]
-    page = kwargs.get("page") or args[2]
-    page_size = kwargs.get("page_size") or args[3]
-    return f"search:fuzzy:{user_id}:{query}:{page}:{page_size}"
-
-
-@cache(expire=CACHE_EXPIRATION, key_builder=_search_files_fuzzy_key_builder)
+@cache(expire=CACHE_EXPIRATION)
 async def _search_files_fuzzy(
-    user_id: int, query: str, page: int, page_size: int
+        user_id: int, query: str, page: int, page_size: int
 ) -> Dict[str, Any]:
     """
     数据库模糊搜索
@@ -351,7 +329,7 @@ async def _get_config_value(key: str, default: str = "") -> str:
 
 
 async def _search_files_vector(
-    user_id: int, query: str, page: int, page_size: int
+        user_id: int, query: str, page: int, page_size: int
 ) -> Dict[str, Any]:
     """
     向量化搜索
@@ -549,19 +527,7 @@ def get_all_files(user_id: int) -> List[File]:
     return File.query.filter_by(uploader_id=user_id).all()
 
 
-def _process_status_key_builder(
-    func,
-    namespace: str = "",
-    request=None,
-    response=None,
-    *args,
-    **kwargs,
-):
-    id_val = kwargs.get("id") or args[0]
-    return f"file:status:count:{id_val}"
-
-
-@cache(expire=60, key_builder=_process_status_key_builder)
+@cache(expire=60)
 async def process_status(id: int) -> Dict[str, int]:
     """获取所有文件的处理状态，使用 Redis 缓存加速"""
     # 缓存未命中，查询数据库
