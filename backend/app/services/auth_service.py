@@ -2,8 +2,8 @@ import datetime
 import logging
 
 import jwt
-from flask import current_app
 
+from app.extensions import SECRET_KEY
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -17,15 +17,11 @@ def generate_token(user_id):
     """
     try:
         payload = {
-            'exp': datetime.datetime.utcnow() + datetime.timedelta(days=1),
-            'iat': datetime.datetime.utcnow(),
-            'sub': str(user_id)
+            "exp": datetime.datetime.utcnow() + datetime.timedelta(days=1),
+            "iat": datetime.datetime.utcnow(),
+            "sub": str(user_id),
         }
-        return jwt.encode(
-            payload,
-            current_app.config['SECRET_KEY'],
-            algorithm='HS256'
-        )
+        return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
     except Exception as e:
         logger.error(f"Error generating token: {e}")
@@ -39,16 +35,12 @@ def decode_token(token):
     :return: 用户 ID 或 错误信息
     """
     try:
-        payload = jwt.decode(
-            token,
-            current_app.config['SECRET_KEY'],
-            algorithms=['HS256']
-        )
-        return payload['sub']
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        return payload["sub"]
     except jwt.ExpiredSignatureError:
-        return 'Token expired. Please log in again.'
+        return "Token expired. Please log in again."
     except jwt.InvalidTokenError:
-        return 'Invalid token. Please log in again.'
+        return "Invalid token. Please log in again."
 
 
 def authenticate_user(username, password):

@@ -1,36 +1,48 @@
+from typing import List, Dict, Union, Any, Optional
+
 import json
 import logging
 import mimetypes
 import os
 import uuid
 from collections import defaultdict
-from typing import List
 
-from flask import current_app
 from openai import OpenAI
 from werkzeug.utils import secure_filename
+from werkzeug.datastructures import FileStorage
 
-from app.extensions import db, redis_client
+from app.extensions import db, redis_client, UPLOAD_FOLDER
+from app.models.file import File
+from app.models.folder import Folder
+
+from fastapi_cache.decorator import cache
+
+from app.extensions import db, redis_client, UPLOAD_FOLDER
 from app.models.file import File
 from app.models.folder import Folder
 
 logger = logging.getLogger(__name__)
 
-FILE_PROCESS_QUEUE = 'file_process_queue'
-ORGANIZE_FILE_QUEUE = 'organize_file_queue'
+FILE_PROCESS_QUEUE = "file_process_queue"
+ORGANIZE_FILE_QUEUE = "organize_file_queue"
 CACHE_EXPIRATION = 3600  # 缓存过期时间（秒）
 
 
-def create_file(file_obj, data):
+def create_file(file_obj: Union[FileStorage, Any], data: Dict[str, Any]) -> File:
     """
-    :param file_obj:文件数据流
-    :param data: 表单数据
-    :return:
+    创建新文件。
+
+    Args:
+        file_obj: 文件对象（Flask/Werkzeug FileStorage 或类似接口）
+        data: 包含 'uploader_id' 和 'parent_id' 的字典
+
+    Returns:
+        File: 创建的文件对象
     """
-    upload_folder = current_app.config['UPLOAD_FOLDER']
+    upload_folder = UPLOAD_FOLDER
 
     # 保留原始文件名用于数据库存储（支持中文）
-    original_filename = file_obj.filename
+    original_filename = file_obj.filename or "unknown"
 
     # 分离文件名和后缀，确保后缀被完整保留
     base_name, extension = os.path.splitext(original_filename)
@@ -61,8 +73,8 @@ def create_file(file_obj, data):
         file_path=unique_filename,  # 只存文件名
         file_size=file_size,
         mime_type=mime_type,
-        uploader_id=data.get('uploader_id'),
-        parent_id=data.get('parent_id')
+        uploader_id=data.get("uploader_id"),
+        parent_id=data.get("parent_id"),
     )
 
     db.session.add(new_file)
@@ -78,16 +90,18 @@ def create_file(file_obj, data):
     return new_file
 
 
-def batch_create_files(file_objs, data):
+def batch_create_files(
+    file_objs: List[Union[FileStorage, Any]], data: Dict[str, Any]
+) -> List[File]:
     """
     批量创建文件，优化数据库事务和Redis操作
     """
-    upload_folder = current_app.config['UPLOAD_FOLDER']
+    upload_folder = UPLOAD_FOLDER
     new_files = []
-    uploader_id = data.get('uploader_id')
+    uploader_id = data.get("uploader_id")
 
     for file_obj in file_objs:
-        if not file_obj or file_obj.filename == '':
+        if not file_obj or file_obj.filename == "":
             continue
 
         original_filename = file_obj.filename
@@ -112,7 +126,7 @@ def batch_create_files(file_objs, data):
             file_size=file_size,
             mime_type=mime_type,
             uploader_id=uploader_id,
-            parent_id=data.get('parent_id')
+            parent_id=data.get("parent_id"),
         )
         new_files.append(new_file)
 
@@ -128,18 +142,32 @@ def batch_create_files(file_objs, data):
                 pipe.rpush(FILE_PROCESS_QUEUE, f.id)
             pipe.execute()
             # 3. 仅清理一次缓存
-            _clear_search_cache(uploader_id)
+            if uploader_id:
+                _clear_search_cache(uploader_id)
         except Exception as e:
             logger.exception(f"Error pushing to Redis queue: {e}")
 
     return new_files
 
 
-def get_file(id) -> File:
-    return File.query.get_or_404(id)
+def get_file(id: int) -> File:
+    file = File.query.get(id)
+    if not file:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="File not found")
+    return file
 
 
-def get_files_and_folders(user_id, parent_id, page=1, page_size=10, name=None, sort_by='created_at', order='desc'):
+def get_files_and_folders(
+    user_id: int,
+    parent_id: Optional[int],
+    page: int = 1,
+    page_size: int = 10,
+    name: Optional[str] = None,
+    sort_by: str = "created_at",
+    order: str = "desc",
+) -> Dict[str, Any]:
     # 确保 page 至少为 1
     if page < 1:
         page = 1
@@ -150,7 +178,7 @@ def get_files_and_folders(user_id, parent_id, page=1, page_size=10, name=None, s
         folder_query = folder_query.filter(Folder.name.ilike(f"%{name}%"))
 
     # 文件夹通常按名称排序
-    if order == 'asc':
+    if order == "asc":
         folder_query = folder_query.order_by(Folder.name.asc())
     else:
         folder_query = folder_query.order_by(Folder.name.desc())
@@ -161,14 +189,14 @@ def get_files_and_folders(user_id, parent_id, page=1, page_size=10, name=None, s
         file_query = file_query.filter(File.name.ilike(f"%{name}%"))
 
     # 排序字段映射
-    if sort_by == 'name':
+    if sort_by == "name":
         sort_column = File.name
-    elif sort_by == 'size':
+    elif sort_by == "size":
         sort_column = File.file_size
     else:
         sort_column = File.created_at
 
-    if order == 'asc':
+    if order == "asc":
         file_query = file_query.order_by(sort_column.asc())
     else:
         file_query = file_query.order_by(sort_column.desc())
@@ -202,22 +230,26 @@ def get_files_and_folders(user_id, parent_id, page=1, page_size=10, name=None, s
         files_result = file_query.offset(file_offset).limit(page_size).all()
 
     return {
-        'folders': [folder.to_dict() for folder in folders_result],
-        'files': {
-            'items': [file.to_dict() for file in files_result],
-            'total': total_items,  # 返回总项数（文件夹+文件），以便前端正确计算分页
-            'page': page,
-            'page_size': page_size,
-            'pages': total_pages
-        }
+        "folders": [folder.to_dict() for folder in folders_result],
+        "files": {
+            "items": [file.to_dict() for file in files_result],
+            "total": total_items,  # 返回总项数（文件夹+文件），以便前端正确计算分页
+            "page": page,
+            "page_size": page_size,
+            "pages": total_pages,
+        },
     }
 
 
-def update_file(id, data):
-    file = File.query.get_or_404(id)
-    file.name = data.get('name', file.name)
-    file.status = data.get('status', file.status)
-    file.parent_id = data.get('parent_id', file.parent_id)
+def update_file(id: int, data: Dict[str, Any]) -> File:
+    file = File.query.get(id)
+    if not file:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="File not found")
+    file.name = data.get("name", file.name)
+    file.status = data.get("status", file.status)
+    file.parent_id = data.get("parent_id", file.parent_id)
     db.session.commit()
 
     # 清除搜索缓存
@@ -226,8 +258,12 @@ def update_file(id, data):
     return file
 
 
-def delete_file(id, commit=True):
-    file = File.query.get_or_404(id)
+def delete_file(id: int, commit: bool = True) -> None:
+    file = File.query.get(id)
+    if not file:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="File not found")
     uploader_id = file.uploader_id
 
     # 删除本地文件
@@ -247,73 +283,96 @@ def delete_file(id, commit=True):
         _clear_search_cache(uploader_id)
 
 
-def search_files(user_id, query, page=1, page_size=10, search_type='fuzzy'):
+async def search_files(
+    user_id: int,
+    query: str,
+    page: int = 1,
+    page_size: int = 10,
+    search_type: str = "fuzzy",
+) -> Dict[str, Any]:
     """
     搜索文件，支持模糊搜索和向量搜索
     """
     if not query:
-        return {'items': [], 'total': 0, 'page': page, 'page_size': page_size}
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
-    if search_type == 'vector':
+    if search_type == "vector":
         return _search_files_vector(user_id, query, page, page_size)
     else:
-        return _search_files_fuzzy(user_id, query, page, page_size)
+        return await _search_files_fuzzy(user_id, query, page, page_size)
 
 
-def _search_files_fuzzy(user_id, query, page, page_size):
+def _search_files_fuzzy_key_builder(
+    func,
+    namespace: str = "",
+    request=None,
+    response=None,
+    *args,
+    **kwargs,
+):
+    user_id = kwargs.get("user_id") or args[0]
+    query = kwargs.get("query") or args[1]
+    page = kwargs.get("page") or args[2]
+    page_size = kwargs.get("page_size") or args[3]
+    return f"search:fuzzy:{user_id}:{query}:{page}:{page_size}"
+
+
+@cache(expire=CACHE_EXPIRATION, key_builder=_search_files_fuzzy_key_builder)
+async def _search_files_fuzzy(
+    user_id: int, query: str, page: int, page_size: int
+) -> Dict[str, Any]:
     """
     数据库模糊搜索
     """
-    cache_key = f"search:fuzzy:{user_id}:{query}:{page}:{page_size}"
-
-    # 尝试从 Redis 获取缓存
-    try:
-        cached_result = redis_client.get(cache_key)
-        if cached_result:
-            logger.info(f"Cache hit for query: {query}")
-            return json.loads(cached_result)
-    except Exception as e:
-        logger.error(f"Redis error: {e}")
-
-    # 缓存未命中，查询数据库
-    logger.info(f"Cache miss for query: {query}")
-    pagination = File.query.filter(
-        File.uploader_id == user_id,
-        File.name.ilike(f"%{query}%")
-    ).paginate(page=page, per_page=page_size, error_out=False)
+    # 手动分页，不使用 Flask-SQLAlchemy 的 paginate
+    base_query = File.query.filter(
+        File.uploader_id == user_id, File.name.ilike(f"%{query}%")
+    )
+    total = base_query.count()
+    offset = (page - 1) * page_size
+    items = base_query.offset(offset).limit(page_size).all()
 
     results = {
-        'items': [file.to_dict() for file in pagination.items],
-        'total': pagination.total,
-        'page': page,
-        'page_size': page_size
+        "items": [file.to_dict() for file in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
     }
-
-    # 将结果存入 Redis 缓存
-    try:
-        redis_client.setex(cache_key, CACHE_EXPIRATION, json.dumps(results))
-    except Exception as e:
-        logger.exception(f"Redis set error: {e}")
 
     return results
 
 
-def _search_files_vector(user_id, query, page, page_size):
+async def _get_config_value(key: str, default: str = "") -> str:
+    """Helper to safely get sys dict value"""
+    from app.services import sys_dict_service
+
+    config = await sys_dict_service.get_sys_dict_by_key(key)
+    return config.value if config else default
+
+
+async def _search_files_vector(
+    user_id: int, query: str, page: int, page_size: int
+) -> Dict[str, Any]:
     """
     向量化搜索
     """
     try:
-        from app.services import sys_dict_service
         # 调用远程服务获取 embedding
         emb_config = {
-            'api': sys_dict_service.get_sys_dict_by_key("emb_api_url").value,
-            'key': sys_dict_service.get_sys_dict_by_key("emb_api_key").value,
-            'model': sys_dict_service.get_sys_dict_by_key("emb_model_name").value
+            "api": await _get_config_value("emb_api_url"),
+            "key": await _get_config_value("emb_api_key"),
+            "model": await _get_config_value("emb_model_name"),
         }
         embeddings = embedding_desc(query, emb_config)
 
         if not embeddings:
-            return {'items': [], 'total': 0, 'page': page, 'page_size': page_size, 'error': 'No embeddings returned'}
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "error": "No embeddings returned",
+            }
 
         query_embedding = embeddings
 
@@ -321,24 +380,24 @@ def _search_files_vector(user_id, query, page, page_size):
         # 计算偏移量
         offset = (page - 1) * page_size
 
-        files = File.query.filter(
-            File.uploader_id == user_id,
-            File.vector_info.isnot(None)
-        ).order_by(
-            File.vector_info.l2_distance(query_embedding)
-        ).limit(page_size).offset(offset).all()
+        files = (
+            File.query.filter(File.uploader_id == user_id, File.vector_info.isnot(None))
+            .order_by(File.vector_info.l2_distance(query_embedding))
+            .limit(page_size)
+            .offset(offset)
+            .all()
+        )
 
         # 获取总数
         total = File.query.filter(
-            File.uploader_id == user_id,
-            File.vector_info.isnot(None)
+            File.uploader_id == user_id, File.vector_info.isnot(None)
         ).count()
 
         results = {
-            'items': [file.to_dict() for file in files],
-            'total': total,
-            'page': page,
-            'page_size': page_size
+            "items": [file.to_dict() for file in files],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
         }
 
         return results
@@ -346,10 +405,16 @@ def _search_files_vector(user_id, query, page, page_size):
     except Exception as e:
         logger.exception(f"Vector search error: {e}")
         # 降级为模糊搜索或返回空
-        return {'items': [], 'total': 0, 'page': page, 'page_size': page_size, 'error': str(e)}
+        return {
+            "items": [],
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "error": str(e),
+        }
 
 
-def _clear_search_cache(user_id):
+def _clear_search_cache(user_id: int) -> None:
     """
     清除指定用户的搜索缓存
     """
@@ -365,7 +430,7 @@ def _clear_search_cache(user_id):
         logger.error(f"Redis clear cache error: {e}")
 
 
-def get_root_file_id(user_id):
+def get_root_file_id(user_id: int) -> Optional[int]:
     cache_key = f"user:root:file:{user_id}"
     cached_id = redis_client.get(cache_key)
     if cached_id:
@@ -378,17 +443,21 @@ def get_root_file_id(user_id):
     return None
 
 
-def upload_avatar(img_file, user_id):
+def upload_avatar(img_file: Union[FileStorage, Any], user_id: int) -> Dict[str, Any]:
     from app.services import folder_service, share_service, user_service
 
     root_folder_id = folder_service.get_root_folder_id(1)
 
-    folder = Folder.query.filter_by(user_id=1, parent_id=root_folder_id, name="所有用户头像").first()
+    folder = Folder.query.filter_by(
+        user_id=1, parent_id=root_folder_id, name="所有用户头像"
+    ).first()
 
     if folder:
         folder_id = folder.id
     else:
-        folder = folder_service.create_folder({"name": "所有用户头像", "parent_id": root_folder_id, "user_id": 1})
+        folder = folder_service.create_folder(
+            {"name": "所有用户头像", "parent_id": root_folder_id, "user_id": 1}
+        )
         folder_id = folder.id
 
     avatar: File = create_file(img_file, {"uploader_id": 1, "parent_id": folder_id})
@@ -400,15 +469,16 @@ def upload_avatar(img_file, user_id):
     user_service.update_user(user_id, {"avatar": avatar_url})
 
     result = avatar.to_dict()
-    result['avatar_url'] = avatar_url
+    result["avatar_url"] = avatar_url
     return result
 
 
-def batch_delete_items(items: List[dict]):
+def batch_delete_items(items: List[Dict[str, Any]]) -> None:
     from app.services import folder_service
+
     for item in items:
-        item_id = item.get('id')
-        is_folder = item.get('is_folder', False)
+        item_id = item.get("id")
+        is_folder = item.get("is_folder", False)
         if is_folder:
             folder_service.delete_folder(item_id)
         else:
@@ -416,10 +486,10 @@ def batch_delete_items(items: List[dict]):
     return None
 
 
-def embedding_desc(desc, config: dict):
-    api = config.get('api')
-    key = config.get('key')
-    model = config.get('model', "Qwen/Qwen3-Embedding-8B")
+def embedding_desc(desc: str, config: Dict[str, str]) -> List[float]:
+    api = config.get("api")
+    key = config.get("key")
+    model = config.get("model", "Qwen/Qwen3-Embedding-8B")
     try:
         client = OpenAI(api_key=key, base_url=api, timeout=120)
         resp = client.embeddings.create(model=model, input=desc)
@@ -429,18 +499,18 @@ def embedding_desc(desc, config: dict):
         return []
 
 
-def retry_embedding(file_id):
+def retry_embedding(file_id: int) -> None:
     file = File.query.get(file_id)
     if not file:
         return
     redis_client.rpush(FILE_PROCESS_QUEUE, file.id)
 
 
-def rebuild_failed_indexes(user_id=None):
+def rebuild_failed_indexes(user_id: Optional[int] = None) -> int:
     """
     批量重建索引失败的文件
     """
-    query = File.query.filter(File.status == 'fail')
+    query = File.query.filter(File.status == "fail")
     if user_id is not None:
         query = query.filter(File.uploader_id == user_id)
 
@@ -452,8 +522,9 @@ def rebuild_failed_indexes(user_id=None):
 
     try:
         # 先更新数据库状态（批量）
-        File.query.filter(File.id.in_(file_ids)) \
-            .update({File.status: 'pending'}, synchronize_session=False)
+        File.query.filter(File.id.in_(file_ids)).update(
+            {File.status: "pending"}, synchronize_session=False
+        )
 
         db.session.commit()
 
@@ -474,21 +545,25 @@ def rebuild_failed_indexes(user_id=None):
     return pushed
 
 
-def get_all_files(user_id):
+def get_all_files(user_id: int) -> List[File]:
     return File.query.filter_by(uploader_id=user_id).all()
 
 
-def process_status(id):
+def _process_status_key_builder(
+    func,
+    namespace: str = "",
+    request=None,
+    response=None,
+    *args,
+    **kwargs,
+):
+    id_val = kwargs.get("id") or args[0]
+    return f"file:status:count:{id_val}"
+
+
+@cache(expire=60, key_builder=_process_status_key_builder)
+async def process_status(id: int) -> Dict[str, int]:
     """获取所有文件的处理状态，使用 Redis 缓存加速"""
-    cache_key = f"file:status:count:{id}"
-
-    try:
-        cached_data = redis_client.get(cache_key)
-        if cached_data:
-            return json.loads(cached_data)
-    except Exception as e:
-        logger.error(f"Redis error in process_status: {e}")
-
     # 缓存未命中，查询数据库
     files = get_all_files(id)
     cnt = defaultdict(int)
@@ -496,15 +571,9 @@ def process_status(id):
         cnt[file.status] += 1
 
     result = {
-        "处理中": cnt['pending'] + cnt['processing'],
-        "成功": cnt['success'],
-        "失败": cnt['fail'],
+        "处理中": cnt["pending"] + cnt["processing"],
+        "成功": cnt["success"],
+        "失败": cnt["fail"],
     }
-
-    # 存入 Redis，设置较短的过期时间（如 60 秒）
-    try:
-        redis_client.setex(cache_key, 60, json.dumps(result))
-    except Exception as e:
-        logger.error(f"Redis set error in process_status: {e}")
 
     return result

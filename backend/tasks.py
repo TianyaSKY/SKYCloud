@@ -1,41 +1,45 @@
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 
-from app import create_app
-from app.extensions import redis_client
+from app import initialize_application
+from app.extensions import redis_client, db
 from app.services.file_service import FILE_PROCESS_QUEUE, ORGANIZE_FILE_QUEUE
-from worker.file_handler import handle_file_process
+from worker.indexing_handler import handle_file_indexing as handle_file_process
 from worker.organize_handler import handle_organize_process
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = create_app()
+# 初始化应用（数据库等）
+initialize_application()
 
 
 def process_task(file_id):
     """
     在线程中处理单个文件处理任务
     """
-    with app.app_context():
-        try:
-            handle_file_process(file_id)
-        except Exception as e:
-            logger.exception(f"Error in thread processing file {file_id}: {e}")
+    try:
+        handle_file_process(file_id)
+    except Exception as e:
+        logger.exception(f"Error in thread processing file {file_id}: {e}")
+    finally:
+        db.session.remove()
 
 
 def process_organize_task(user_id):
     """
     在线程中处理文件整理任务
     """
-    with app.app_context():
-        try:
-            logger.info(f"Starting organize_files for user {user_id}")
-            result = handle_organize_process(user_id)
-            logger.info(f"Finished organize_files for user {user_id}: {result}")
-        except Exception as e:
-            logger.exception(f"Error in thread organizing files for user {user_id}: {e}")
+    try:
+        logger.info(f"Starting organize_files for user {user_id}")
+        result = handle_organize_process(user_id)
+        logger.info(f"Finished organize_files for user {user_id}: {result}")
+    except Exception as e:
+        logger.exception(f"Error in thread organizing files for user {user_id}: {e}")
+    finally:
+        db.session.remove()
 
 
 def run_worker(max_workers):
@@ -45,7 +49,9 @@ def run_worker(max_workers):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         while True:
             # blpop 返回一个元组 (queue_name, data)
-            task = redis_client.blpop([FILE_PROCESS_QUEUE, ORGANIZE_FILE_QUEUE], timeout=0)
+            task = redis_client.blpop(
+                [FILE_PROCESS_QUEUE, ORGANIZE_FILE_QUEUE], timeout=0
+            )
 
             if task:
                 queue_name, data = task
@@ -57,10 +63,14 @@ def run_worker(max_workers):
                         user_id = int(data)
                         executor.submit(process_organize_task, user_id)
                 except ValueError:
-                    logger.exception(f"Invalid data received from queue {queue_name}: {data}")
+                    logger.exception(
+                        f"Invalid data received from queue {queue_name}: {data}"
+                    )
                 except Exception as e:
                     logger.exception(f"Error submitting task from {queue_name}: {e}")
 
 
-if __name__ == '__main__':
-    run_worker(max_workers=5)
+if __name__ == "__main__":
+    # 从环境变量读取线程数，默认为 5
+    max_workers_env = int(os.getenv("WORKER_MAX_THREADS", 5))
+    run_worker(max_workers=max_workers_env)

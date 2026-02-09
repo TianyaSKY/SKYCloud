@@ -1,6 +1,9 @@
 import json
 from typing import List
 
+from fastapi import HTTPException
+from fastapi_cache.decorator import cache
+
 from app.extensions import db, redis_client
 from app.models.file import File
 from app.models.folder import Folder
@@ -10,9 +13,9 @@ from app.services.file_service import delete_file, _clear_search_cache
 def create_folder(data):
     try:
         new_folder = Folder(
-            name=data['name'],
-            user_id=data.get('user_id'),
-            parent_id=data.get('parent_id')
+            name=data["name"],
+            user_id=data.get("user_id"),
+            parent_id=data.get("parent_id"),
         )
         db.session.add(new_folder)
         db.session.commit()
@@ -28,14 +31,19 @@ def create_folder(data):
 
 
 def get_folder(id):
-    return Folder.query.get_or_404(id)
+    folder = Folder.query.get(id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return folder
 
 
 def update_folder(id, data):
-    folder = Folder.query.get_or_404(id)
+    folder = Folder.query.get(id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
     try:
-        folder.name = data.get('name', folder.name)
-        folder.parent_id = data.get('parent_id', folder.parent_id)
+        folder.name = data.get("name", folder.name)
+        folder.parent_id = data.get("parent_id", folder.parent_id)
         db.session.commit()
 
         # Invalidate cache
@@ -50,7 +58,9 @@ def update_folder(id, data):
 
 
 def delete_folder(id):
-    folder = Folder.query.get_or_404(id)
+    folder = Folder.query.get(id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
     user_id = folder.user_id
 
     try:
@@ -82,43 +92,43 @@ def _delete_folder_recursive(folder):
         db.session.delete(subfolder)
 
 
-def get_root_folder_id(user_id):
-    cache_key = f"user:root:folder:{user_id}"
-    cached_id = redis_client.get(cache_key)
-    if cached_id:
-        return int(cached_id)
+def _root_folder_key_builder(func, namespace, request, response, *args, **kwargs):
+    user_id = kwargs.get("user_id") or args[0]
+    return f"user:root:folder:{user_id}"
 
+
+@cache(expire=3600, key_builder=_root_folder_key_builder)
+async def get_root_folder_id(user_id) -> int | None:
     root_folder = Folder.query.filter_by(user_id=user_id, parent_id=None).first()
     if root_folder:
-        redis_client.set(cache_key, root_folder.id, ex=3600)
         return root_folder.id
     return None
 
 
-def get_files_in_root_folder(user_id):
-    cache_key = f"user:files:root:{user_id}"
-    cached_files = redis_client.get(cache_key)
-    if cached_files:
-        return [File.from_cache(f) for f in json.loads(cached_files)]
+def _files_root_key_builder(func, namespace, request, response, *args, **kwargs):
+    user_id = kwargs.get("user_id") or args[0]
+    return f"user:files:root:{user_id}"
 
-    root_folder_id = get_root_folder_id(user_id)
+
+@cache(expire=3600, key_builder=_files_root_key_builder)
+async def get_files_in_root_folder(user_id) -> List[dict]:
+    root_folder_id = await get_root_folder_id(user_id)
     if not root_folder_id:
         return []
 
     files = File.query.filter_by(parent_id=root_folder_id).all()
-    return files
+    return [f.to_dict() for f in files]
 
 
-def get_folders(user_id) -> List[Folder]:
-    cache_key = f"user:folders:{user_id}"
-    cached_folders = redis_client.get(cache_key)
-    if cached_folders:
-        return [Folder.from_cache(f) for f in json.loads(cached_folders)]
+def _folders_key_builder(func, namespace, request, response, *args, **kwargs):
+    user_id = kwargs.get("user_id") or args[0]
+    return f"user:folders:{user_id}"
 
+
+@cache(expire=3600, key_builder=_folders_key_builder)
+async def get_folders(user_id) -> List[dict]:
     folders = Folder.query.filter_by(user_id=user_id).all()
-    folder_list = [folder.to_dict() for folder in folders]
-    redis_client.set(cache_key, json.dumps(folder_list), ex=3600)
-    return folders
+    return [f.to_dict() for f in folders]
 
 
 def organize_files(user_id):

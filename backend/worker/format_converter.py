@@ -1,3 +1,12 @@
+"""
+文件格式转换模块
+
+提供将各种文件格式转换为可处理格式的功能：
+- Office 文档 → PDF
+- PDF → 图片
+- 视频 → 关键帧图片
+"""
+
 import locale
 import logging
 import os
@@ -14,12 +23,12 @@ def get_libreoffice_command():
     尝试获取 LibreOffice 的可执行文件路径
     """
     # 检查环境变量
-    env_path = os.environ.get('LIBREOFFICE_PATH')
+    env_path = os.environ.get("LIBREOFFICE_PATH")
     if env_path and os.path.exists(env_path):
         return env_path
 
     # Windows 常见路径自动检测
-    if os.name == 'nt':
+    if os.name == "nt":
         possible_paths = [
             r"C:\Program Files\LibreOffice\program\soffice.exe",
             r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
@@ -29,7 +38,7 @@ def get_libreoffice_command():
                 return path
 
     # 默认回退到命令名
-    return 'soffice'
+    return "soffice"
 
 
 def convert_office_to_pdf(input_path, output_dir):
@@ -39,17 +48,19 @@ def convert_office_to_pdf(input_path, output_dir):
     soffice_cmd = get_libreoffice_command()
     logger.info(f"Converting office document to PDF: {input_path}")
 
-    user_profile_path = os.path.join(output_dir, 'libreoffice_user_profile')
+    user_profile_path = os.path.join(output_dir, "libreoffice_user_profile")
     user_profile_url = f"file:///{user_profile_path.replace(os.sep, '/')}"
 
     # soffice --headless --convert-to pdf <file> --outdir <dir>
     cmd = [
         soffice_cmd,
         f"-env:UserInstallation={user_profile_url}",
-        '--headless',
-        '--convert-to', 'pdf',
+        "--headless",
+        "--convert-to",
+        "pdf",
         input_path,
-        '--outdir', output_dir
+        "--outdir",
+        output_dir,
     ]
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -60,19 +71,19 @@ def convert_office_to_pdf(input_path, output_dir):
     except subprocess.CalledProcessError as e:
         stderr_content = e.stderr if e.stderr else b""
         try:
-            error_msg = stderr_content.decode('utf-8')
+            error_msg = stderr_content.decode("utf-8")
         except UnicodeDecodeError:
             try:
                 error_msg = stderr_content.decode(locale.getpreferredencoding())
             except:
-                error_msg = stderr_content.decode('utf-8', errors='replace')
+                error_msg = stderr_content.decode("utf-8", errors="replace")
 
         logger.error(f"LibreOffice conversion failed: {error_msg}")
         raise e
 
     # 推断生成的 PDF 文件名
     base_name = os.path.splitext(os.path.basename(input_path))[0]
-    return os.path.join(output_dir, base_name + '.pdf')
+    return os.path.join(output_dir, base_name + ".pdf")
 
 
 def convert_pdf_to_images(pdf_path, output_dir, max_pages=5):
