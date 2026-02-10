@@ -92,18 +92,18 @@ def handle_file_indexing(file_id: int) -> None:
 def _get_vl_config() -> dict:
     """获取视觉语言模型配置"""
     return {
-        "api": sys_dict_service.get_sys_dict_by_key("vl_api_url").value,
-        "key": sys_dict_service.get_sys_dict_by_key("vl_api_key").value,
-        "model": sys_dict_service.get_sys_dict_by_key("vl_api_model").value,
+        "api": sys_dict_service.get_sys_dict_by_key_sync("vl_api_url").value,
+        "key": sys_dict_service.get_sys_dict_by_key_sync("vl_api_key").value,
+        "model": sys_dict_service.get_sys_dict_by_key_sync("vl_api_model").value,
     }
 
 
 def _get_embedding_config() -> dict:
     """获取 Embedding 模型配置"""
     return {
-        "api": sys_dict_service.get_sys_dict_by_key("emb_api_url").value,
-        "key": sys_dict_service.get_sys_dict_by_key("emb_api_key").value,
-        "model": sys_dict_service.get_sys_dict_by_key("emb_model_name").value,
+        "api": sys_dict_service.get_sys_dict_by_key_sync("emb_api_url").value,
+        "key": sys_dict_service.get_sys_dict_by_key_sync("emb_api_key").value,
+        "model": sys_dict_service.get_sys_dict_by_key_sync("emb_model_name").value,
     }
 
 

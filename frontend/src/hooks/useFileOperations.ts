@@ -1,5 +1,5 @@
 import {reactive, ref} from 'vue'
-import {Message} from '@arco-design/web-vue'
+import {Message, Notification} from '@arco-design/web-vue'
 import {
     batchDeleteFiles,
     createFolder,
@@ -12,32 +12,29 @@ import {
     rebuildFailedIndexes,
     retryEmbedding,
     updateFile,
-    updateFolder,
-    uploadFile
+    updateFolder
 } from '../api/file'
 import {createShare} from '../api/share'
+import {uploadFileOptimized} from '../utils/upload'
 
 export function useFileOperations(
     currentParentId: any,
     fetchFiles: () => Promise<void>,
     selectedKeys: any,
-    fileList?: any // 传入文件列表以便查找类型
+    fileList?: any
 ) {
     const folderForm = reactive({name: ''})
     const showCreateFolder = ref(false)
 
-    // 重命名相关
     const showRenameModal = ref(false)
     const renameForm = reactive({name: ''})
     const renamingItem = ref<any>(null)
 
-    // 移动相关
     const showMoveModal = ref(false)
     const movingItem = ref<any>(null)
     const folderTree = ref<any[]>([])
     const targetFolderId = ref<number | null>(null)
 
-    // 分享相关
     const showShareModal = ref(false)
     const showShareResult = ref(false)
     const selectedFile = ref<any>(null)
@@ -45,21 +42,54 @@ export function useFileOperations(
     const shareForm = reactive({expires_at: ''})
 
     const handleUpload = (options: any) => {
-        const {fileItem, onSuccess, onError} = options
-        const formData = new FormData()
-        formData.append('file', fileItem.file)
-        if (currentParentId.value) {
-            formData.append('parent_id', currentParentId.value.toString())
+        const {fileItem, onSuccess, onError, onProgress} = options
+        const rawFile = fileItem?.file as File
+        if (!rawFile) {
+            onError?.(new Error('Invalid upload file'))
+            return
         }
 
-        uploadFile(formData)
+        const notificationId = `upload-${fileItem.uid || Date.now()}`
+        Notification.info({
+            id: notificationId,
+            title: '上传中',
+            content: `正在准备上传 ${fileItem.name}...`,
+            duration: 0,
+            closable: false
+        })
+
+        uploadFileOptimized(rawFile, currentParentId.value, (percent) => {
+            if (typeof onProgress === 'function') {
+                onProgress(percent)
+            }
+            Notification.info({
+                id: notificationId,
+                title: '上传中',
+                content: `正在上传 ${fileItem.name}: ${Math.round(percent)}%`,
+                duration: 0,
+                closable: false
+            })
+        })
             .then(() => {
-                Message.success(`${fileItem.name} 上传成功`)
+                Notification.success({
+                    id: notificationId,
+                    title: '上传完成',
+                    content: `${fileItem.name} 上传成功`,
+                    duration: 3000,
+                    closable: true
+                })
                 fetchFiles()
-                onSuccess()
+                onSuccess?.()
             })
             .catch((error) => {
-                onError(error)
+                Notification.error({
+                    id: notificationId,
+                    title: '上传失败',
+                    content: `${fileItem.name} 上传失败: ${error.message || '未知错误'}`,
+                    duration: 4000,
+                    closable: true
+                })
+                onError?.(error)
             })
     }
 
@@ -74,7 +104,8 @@ export function useFileOperations(
             showCreateFolder.value = false
             folderForm.name = ''
             await fetchFiles()
-        } catch (error) {
+        } catch {
+            // handled by interceptor
         }
     }
 
@@ -87,13 +118,13 @@ export function useFileOperations(
             }
             Message.success('删除成功')
             await fetchFiles()
-        } catch (error) {
+        } catch {
+            // handled by interceptor
         }
     }
 
     const handleBatchDelete = async (ids: number[]) => {
         try {
-            // 从 fileList 中找到对应的项，确定是文件还是文件夹
             const itemsToDelete = ids.map(id => {
                 const item = fileList?.value?.find((f: any) => f.id === id)
                 return {
@@ -106,7 +137,7 @@ export function useFileOperations(
             Message.success('批量删除成功')
             selectedKeys.value = []
             await fetchFiles()
-        } catch (error) {
+        } catch {
             Message.error('批量删除失败')
         }
     }
@@ -121,7 +152,8 @@ export function useFileOperations(
             document.body.appendChild(link)
             link.click()
             link.remove()
-        } catch (error) {
+        } catch {
+            // handled by interceptor
         }
     }
 
@@ -141,7 +173,7 @@ export function useFileOperations(
             shareUrl.value = `${window.location.origin}/s/${token}`
             showShareModal.value = false
             showShareResult.value = true
-        } catch (error) {
+        } catch {
             Message.error('创建分享失败')
         }
     }
@@ -151,7 +183,7 @@ export function useFileOperations(
             await retryEmbedding(record.id)
             Message.success('已提交重试请求')
             await fetchFiles()
-        } catch (error) {
+        } catch {
             Message.error('重试失败')
         }
     }
@@ -162,7 +194,7 @@ export function useFileOperations(
             const count = res.count || res.data?.count || 0
             Message.success(`已触发批量重建，共 ${count} 个文件`)
             await fetchFiles()
-        } catch (error) {
+        } catch {
             Message.error('批量重建失败')
         }
     }
@@ -184,7 +216,7 @@ export function useFileOperations(
             Message.success('重命名成功')
             showRenameModal.value = false
             await fetchFiles()
-        } catch (error) {
+        } catch {
             Message.error('重命名失败')
         }
     }
@@ -195,7 +227,6 @@ export function useFileOperations(
             const res: any = await getAllFolders()
             const folders = res.folders || []
 
-            // 构建树形结构
             const buildTree = (parentId: number | null) => {
                 return folders
                     .filter((f: any) => f.parent_id === parentId)
@@ -216,9 +247,8 @@ export function useFileOperations(
                     children: buildTree(rootId)
                 }
             ]
-
             showMoveModal.value = true
-        } catch (error) {
+        } catch {
             Message.error('获取文件夹列表失败')
         }
     }
@@ -242,7 +272,7 @@ export function useFileOperations(
             Message.success('移动成功')
             showMoveModal.value = false
             await fetchFiles()
-        } catch (error) {
+        } catch {
             Message.error('移动失败')
         }
     }
@@ -252,7 +282,7 @@ export function useFileOperations(
             const res: any = await organizeFiles()
             const message = res.message || (Array.isArray(res) ? res[0] : '已开始智能整理')
             Message.success(message)
-        } catch (error) {
+        } catch {
             Message.error('触发智能整理失败')
         }
     }

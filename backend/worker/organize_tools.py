@@ -1,7 +1,6 @@
 import logging
 
 from langchain.tools import tool
-from sqlalchemy.orm import sessionmaker
 
 from app.extensions import db, redis_client
 from app.models.file import File
@@ -12,8 +11,7 @@ logger = logging.getLogger(__name__)
 
 def get_session():
     """Create a new independent session for tool execution"""
-    SessionLocal = sessionmaker(bind=db.engine)
-    return SessionLocal()
+    return db.session()
 
 
 def clear_user_cache(user_id):

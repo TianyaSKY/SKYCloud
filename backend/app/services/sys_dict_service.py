@@ -55,6 +55,15 @@ async def get_sys_dict_by_key(key):
     return None
 
 
+def get_sys_dict_by_key_sync(key):
+    """Synchronous lookup for worker/thread contexts."""
+    return (
+        SysDict.query.filter_by(key=key, enable=True)
+        .order_by(SysDict.id.desc())
+        .first()
+    )
+
+
 async def get_sys_dict(id):
     all_dicts = await get_sys_dict_all()
     for item in all_dicts:

@@ -60,6 +60,19 @@ class RetryEmbeddingRequest(BaseModel):
     file_id: int
 
 
+class MultipartInitRequest(BaseModel):
+    filename: str
+    total_size: int = Field(gt=0)
+    chunk_size: int | None = Field(default=None, gt=0)
+    parent_id: int | None = None
+    mime_type: str | None = None
+    upload_id: str | None = None
+
+
+class MultipartCompleteRequest(BaseModel):
+    upload_id: str
+
+
 class ShareCreateRequest(BaseModel):
     file_id: int
     expires_at: str | None = None

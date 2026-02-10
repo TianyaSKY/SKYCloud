@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 
 def get_llm_config():
     """从系统字典服务获取 LLM 配置。"""
-    url = sys_dict_service.get_sys_dict_by_key("chat_api_url").value
-    key = sys_dict_service.get_sys_dict_by_key("chat_api_key").value
-    model = sys_dict_service.get_sys_dict_by_key("chat_api_model").value
+    url = sys_dict_service.get_sys_dict_by_key_sync("chat_api_url").value
+    key = sys_dict_service.get_sys_dict_by_key_sync("chat_api_key").value
+    model = sys_dict_service.get_sys_dict_by_key_sync("chat_api_model").value
     return url, key, model
 
 

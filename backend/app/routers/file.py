@@ -15,13 +15,15 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from app.dependencies import ensure_owner_or_admin, get_current_user
 from app.schemas import (
+    AvatarUploadRequest,
     BatchDeleteRequest,
     FileUpdateRequest,
+    MultipartCompleteRequest,
+    MultipartInitRequest,
     RetryEmbeddingRequest,
-    AvatarUploadRequest,
 )
 from app.services import file_service
-from app.upload_adapter import FastAPIUploadAdapter, Base64UploadAdapter
+from app.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
 
 router = APIRouter(tags=["file"])
 
@@ -52,6 +54,8 @@ def create_file(
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
@@ -78,10 +82,93 @@ def batch_upload_files(
             status_code=status.HTTP_201_CREATED,
             content=[f.to_dict() for f in new_files],
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
         ) from exc
+
+
+@router.post("/files/multipart/init")
+def init_multipart_upload(
+        payload: MultipartInitRequest,
+        current_user=Depends(get_current_user),
+):
+    try:
+        return file_service.init_multipart_upload(
+            current_user.id, payload.model_dump(exclude_none=True)
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+
+@router.post("/files/multipart/chunk")
+def upload_multipart_chunk(
+        upload_id: str = Form(...),
+        chunk_index: int = Form(...),
+        chunk: UploadFile = FastAPIFile(...),
+        current_user=Depends(get_current_user),
+):
+    if not chunk.filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="No chunk provided"
+        )
+
+    try:
+        return file_service.save_multipart_chunk(
+            current_user.id,
+            upload_id,
+            chunk_index,
+            FastAPIUploadAdapter(chunk),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+
+@router.post("/files/multipart/complete")
+def complete_multipart_upload(
+        payload: MultipartCompleteRequest,
+        current_user=Depends(get_current_user),
+):
+    try:
+        new_file = file_service.complete_multipart_upload(
+            current_user.id, payload.upload_id
+        )
+        return JSONResponse(
+            status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+
+@router.get("/files/multipart/{upload_id}")
+def get_multipart_upload_status(
+        upload_id: str,
+        current_user=Depends(get_current_user),
+):
+    return file_service.get_multipart_upload_status(current_user.id, upload_id)
+
+
+@router.delete("/files/multipart/{upload_id}")
+def abort_multipart_upload(
+        upload_id: str,
+        current_user=Depends(get_current_user),
+):
+    file_service.abort_multipart_upload(current_user.id, upload_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/files/list")
@@ -94,10 +181,9 @@ def list_files(
         sort_by: str = Query(default="created_at"),
         order: str = Query(default="desc"),
 ):
-    results = file_service.get_files_and_folders(
+    return file_service.get_files_and_folders(
         current_user.id, parent_id, page, page_size, name, sort_by, order
     )
-    return results
 
 
 @router.get("/files/search")
@@ -110,9 +196,7 @@ async def search_files(
 ):
     if not q:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
-
-    results = await file_service.search_files(current_user.id, q, page, page_size, type)
-    return results
+    return await file_service.search_files(current_user.id, q, page, page_size, type)
 
 
 @router.put("/files/{id}")
@@ -167,23 +251,19 @@ def upload_avatar(
 def batch_delete_files(
         payload: BatchDeleteRequest, current_user=Depends(get_current_user)
 ):
-    # 权限检查：确保用户有权限删除每个文件
     for item in payload.items:
         if not item.is_folder:
             _ensure_file_access(current_user, item.id)
-        else:
-            # 对于文件夹，检查用户是否是所有者或管理员
-            from app.services import folder_service
+            continue
 
-            folder = folder_service.get_folder(item.id)
-            if (
-                    folder
-                    and current_user.role != "admin"
-                    and folder.user_id != current_user.id
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
-                )
+        from app.services import folder_service
+
+        folder = folder_service.get_folder(item.id)
+        if folder and current_user.role != "admin" and folder.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+            )
+
     items = [item.model_dump() for item in payload.items]
     file_service.batch_delete_items(items)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -1,3 +1,4 @@
+import type {AxiosProgressEvent, AxiosRequestConfig} from 'axios'
 import request from './request'
 
 export interface FileItem {
@@ -25,6 +26,22 @@ export interface SearchFilesParams {
     type?: 'fuzzy' | 'vector'
 }
 
+export interface MultipartInitRequest {
+    filename: string
+    total_size: number
+    chunk_size?: number
+    parent_id?: number | null
+    mime_type?: string
+    upload_id?: string
+}
+
+export interface MultipartInitResponse {
+    upload_id: string
+    chunk_size: number
+    total_chunks: number
+    uploaded_chunks: number[]
+}
+
 export const getFiles = (params?: ListFilesParams) => {
     return request.get('/files/list', {params})
 }
@@ -33,20 +50,57 @@ export const searchFiles = (params: SearchFilesParams) => {
     return request.get('/files/search', {params})
 }
 
-export const uploadFile = (data: FormData) => {
+export const uploadFile = (data: FormData, config?: AxiosRequestConfig) => {
     return request.post('/files', data, {
+        timeout: 0,
+        ...config,
+        headers: {
+            'Content-Type': 'multipart/form-data',
+            ...(config?.headers || {})
+        }
+    })
+}
+
+export const batchUploadFiles = (data: FormData, config?: AxiosRequestConfig) => {
+    return request.post('/files/batch', data, {
+        timeout: 0,
+        ...config,
+        headers: {
+            'Content-Type': 'multipart/form-data',
+            ...(config?.headers || {})
+        }
+    })
+}
+
+export const initMultipartUpload = (data: MultipartInitRequest) => {
+    return request.post<MultipartInitResponse>('/files/multipart/init', data, {
+        timeout: 0
+    })
+}
+
+export const uploadMultipartChunk = (
+    data: FormData,
+    onUploadProgress?: (progressEvent: AxiosProgressEvent) => void
+) => {
+    return request.post('/files/multipart/chunk', data, {
+        timeout: 0,
+        onUploadProgress,
         headers: {
             'Content-Type': 'multipart/form-data'
         }
     })
 }
 
-export const batchUploadFiles = (data: FormData) => {
-    return request.post('/files/batch', data, {
-        headers: {
-            'Content-Type': 'multipart/form-data'
-        }
-    })
+export const completeMultipartUpload = (upload_id: string) => {
+    return request.post('/files/multipart/complete', {upload_id}, {timeout: 0})
+}
+
+export const getMultipartUploadStatus = (upload_id: string) => {
+    return request.get<MultipartInitResponse>(`/files/multipart/${upload_id}`, {timeout: 0})
+}
+
+export const abortMultipartUpload = (upload_id: string) => {
+    return request.delete(`/files/multipart/${upload_id}`, {timeout: 0})
 }
 
 export const deleteFile = (id: number) => {

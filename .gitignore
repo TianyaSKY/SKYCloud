@@ -1,3 +1,7 @@
 .idea
 .jbeval
 .env
+__pycache__/
+*.pyc
+nul
+backend/nul
