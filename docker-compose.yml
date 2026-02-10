@@ -41,7 +41,7 @@ services:
       dockerfile: Dockerfile
     container_name: skycloud-backend-api
     restart: always
-    command: python app.py
+    command: python run.py
     ports:
       - "${BACKEND_API_PORT}:5000"
     volumes:

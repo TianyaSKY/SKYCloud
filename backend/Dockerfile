@@ -46,4 +46,4 @@ RUN mkdir -p /data/uploads && chmod 777 /data/uploads
 EXPOSE 5000
 
 # 启动命令
-CMD ["python", "run_all.py"]
+CMD ["python", "run.py"]

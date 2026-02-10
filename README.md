@@ -1,125 +1,150 @@
 <div align="center">
   <h1 style="letter-spacing:4px;">SKYCLOUD</h1>
-  <p><strong>智能云端 · 高效存储 · AI 赋能</strong></p>
+  <p><strong>AI 驱动的云文件管理平台</strong></p>
   <p>
     <img src="https://img.shields.io/badge/Python-3.10%2B-blue" alt="Python">
     <img src="https://img.shields.io/badge/Vue.js-3.x-4FC08D" alt="Vue">
-    <img src="https://img.shields.io/badge/Flask-2.x-000000" alt="Flask">
+    <img src="https://img.shields.io/badge/FastAPI-0.115-009688" alt="FastAPI">
     <img src="https://img.shields.io/badge/PostgreSQL-15-336791" alt="PostgreSQL">
     <img src="https://img.shields.io/badge/Docker-Enabled-2496ED" alt="Docker">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </p>
+  <p><a href="./README_EN.md">English README</a></p>
 </div>
 
----
+# SKYCloud
 
-SKYCloud 是一个集成了 AI 能力的智能  `云存储` `云知识库`平台，专注于文档处理与管理。它利用大语言模型（LLMs）和向量数据库，提供语义搜索、多模态知识交互问答及自动化整理等高级功能。
+SKYCloud 是一个 AI 增强的云文件管理系统，支持：
+- 文件上传、预览与整理
+- 分享链接与收件箱协作
+- 基于 LangChain/OpenAI 的智能对话
 
-## ✨ 功能特性
+## 功能截图
 
-* **🤖 AI 智能分析**: 集成 LangChain 和 OpenAI，支持文档自动索引、语义搜索及分类整理。
-* **🔍 向量检索**: 基于 PostgreSQL 和 `pgvector` 扩展，实现高效的文档内容语义匹配。
-* **📄 多格式预览**: 内置支持 PDF、Word、Excel 等多种办公文档的在线直接预览。
-* **🎨 现代化 UI**: 采用 Vue 3 + Vite + Arco Design 构建，提供极致的响应式交互体验。
-* **🐳 容器化部署**: 全量支持 Docker Compose，一键搭建开发与生产环境。
+| 登录 / 控制台 | 文件浏览 |
+| --- | --- |
+| ![登录控制台](images/img.png) | ![文件浏览](images/img_1.png) |
 
-## 📸 项目截图
+| 智能助手 |
+| --- |
+| ![智能助手](images/img_2.png) |
 
-|         首页概览          |           登录界面            |
-|:---------------------:|:-------------------------:|
-| ![首页](images/img.png) | ![登录界面](images/img_1.png) |
+## 技术栈
 
-|          智能文件整理           |
-|:-------------------------:|
-| ![问答界面](images/img_2.png) |
+- 后端：FastAPI、SQLAlchemy、Redis、PostgreSQL (pgvector)
+- 前端：Vue 3、TypeScript、Vite、Arco Design
+- Worker：Python 多线程任务进程（异步索引/整理）
+- 部署：Docker Compose
 
-## 📂 项目结构
+## 项目结构
 
 ```text
 SKYCloud/
-├── backend/            # Flask 后端服务
-│   ├── app/            # 核心业务逻辑 (API, Models, Services)
-│   ├── worker/         # 异步任务处理 (Celery/Tasks)
-│   └── Dockerfile      # 后端镜像构建
-├── frontend/           # Vue 3 前端应用
-│   ├── src/            # 源代码
-│   └── Dockerfile      # 前端镜像构建
-├── images/             # 项目文档图片
-├── docker-compose.yml  # 容器编排配置
-└── .env.example        # 环境变量模板
+|- backend/                # FastAPI 应用 + worker
+|  |- app/                 # 路由、模型、服务、Schemas
+|  |- worker/              # 后台任务处理
+|  |- run.py               # FastAPI 入口
+|  |- tasks.py             # Worker 入口
+|  `- requirements.txt
+|- frontend/               # Vue 3 + Vite 应用
+|  |- src/
+|  `- package.json
+|- images/                 # README 图片
+|- docker-compose.yml
+`- .env.example
 ```
 
-## 🛠️ 技术栈
+## 环境要求
 
-### 后端 (Backend)
+- Python 3.10+
+- Node.js 20+
+- Docker + Docker Compose（可选，推荐一键启动）
 
-- **核心框架**: Flask, Flask-RESTX
-- **AI 引擎**: LangChain, LangGraph, OpenAI API
-- **数据库**: PostgreSQL (pgvector), Redis
-- **ORM**: SQLAlchemy
-- **文档解析**: PyMuPDF, python-docx, pdf2image
+## 快速开始 (Docker)
 
-### 前端 (Frontend)
+1. 克隆并进入项目：
 
-- **核心框架**: Vue 3, Vite, TypeScript
-- **UI 组件**: Arco Design Vue
-- **文档预览**: @vue-office
+```bash
+git clone https://github.com/TianyaSKY/SKYCloud
+cd SKYCloud
+```
 
-## 🚀 快速开始
+2. 创建环境变量文件：
 
-### 前置要求
+```bash
+cp .env.example .env
+```
 
-- Docker & Docker Compose
-- (可选) Python 3.10+, Node.js 20+
+3. 修改 `.env` 关键配置：
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`
+- `REDIS_PORT`
+- `BACKEND_API_PORT`
+- `UPLOAD_HOST_PATH`（宿主机上传目录）
+- `UPLOAD_FOLDER`（容器内上传目录，默认 `/data/uploads`）
+- `WORKER_MAX_THREADS`
+- `FRONTEND_PORT`
+- `DEFAULT_MODEL_PWD`
+- `SECRET_KEY`（生产环境务必设置）
 
-### 快速启动 (推荐)
+4. 启动全部服务：
 
-1. **克隆仓库**:
-   ```bash
-   git clone https://github.com/TianyaSKY/SKYCloud.git
-   cd SKYCloud
-   ```
+```bash
+docker-compose up -d --build
+```
 
-2. **配置环境**:
-   ```bash
-   cp .env.example .env
-   # 根据需要修改 .env 中的配置
-   ```
+5. 访问地址：
+- 前端：`http://localhost:${FRONTEND_PORT}`（默认 `http://localhost:80`）
+- 后端健康检查：`http://localhost:${BACKEND_API_PORT}/api/health`（默认 `http://localhost:5000/api/health`）
 
-3. **一键启动**:
-   ```bash
-   docker-compose up -d
-   ```
+## 本地开发
 
-4. **访问应用**:
-    - 前端地址: `http://localhost`
+### 1. 先准备后端依赖服务
+先启动 PostgreSQL 和 Redis（本机或 Docker 均可）。
 
-## ⚙️ 配置说明
+### 2. 启动后端 API
 
-### 环境变量
+```bash
+cd backend
+pip install -r requirements.txt
+python run.py
+# or
+uvicorn run:app --reload --port 5000
+```
 
-请确保在 `.env` 文件中正确配置以下关键变量：
+### 3. 启动后端 Worker
 
-- `DATABASE_URL`: PostgreSQL 连接字符串。
-- `UPLOAD_FOLDER`: 文件上传存储路径（容器内默认为 `/upload`）。
+```bash
+cd backend
+python tasks.py
+```
 
-### 启用 AI 功能
+### 4. 启动前端
 
-1. 使用默认管理员账户登录。
-2. 进入 **系统管理 -> 字典配置**。
-3. 配置相关的 AI 模型参数（如 API Key、Base URL 等）。
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-## 🔐 默认账户
+前端开发服务器会将 `/api` 请求代理到 `http://localhost:5000`。
 
-系统初始化后提供的管理员账户：
+## 构建与类型检查
 
-- **用户名**: `admin`
-- **密码**: `admin123`
+```bash
+cd frontend
+npm run type-check
+npm run build
+```
 
-> [!IMPORTANT]
-> **安全提示**: 默认账户仅用于系统初始化。为了数据安全，建议首次登录后立即创建个人账户，并避免在生产环境直接使用 `admin`
-> 账户进行日常操作。
+## 默认账号
 
-## 📄 开源协议
+`backend/init_db.sql` 内包含默认管理员初始化数据：
+- 用户名：`admin`
+- 密码：`admin123`
 
-本项目基于 [MIT License](LICENSE) 协议开源。
+为安全起见，非演示环境请首次登录后立即修改。
+
+## 说明
+
+- 当前仓库尚未建立完整自动化测试体系。
+- 修改核心逻辑时建议补充测试（后端建议 `pytest`，前端建议 `vitest`）。
