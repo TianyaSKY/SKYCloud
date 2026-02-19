@@ -219,4 +219,3 @@ def _extract_text_content(local_path: str) -> str:
 # 为了向后兼容，保留旧函数名的别名
 desc_file = generate_file_description
 format_data = _extract_text_content
-# upload_file 已被废弃

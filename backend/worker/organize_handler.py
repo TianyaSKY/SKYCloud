@@ -10,7 +10,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import create_react_agent
 
-from app.services import sys_dict_service
+from app.services.model_config import get_chat_model_config
 from .organize_tools import (
     get_all_files, get_folder_tree, create_folder, rename_folder, move_file,
     get_file_information, delete_folder, merge_folders, find_duplicate_folders,
@@ -23,11 +23,9 @@ logger = logging.getLogger(__name__)
 
 
 def get_llm_config():
-    """从系统字典服务获取 LLM 配置。"""
-    url = sys_dict_service.get_sys_dict_by_key_sync("chat_api_url").value
-    key = sys_dict_service.get_sys_dict_by_key_sync("chat_api_key").value
-    model = sys_dict_service.get_sys_dict_by_key_sync("chat_api_model").value
-    return url, key, model
+    """从环境变量获取 LLM 配置。"""
+    config = get_chat_model_config()
+    return config["api"], config["key"], config["model"]
 
 
 def organize_files(user_id: int):

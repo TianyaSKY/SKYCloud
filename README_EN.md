@@ -70,7 +70,12 @@ cp .env.example .env
 - `WORKER_MAX_THREADS`
 - `FRONTEND_PORT`
 - `DEFAULT_MODEL_PWD`
+- `CHAT_API_URL`, `CHAT_API_KEY`, `CHAT_API_MODEL`
+- `EMB_API_URL`, `EMB_API_KEY`, `EMB_MODEL_NAME`
+- `VL_API_URL`, `VL_API_KEY`, `VL_API_MODEL`
 - `SECRET_KEY` (strongly recommended in production)
+
+Model configuration is now loaded from environment variables and is no longer stored in `sys_dict`.
 
 4. Start all services:
 
@@ -136,4 +141,3 @@ For security, change it after first login in non-demo environments.
 - There are currently no established automated tests in this repository.
 - If you modify core logic, add tests (recommended: `pytest` for backend, `vitest` for frontend).
 - Current `docker-compose.yml` uses `python app.py` for `backend-api`, but the backend entry file is `backend/run.py`. If API container fails to start, update compose command to `python run.py`.
-

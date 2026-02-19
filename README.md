@@ -84,7 +84,12 @@ cp .env.example .env
 - `WORKER_MAX_THREADS`
 - `FRONTEND_PORT`
 - `DEFAULT_MODEL_PWD`
+- `CHAT_API_URL`, `CHAT_API_KEY`, `CHAT_API_MODEL`
+- `EMB_API_URL`, `EMB_API_KEY`, `EMB_MODEL_NAME`
+- `VL_API_URL`, `VL_API_KEY`, `VL_API_MODEL`
 - `SECRET_KEY`（生产环境务必设置）
+
+模型配置已改为环境变量读取，不再存储在数据库 `sys_dict` 中。
 
 4. 启动全部服务：
 

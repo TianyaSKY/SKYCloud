@@ -189,18 +189,10 @@ SELECT 'admin',
        'scrypt:32768:8:1$ULeZhKdUrZi46VVx$30e562fbf0a745b562fd7b2e037ba1e634cb13f82cd6f9d27763863136b16dc20e21802e44af40eaa5cee287c6bbd9e474d211b157b85dba3bb85bde49e4b2f1',
        'admin' WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = 'admin');
 
--- 2. 初始化系统配置 (使用默认密码占位符，请替换为实际 API Key)
+-- 2. 初始化系统配置（模型配置请使用环境变量，不再写入 sys_dict）
 INSERT INTO sys_dict (key, value, des)
-VALUES ('site_name', 'SKYCloud', '站点名称（显示在网页标题与 Logo 旁）'),
-       ('vl_api_url', 'https://api.siliconflow.cn/v1', 'Vision 模型 Base URL'),
-       ('vl_api_key', 'pwd', 'Vision 模型 API 密钥'),
-       ('vl_api_model', 'Qwen/Qwen3-VL-30B-A3B-Instruct', '多模态模型名称'),
-       ('emb_api_url', 'https://api.siliconflow.cn/v1', 'Embedding 模型 Base URL'),
-       ('emb_api_key', 'pwd', 'Embedding 模型 API 密钥'),
-       ('emb_model_name', 'Qwen/Qwen3-Embedding-8B', '向量嵌入模型名称'),
-       ('chat_api_url', 'https://api.siliconflow.cn/v1', 'Chat 模型 Base URL'),
-       ('chat_api_key', 'pwd', 'Chat 模型 API 密钥'),
-       ('chat_api_model', 'deepseek-ai/DeepSeek-V3.2', '对话模型名称') ON CONFLICT (key) DO NOTHING;
+VALUES ('site_name', 'SKYCloud', '站点名称（显示在网页标题与 Logo 旁）')
+       ON CONFLICT (key) DO NOTHING;
 
 -- 3. 初始化根目录 (依赖 admin 用户 ID)
 -- 这一步比较复杂，因为需要获取 admin 的 ID。

@@ -10,33 +10,29 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from sqlalchemy import text
 
 from app.extensions import db
-from app.services.sys_dict_service import get_sys_dict_by_key_sync
+from app.services.model_config import get_chat_model_config, get_embedding_model_config
 
 logger = logging.getLogger(__name__)
 
 
 def get_chat_model():
-    api_url = get_sys_dict_by_key_sync('chat_api_url').value
-    api_key = get_sys_dict_by_key_sync('chat_api_key').value
-    model_name = get_sys_dict_by_key_sync('chat_api_model').value
+    config = get_chat_model_config()
 
     return ChatOpenAI(
-        api_key=api_key,
-        base_url=api_url,
-        model=model_name,
+        api_key=config["key"],
+        base_url=config["api"],
+        model=config["model"],
         temperature=0,
     )
 
 
 def get_embeddings_model():
-    api_url = get_sys_dict_by_key_sync('emb_api_url').value
-    api_key = get_sys_dict_by_key_sync('emb_api_key').value
-    model_name = get_sys_dict_by_key_sync('emb_model_name').value
+    config = get_embedding_model_config()
 
     return OpenAIEmbeddings(
-        api_key=api_key,
-        base_url=api_url,
-        model=model_name
+        api_key=config["key"],
+        base_url=config["api"],
+        model=config["model"],
     )
 
 

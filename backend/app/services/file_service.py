@@ -18,6 +18,7 @@ from werkzeug.utils import secure_filename
 from app.extensions import UPLOAD_FOLDER, db, redis_client
 from app.models.file import File
 from app.models.folder import Folder
+from app.services.model_config import get_embedding_model_config
 
 logger = logging.getLogger(__name__)
 
@@ -557,22 +558,11 @@ async def _search_files_fuzzy(
     }
 
 
-async def _get_config_value(key: str, default: str = "") -> str:
-    from app.services import sys_dict_service
-
-    config = await sys_dict_service.get_sys_dict_by_key(key)
-    return config.value if config else default
-
-
 async def _search_files_vector(
     user_id: int, query: str, page: int, page_size: int
 ) -> Dict[str, Any]:
     try:
-        emb_config = {
-            "api": await _get_config_value("emb_api_url"),
-            "key": await _get_config_value("emb_api_key"),
-            "model": await _get_config_value("emb_model_name"),
-        }
+        emb_config = get_embedding_model_config()
         embeddings = embedding_desc(query, emb_config)
         if not embeddings:
             return {

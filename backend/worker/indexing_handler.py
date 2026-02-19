@@ -12,7 +12,8 @@ import logging
 
 from app.extensions import db
 from app.models.file import File
-from app.services import sys_dict_service, file_service, inbox_service
+from app.services import file_service, inbox_service
+from app.services.model_config import get_embedding_model_config, get_vl_model_config
 from worker.description_generator import generate_file_description
 
 logger = logging.getLogger(__name__)
@@ -45,8 +46,8 @@ def handle_file_indexing(file_id: int) -> None:
         db.session.commit()
 
         # 获取模型配置
-        vl_config = _get_vl_config()
-        emb_config = _get_embedding_config()
+        vl_config = get_vl_model_config()
+        emb_config = get_embedding_model_config()
 
         # 使用 get_abs_path 获取完整路径
         abs_path = file.get_abs_path()
@@ -87,24 +88,6 @@ def handle_file_indexing(file_id: int) -> None:
                     ),
                 }
             )
-
-
-def _get_vl_config() -> dict:
-    """获取视觉语言模型配置"""
-    return {
-        "api": sys_dict_service.get_sys_dict_by_key_sync("vl_api_url").value,
-        "key": sys_dict_service.get_sys_dict_by_key_sync("vl_api_key").value,
-        "model": sys_dict_service.get_sys_dict_by_key_sync("vl_api_model").value,
-    }
-
-
-def _get_embedding_config() -> dict:
-    """获取 Embedding 模型配置"""
-    return {
-        "api": sys_dict_service.get_sys_dict_by_key_sync("emb_api_url").value,
-        "key": sys_dict_service.get_sys_dict_by_key_sync("emb_api_key").value,
-        "model": sys_dict_service.get_sys_dict_by_key_sync("emb_model_name").value,
-    }
 
 
 # 为了向后兼容，保留旧函数名的别名
