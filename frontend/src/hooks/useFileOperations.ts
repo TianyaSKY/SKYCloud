@@ -281,7 +281,11 @@ export function useFileOperations(
         try {
             const res: any = await organizeFiles()
             const message = res.message || (Array.isArray(res) ? res[0] : '已开始智能整理')
-            Message.success(message)
+            if (res?.queued === false) {
+                Message.warning(message)
+            } else {
+                Message.success(message)
+            }
         } catch {
             Message.error('触发智能整理失败')
         }

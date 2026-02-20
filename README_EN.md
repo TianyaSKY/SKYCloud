@@ -66,16 +66,20 @@ cp .env.example .env
 - `REDIS_PORT`
 - `BACKEND_API_PORT`
 - `UPLOAD_HOST_PATH` (host path for uploaded files)
-- `UPLOAD_FOLDER` (container/internal upload path, default `/data/uploads`)
 - `WORKER_MAX_THREADS`
 - `FRONTEND_PORT`
 - `DEFAULT_MODEL_PWD`
 - `CHAT_API_URL`, `CHAT_API_KEY`, `CHAT_API_MODEL`
 - `EMB_API_URL`, `EMB_API_KEY`, `EMB_MODEL_NAME`
 - `VL_API_URL`, `VL_API_KEY`, `VL_API_MODEL`
+- `RERANK_API_URL`, `RERANK_API_KEY`, `RERANK_MODEL`, `RERANK_TOP_K`
+- `RAG_VECTOR_FETCH_K`
 - `SECRET_KEY` (strongly recommended in production)
 
+Note: the container upload directory is now fixed to `/data/uploads`, so `UPLOAD_FOLDER` is no longer an environment variable.
+
 Model configuration is now loaded from environment variables and is no longer stored in `sys_dict`.
+RAG now supports an optional rerank model (vector recall first, then reranking).
 
 4. Start all services:
 

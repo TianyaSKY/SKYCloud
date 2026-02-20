@@ -66,8 +66,14 @@ async def get_folders(current_user=Depends(get_current_user)):
 
 @router.post("/folder/organize")
 def organize_user_files(current_user=Depends(get_current_user)):
-    folder_service.organize_files(current_user.id)
+    queued = folder_service.organize_files(current_user.id)
+    message = (
+        "已开始整理文件，请留意收件箱里的通知，整理完成后会通知您"
+        if queued
+        else "已有整理任务在排队或执行中，请勿重复提交"
+    )
     return {
-        "message": "已开始整理文件，请留意收件箱里的通知，整理完成后会通知您",
+        "message": message,
+        "queued": queued,
         "code": 200,
     }

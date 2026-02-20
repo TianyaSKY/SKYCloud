@@ -14,7 +14,16 @@ logger = logging.getLogger(__name__)
 def initialize_application():
     """初始化应用：创建数据库表、初始化数据等"""
     # 导入模型以注册到 Base.metadata
-    from app.models import User, File, Folder, SysDict, Share, Inbox
+    from app.models import (
+        User,
+        File,
+        Folder,
+        SysDict,
+        Share,
+        Inbox,
+        FileChangeEvent,
+        OrganizeCheckpoint,
+    )
 
     # 确保上传目录存在
     if not os.path.exists(UPLOAD_FOLDER):

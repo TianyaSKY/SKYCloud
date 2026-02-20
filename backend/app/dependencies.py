@@ -1,5 +1,5 @@
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.extensions import SECRET_KEY
@@ -11,13 +11,16 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 async def get_current_user(
         credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+        token: str | None = Query(default=None, alias="token"),
 ) -> User:
-    if credentials is None or credentials.scheme.lower() != "bearer":
+    if credentials and credentials.scheme.lower() == "bearer":
+        token = credentials.credentials
+
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Token is missing!"
         )
 
-    token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         user_id = payload.get("sub")

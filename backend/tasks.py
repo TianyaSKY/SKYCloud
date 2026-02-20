@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app import initialize_application
 from app.extensions import redis_client, db
+from app.services import folder_service
 from app.services.file_service import (
     FILE_PROCESS_QUEUE,
     ORGANIZE_FILE_QUEUE,
@@ -53,12 +54,14 @@ def process_organize_task(user_id):
     在线程中处理文件整理任务
     """
     try:
+        folder_service.mark_organize_task_running(user_id)
         logger.info(f"Starting organize_files for user {user_id}")
         result = handle_organize_process(user_id)
         logger.info(f"Finished organize_files for user {user_id}: {result}")
     except Exception as e:
         logger.exception(f"Error in thread organizing files for user {user_id}: {e}")
     finally:
+        folder_service.release_organize_task_lock(user_id)
         db.session.remove()
 
 

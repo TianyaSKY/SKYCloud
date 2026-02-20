@@ -19,7 +19,7 @@ class File(Base):
 
     # AI 相关字段
     status = Column(String(20), default="pending")  # pending, processing, success, fail
-    vector_info = Column(Vector(1536))
+    vector_info = Column(Vector(1024))
     description = Column(String(4096))  # 对于文件的描述
 
     uploader_id = Column(Integer, ForeignKey("users.id"))

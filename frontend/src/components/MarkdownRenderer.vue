@@ -16,13 +16,42 @@ marked.setOptions({
   gfm: true,         // 启用 GitHub Flavored Markdown
 });
 
+const renderer = new marked.Renderer();
+const originalImage = renderer.image.bind(renderer);
+
+renderer.image = (token: any) => {
+  if (token.href && token.href.includes('/api/file')) {
+    // 兼容纠错：
+    // 情况 1: AI 可能写成 /api/file/download/1 -> /api/files/1/download
+    // 情况 2: AI 可能写成 /api/files/download/1 -> /api/files/1/download
+    // 我们的后端路由是 /api/files/{id}/download
+    
+    let normalizedHref = token.href;
+    const downloadMatch = normalizedHref.match(/\/download\/(\d+)/);
+    if (downloadMatch) {
+      const fileId = downloadMatch[1];
+      normalizedHref = `/api/files/${fileId}/download`;
+    } else if (!normalizedHref.includes('/api/files/')) {
+       // 转换 /api/file/ 为 /api/files/
+       normalizedHref = normalizedHref.replace('/api/file/', '/api/files/');
+    }
+
+    const authToken = localStorage.getItem('token');
+    if (authToken) {
+      normalizedHref = `${normalizedHref}${normalizedHref.includes('?') ? '&' : '?'}token=${authToken}`;
+    }
+    token.href = normalizedHref;
+  }
+  return originalImage(token);
+};
+
 const renderedHtml = computed(() => {
   if (!props.content) return '';
 
   // 过滤 AI 特殊标记
   const cleanContent = props.content.replace(/<\|begin_of_box\|>|<\|end_of_box\|>|<\|thought\|>|<\/thought>/g, '');
 
-  return marked.parse(cleanContent);
+  return marked.parse(cleanContent, {renderer});
 });
 </script>
 

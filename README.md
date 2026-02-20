@@ -80,16 +80,20 @@ cp .env.example .env
 - `REDIS_PORT`
 - `BACKEND_API_PORT`
 - `UPLOAD_HOST_PATH`（宿主机上传目录）
-- `UPLOAD_FOLDER`（容器内上传目录，默认 `/data/uploads`）
 - `WORKER_MAX_THREADS`
 - `FRONTEND_PORT`
 - `DEFAULT_MODEL_PWD`
 - `CHAT_API_URL`, `CHAT_API_KEY`, `CHAT_API_MODEL`
 - `EMB_API_URL`, `EMB_API_KEY`, `EMB_MODEL_NAME`
 - `VL_API_URL`, `VL_API_KEY`, `VL_API_MODEL`
+- `RERANK_API_URL`, `RERANK_API_KEY`, `RERANK_MODEL`, `RERANK_TOP_K`
+- `RAG_VECTOR_FETCH_K`
 - `SECRET_KEY`（生产环境务必设置）
 
+说明：容器内上传目录已固定为 `/data/uploads`，无需在环境变量中配置 `UPLOAD_FOLDER`。
+
 模型配置已改为环境变量读取，不再存储在数据库 `sys_dict` 中。
+RAG 已支持可选重排序模型：先向量召回，再调用重排序模型重新排序文档。
 
 4. 启动全部服务：
 

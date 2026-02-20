@@ -18,6 +18,7 @@ from werkzeug.utils import secure_filename
 from app.extensions import UPLOAD_FOLDER, db, redis_client
 from app.models.file import File
 from app.models.folder import Folder
+from app.services import change_log_service
 from app.services.model_config import get_embedding_model_config
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,18 @@ def create_file(file_obj: Union[FileStorage, Any], data: Dict[str, Any]) -> File
     db.session.add(new_file)
     db.session.commit()
 
+    if new_file.uploader_id:
+        change_log_service.log_event(
+            user_id=new_file.uploader_id,
+            entity_type="file",
+            entity_id=new_file.id,
+            action="create",
+            old_parent_id=None,
+            new_parent_id=new_file.parent_id,
+            old_name=None,
+            new_name=new_file.name,
+        )
+
     _push_processing_queue([new_file.id], new_file.uploader_id)
     return new_file
 
@@ -195,6 +208,23 @@ def batch_create_files(
 
     db.session.add_all(new_files)
     db.session.commit()
+
+    if uploader_id:
+        change_log_service.log_events_batch(
+            uploader_id,
+            [
+                {
+                    "entity_type": "file",
+                    "entity_id": file_obj.id,
+                    "action": "create",
+                    "old_parent_id": None,
+                    "new_parent_id": file_obj.parent_id,
+                    "old_name": None,
+                    "new_name": file_obj.name,
+                }
+                for file_obj in new_files
+            ],
+        )
 
     _push_processing_queue([f.id for f in new_files], uploader_id)
     return new_files
@@ -407,6 +437,17 @@ def complete_multipart_upload(uploader_id: int, upload_id: str) -> File:
     finally:
         shutil.rmtree(upload_dir, ignore_errors=True)
 
+    change_log_service.log_event(
+        user_id=uploader_id,
+        entity_type="file",
+        entity_id=new_file.id,
+        action="create",
+        old_parent_id=None,
+        new_parent_id=new_file.parent_id,
+        old_name=None,
+        new_name=new_file.name,
+    )
+
     _push_processing_queue([new_file.id], uploader_id)
     return new_file
 
@@ -496,21 +537,47 @@ def update_file(id: int, data: Dict[str, Any]) -> File:
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
+    old_name = file_obj.name
+    old_parent_id = file_obj.parent_id
+
     file_obj.name = data.get("name", file_obj.name)
     file_obj.status = data.get("status", file_obj.status)
     file_obj.parent_id = data.get("parent_id", file_obj.parent_id)
     db.session.commit()
 
+    name_changed = file_obj.name != old_name
+    parent_changed = file_obj.parent_id != old_parent_id
+    if name_changed or parent_changed:
+        action = "update_meta"
+        if name_changed and not parent_changed:
+            action = "rename"
+        elif parent_changed and not name_changed:
+            action = "move"
+
+        change_log_service.log_event(
+            user_id=file_obj.uploader_id,
+            entity_type="file",
+            entity_id=file_obj.id,
+            action=action,
+            old_parent_id=old_parent_id,
+            new_parent_id=file_obj.parent_id,
+            old_name=old_name,
+            new_name=file_obj.name,
+        )
+
     _clear_search_cache(file_obj.uploader_id)
     return file_obj
 
 
-def delete_file(id: int, commit: bool = True) -> None:
+def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
     file_obj = File.query.get(id)
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
     uploader_id = file_obj.uploader_id
+    old_parent_id = file_obj.parent_id
+    old_name = file_obj.name
+    entity_id = file_obj.id
     abs_path = file_obj.get_abs_path()
     if os.path.exists(abs_path):
         try:
@@ -521,6 +588,17 @@ def delete_file(id: int, commit: bool = True) -> None:
     db.session.delete(file_obj)
     if commit:
         db.session.commit()
+        if log_event:
+            change_log_service.log_event(
+                user_id=uploader_id,
+                entity_type="file",
+                entity_id=entity_id,
+                action="delete",
+                old_parent_id=old_parent_id,
+                new_parent_id=None,
+                old_name=old_name,
+                new_name=None,
+            )
         _clear_search_cache(uploader_id)
 
 
@@ -672,7 +750,7 @@ def embedding_desc(desc: str, config: Dict[str, str]) -> List[float]:
     try:
         client = OpenAI(api_key=key, base_url=api, timeout=120)
         resp = client.embeddings.create(model=model, input=desc)
-        return resp.data[0].embedding[:1536]
+        return resp.data[0].embedding[:1024]
     except Exception as e:
         logger.exception(f"Embedding failed: {e}")
         return []

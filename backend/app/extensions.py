@@ -1,5 +1,4 @@
 import os
-import platform
 
 from dotenv import load_dotenv
 from redis import Redis
@@ -20,18 +19,8 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = os.getenv("REDIS_PORT", "6379")
 DEFAULT_MODEL_PWD = os.getenv("DEFAULT_MODEL_PWD", "")
 
-# 上传路径配置
-# 默认逻辑：
-# 1. 优先使用环境变量 UPLOAD_FOLDER
-# 2. 如果是 Windows，默认使用 D:\SKYCloudFilesUpload
-# 3. 如果是 Linux (Docker)，默认使用 /data/uploads
-if os.getenv("UPLOAD_FOLDER"):
-    UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER")
-else:
-    if platform.system() == "Windows":
-        UPLOAD_FOLDER = r"D:\SKYCloudFilesUpload"
-    else:
-        UPLOAD_FOLDER = "/data/uploads"
+# 容器内上传目录固定路径（不从环境变量读取）
+UPLOAD_FOLDER = "/data/uploads"
 
 # JWT 密钥 - 生产环境必须设置环境变量
 SECRET_KEY = os.getenv("SECRET_KEY")

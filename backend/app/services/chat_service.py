@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from operator import itemgetter
 
 from langchain_core.documents import Document
@@ -11,8 +12,20 @@ from sqlalchemy import text
 
 from app.extensions import db
 from app.services.model_config import get_chat_model_config, get_embedding_model_config
+from app.services.rerank_service import rerank_documents
 
 logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+RAG_VECTOR_FETCH_K = _env_int("RAG_VECTOR_FETCH_K", 20)
 
 
 def get_chat_model():
@@ -39,7 +52,7 @@ def get_embeddings_model():
 def custom_db_retriever(query_text: str, user_id: int):
     """自定义检索器，使用 SQLAlchemy 执行向量搜索"""
     embeddings = get_embeddings_model()
-    query_vector = embeddings.embed_query(query_text)[:1536]
+    query_vector = embeddings.embed_query(query_text)[:1024]
 
     sql = text("""
                SELECT id, name, description, mime_type
@@ -48,16 +61,20 @@ def custom_db_retriever(query_text: str, user_id: int):
                  AND description != ''
           AND uploader_id = :user_id
                ORDER BY vector_info <=> :vector
-                   LIMIT 20
+                   LIMIT :limit
                """)
 
-    results = db.session.execute(sql, {"vector": str(query_vector), "user_id": user_id}).fetchall()
+    results = db.session.execute(
+        sql,
+        {"vector": str(query_vector), "user_id": user_id, "limit": RAG_VECTOR_FETCH_K},
+    ).fetchall()
     docs = []
     for row in results:
         content = f"文件名: {row[1]}\n描述: {row[2]}"
         metadata = {"id": row[0], "name": row[1], "mime_type": row[3]}
         docs.append(Document(page_content=content, metadata=metadata))
 
+    docs = rerank_documents(query_text, docs)
     logger.info(f"数据库检索到 {len(docs)} 条结果")
     return docs
 
@@ -69,7 +86,7 @@ def format_docs(docs):
         info = f"[文件: {m['name']} (ID: {m['id']})]\n{doc.page_content}"
         # 如果是图片，提示 AI 可以使用特定语法引用
         if m.get('mime_type', '').startswith('image/'):
-            info += f"\n(这是一张图片，你可以使用 Markdown 语法展示它: ![图片](/api/file/download/{m['id']}))"
+            info += f"\n(这是一张图片，你可以使用 Markdown 语法展示它: ![图片名](/api/files/{m['id']}/download))"
         formatted.append(info)
     return "\n\n---\n\n".join(formatted)
 
@@ -93,22 +110,30 @@ async def generate_chat_events(user_id, query: str, history: list):
     answer_prompt = ChatPromptTemplate.from_template("""
 你是一个云盘助手。请根据以下参考信息回答用户问题。
 
+### 指令要求：
 1. 请使用中文回答。
-2. 如果参考信息中有图片文件，且与问题相关，请在回答中使用 Markdown 语法 `![图片名](/api/file/download/文件ID)` 展示图片。
-3. 如果信息不足，请根据已知内容回答。
+2. **严禁在回答开头输出搜索关键词。** 直接开始你的回答。
+3. **展示图片：** 如果参考信息中有图片且相关，必须严格按照以下格式展示：
+   `![图片描述](/api/files/文件ID/download)`
+   注意：文件ID 必须替换为参考信息中提供的 ID。
 4. 保持回答简洁专业。
 
-历史对话：
+### 历史对话：
 {history}
 
-参考信息：
+### 参考信息：
 {context}
 
-问题：{question}
+### 问题：
+{question}
 """)
 
     # 最终回答链
-    answer_chain = (answer_prompt | llm | StrOutputParser()).with_config({"run_name": "final_answer"})
+    answer_chain = (
+        answer_prompt | 
+        llm.with_config({"run_name": "final_answer_model", "tags": ["final_answer"]}) | 
+        StrOutputParser()
+    ).with_config({"run_name": "final_answer_chain"})
 
     rag_chain = (
             RunnableParallel({
@@ -130,13 +155,13 @@ async def generate_chat_events(user_id, query: str, history: list):
         ):
             kind = event["event"]
 
-            # 处理关键词生成
+            # 处理关键词生成（仅在链结束时发送完整关键词）
             if kind == "on_chain_end" and event["name"] == "keyword_gen":
                 keywords = event["data"]["output"]
                 yield f"data: {json.dumps({'type': 'keywords', 'content': keywords})}\n\n"
 
-            # 处理最终回答的流
-            elif kind == "on_chat_model_stream":
+            # 处理最终回答的流：通过 run_name 'final_answer_model' 确保不包含关键词生成的 token
+            elif kind == "on_chat_model_stream" and event["name"] == "final_answer_model":
                 content = event["data"]["chunk"].content
                 if content:
                     yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"

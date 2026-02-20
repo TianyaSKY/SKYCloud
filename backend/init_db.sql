@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS files
 ) DEFAULT 'pending', -- pending, processing, success, fail
     vector_info vector
 (
-    1536
+    1024
 ),
     description VARCHAR
 (
@@ -175,8 +175,37 @@ CREATE TABLE IF NOT EXISTS sys_dict
     255
 ),
     enable BOOLEAN DEFAULT TRUE,
+     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+     );
+
+-- 8. 创建文件变更事件表（用于增量整理）
+CREATE TABLE IF NOT EXISTS file_change_events
+(
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users (id) ON DELETE CASCADE,
+    entity_type VARCHAR(20) NOT NULL, -- file / folder
+    entity_id INTEGER NOT NULL,
+    action VARCHAR(32) NOT NULL,      -- create / move / rename / delete / update_meta
+    old_parent_id INTEGER,
+    new_parent_id INTEGER,
+    old_name VARCHAR(255),
+    new_name VARCHAR(255),
+    payload TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+);
+CREATE INDEX IF NOT EXISTS idx_file_change_events_user_created
+    ON file_change_events (user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_file_change_events_user_id
+    ON file_change_events (user_id, id);
+
+-- 9. 创建整理检查点表（用于增量整理游标）
+CREATE TABLE IF NOT EXISTS organize_checkpoints
+(
+    user_id INTEGER PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+    last_event_id INTEGER DEFAULT 0 NOT NULL,
+    last_full_scan_at TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 -- ==========================================
 -- 初始化数据
