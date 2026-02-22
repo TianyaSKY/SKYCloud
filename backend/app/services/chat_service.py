@@ -12,6 +12,11 @@ from sqlalchemy import text
 
 from app.extensions import db
 from app.services.model_config import get_chat_model_config, get_embedding_model_config
+from app.services.query_rewrite import (
+    build_retrieval_query,
+    format_keyword_dimensions,
+    parse_keyword_dimensions,
+)
 from app.services.rerank_service import rerank_documents
 
 logger = logging.getLogger(__name__)
@@ -97,13 +102,40 @@ def format_history(history):
     return str(history) if history else ""
 
 
+def retrieve_docs_with_rewrite(payload: dict):
+    question = str(payload.get("question", "") or "")
+    raw_keywords = str(payload.get("raw_keywords", "") or "")
+    current_user_id = int(payload["user_id"])
+
+    dimensions = parse_keyword_dimensions(raw_keywords, question)
+    retrieval_query = build_retrieval_query(question, dimensions)
+    return custom_db_retriever(retrieval_query, current_user_id)
+
+
 async def generate_chat_events(user_id, query: str, history: list):
     """异步生成器，用于 SSE 流式输出"""
     llm = get_chat_model()
     formatted_history = format_history(history)
 
-    # 关键词重写链：使用中文提示词，但要求输出英文关键词（根据之前的要求）
-    rewrite_prompt = ChatPromptTemplate.from_template("请从以下问题中提取核心搜索关键词：{question}。仅输出英文关键词。")
+    # 关键词重写链：多维度提取，统一输出 JSON，便于下游检索拼接
+    rewrite_prompt = ChatPromptTemplate.from_template("""
+请从用户问题中提取检索关键词，并按以下维度输出 JSON：
+{
+  "topic_terms": [],
+  "entity_terms": [],
+  "time_terms": [],
+  "file_type_terms": [],
+  "action_terms": [],
+  "synonym_terms": []
+}
+
+要求：
+1. 仅输出 JSON，不要附加说明。
+2. 每个字段都必须是数组，元素是英文短语；没有内容时输出空数组 []。
+3. 不要编造无关词。
+
+问题：{question}
+""")
     rewriter = (rewrite_prompt | llm | StrOutputParser()).with_config({"run_name": "keyword_gen"})
 
     # 最终回答的提示词模板：使用中文提示词
@@ -138,10 +170,12 @@ async def generate_chat_events(user_id, query: str, history: list):
     rag_chain = (
             RunnableParallel({
                 "context": {
-                               "query_text": rewriter,
-                               "user_id": itemgetter("user_id")
-                           } | RunnableLambda(
-                    lambda x: custom_db_retriever(x["query_text"], x["user_id"])) | format_docs,
+                               "raw_keywords": rewriter,
+                               "question": itemgetter("question"),
+                               "user_id": itemgetter("user_id"),
+                           } | RunnableLambda(retrieve_docs_with_rewrite).with_config(
+                    {"run_name": "custom_db_retriever"}
+                ) | format_docs,
                 "question": itemgetter("question"),
                 "history": itemgetter("history")
             })
@@ -157,7 +191,9 @@ async def generate_chat_events(user_id, query: str, history: list):
 
             # 处理关键词生成（仅在链结束时发送完整关键词）
             if kind == "on_chain_end" and event["name"] == "keyword_gen":
-                keywords = event["data"]["output"]
+                raw_keywords = str(event["data"]["output"] or "")
+                dimensions = parse_keyword_dimensions(raw_keywords, query)
+                keywords = format_keyword_dimensions(dimensions)
                 yield f"data: {json.dumps({'type': 'keywords', 'content': keywords})}\n\n"
 
             # 处理最终回答的流：通过 run_name 'final_answer_model' 确保不包含关键词生成的 token
