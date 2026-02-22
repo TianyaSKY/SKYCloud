@@ -15,9 +15,10 @@
 # SKYCloud
 
 SKYCloud 是一个 AI 增强的云文件管理系统，支持：
-- 文件上传、预览与整理
+- 文件上传、预览
 - 分享链接与收件箱协作
-- 基于 LangChain/OpenAI 的智能对话
+- 基于 LangChain/OpenAI 增强RAG 的智能对话
+- 基于 LangGraph的文件智能分类整理
 
 ## 功能截图
 
@@ -76,74 +77,47 @@ cp .env.example .env
 ```
 
 3. 修改 `.env` 关键配置：
-- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`
-- `REDIS_PORT`
-- `BACKEND_API_PORT`
-- `UPLOAD_HOST_PATH`（宿主机上传目录）
-- `WORKER_MAX_THREADS`
-- `FRONTEND_PORT`
-- `DEFAULT_MODEL_PWD`
-- `CHAT_API_URL`, `CHAT_API_KEY`, `CHAT_API_MODEL`
-- `EMB_API_URL`, `EMB_API_KEY`, `EMB_MODEL_NAME`
-- `VL_API_URL`, `VL_API_KEY`, `VL_API_MODEL`
-- `RERANK_API_URL`, `RERANK_API_KEY`, `RERANK_MODEL`, `RERANK_TOP_K`
-- `RAG_VECTOR_FETCH_K`
-- `SECRET_KEY`（生产环境务必设置）
 
-说明：容器内上传目录已固定为 `/data/uploads`，无需在环境变量中配置 `UPLOAD_FOLDER`。
+## RAG 说明
 
-模型配置已改为环境变量读取，不再存储在数据库 `sys_dict` 中。
-RAG 已支持可选重排序模型：先向量召回，再调用重排序模型重新排序文档。
+当前 RAG 是“文件级描述检索 + 多查询融合”，核心流程如下：
 
-4. 启动全部服务：
+1. 文件索引（离线）
+- 文件上传后由 `backend/tasks.py` worker 异步处理。
+- 为文件生成描述并写入 `files.description`，再生成 embedding 写入 `files.vector_info`（1024 维 pgvector）。
+- 依赖 `files` 表上的向量索引。
+
+2. 关键词重写（在线）
+- 聊天接口 `/api/chat` 收到问题后，先让 LLM 输出 6 维结构化关键词：
+  - `topic_terms`（主题词）
+  - `entity_terms`（实体词）
+  - `time_terms`（时间词）
+  - `file_type_terms`（文件类型词）
+  - `action_terms`（动作词）
+  - `synonym_terms`（同义扩展词）
+
+3. Multi-Query Fusion 检索
+- 基于“原问题 + 多维关键词”生成多条 query（上限由 `RAG_MULTI_QUERY_MAX_QUERIES` 控制）。
+- 每条 query 分别执行向量召回（每路 top-k 为 `RAG_VECTOR_FETCH_K`）。
+- 多路召回结果通过 RRF 融合排序（参数 `RAG_RRF_K`），再截断到 `RAG_FUSION_TOP_K`。
+- 融合结果可选经过 rerank 模型重排（`RERANK_*` 配置），然后作为上下文给回答模型。
+
+4. 生成与流式返回
+- 最终回答按 SSE 流式返回，前端会接收：
+  - `keywords`：结构化关键词展示
+  - `status`：检索/错误状态
+  - `token`：回答增量 token
+
+5. 启动全部服务：
 
 ```bash
 docker-compose up -d --build
 ```
 
-5. 访问地址：
+6. 访问地址：
 - 前端：`http://localhost:${FRONTEND_PORT}`（默认 `http://localhost:80`）
 - 后端健康检查：`http://localhost:${BACKEND_API_PORT}/api/health`（默认 `http://localhost:5000/api/health`）
 
-## 本地开发
-
-### 1. 先准备后端依赖服务
-先启动 PostgreSQL 和 Redis（本机或 Docker 均可）。
-
-### 2. 启动后端 API
-
-```bash
-cd backend
-pip install -r requirements.txt
-python run.py
-# or
-uvicorn run:app --reload --port 5000
-```
-
-### 3. 启动后端 Worker
-
-```bash
-cd backend
-python tasks.py
-```
-
-### 4. 启动前端
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-前端开发服务器会将 `/api` 请求代理到 `http://localhost:5000`。
-
-## 构建与类型检查
-
-```bash
-cd frontend
-npm run type-check
-npm run build
-```
 
 ## 默认账号
 
@@ -152,8 +126,3 @@ npm run build
 - 密码：`admin123`
 
 为安全起见，非演示环境请首次登录后立即修改。
-
-## 说明
-
-- 当前仓库尚未建立完整自动化测试体系。
-- 修改核心逻辑时建议补充测试（后端建议 `pytest`，前端建议 `vitest`）。

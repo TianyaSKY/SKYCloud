@@ -2,6 +2,8 @@ import json
 import re
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
+
 DIMENSION_KEYS = (
     "topic_terms",
     "entity_terms",
@@ -53,8 +55,15 @@ DISPLAY_LABELS: dict[str, str] = {
 TERM_SPLIT_PATTERN = re.compile(r"[,;|/\n]+")
 
 
-def _empty_dimensions() -> dict[str, list[str]]:
-    return {key: [] for key in DIMENSION_KEYS}
+class RewriteKeywordDimensions(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    topic_terms: list[StrictStr] = Field(default_factory=list)
+    entity_terms: list[StrictStr] = Field(default_factory=list)
+    time_terms: list[StrictStr] = Field(default_factory=list)
+    file_type_terms: list[StrictStr] = Field(default_factory=list)
+    action_terms: list[StrictStr] = Field(default_factory=list)
+    synonym_terms: list[StrictStr] = Field(default_factory=list)
 
 
 def _dedupe_terms(values: list[str]) -> list[str]:
@@ -119,47 +128,137 @@ def _parse_json_payload(raw_output: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def parse_keyword_dimensions(raw_output: str, question: str = "") -> dict[str, list[str]]:
-    dimensions = _empty_dimensions()
-    payload = _parse_json_payload(raw_output)
+def _normalize_dimensions(
+    dimensions: RewriteKeywordDimensions,
+) -> RewriteKeywordDimensions:
+    normalized: dict[str, list[str]] = {}
+    for key in DIMENSION_KEYS:
+        values = [item.strip() for item in getattr(dimensions, key)]
+        normalized[key] = _dedupe_terms(values)
+    return RewriteKeywordDimensions.model_validate(normalized)
 
-    if payload:
-        for key, value in payload.items():
-            if not isinstance(key, str):
-                continue
-            mapped_key = KEY_ALIASES.get(key.strip().lower()) or KEY_ALIASES.get(key.strip())
-            if mapped_key not in dimensions:
-                continue
-            dimensions[mapped_key].extend(_normalize_terms(value))
+
+def validate_keyword_dimensions(payload: dict[str, Any]) -> RewriteKeywordDimensions:
+    normalized_payload: dict[str, Any] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str):
+            normalized_payload[key] = value
+            continue
+        mapped_key = KEY_ALIASES.get(key.strip().lower()) or KEY_ALIASES.get(key.strip())
+        normalized_payload[mapped_key or key] = value
+
+    validated = RewriteKeywordDimensions.model_validate(normalized_payload)
+    return _normalize_dimensions(validated)
+
+
+def _fallback_dimensions(question: str = "", raw_output: str = "") -> RewriteKeywordDimensions:
+    fallback_terms: list[str] = []
+    if question.strip():
+        fallback_terms = [question.strip()]
+    elif raw_output.strip():
+        fallback_terms = _normalize_terms(raw_output)
+
+    return RewriteKeywordDimensions(topic_terms=fallback_terms)
+
+
+def parse_keyword_dimensions(
+    raw_output: str, question: str = ""
+) -> RewriteKeywordDimensions:
+    payload = _parse_json_payload(raw_output)
+    if not payload:
+        return _fallback_dimensions(question, raw_output)
+
+    try:
+        return validate_keyword_dimensions(payload)
+    except ValidationError:
+        return _fallback_dimensions(question, raw_output)
+
+
+def coerce_keyword_dimensions(
+    raw_output: Any, question: str = ""
+) -> RewriteKeywordDimensions:
+    if isinstance(raw_output, RewriteKeywordDimensions):
+        return _normalize_dimensions(raw_output)
+
+    if isinstance(raw_output, dict):
+        try:
+            return validate_keyword_dimensions(raw_output)
+        except ValidationError:
+            return _fallback_dimensions(question)
+
+    if isinstance(raw_output, str):
+        return parse_keyword_dimensions(raw_output, question)
+
+    return _fallback_dimensions(question)
+
+
+def require_keyword_dimensions(raw_output: Any) -> RewriteKeywordDimensions:
+    if isinstance(raw_output, RewriteKeywordDimensions):
+        return _normalize_dimensions(raw_output)
+
+    if isinstance(raw_output, dict):
+        return validate_keyword_dimensions(raw_output)
+
+    raise ValueError(
+        "Invalid rewrite output type, expected RewriteKeywordDimensions or dict"
+    )
+
+
+def build_multi_queries(
+    question: str,
+    dimensions: RewriteKeywordDimensions,
+    max_queries: int = 6,
+) -> list[str]:
+    if max_queries <= 0:
+        return []
+
+    seen: set[str] = set()
+    queries: list[str] = []
+
+    def _add(query_text: str) -> None:
+        text = (query_text or "").strip()
+        if not text:
+            return
+        key = text.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        queries.append(text)
+
+    normalized_question = question.strip()
+    _add(normalized_question)
+    _add(build_retrieval_query(normalized_question, dimensions))
 
     for key in DIMENSION_KEYS:
-        dimensions[key] = _dedupe_terms(dimensions[key])
+        terms = list(getattr(dimensions, key))
+        if not terms:
+            continue
+        dim_query = " ".join(_dedupe_terms(terms))
+        _add(dim_query)
+        if normalized_question:
+            _add(f"{normalized_question} {dim_query}")
+        if len(queries) >= max_queries:
+            break
 
-    if all(not dimensions[key] for key in DIMENSION_KEYS):
-        dimensions["topic_terms"] = _normalize_terms(raw_output)
-
-    if not dimensions["topic_terms"] and question.strip():
-        dimensions["topic_terms"] = [question.strip()]
-
-    return dimensions
+    return queries[:max_queries]
 
 
-def build_retrieval_query(question: str, dimensions: dict[str, list[str]]) -> str:
+def build_retrieval_query(question: str, dimensions: RewriteKeywordDimensions) -> str:
     terms: list[str] = []
     if question.strip():
         terms.append(question.strip())
 
     for key in DIMENSION_KEYS:
-        terms.extend(dimensions.get(key, []))
+        terms.extend(getattr(dimensions, key))
 
     merged = _dedupe_terms(terms)
     return " ".join(merged).strip()
 
 
-def format_keyword_dimensions(dimensions: dict[str, list[str]]) -> str:
+def format_keyword_dimensions(dimensions: RewriteKeywordDimensions) -> str:
     chunks: list[str] = []
     for key in DIMENSION_KEYS:
-        terms = dimensions.get(key, [])
+        terms = getattr(dimensions, key)
         if not terms:
             continue
         label = DISPLAY_LABELS.get(key, key)
