@@ -7,6 +7,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     Response,
     status,
 )
@@ -15,7 +16,6 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from app.dependencies import ensure_owner_or_admin, get_current_user
 from app.schemas import (
-    AvatarUploadRequest,
     BatchDeleteRequest,
     FileUpdateRequest,
     MultipartCompleteRequest,
@@ -229,18 +229,40 @@ def download_file(id: int, current_user=Depends(get_current_user)):
 
 
 @router.post("/files/upload/avatar/{id}")
-def upload_avatar(
+async def upload_avatar(
         id: int,
-        payload: AvatarUploadRequest,
+        request: Request,
+        avatar: UploadFile | None = FastAPIFile(default=None),
+        avatar_base64: str | None = Form(default=None),
         current_user=Depends(get_current_user),
 ):
     ensure_owner_or_admin(current_user, id)
-    if not payload.avatar:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="No avatar data"
-        )
 
-    adapter = Base64UploadAdapter(payload.avatar)
+    adapter = None
+    if avatar is not None:
+        if not avatar.filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="No avatar file"
+            )
+        adapter = FastAPIUploadAdapter(avatar)
+    else:
+        avatar_text = (avatar_base64 or "").strip()
+        if not avatar_text and request.headers.get("content-type", "").startswith(
+            "application/json"
+        ):
+            try:
+                payload = await request.json()
+                if isinstance(payload, dict):
+                    avatar_text = str(payload.get("avatar") or "").strip()
+            except Exception:
+                avatar_text = ""
+
+        if not avatar_text:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="No avatar data"
+            )
+        adapter = Base64UploadAdapter(avatar_text)
+
     result = file_service.upload_avatar(adapter, id)
     if result.get("avatar_url") and "avatar" not in result:
         result["avatar"] = result["avatar_url"]

@@ -213,41 +213,30 @@ CREATE TABLE IF NOT EXISTS organize_checkpoints
 
 -- 1. 初始化管理员用户 (密码为 'admin123' 的 hash 值，需根据实际加密方式生成，这里使用初始密钥生成的hash值)
 
-INSERT INTO users (username, password_hash, role)
-SELECT 'admin',
-       'scrypt:32768:8:1$ULeZhKdUrZi46VVx$30e562fbf0a745b562fd7b2e037ba1e634cb13f82cd6f9d27763863136b16dc20e21802e44af40eaa5cee287c6bbd9e474d211b157b85dba3bb85bde49e4b2f1',
-       'admin' WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = 'admin');
+INSERT INTO users (id, username, password_hash, role)
+VALUES (
+           1,
+           'admin',
+           'scrypt:32768:8:1$ULeZhKdUrZi46VVx$30e562fbf0a745b562fd7b2e037ba1e634cb13f82cd6f9d27763863136b16dc20e21802e44af40eaa5cee287c6bbd9e474d211b157b85dba3bb85bde49e4b2f1',
+           'admin'
+       )
+ON CONFLICT (id) DO NOTHING;
 
--- 2. 初始化系统配置（模型配置请使用环境变量，不再写入 sys_dict）
+-- 2. 初始化系统配置
 INSERT INTO sys_dict (key, value, des)
 VALUES ('site_name', 'SKYCloud', '站点名称（显示在网页标题与 Logo 旁）')
        ON CONFLICT (key) DO NOTHING;
 
--- 3. 初始化根目录 (依赖 admin 用户 ID)
--- 这一步比较复杂，因为需要获取 admin 的 ID。
--- 使用 CTE (Common Table Expressions) 来处理依赖关系
+-- 3. 初始化根目录（固定 id=1，属于 admin(id=1)）
+INSERT INTO folder (id, name, user_id, parent_id)
+VALUES (1, '/', 1, NULL)
+ON CONFLICT (id) DO NOTHING;
 
-WITH admin_user AS (SELECT id
-                    FROM users
-                    WHERE username = 'admin'
-    LIMIT 1
-    )
-   , root_folder_insert AS (
-INSERT
-INTO folder (name, user_id, parent_id)
-SELECT '/', id, NULL
-FROM admin_user
-WHERE NOT EXISTS (SELECT 1 FROM folder WHERE name = '/'
-  AND parent_id IS NULL)
-    RETURNING id
-    , user_id
-    )
--- 4. 初始化头像文件夹 (依赖根目录 ID)
-INSERT
-INTO folder (name, user_id, parent_id)
-SELECT '所有用户头像', user_id, id
-FROM root_folder_insert
-WHERE NOT EXISTS (SELECT 1
-                  FROM folder f
-                           JOIN root_folder_insert r ON f.parent_id = r.id
-                  WHERE f.name = '所有用户头像');
+-- 4. 初始化头像文件夹（固定 id=2，根目录固定 parent_id=1）
+INSERT INTO folder (id, name, user_id, parent_id)
+VALUES (2, '所有用户头像', 1, 1)
+ON CONFLICT (id) DO NOTHING;
+
+-- 5. 修正序列，避免后续自增主键冲突
+SELECT setval(pg_get_serial_sequence('users', 'id'), COALESCE((SELECT MAX(id) FROM users), 1), true);
+SELECT setval(pg_get_serial_sequence('folder', 'id'), COALESCE((SELECT MAX(id) FROM folder), 1), true);
