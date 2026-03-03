@@ -32,3 +32,4 @@ python-dotenv==1.0.0
 
 # --- 工具库 ---
 werkzeug==3.0.3
+httpx>=0.27

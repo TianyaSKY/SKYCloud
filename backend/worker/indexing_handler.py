@@ -57,8 +57,10 @@ def handle_file_indexing(file_id: int) -> None:
         file.description = description
         db.session.commit()
 
-        # 生成向量嵌入
-        file.vector_info = file_service.embedding_desc(description, emb_config)
+        # 生成向量嵌入（文件名 + 描述 拼接，使文件名也参与语义检索）
+        embedding_text = f"文件名: {file.name}\n{description}"
+        file.vector_info = file_service.embedding_desc(
+            embedding_text, emb_config)
 
         # 更新状态为成功
         file.status = "success"

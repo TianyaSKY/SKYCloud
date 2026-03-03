@@ -31,7 +31,8 @@ def initialize_application():
             os.makedirs(UPLOAD_FOLDER)
             logger.info(f"Created upload directory: {UPLOAD_FOLDER}")
         except Exception as e:
-            logger.error(f"Failed to create upload directory {UPLOAD_FOLDER}: {e}")
+            logger.error(
+                f"Failed to create upload directory {UPLOAD_FOLDER}: {e}")
 
     # 数据库连接重试逻辑
     max_retries = 3
@@ -70,7 +71,7 @@ def initialize_application():
         with engine.connect() as conn:
             conn.execute(
                 text(
-                    "CREATE INDEX IF NOT EXISTS file_vector_idx ON files USING hnsw (vector_info vector_l2_ops)"
+                    "CREATE INDEX IF NOT EXISTS file_vector_idx ON files USING hnsw (vector_info vector_cosine_ops)"
                 )
             )
             conn.commit()

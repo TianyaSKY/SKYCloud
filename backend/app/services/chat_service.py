@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -34,7 +35,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 RAG_VECTOR_FETCH_K = _env_int("RAG_VECTOR_FETCH_K", 20)
-RAG_MULTI_QUERY_MAX_QUERIES = _env_int("RAG_MULTI_QUERY_MAX_QUERIES", 6)
+RAG_MULTI_QUERY_MAX_QUERIES = _env_int("RAG_MULTI_QUERY_MAX_QUERIES", 3)
 RAG_RRF_K = _env_int("RAG_RRF_K", 60)
 RAG_FUSION_TOP_K = _env_int("RAG_FUSION_TOP_K", 30)
 
@@ -66,8 +67,18 @@ def _vector_search_docs(
         embeddings: OpenAIEmbeddings,
         limit: int,
 ) -> list[Document]:
+    """单条查询的完整向量检索（embedding + DB），保留向后兼容。"""
     query_vector = embeddings.embed_query(query_text)[:1024]
+    return _db_search_by_vector(query_vector, query_text, user_id, limit)
 
+
+def _db_search_by_vector(
+        query_vector: list[float],
+        query_text: str,
+        user_id: int,
+        limit: int,
+) -> list[Document]:
+    """使用预计算的向量进行数据库搜索。"""
     sql = text("""
                SELECT id, name, description, mime_type, (vector_info <=> :vector) AS distance
                 FROM files
@@ -76,11 +87,11 @@ def _vector_search_docs(
            AND uploader_id = :user_id
                 ORDER BY vector_info <=> :vector
                    LIMIT :limit
-               """)
+                """)
 
     results = db.session.execute(
         sql,
-        {"vector": str(query_vector), "user_id": user_id, "limit": RAG_VECTOR_FETCH_K},
+        {"vector": str(query_vector), "user_id": user_id, "limit": limit},
     ).fetchall()
     docs: list[Document] = []
     for rank, row in enumerate(results, start=1):
@@ -117,7 +128,8 @@ def _fuse_docs_with_rrf(
 
     ranked_ids = sorted(
         scores.keys(),
-        key=lambda doc_id: (-scores[doc_id], doc_map[doc_id].metadata.get("distance", float("inf"))),
+        key=lambda doc_id: (-scores[doc_id],
+                            doc_map[doc_id].metadata.get("distance", float("inf"))),
     )
     fused_docs: list[Document] = []
     for doc_id in ranked_ids[:top_k]:
@@ -127,20 +139,24 @@ def _fuse_docs_with_rrf(
     return fused_docs
 
 
-def custom_db_retriever(query_text: str, user_id: int):
+async def custom_db_retriever(query_text: str, user_id: int):
     """单查询向量检索，保留兼容。"""
     embeddings = get_embeddings_model()
-    docs = _vector_search_docs(query_text, user_id, embeddings, RAG_VECTOR_FETCH_K)
-    docs = rerank_documents(query_text, docs)
+    docs = _vector_search_docs(
+        query_text, user_id, embeddings, RAG_VECTOR_FETCH_K)
+    docs = await rerank_documents(query_text, docs)
     logger.info(f"单查询检索结果: {len(docs)}")
     return docs
 
 
-def multi_query_db_retriever(
+async def multi_query_db_retriever(
         question: str,
         user_id: int,
         dimensions: RewriteKeywordDimensions,
 ):
+    import time
+    t0 = time.perf_counter()
+
     queries = build_multi_queries(
         question,
         dimensions,
@@ -150,25 +166,44 @@ def multi_query_db_retriever(
         queries = [question.strip()]
 
     embeddings = get_embeddings_model()
+    loop = asyncio.get_running_loop()
+
+    # ---- 阶段 1: 批量 embedding（1 次 HTTP 请求代替 N 次）----
+    t1 = time.perf_counter()
+    all_vectors = await loop.run_in_executor(
+        None, embeddings.embed_documents, queries
+    )
+    all_vectors = [v[:1024] for v in all_vectors]
+    t2 = time.perf_counter()
+    logger.info(f"[计时] 批量 embedding {len(queries)} 条: {t2 - t1:.2f}s")
+
+    # ---- 阶段 2: 顺序数据库向量检索（db.session 线程安全）----
     result_sets: list[list[Document]] = []
-    for query_text in queries:
+    for query_text, vector in zip(queries, all_vectors):
         try:
-            docs = _vector_search_docs(
-                query_text,
-                user_id,
-                embeddings,
-                RAG_VECTOR_FETCH_K,
-            )
+            docs = _db_search_by_vector(
+                vector, query_text, user_id, RAG_VECTOR_FETCH_K)
             if docs:
                 result_sets.append(docs)
         except Exception as exc:
-            logger.warning(f"Multi-query recall failed for query='{query_text}': {exc}")
+            logger.warning(
+                f"Multi-query recall failed for query='{query_text}': {exc}")
+    t3 = time.perf_counter()
+    logger.info(f"[计时] DB 向量检索 {len(queries)} 条: {t3 - t2:.2f}s")
 
-    fused_docs = _fuse_docs_with_rrf(result_sets, rrf_k=RAG_RRF_K, top_k=RAG_FUSION_TOP_K)
+    # ---- 阶段 3: RRF 融合 ----
+    fused_docs = _fuse_docs_with_rrf(
+        result_sets, rrf_k=RAG_RRF_K, top_k=RAG_FUSION_TOP_K)
+
+    # ---- 阶段 4: Rerank ----
     retrieval_query = build_retrieval_query(question, dimensions)
-    reranked_docs = rerank_documents(retrieval_query, fused_docs)
+    reranked_docs = await rerank_documents(retrieval_query, fused_docs)
+    t4 = time.perf_counter()
+    logger.info(f"[计时] Rerank: {t4 - t3:.2f}s")
+
     logger.info(
-        f"多查询融合检索完成: queries={len(queries)}, raw_sets={len(result_sets)}, fused={len(fused_docs)}, reranked={len(reranked_docs)}"
+        f"多查询融合检索完成: queries={len(queries)}, fused={len(fused_docs)}, "
+        f"reranked={len(reranked_docs)}, 总耗时={t4 - t0:.2f}s"
     )
     return reranked_docs
 
@@ -191,13 +226,13 @@ def format_history(history):
     return str(history) if history else ""
 
 
-def retrieve_docs_with_rewrite(payload: dict):
+async def retrieve_docs_with_rewrite(payload: dict):
     question = str(payload.get("question", "") or "")
     rewrite_output = payload.get("rewrite_output")
     current_user_id = int(payload["user_id"])
 
     dimensions = require_keyword_dimensions(rewrite_output)
-    return multi_query_db_retriever(question, current_user_id, dimensions)
+    return await multi_query_db_retriever(question, current_user_id, dimensions)
 
 
 async def generate_chat_events(user_id, query: str, history: list):
@@ -224,7 +259,8 @@ async def generate_chat_events(user_id, query: str, history: list):
 问题：{question}
 """)
     rewrite_llm = llm.with_structured_output(RewriteKeywordDimensions)
-    rewriter = (rewrite_prompt | rewrite_llm).with_config({"run_name": "keyword_gen"})
+    rewriter = (rewrite_prompt | rewrite_llm).with_config(
+        {"run_name": "keyword_gen"})
 
     # 最终回答的提示词模板：使用中文提示词
     answer_prompt = ChatPromptTemplate.from_template("""
@@ -250,24 +286,24 @@ async def generate_chat_events(user_id, query: str, history: list):
 
     # 最终回答链
     answer_chain = (
-        answer_prompt | 
-        llm.with_config({"run_name": "final_answer_model", "tags": ["final_answer"]}) | 
+        answer_prompt |
+        llm.with_config({"run_name": "final_answer_model", "tags": ["final_answer"]}) |
         StrOutputParser()
     ).with_config({"run_name": "final_answer_chain"})
 
     rag_chain = (
-            RunnableParallel({
-                "context": {
-                               "rewrite_output": rewriter,
-                               "question": itemgetter("question"),
-                               "user_id": itemgetter("user_id"),
-                           } | RunnableLambda(retrieve_docs_with_rewrite).with_config(
-                    {"run_name": "custom_db_retriever"}
-                ) | format_docs,
+        RunnableParallel({
+            "context": {
+                "rewrite_output": rewriter,
                 "question": itemgetter("question"),
-                "history": itemgetter("history")
-            })
-            | answer_chain
+                "user_id": itemgetter("user_id"),
+            } | RunnableLambda(retrieve_docs_with_rewrite).with_config(
+                {"run_name": "custom_db_retriever"}
+            ) | format_docs,
+            "question": itemgetter("question"),
+            "history": itemgetter("history")
+        })
+        | answer_chain
     )
 
     try:

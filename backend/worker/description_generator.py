@@ -51,7 +51,8 @@ TEXT_EXTENSIONS = {
 }
 
 # 支持的文件格式分类
-DOCUMENT_EXTENSIONS = {".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".pdf"}
+DOCUMENT_EXTENSIONS = {".docx", ".doc",
+                       ".xlsx", ".xls", ".pptx", ".ppt", ".pdf"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg"}
@@ -90,14 +91,16 @@ def _get_visual_urls(local_path: str) -> list:
                     if ext == ".pdf"
                     else convert_office_to_pdf(local_path, tmpdir)
                 )
-                images = convert_pdf_to_images(target_pdf, tmpdir, max_pages=20)
+                images = convert_pdf_to_images(
+                    target_pdf, tmpdir, max_pages=20)
                 for img_path in images:
                     uri = image_to_base64(img_path)
                     if uri:
                         image_uris.append(uri)
 
             elif ext in VIDEO_EXTENSIONS:
-                frames = extract_video_frames(local_path, tmpdir, frame_count=20)
+                frames = extract_video_frames(
+                    local_path, tmpdir, frame_count=20)
                 for img_path in frames:
                     uri = image_to_base64(img_path)
                     if uri:
@@ -110,7 +113,8 @@ def _get_visual_urls(local_path: str) -> list:
             else:
                 raise ValueError(f"Unsupported file type: {ext}")
         except Exception as e:
-            logger.error(f"Error processing visual content for {local_path}: {e}")
+            logger.error(
+                f"Error processing visual content for {local_path}: {e}")
             raise e
 
     return image_uris
@@ -140,11 +144,11 @@ def generate_file_description(local_path: str, config: dict) -> str:
 
     # 强制要求最终输出为英文
     prompt = (
-        "You are a professional file analysis assistant. Please carefully observe the provided file content "
-        "(which may be document screenshots, video keyframes, or images) and generate an accurate, professional, "
-        "and concise description. The description should include: core theme, main content summary, and key information points. "
-        "Output the description text directly in ENGLISH without any preamble or explanatory text. Do not use Markdown syntax. "
-        "No need to describe the sequence of images."
+        "你是一个专业的文件分析助手。请仔细观察提供的文件内容"
+        "（可能是文档截图、视频关键帧或图片），生成准确、专业、简洁的描述。"
+        "描述应包含：核心主题、主要内容摘要和关键信息点。"
+        "请直接用中文输出描述文本，不要添加任何前缀或解释性文字。不要使用 Markdown 语法。"
+        "不需要描述图片的顺序。"
     )
 
     content = [{"type": "text", "text": prompt}]
@@ -200,7 +204,8 @@ def _extract_text_content(local_path: str) -> str:
             for table in doc.tables:
                 for row in table.rows:
                     content.append(
-                        " | ".join(c.text.strip() for c in row.cells if c.text.strip())
+                        " | ".join(c.text.strip()
+                                   for c in row.cells if c.text.strip())
                     )
             return "\n".join(content)
         except:

@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-import requests
+import httpx
 from langchain_core.documents import Document
 
 from app.services.model_config import get_rerank_model_config, get_rerank_top_k
@@ -60,7 +60,7 @@ def _extract_ranked_indices(payload: dict[str, Any]) -> list[int]:
     return ranked_indices
 
 
-def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
+async def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
     if len(docs) <= 1:
         return docs
 
@@ -71,7 +71,8 @@ def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
     top_k = min(get_rerank_top_k(), len(docs))
 
     if not api_url or not api_key or not model:
-        logger.info("Rerank is skipped because api/key/model is not fully configured")
+        logger.info(
+            "Rerank is skipped because api/key/model is not fully configured")
         return docs
 
     payload = {
@@ -81,20 +82,22 @@ def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
         "top_n": top_k,
         "return_documents": False,
     }
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {api_key}",
+               "Content-Type": "application/json"}
 
     try:
-        response = requests.post(
-            f"{api_url}/rerank",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        response.raise_for_status()
-        result = response.json()
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{api_url}/rerank",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            result = response.json()
         ranked_indices = _extract_ranked_indices(result)
         if not ranked_indices:
-            logger.warning("Rerank response missing ranked indices, fallback to vector rank")
+            logger.warning(
+                "Rerank response missing ranked indices, fallback to vector rank")
             return docs
 
         ranked_docs = [docs[i] for i in ranked_indices if 0 <= i < len(docs)]

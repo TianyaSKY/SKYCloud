@@ -18,7 +18,8 @@ class File(Base):
     mime_type = Column(String(255))  # 如 'image/jpeg', 'application/pdf'
 
     # AI 相关字段
-    status = Column(String(20), default="pending")  # pending, processing, success, fail
+    # pending, processing, success, fail
+    status = Column(String(20), default="pending")
     vector_info = Column(Vector(1024))
     description = Column(String(4096))  # 对于文件的描述
 
@@ -30,7 +31,8 @@ class File(Base):
     uploader = relationship("User", backref="files")
 
     # 级联删除：当文件被删除时，自动删除关联的分享记录
-    shares = relationship("Share", back_populates="file", cascade="all, delete-orphan")
+    shares = relationship("Share", back_populates="file",
+                          cascade="all, delete-orphan")
 
     # 添加 query 属性用于兼容 Flask-SQLAlchemy 风格的查询
     query = _scoped_session.query_property()
@@ -40,7 +42,7 @@ class File(Base):
             "file_vector_idx",
             "vector_info",
             postgresql_using="hnsw",
-            postgresql_ops={"vector_info": "vector_l2_ops"},
+            postgresql_ops={"vector_info": "vector_cosine_ops"},
         ),
     )
 
