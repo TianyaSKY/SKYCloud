@@ -1,16 +1,3 @@
-import datetime
-import logging
-import os
-import sys
-import time
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
-
-from app.services import change_log_service
-from app.services.model_config import get_chat_model_config
 from .organize_tools import (
     check_empty_folders_internal,
     check_mixed_folders_internal,
@@ -27,6 +14,18 @@ from .organize_tools import (
     move_folder,
     rename_folder,
 )
+from app.services.model_config import get_chat_model_config
+from app.services import change_log_service
+from langgraph.prebuilt import create_react_agent
+from langchain_openai import ChatOpenAI
+import datetime
+import logging
+import os
+import sys
+import time
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 
 logger = logging.getLogger(__name__)
 
@@ -73,41 +72,70 @@ Your task consists of the following parts:
 
 General Constraints:
 - All operations are only for user_id: {user_id}.
+- IMPORTANT: Every tool that modifies data requires a `user_id` parameter. Always pass {user_id}.
 - You can only move/read files; do NOT modify or delete file content.
 - Step-by-step: perform 3-5 operations per turn, observe results, then continue.
 """
 
 
+def _format_files_detail(files_detail: list[dict]) -> str:
+    if not files_detail:
+        return "  (none)"
+    lines = []
+    for f in files_detail:
+        lines.append(
+            f"  - File \"{f['name']}\" (ID: {f['id']}) → currently at: {f['path']}")
+    return "\n".join(lines)
+
+
+def _format_folders_detail(folders_detail: list[dict]) -> str:
+    if not folders_detail:
+        return "  (none)"
+    lines = []
+    for f in folders_detail:
+        lines.append(
+            f"  - Folder \"{f['name']}\" (ID: {f['id']}) → path: {f['path']}")
+    return "\n".join(lines)
+
+
 def _build_incremental_prompt(user_id: int, context: dict) -> str:
-    changed_file_ids = context.get("changed_file_ids") or []
-    changed_folder_ids = context.get("changed_folder_ids") or []
     summary_text = context.get("summary_text") or "No summary."
     checkpoint_event_id = context.get("checkpoint_event_id", 0)
     target_event_id = context.get("target_event_id", 0)
+    files_detail = context.get("changed_files_detail") or []
+    folders_detail = context.get("changed_folders_detail") or []
+
+    files_section = _format_files_detail(files_detail)
+    folders_section = _format_folders_detail(folders_detail)
 
     return f"""
-You are an intelligent file organization assistant. Your goal is to keep the user's file system well-organized.
+You are an intelligent file organization assistant performing INCREMENTAL organization.
 
 Current User ID: {user_id}
-Mode: Incremental organization based on change events.
-Event range to process: ({checkpoint_event_id}, {target_event_id}]
+Event range: ({checkpoint_event_id}, {target_event_id}]
 
-Change Summary:
+## What Changed (event log summary)
 {summary_text}
 
-Priority Scope:
-- Changed file IDs: {changed_file_ids}
-- Changed folder IDs: {changed_folder_ids}
+## Files That Changed (current state)
+{files_section}
 
-Execution strategy:
-1. Start from changed folders/files first. Avoid scanning the whole library unless absolutely required.
-2. Use `get_file_information` only when classification is unclear.
-3. Keep the Single Content Principle: folders should not contain both files and subfolders.
-4. If duplicates are found around the changed scope, merge with `merge_folders`.
-5. Clean up empty folders with `delete_folder`.
+## Folders That Changed (current state)
+{folders_section}
 
-General Constraints:
+## Your Task
+1. **Focus ONLY on the items listed above.** Ensure each changed file is in the correct folder based on its name and content.
+2. If a changed file's current location seems wrong, move it to a better folder.
+3. If no suitable folder exists for a changed file, create one with `create_folder`.
+4. If a changed folder has an inaccurate name, rename it.
+5. After moving files, check if the source or target folders now violate the Single Content Principle (a folder must NOT contain both files and subfolders simultaneously).
+6. Clean up any empty folders created as a side effect.
+
+## Constraints
+- **SCOPE RESTRICTION**: Do NOT scan or reorganize the entire file library. Only use `get_all_files` or `get_folder_tree` if you need to find a suitable destination for a changed file.
+- If file content is unclear from the name alone, use `get_file_information` to read its description.
 - All operations are only for user_id: {user_id}.
+- IMPORTANT: Every tool that modifies data requires a `user_id` parameter. Always pass {user_id}.
 - You can only move/read files; do NOT modify or delete file content.
 - Step-by-step: perform 3-5 operations per turn, observe results, then continue.
 """
@@ -152,7 +180,8 @@ def organize_files(user_id: int):
             user_id=user_id, max_events=MAX_INCREMENTAL_EVENTS
         )
     except Exception as exc:
-        logger.warning(f"Load incremental context failed, fallback to full scan: {exc}")
+        logger.warning(
+            f"Load incremental context failed, fallback to full scan: {exc}")
         incremental_context = {
             "has_changes": True,
             "overflow": True,
@@ -162,7 +191,8 @@ def organize_files(user_id: int):
 
     if not incremental_context.get("has_changes"):
         if incremental_context.get("has_checkpoint"):
-            target_event_id = int(incremental_context.get("target_event_id") or 0)
+            target_event_id = int(
+                incremental_context.get("target_event_id") or 0)
             change_log_service.update_checkpoint(
                 user_id, target_event_id, mark_full_scan=False
             )
@@ -171,12 +201,14 @@ def organize_files(user_id: int):
 
         # 新功能上线前已有文件但尚无 checkpoint/事件日志时，首次仍执行一次全量整理
         results.append("未检测到增量事件且无历史 checkpoint，执行首次全量整理。")
-        checkpoint_target_event_id = int(incremental_context.get("target_event_id") or 0)
+        checkpoint_target_event_id = int(
+            incremental_context.get("target_event_id") or 0)
         full_scan_mode = True
         prompt = _build_full_prompt(user_id)
         current_messages = [("user", prompt)]
     else:
-        checkpoint_target_event_id = int(incremental_context.get("target_event_id") or 0)
+        checkpoint_target_event_id = int(
+            incremental_context.get("target_event_id") or 0)
         full_scan_mode = bool(incremental_context.get("overflow"))
 
         if full_scan_mode:
@@ -194,31 +226,50 @@ def organize_files(user_id: int):
         current_messages = [("user", prompt)]
     validation_passed = False
 
+    # 收集完整对话历史，用于重试时保持上下文
+    all_messages = list(current_messages)
+
     for attempt in range(MAX_VALIDATION_RETRIES):
         config = {
             "configurable": {"thread_id": f"file_org_{user_id}_{int(time.time() * 1000)}_{attempt}"},
             "recursion_limit": RECURSION_LIMIT,
         }
 
-        for chunk in agent_executor.stream({"messages": current_messages}, config):
-            if "agent" in chunk:
-                message = chunk["agent"]["messages"][0]
-                results.append(f"Agent: {message.tool_calls}")
+        try:
+            for chunk in agent_executor.stream({"messages": current_messages}, config):
+                if "agent" in chunk:
+                    message = chunk["agent"]["messages"][0]
+                    results.append(f"Agent: {message.tool_calls}")
+                    all_messages.append(message)
 
-                if hasattr(message, "usage_metadata") and message.usage_metadata:
-                    usage = message.usage_metadata
-                    total_usage["input_tokens"] += usage.get("input_tokens", 0)
-                    total_usage["output_tokens"] += usage.get("output_tokens", 0)
-                    total_usage["total_tokens"] += usage.get("total_tokens", 0)
+                    if hasattr(message, "usage_metadata") and message.usage_metadata:
+                        usage = message.usage_metadata
+                        total_usage["input_tokens"] += usage.get(
+                            "input_tokens", 0)
+                        total_usage["output_tokens"] += usage.get(
+                            "output_tokens", 0)
+                        total_usage["total_tokens"] += usage.get(
+                            "total_tokens", 0)
 
-            elif "tools" in chunk:
-                results.append(f"Tool: {chunk['tools']['messages'][0].content}")
+                elif "tools" in chunk:
+                    tool_message = chunk["tools"]["messages"][0]
+                    results.append(f"Tool: {tool_message.content}")
+                    all_messages.append(tool_message)
+        except Exception as exc:
+            exc_name = type(exc).__name__
+            if "RecursionError" in exc_name or "GraphRecursionError" in exc_name:
+                results.append(
+                    f"Agent 达到最大步数限制 ({RECURSION_LIMIT})，停止当前轮次。"
+                )
+                logger.warning(
+                    f"Recursion limit reached for user {user_id} on attempt {attempt}"
+                )
+            else:
+                raise
 
-        mixed_info = check_mixed_folders_internal(user_id)
-        empty_info = check_empty_folders_internal(user_id)
-
-        is_mixed_clean = "未发现" in mixed_info or "not found" in mixed_info.lower()
-        is_empty_clean = "未发现" in empty_info or "not found" in empty_info.lower()
+        # 使用结构化返回值进行校验
+        is_mixed_clean, mixed_info = check_mixed_folders_internal(user_id)
+        is_empty_clean, empty_info = check_empty_folders_internal(user_id)
 
         if is_mixed_clean and is_empty_clean:
             validation_passed = True
@@ -232,19 +283,22 @@ def organize_files(user_id: int):
             error_details += f"\n发现空文件夹：\n{empty_info}"
 
         results.append(f"校验失败，继续处理...{error_details}")
-        current_messages = [
-            (
-                "user",
-                "Organization is not yet complete. Please resolve the following issues:\n"
-                f"{error_details}\nConfirm again once fixed.",
-            )
-        ]
+
+        # 保留完整对话历史，追加修复指令
+        fix_message = (
+            "user",
+            "Organization is not yet complete. Please resolve the following issues:\n"
+            f"{error_details}\nConfirm again once fixed.",
+        )
+        all_messages.append(fix_message)
+        current_messages = list(all_messages)
 
     if validation_passed and checkpoint_target_event_id is not None:
         change_log_service.update_checkpoint(
             user_id, checkpoint_target_event_id, mark_full_scan=full_scan_mode
         )
-        results.append(f"已推进整理 checkpoint 至事件 ID: {checkpoint_target_event_id}")
+        results.append(
+            f"已推进整理 checkpoint 至事件 ID: {checkpoint_target_event_id}")
     elif checkpoint_target_event_id is not None:
         results.append("整理未通过最终校验，本次未推进 checkpoint。")
 

@@ -4,13 +4,81 @@ from datetime import datetime
 from typing import Any
 
 from app.extensions import db
+from app.models.file import File
 from app.models.file_change_event import FileChangeEvent
+from app.models.folder import Folder
 from app.models.organize_checkpoint import OrganizeCheckpoint
 from app.services.change_log_summary import summarize_events
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_INCREMENTAL_EVENTS = 200
+
+
+def _build_folder_path(folder_id: int | None, folder_map: dict[int, Folder]) -> str:
+    """根据 folder_map 构建完整路径，如 '根目录/学习资料/数学'。"""
+    if folder_id is None or folder_id == 0:
+        return "根目录"
+    parts: list[str] = []
+    current_id = folder_id
+    seen: set[int] = set()
+    while current_id and current_id in folder_map:
+        if current_id in seen:
+            break
+        seen.add(current_id)
+        folder = folder_map[current_id]
+        parts.append(folder.name)
+        current_id = folder.parent_id
+    parts.reverse()
+    return "根目录/" + "/".join(parts) if parts else "根目录"
+
+
+def _resolve_changed_details(
+    user_id: int,
+    changed_file_ids: list[int],
+    changed_folder_ids: list[int],
+) -> dict[str, Any]:
+    """查询变化文件/文件夹的详细信息，包括名称和完整路径。"""
+    # 查询所有文件夹用于构建路径
+    all_folders = Folder.query.filter_by(user_id=user_id).all()
+    folder_map: dict[int, Folder] = {f.id: f for f in all_folders}
+
+    # 变化文件详情
+    changed_files_detail: list[dict[str, Any]] = []
+    if changed_file_ids:
+        files = File.query.filter(
+            File.id.in_(changed_file_ids),
+            File.uploader_id == user_id,
+        ).all()
+        for f in files:
+            changed_files_detail.append({
+                "id": f.id,
+                "name": f.name,
+                "parent_id": f.parent_id,
+                "path": _build_folder_path(f.parent_id, folder_map),
+            })
+
+    # 变化文件夹详情
+    changed_folders_detail: list[dict[str, Any]] = []
+    if changed_folder_ids:
+        for fid in changed_folder_ids:
+            if fid == 0:
+                changed_folders_detail.append({
+                    "id": 0, "name": "根目录", "path": "根目录",
+                })
+            elif fid in folder_map:
+                folder = folder_map[fid]
+                changed_folders_detail.append({
+                    "id": folder.id,
+                    "name": folder.name,
+                    "parent_id": folder.parent_id,
+                    "path": _build_folder_path(folder.id, folder_map),
+                })
+
+    return {
+        "changed_files_detail": changed_files_detail,
+        "changed_folders_detail": changed_folders_detail,
+    }
 
 
 def _to_payload_text(payload: dict[str, Any] | str | None) -> str | None:
@@ -85,7 +153,8 @@ def log_events_batch(user_id: int, events: list[dict[str, Any]]) -> int:
         return len(rows)
     except Exception as exc:
         db.session.rollback()
-        logger.warning(f"Failed to write change events for user {user_id}: {exc}")
+        logger.warning(
+            f"Failed to write change events for user {user_id}: {exc}")
         return 0
 
 
@@ -111,12 +180,14 @@ def update_checkpoint(
     target_event_id = max(0, int(event_id or 0))
     checkpoint = OrganizeCheckpoint.query.filter_by(user_id=user_id).first()
     if checkpoint is None:
-        checkpoint = OrganizeCheckpoint(user_id=user_id, last_event_id=target_event_id)
+        checkpoint = OrganizeCheckpoint(
+            user_id=user_id, last_event_id=target_event_id)
         if mark_full_scan:
             checkpoint.last_full_scan_at = datetime.utcnow()
         db.session.add(checkpoint)
     else:
-        checkpoint.last_event_id = max(int(checkpoint.last_event_id or 0), target_event_id)
+        checkpoint.last_event_id = max(
+            int(checkpoint.last_event_id or 0), target_event_id)
         if mark_full_scan:
             checkpoint.last_full_scan_at = datetime.utcnow()
 
@@ -124,7 +195,8 @@ def update_checkpoint(
         db.session.commit()
     except Exception as exc:
         db.session.rollback()
-        logger.warning(f"Failed to update organize checkpoint for user {user_id}: {exc}")
+        logger.warning(
+            f"Failed to update organize checkpoint for user {user_id}: {exc}")
 
 
 def load_incremental_context(
@@ -134,7 +206,8 @@ def load_incremental_context(
 
     checkpoint = OrganizeCheckpoint.query.filter_by(user_id=user_id).first()
     has_checkpoint = checkpoint is not None
-    checkpoint_event_id = int(checkpoint.last_event_id or 0) if checkpoint else 0
+    checkpoint_event_id = int(
+        checkpoint.last_event_id or 0) if checkpoint else 0
     target_event_id = get_latest_event_id(user_id)
 
     if target_event_id <= checkpoint_event_id:
@@ -169,6 +242,12 @@ def load_incremental_context(
         to_event_id=target_event_id,
     )
 
+    details = _resolve_changed_details(
+        user_id,
+        summary["changed_file_ids"],
+        summary["changed_folder_ids"],
+    )
+
     return {
         "has_changes": total_events > 0,
         "has_checkpoint": has_checkpoint,
@@ -181,4 +260,6 @@ def load_incremental_context(
         "changed_file_ids": summary["changed_file_ids"],
         "changed_folder_ids": summary["changed_folder_ids"],
         "action_breakdown": summary["action_breakdown"],
+        "changed_files_detail": details["changed_files_detail"],
+        "changed_folders_detail": details["changed_folders_detail"],
     }

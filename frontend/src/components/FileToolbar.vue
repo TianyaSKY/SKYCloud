@@ -3,19 +3,22 @@
     <a-space size="medium">
       <!-- 核心操作组 -->
       <a-button-group>
-        <a-upload :custom-request="handleUpload" :show-file-list="false" multiple>
-          <template #upload-button>
-            <a-button type="primary">
-              <template #icon>
-                <icon-upload/>
-              </template>
-              上传
-            </a-button>
+        <a-button type="primary" @click="triggerUpload">
+          <template #icon>
+            <icon-upload />
           </template>
-        </a-upload>
+          上传
+        </a-button>
+        <input
+          ref="fileInputRef"
+          type="file"
+          multiple
+          class="hidden-file-input"
+          @change="onFilesSelected"
+        />
         <a-button type="primary" @click="$emit('create-folder')">
           <template #icon>
-            <icon-folder-add/>
+            <icon-folder-add />
           </template>
           新建文件夹
         </a-button>
@@ -24,7 +27,7 @@
       <!-- 常用辅助操作 -->
       <a-button @click="$emit('refresh')">
         <template #icon>
-          <icon-refresh/>
+          <icon-refresh />
         </template>
         刷新
       </a-button>
@@ -33,20 +36,20 @@
       <a-dropdown trigger="click">
         <a-button>
           <template #icon>
-            <icon-more/>
+            <icon-more />
           </template>
           更多
         </a-button>
         <template #content>
           <a-doption @click="$emit('organize')">
             <template #icon>
-              <icon-bulb/>
+              <icon-bulb />
             </template>
             智能整理
           </a-doption>
           <a-doption @click="$emit('rebuild-indexes')">
             <template #icon>
-              <icon-tool/>
+              <icon-tool />
             </template>
             重建索引
           </a-doption>
@@ -57,13 +60,49 @@
 </template>
 
 <script lang="ts" setup>
-import {IconBulb, IconFolderAdd, IconMore, IconRefresh, IconTool, IconUpload} from '@arco-design/web-vue/es/icon'
+import { ref } from "vue";
+import {
+  IconBulb,
+  IconFolderAdd,
+  IconMore,
+  IconRefresh,
+  IconTool,
+  IconUpload,
+} from "@arco-design/web-vue/es/icon";
 
-defineProps<{
-  handleUpload: (options: any) => void
-}>()
+const props = defineProps<{
+  handleUpload: (options: any) => void;
+}>();
 
-defineEmits(['create-folder', 'organize', 'refresh', 'rebuild-indexes'])
+defineEmits(["create-folder", "organize", "refresh", "rebuild-indexes"]);
+
+const fileInputRef = ref<HTMLInputElement | null>(null);
+
+const triggerUpload = () => {
+  fileInputRef.value?.click();
+};
+
+const onFilesSelected = (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const files = input.files;
+  if (!files || files.length === 0) return;
+
+  // 先清空 input，避免选择同一文件时不触发 change
+  const fileArray = Array.from(files);
+  input.value = "";
+
+  // 用 requestAnimationFrame 延迟处理，让文件对话框先关闭、浏览器先渲染
+  requestAnimationFrame(() => {
+    for (const file of fileArray) {
+      props.handleUpload({
+        fileItem: { file, name: file.name, uid: `${file.name}-${Date.now()}` },
+        onSuccess: () => {},
+        onError: () => {},
+        onProgress: () => {},
+      });
+    }
+  });
+};
 </script>
 
 <style scoped>
@@ -71,6 +110,10 @@ defineEmits(['create-folder', 'organize', 'refresh', 'rebuild-indexes'])
   margin-bottom: 16px;
   display: flex;
   align-items: center;
+}
+
+.hidden-file-input {
+  display: none;
 }
 
 /* 优化按钮组样式，使其更紧凑 */
