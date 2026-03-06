@@ -1,8 +1,9 @@
+import json
+import uuid
 from typing import List
 
 from fastapi import HTTPException
 from fastapi_cache.decorator import cache
-from redis.exceptions import WatchError
 
 from app.extensions import db, redis_client
 from app.models.file import File
@@ -196,35 +197,75 @@ async def get_folders(user_id) -> List[dict]:
     return [f.to_dict() for f in folders]
 
 
-def mark_organize_task_running(user_id: int) -> None:
-    redis_client.set(
+def _acquire_organize_task_lock_and_enqueue(user_id: int, lock_token: str) -> bool:
+    """
+    原子加锁并入队：仅当锁不存在时设置锁并入队。
+    锁值格式: "<token>:<state>"，state 为 queued/running。
+    """
+    lock_key = _organize_task_lock_key(user_id)
+    queue_payload = json.dumps({"user_id": user_id, "lock_token": lock_token})
+    script = """
+    if redis.call('EXISTS', KEYS[1]) == 1 then
+        return 0
+    end
+    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+    redis.call('RPUSH', KEYS[2], ARGV[3])
+    return 1
+    """
+    result = redis_client.eval(
+        script,
+        2,
+        lock_key,
+        ORGANIZE_FILE_QUEUE,
+        f"{lock_token}:queued",
+        ORGANIZE_TASK_LOCK_TTL_SECONDS,
+        queue_payload,
+    )
+    return bool(result)
+
+
+def mark_organize_task_running(user_id: int, lock_token: str) -> None:
+    """
+    仅当当前锁 token 匹配时，将状态改为 running 并续期。
+    """
+    script = """
+    local current = redis.call('GET', KEYS[1])
+    if not current then
+        return 0
+    end
+    if string.sub(current, 1, string.len(ARGV[1])) ~= ARGV[1] then
+        return 0
+    end
+    redis.call('SET', KEYS[1], ARGV[1] .. ':running', 'EX', ARGV[2])
+    return 1
+    """
+    redis_client.eval(
+        script,
+        1,
         _organize_task_lock_key(user_id),
-        "running",
-        ex=ORGANIZE_TASK_LOCK_TTL_SECONDS,
+        lock_token,
+        ORGANIZE_TASK_LOCK_TTL_SECONDS,
     )
 
 
-def release_organize_task_lock(user_id: int) -> None:
-    redis_client.delete(_organize_task_lock_key(user_id))
+def release_organize_task_lock(user_id: int, lock_token: str) -> None:
+    """
+    仅释放属于当前 token 的锁，避免误删新任务锁。
+    """
+    script = """
+    local current = redis.call('GET', KEYS[1])
+    if not current then
+        return 0
+    end
+    if string.sub(current, 1, string.len(ARGV[1])) ~= ARGV[1] then
+        return 0
+    end
+    return redis.call('DEL', KEYS[1])
+    """
+    redis_client.eval(script, 1, _organize_task_lock_key(user_id), lock_token)
 
 
 def organize_files(user_id: int) -> bool:
     """入队整理任务；若已有同用户任务在排队/执行，则返回 False。"""
-    lock_key = _organize_task_lock_key(user_id)
-    pipe = redis_client.pipeline()
-    while True:
-        try:
-            pipe.watch(lock_key)
-            if pipe.exists(lock_key):
-                pipe.unwatch()
-                return False
-
-            pipe.multi()
-            pipe.set(lock_key, "queued", ex=ORGANIZE_TASK_LOCK_TTL_SECONDS)
-            pipe.rpush(ORGANIZE_FILE_QUEUE, user_id)
-            pipe.execute()
-            return True
-        except WatchError:
-            continue
-        finally:
-            pipe.reset()
+    lock_token = str(uuid.uuid4())
+    return _acquire_organize_task_lock_and_enqueue(user_id, lock_token)
