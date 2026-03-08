@@ -22,6 +22,7 @@ from app.schemas import (
     MultipartInitRequest,
     RetryEmbeddingRequest,
 )
+from app.services import file_access_bloom
 from app.services import file_service
 from app.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
 
@@ -29,6 +30,14 @@ router = APIRouter(tags=["file"])
 
 
 def _ensure_file_access(current_user, file_id: int):
+    if current_user.role != "admin":
+        if not file_access_bloom.maybe_user_can_access_file(current_user.id, file_id):
+            if file_access_bloom.maybe_file_exists(file_id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+                )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
     file_obj = file_service.get_file(file_id)
     if current_user.role != "admin" and file_obj.uploader_id != current_user.id:
         raise HTTPException(

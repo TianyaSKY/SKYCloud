@@ -19,6 +19,7 @@ from app.extensions import UPLOAD_FOLDER, db, redis_client
 from app.models.file import File
 from app.models.folder import Folder
 from app.services import change_log_service
+from app.services import file_access_bloom
 from app.services.model_config import get_embedding_model_config
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,7 @@ def create_file(file_obj: Union[FileStorage, Any], data: Dict[str, Any]) -> File
     )
     db.session.add(new_file)
     db.session.commit()
+    file_access_bloom.add_file(new_file.id, new_file.uploader_id)
 
     if new_file.uploader_id:
         change_log_service.log_event(
@@ -211,6 +213,8 @@ def batch_create_files(
 
     db.session.add_all(new_files)
     db.session.commit()
+    for file_obj in new_files:
+        file_access_bloom.add_file(file_obj.id, file_obj.uploader_id)
 
     if uploader_id:
         change_log_service.log_events_batch(
@@ -431,6 +435,7 @@ def complete_multipart_upload(uploader_id: int, upload_id: str) -> File:
         )
         db.session.add(new_file)
         db.session.commit()
+        file_access_bloom.add_file(new_file.id, new_file.uploader_id)
     except Exception as e:
         db.session.rollback()
         logger.exception(f"Failed to persist merged file: {e}")
