@@ -101,8 +101,8 @@ CREATE TABLE IF NOT EXISTS files
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
--- 创建向量索引 (HNSW)
-CREATE INDEX IF NOT EXISTS file_vector_idx ON files USING hnsw (vector_info vector_l2_ops);
+-- 创建向量索引 (HNSW, cosine distance)
+CREATE INDEX IF NOT EXISTS file_vector_idx ON files USING hnsw (vector_info vector_cosine_ops);
 
 -- 5. 创建分享表
 CREATE TABLE IF NOT EXISTS share

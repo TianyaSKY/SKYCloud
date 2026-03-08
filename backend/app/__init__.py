@@ -11,6 +11,38 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _ensure_file_vector_index() -> None:
+    """Ensure the file vector index uses cosine distance consistently."""
+    expected_sql = "CREATE INDEX file_vector_idx ON files USING hnsw (vector_info vector_cosine_ops)"
+    try:
+        with engine.connect() as conn:
+            existing_index_sql = conn.execute(
+                text(
+                    """
+                    SELECT indexdef
+                    FROM pg_indexes
+                    WHERE schemaname = current_schema()
+                      AND tablename = 'files'
+                      AND indexname = 'file_vector_idx'
+                    """
+                )
+            ).scalar()
+
+            if existing_index_sql and "vector_cosine_ops" in existing_index_sql:
+                return
+
+            if existing_index_sql:
+                logger.info(
+                    "Recreating file_vector_idx to use vector_cosine_ops instead of the old operator class."
+                )
+                conn.execute(text("DROP INDEX IF EXISTS file_vector_idx"))
+
+            conn.execute(text(expected_sql))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Warning: Could not ensure vector index operator class: {e}")
+
+
 def initialize_application():
     """初始化应用：创建数据库表、初始化数据等"""
     # 导入模型以注册到 Base.metadata
@@ -66,14 +98,5 @@ def initialize_application():
     # 自动创建所有表
     Base.metadata.create_all(bind=engine)
 
-    # 尝试创建 HNSW 索引（如果尚未存在）
-    try:
-        with engine.connect() as conn:
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS file_vector_idx ON files USING hnsw (vector_info vector_cosine_ops)"
-                )
-            )
-            conn.commit()
-    except Exception as e:
-        logger.warning(f"Warning: Could not create vector index: {e}")
+    # 确保向量索引与检索距离度量保持一致
+    _ensure_file_vector_index()

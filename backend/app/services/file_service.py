@@ -662,7 +662,7 @@ async def _search_files_vector(
         offset = (page - 1) * page_size
         items = (
             File.query.filter(File.uploader_id == user_id, File.vector_info.isnot(None))
-            .order_by(File.vector_info.l2_distance(embeddings))
+            .order_by(File.vector_info.cosine_distance(embeddings))
             .limit(page_size)
             .offset(offset)
             .all()
