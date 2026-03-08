@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from collections import defaultdict
+from functools import lru_cache
 from operator import itemgetter
 
 from langchain_core.documents import Document
@@ -12,7 +13,7 @@ from langchain_core.runnables import RunnableParallel, RunnableLambda
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from sqlalchemy import text
 
-from app.extensions import db
+from app.extensions import SessionLocal
 from app.services.model_config import get_chat_model_config, get_embedding_model_config
 from app.services.query_rewrite import (
     build_multi_queries,
@@ -40,6 +41,7 @@ RAG_RRF_K = _env_int("RAG_RRF_K", 60)
 RAG_FUSION_TOP_K = _env_int("RAG_FUSION_TOP_K", 30)
 
 
+@lru_cache(maxsize=1)
 def get_chat_model():
     config = get_chat_model_config()
 
@@ -51,6 +53,7 @@ def get_chat_model():
     )
 
 
+@lru_cache(maxsize=1)
 def get_embeddings_model():
     config = get_embedding_model_config()
 
@@ -78,7 +81,7 @@ def _db_search_by_vector(
         user_id: int,
         limit: int,
 ) -> list[Document]:
-    """使用预计算的向量进行数据库搜索。"""
+    """使用预计算的向量进行数据库搜索。使用独立 session 确保线程安全。"""
     sql = text("""
                SELECT id, name, description, mime_type, (vector_info <=> :vector) AS distance
                 FROM files
@@ -89,10 +92,15 @@ def _db_search_by_vector(
                    LIMIT :limit
                 """)
 
-    results = db.session.execute(
-        sql,
-        {"vector": str(query_vector), "user_id": user_id, "limit": limit},
-    ).fetchall()
+    session = SessionLocal()
+    try:
+        results = session.execute(
+            sql,
+            {"vector": str(query_vector), "user_id": user_id, "limit": limit},
+        ).fetchall()
+    finally:
+        session.close()
+
     docs: list[Document] = []
     for rank, row in enumerate(results, start=1):
         content = f"文件名: {row[1]}\n描述: {row[2]}"
@@ -153,6 +161,7 @@ async def multi_query_db_retriever(
         question: str,
         user_id: int,
         dimensions: RewriteKeywordDimensions,
+        original_vector: list[float] | None = None,
 ):
     import time
     t0 = time.perf_counter()
@@ -168,16 +177,31 @@ async def multi_query_db_retriever(
     embeddings = get_embeddings_model()
     loop = asyncio.get_running_loop()
 
-    # ---- 阶段 1: 批量 embedding（1 次 HTTP 请求代替 N 次）----
+    # ---- 阶段 1: embedding ----
+    # 如果已预计算原始问题向量，只需 embed 额外查询
     t1 = time.perf_counter()
-    all_vectors = await loop.run_in_executor(
-        None, embeddings.embed_documents, queries
-    )
-    all_vectors = [v[:1024] for v in all_vectors]
-    t2 = time.perf_counter()
-    logger.info(f"[计时] 批量 embedding {len(queries)} 条: {t2 - t1:.2f}s")
+    if original_vector and queries:
+        additional_queries = queries[1:]  # queries[0] 始终是原始问题
+        if additional_queries:
+            extra_vectors = await loop.run_in_executor(
+                None, embeddings.embed_documents, additional_queries
+            )
+            all_vectors = [original_vector] + [v[:1024] for v in extra_vectors]
+        else:
+            all_vectors = [original_vector]
+        t2 = time.perf_counter()
+        logger.info(
+            f"[计时] 增量 embedding {len(additional_queries)} 条: {t2 - t1:.2f}s"
+            f" (原始问题已并行预计算)")
+    else:
+        all_vectors = await loop.run_in_executor(
+            None, embeddings.embed_documents, queries
+        )
+        all_vectors = [v[:1024] for v in all_vectors]
+        t2 = time.perf_counter()
+        logger.info(f"[计时] 批量 embedding {len(queries)} 条: {t2 - t1:.2f}s")
 
-    # ---- 阶段 2: 顺序数据库向量检索（db.session 线程安全）----
+    # ---- 阶段 2: 顺序数据库向量检索 ----
     result_sets: list[list[Document]] = []
     for query_text, vector in zip(queries, all_vectors):
         try:
@@ -226,13 +250,27 @@ def format_history(history):
     return str(history) if history else ""
 
 
+async def embed_original_question(payload: dict) -> list[float]:
+    """预计算原始问题的 embedding，与关键词改写并行执行。"""
+    question = str(payload.get("question", "") or "").strip()
+    if not question:
+        return []
+    embeddings = get_embeddings_model()
+    loop = asyncio.get_running_loop()
+    vector = await loop.run_in_executor(None, embeddings.embed_query, question)
+    return vector[:1024]
+
+
 async def retrieve_docs_with_rewrite(payload: dict):
     question = str(payload.get("question", "") or "")
     rewrite_output = payload.get("rewrite_output")
+    original_vector = payload.get("original_vector") or None
     current_user_id = int(payload["user_id"])
 
     dimensions = require_keyword_dimensions(rewrite_output)
-    return await multi_query_db_retriever(question, current_user_id, dimensions)
+    return await multi_query_db_retriever(
+        question, current_user_id, dimensions, original_vector=original_vector
+    )
 
 
 async def generate_chat_events(user_id, query: str, history: list):
@@ -252,13 +290,15 @@ async def generate_chat_events(user_id, query: str, history: list):
 6. 同义扩展词（synonym_terms）
 
 要求：
-1. 每个字段都应该是英文短语数组。
-2. 无内容时返回空数组。
-3. 不要编造无关词。
+1. 使用与用户问题相同的语言输出关键词（中文问题输出中文，英文问题输出英文）。
+2. 在 synonym_terms 中可补充跨语言同义词以提高召回率。
+3. 无内容时返回空数组。
+4. 不要编造无关词。
 
 问题：{question}
 """)
-    rewrite_llm = llm.with_structured_output(RewriteKeywordDimensions)
+    rewrite_llm = llm.with_structured_output(
+        RewriteKeywordDimensions, strict=False)
     rewriter = (rewrite_prompt | rewrite_llm).with_config(
         {"run_name": "keyword_gen"})
 
@@ -295,6 +335,9 @@ async def generate_chat_events(user_id, query: str, history: list):
         RunnableParallel({
             "context": {
                 "rewrite_output": rewriter,
+                "original_vector": RunnableLambda(
+                    embed_original_question
+                ).with_config({"run_name": "embed_original"}),
                 "question": itemgetter("question"),
                 "user_id": itemgetter("user_id"),
             } | RunnableLambda(retrieve_docs_with_rewrite).with_config(

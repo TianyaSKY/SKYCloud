@@ -2,7 +2,7 @@ import json
 import re
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 DIMENSION_KEYS = (
     "topic_terms",
@@ -56,14 +56,14 @@ TERM_SPLIT_PATTERN = re.compile(r"[,;|/\n]+")
 
 
 class RewriteKeywordDimensions(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid")
 
-    topic_terms: list[StrictStr] = Field(default_factory=list)
-    entity_terms: list[StrictStr] = Field(default_factory=list)
-    time_terms: list[StrictStr] = Field(default_factory=list)
-    file_type_terms: list[StrictStr] = Field(default_factory=list)
-    action_terms: list[StrictStr] = Field(default_factory=list)
-    synonym_terms: list[StrictStr] = Field(default_factory=list)
+    topic_terms: list[str] = Field(default_factory=list)
+    entity_terms: list[str] = Field(default_factory=list)
+    time_terms: list[str] = Field(default_factory=list)
+    file_type_terms: list[str] = Field(default_factory=list)
+    action_terms: list[str] = Field(default_factory=list)
+    synonym_terms: list[str] = Field(default_factory=list)
 
 
 def _dedupe_terms(values: list[str]) -> list[str]:
@@ -105,14 +105,15 @@ def _extract_json_text(raw_output: str) -> str:
     if not text:
         return ""
 
-    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S | re.I)
+    fenced_match = re.search(
+        r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S | re.I)
     if fenced_match:
         return fenced_match.group(1)
 
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end > start:
-        return text[start : end + 1]
+        return text[start: end + 1]
     return text
 
 
@@ -144,7 +145,8 @@ def validate_keyword_dimensions(payload: dict[str, Any]) -> RewriteKeywordDimens
         if not isinstance(key, str):
             normalized_payload[key] = value
             continue
-        mapped_key = KEY_ALIASES.get(key.strip().lower()) or KEY_ALIASES.get(key.strip())
+        mapped_key = KEY_ALIASES.get(
+            key.strip().lower()) or KEY_ALIASES.get(key.strip())
         normalized_payload[mapped_key or key] = value
 
     validated = RewriteKeywordDimensions.model_validate(normalized_payload)
@@ -209,6 +211,14 @@ def build_multi_queries(
     dimensions: RewriteKeywordDimensions,
     max_queries: int = 6,
 ) -> list[str]:
+    """生成多样化的检索查询。
+
+    策略:
+      1. 原始问题
+      2. 全维度合并查询
+      3. 高价值维度组合（主题+实体、主题+时间）
+      4. 问题+同义扩展
+    """
     if max_queries <= 0:
         return []
 
@@ -226,19 +236,32 @@ def build_multi_queries(
         queries.append(text)
 
     normalized_question = question.strip()
+
+    # 1. 原始问题
     _add(normalized_question)
+
+    # 2. 全维度合并查询
     _add(build_retrieval_query(normalized_question, dimensions))
 
-    for key in DIMENSION_KEYS:
-        terms = list(getattr(dimensions, key))
-        if not terms:
-            continue
-        dim_query = " ".join(_dedupe_terms(terms))
-        _add(dim_query)
-        if normalized_question:
-            _add(f"{normalized_question} {dim_query}")
-        if len(queries) >= max_queries:
-            break
+    # 3. 高价值维度组合
+    topic = " ".join(_dedupe_terms(list(dimensions.topic_terms)))
+    entity = " ".join(_dedupe_terms(list(dimensions.entity_terms)))
+    time_t = " ".join(_dedupe_terms(list(dimensions.time_terms)))
+    file_type = " ".join(_dedupe_terms(list(dimensions.file_type_terms)))
+
+    if topic and entity:
+        _add(f"{topic} {entity}")
+    if topic and time_t:
+        _add(f"{topic} {time_t}")
+    if topic and file_type:
+        _add(f"{topic} {file_type}")
+    if entity and time_t:
+        _add(f"{entity} {time_t}")
+
+    # 4. 问题 + 同义扩展词（跨语言召回）
+    synonym = " ".join(_dedupe_terms(list(dimensions.synonym_terms)))
+    if normalized_question and synonym:
+        _add(f"{normalized_question} {synonym}")
 
     return queries[:max_queries]
 
