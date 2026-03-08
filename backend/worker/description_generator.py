@@ -120,17 +120,79 @@ def _get_visual_urls(local_path: str) -> list:
     return image_uris
 
 
-def generate_file_description(local_path: str, config: dict) -> str:
+def _generate_text_description(local_path: str, config: dict) -> str:
     """
-    生成文件的多模态描述。
+    使用对话模型为纯文本文件生成描述（比 VL 模型更快更便宜）。
+
+    Args:
+        local_path: 文件本地路径
+        config: Chat 模型配置，包含 api、key、model
+
+    Returns:
+        str: 生成的中文描述文本
+    """
+    text_content = _extract_text_content(local_path)
+    if not text_content.strip():
+        return "空文件"
+
+    # 截断过长的文本，避免超出模型上下文
+    max_chars = 8000
+    if len(text_content) > max_chars:
+        text_content = text_content[:max_chars] + "\n...（内容已截断）"
+
+    api = config.get("api")
+    key = config.get("key")
+    model = config.get("model")
+
+    client = OpenAI(api_key=key, base_url=api, timeout=120)
+
+    prompt = (
+        "你是一个专业的文件分析助手。请根据以下文本内容，生成准确、专业、简洁的描述。"
+        "描述应包含：核心主题、主要内容摘要和关键信息点。"
+        "请直接用中文输出描述文本，不要添加任何前缀或解释性文字。不要使用 Markdown 语法。"
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": text_content},
+            ],
+        )
+        ans = response.choices[0].message.content
+        if not ans:
+            raise Exception("未知错误 无法生成文件描述")
+        logger.info(f"[Chat] Text description generated for {local_path}")
+        return ans
+    except Exception as e:
+        logger.exception(f"Chat LLM API call failed: {e}")
+        raise e
+
+
+def generate_file_description(
+    local_path: str, config: dict, chat_config: dict | None = None
+) -> str:
+    """
+    生成文件描述。纯文本文件使用对话模型，其他文件使用 VL 多模态模型。
 
     Args:
         local_path: 文件本地路径
         config: VL 模型配置，包含 api、key、model
+        chat_config: Chat 模型配置（可选），纯文本文件使用
 
     Returns:
-        str: 生成的英文描述文本
+        str: 生成的中文描述文本
     """
+    path = Path(local_path)
+    ext = path.suffix.lower()
+
+    # 纯文本文件：使用对话模型（更快更便宜）
+    if ext in TEXT_EXTENSIONS:
+        text_config = chat_config or config
+        return _generate_text_description(local_path, text_config)
+
+    # 非文本文件：使用 VL 多模态模型
     api = config.get("api")
     key = config.get("key")
     model = config.get("model")
@@ -142,7 +204,6 @@ def generate_file_description(local_path: str, config: dict) -> str:
 
     client = OpenAI(api_key=key, base_url=api, timeout=120)
 
-    # 强制要求最终输出为英文
     prompt = (
         "你是一个专业的文件分析助手。请仔细观察提供的文件内容"
         "（可能是文档截图、视频关键帧或图片），生成准确、专业、简洁的描述。"
@@ -167,7 +228,7 @@ def generate_file_description(local_path: str, config: dict) -> str:
             raise Exception("未知错误 无法生成文件描述")
         return ans
     except Exception as e:
-        logger.exception(f"LLM API call failed: {e}")
+        logger.exception(f"VL LLM API call failed: {e}")
         raise e
 
 

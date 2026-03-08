@@ -28,6 +28,9 @@ ORGANIZE_FILE_QUEUE = "organize_file_queue"
 CACHE_EXPIRATION = 3600
 
 COPY_BUFFER_SIZE = 1024 * 1024
+
+# Embedding 客户端缓存，避免每次调用都新建连接
+_embedding_client_cache: Dict[tuple, OpenAI] = {}
 DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024
 MAX_CHUNK_SIZE = 64 * 1024 * 1024
 MAX_UPLOAD_SIZE = 0
@@ -743,17 +746,43 @@ def batch_delete_items(items: List[Dict[str, Any]]) -> None:
             delete_file(item_id)
 
 
+def _get_embedding_client(config: Dict[str, str]) -> OpenAI:
+    """获取或复用 Embedding OpenAI 客户端"""
+    cache_key = (config.get("api"), config.get("key"))
+    if cache_key not in _embedding_client_cache:
+        _embedding_client_cache[cache_key] = OpenAI(
+            api_key=config["key"], base_url=config["api"], timeout=120
+        )
+    return _embedding_client_cache[cache_key]
+
+
 def embedding_desc(desc: str, config: Dict[str, str]) -> List[float]:
-    api = config.get("api")
-    key = config.get("key")
     model = config.get("model", "Qwen/Qwen3-Embedding-8B")
     try:
-        client = OpenAI(api_key=key, base_url=api, timeout=120)
+        client = _get_embedding_client(config)
         resp = client.embeddings.create(model=model, input=desc)
         return resp.data[0].embedding[:1024]
     except Exception as e:
         logger.exception(f"Embedding failed: {e}")
         return []
+
+
+def batch_embedding_desc(
+    texts: List[str], config: Dict[str, str]
+) -> List[List[float]]:
+    """批量生成 embedding 向量，一次 API 调用处理多条文本"""
+    if not texts:
+        return []
+    model = config.get("model", "Qwen/Qwen3-Embedding-8B")
+    try:
+        client = _get_embedding_client(config)
+        resp = client.embeddings.create(model=model, input=texts)
+        # 按 index 排序确保结果顺序与输入一致
+        sorted_data = sorted(resp.data, key=lambda x: x.index)
+        return [item.embedding[:1024] for item in sorted_data]
+    except Exception as e:
+        logger.exception(f"Batch embedding failed: {e}")
+        return [[] for _ in texts]
 
 
 def retry_embedding(file_id: int) -> None:

@@ -72,6 +72,7 @@ import {
 
 const props = defineProps<{
   handleUpload: (options: any) => void;
+  handleBatchUpload: (files: File[]) => void;
 }>();
 
 defineEmits(["create-folder", "organize", "refresh", "rebuild-indexes"]);
@@ -93,14 +94,7 @@ const onFilesSelected = (event: Event) => {
 
   // 用 requestAnimationFrame 延迟处理，让文件对话框先关闭、浏览器先渲染
   requestAnimationFrame(() => {
-    for (const file of fileArray) {
-      props.handleUpload({
-        fileItem: { file, name: file.name, uid: `${file.name}-${Date.now()}` },
-        onSuccess: () => {},
-        onError: () => {},
-        onProgress: () => {},
-      });
-    }
+    props.handleBatchUpload(fileArray);
   });
 };
 </script>
