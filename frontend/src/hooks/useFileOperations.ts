@@ -75,11 +75,11 @@ export function useFileOperations(
         closable: false,
       });
     })
-      .then(() => {
+      .then((result) => {
         Notification.success({
           id: notificationId,
-          title: "上传完成",
-          content: `${fileItem.name} 上传成功`,
+          title: result.instantUpload ? "秒传完成" : "上传完成",
+          content: `${fileItem.name} ${result.instantUpload ? "秒传成功" : "上传成功"}`,
           duration: 3000,
           closable: true,
         });

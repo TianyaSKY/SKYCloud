@@ -43,6 +43,38 @@ def _ensure_file_vector_index() -> None:
         logger.warning(f"Warning: Could not ensure vector index operator class: {e}")
 
 
+def _ensure_file_content_hash_column() -> None:
+    """Ensure the files table has the content_hash column for instant uploads."""
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'files'
+                      AND column_name = 'content_hash'
+                    """
+                )
+            ).scalar()
+            if not exists:
+                logger.info(
+                    "Adding files.content_hash column for instant upload support."
+                )
+                conn.execute(
+                    text("ALTER TABLE files ADD COLUMN content_hash VARCHAR(64)")
+                )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_files_content_hash_size ON files (content_hash, file_size)"
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Warning: Could not ensure files.content_hash column: {e}")
+
+
 def initialize_application():
     """初始化应用：创建数据库表、初始化数据等"""
     # 导入模型以注册到 Base.metadata
@@ -63,8 +95,7 @@ def initialize_application():
             os.makedirs(UPLOAD_FOLDER)
             logger.info(f"Created upload directory: {UPLOAD_FOLDER}")
         except Exception as e:
-            logger.error(
-                f"Failed to create upload directory {UPLOAD_FOLDER}: {e}")
+            logger.error(f"Failed to create upload directory {UPLOAD_FOLDER}: {e}")
 
     # 数据库连接重试逻辑
     max_retries = 3
@@ -97,6 +128,7 @@ def initialize_application():
 
     # 自动创建所有表
     Base.metadata.create_all(bind=engine)
+    _ensure_file_content_hash_column()
 
     # 确保向量索引与检索距离度量保持一致
     _ensure_file_vector_index()

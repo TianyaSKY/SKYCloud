@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import math
 import mimetypes
@@ -7,7 +8,7 @@ import re
 import shutil
 import uuid
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, cast
 
 from fastapi import HTTPException
 from fastapi_cache.decorator import cache
@@ -65,6 +66,159 @@ def _resolve_mime_type(path: str, provided: Optional[str] = None) -> Optional[st
     if provided:
         return provided
     return mimetypes.guess_type(path)[0]
+
+
+def _normalize_content_hash(content_hash: Optional[str]) -> Optional[str]:
+    if not content_hash:
+        return None
+    normalized = content_hash.strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", normalized):
+        raise HTTPException(status_code=400, detail="Invalid content_hash")
+    return normalized
+
+
+def _calculate_file_hash(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as file_obj:
+        while True:
+            chunk = file_obj.read(COPY_BUFFER_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _get_reusable_source_file(content_hash: str, file_size: int) -> Optional[File]:
+    source_file = (
+        File.query.filter_by(content_hash=content_hash, file_size=file_size)
+        .order_by(File.id.asc())
+        .first()
+    )
+    if not source_file:
+        return None
+    if not os.path.exists(source_file.get_abs_path()):
+        return None
+    return source_file
+
+
+def _persist_file_record(
+    *,
+    name: str,
+    file_path: str,
+    file_size: int,
+    mime_type: Optional[str],
+    uploader_id: Optional[int],
+    parent_id: Optional[int],
+    content_hash: Optional[str],
+    status: str = "pending",
+    description: Optional[str] = None,
+    vector_info: Any = None,
+) -> File:
+    new_file = File(
+        name=name,
+        file_path=file_path,
+        file_size=file_size,
+        mime_type=mime_type,
+        uploader_id=uploader_id,
+        parent_id=parent_id,
+        content_hash=content_hash,
+        status=status,
+        description=description,
+        vector_info=vector_info,
+    )
+    db.session.add(new_file)
+    db.session.commit()
+    file_access_bloom.add_file(
+        cast(int, new_file.id), cast(int | None, new_file.uploader_id)
+    )
+    return new_file
+
+
+def _log_file_created(file_obj: File) -> None:
+    uploader_id = cast(int | None, file_obj.uploader_id)
+    if not uploader_id:
+        return
+    change_log_service.log_event(
+        user_id=uploader_id,
+        entity_type="file",
+        entity_id=cast(int, file_obj.id),
+        action="create",
+        old_parent_id=None,
+        new_parent_id=cast(int | None, file_obj.parent_id),
+        old_name=None,
+        new_name=cast(str | None, file_obj.name),
+    )
+
+
+def _clone_existing_file(
+    source_file: File,
+    *,
+    filename: str,
+    uploader_id: int,
+    parent_id: Optional[int],
+    mime_type: Optional[str],
+    content_hash: str,
+) -> File:
+    resolved_mime = mime_type or cast(str | None, source_file.mime_type)
+    source_status = cast(str | None, source_file.status)
+    status = source_status or "pending"
+    description = (
+        cast(str | None, source_file.description) if status == "success" else None
+    )
+    vector_info = source_file.vector_info if status == "success" else None
+
+    try:
+        new_file = _persist_file_record(
+            name=filename,
+            file_path=cast(str, source_file.file_path),
+            file_size=cast(int | None, source_file.file_size) or 0,
+            mime_type=resolved_mime,
+            uploader_id=uploader_id,
+            parent_id=parent_id,
+            content_hash=content_hash,
+            status=status,
+            description=description,
+            vector_info=vector_info,
+        )
+    except Exception as e:
+        db.session.rollback()
+        logger.exception(f"Failed to create instant upload record: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save file metadata")
+
+    _log_file_created(new_file)
+    if status != "success":
+        _push_processing_queue([cast(int, new_file.id)], uploader_id)
+    else:
+        _clear_search_cache(uploader_id)
+    return new_file
+
+
+def preflight_file_upload(uploader_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
+    filename = (data.get("filename") or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename is required")
+
+    total_size = int(data.get("total_size") or 0)
+    if total_size <= 0:
+        raise HTTPException(status_code=400, detail="total_size must be positive")
+
+    content_hash = _normalize_content_hash(data.get("content_hash"))
+    if not content_hash:
+        raise HTTPException(status_code=400, detail="content_hash is required")
+
+    source_file = _get_reusable_source_file(content_hash, total_size)
+    if not source_file:
+        return {"instant_upload": False, "exists": False}
+
+    new_file = _clone_existing_file(
+        source_file,
+        filename=filename,
+        uploader_id=uploader_id,
+        parent_id=data.get("parent_id"),
+        mime_type=data.get("mime_type"),
+        content_hash=content_hash,
+    )
+    return {"instant_upload": True, "exists": True, "file": new_file.to_dict()}
 
 
 def _push_processing_queue(file_ids: List[int], uploader_id: Optional[int]) -> None:
@@ -149,31 +303,28 @@ def create_file(file_obj: Union[FileStorage, Any], data: Dict[str, Any]) -> File
     file_size = os.path.getsize(full_path)
     mime_type = _resolve_mime_type(full_path, getattr(file_obj, "mimetype", None))
 
-    new_file = File(
-        name=original_filename,
-        file_path=unique_filename,
-        file_size=file_size,
-        mime_type=mime_type,
-        uploader_id=data.get("uploader_id"),
-        parent_id=data.get("parent_id"),
-    )
-    db.session.add(new_file)
-    db.session.commit()
-    file_access_bloom.add_file(new_file.id, new_file.uploader_id)
-
-    if new_file.uploader_id:
-        change_log_service.log_event(
-            user_id=new_file.uploader_id,
-            entity_type="file",
-            entity_id=new_file.id,
-            action="create",
-            old_parent_id=None,
-            new_parent_id=new_file.parent_id,
-            old_name=None,
-            new_name=new_file.name,
+    try:
+        content_hash = _calculate_file_hash(full_path)
+        new_file = _persist_file_record(
+            name=original_filename,
+            file_path=unique_filename,
+            file_size=file_size,
+            mime_type=mime_type,
+            uploader_id=data.get("uploader_id"),
+            parent_id=data.get("parent_id"),
+            content_hash=content_hash,
         )
+    except Exception as e:
+        db.session.rollback()
+        if os.path.exists(full_path):
+            os.remove(full_path)
+        logger.exception(f"Failed to save uploaded file metadata: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save file metadata")
 
-    _push_processing_queue([new_file.id], new_file.uploader_id)
+    _log_file_created(new_file)
+    _push_processing_queue(
+        [cast(int, new_file.id)], cast(int | None, new_file.uploader_id)
+    )
     return new_file
 
 
@@ -197,12 +348,14 @@ def batch_create_files(
         file_obj.save(full_path)
         file_size = os.path.getsize(full_path)
         mime_type = _resolve_mime_type(full_path, getattr(file_obj, "mimetype", None))
+        content_hash = _calculate_file_hash(full_path)
 
         new_file = File(
             name=original_filename,
             file_path=unique_filename,
             file_size=file_size,
             mime_type=mime_type,
+            content_hash=content_hash,
             uploader_id=uploader_id,
             parent_id=data.get("parent_id"),
         )
@@ -214,7 +367,9 @@ def batch_create_files(
     db.session.add_all(new_files)
     db.session.commit()
     for file_obj in new_files:
-        file_access_bloom.add_file(file_obj.id, file_obj.uploader_id)
+        file_access_bloom.add_file(
+            cast(int, file_obj.id), cast(int | None, file_obj.uploader_id)
+        )
 
     if uploader_id:
         change_log_service.log_events_batch(
@@ -222,18 +377,18 @@ def batch_create_files(
             [
                 {
                     "entity_type": "file",
-                    "entity_id": file_obj.id,
+                    "entity_id": cast(int, file_obj.id),
                     "action": "create",
                     "old_parent_id": None,
-                    "new_parent_id": file_obj.parent_id,
+                    "new_parent_id": cast(int | None, file_obj.parent_id),
                     "old_name": None,
-                    "new_name": file_obj.name,
+                    "new_name": cast(str | None, file_obj.name),
                 }
                 for file_obj in new_files
             ],
         )
 
-    _push_processing_queue([f.id for f in new_files], uploader_id)
+    _push_processing_queue([cast(int, f.id) for f in new_files], uploader_id)
     return new_files
 
 
@@ -260,6 +415,27 @@ def init_multipart_upload(uploader_id: int, data: Dict[str, Any]) -> Dict[str, A
 
     parent_id = data.get("parent_id")
     mime_type = data.get("mime_type")
+    content_hash = _normalize_content_hash(data.get("content_hash"))
+
+    if content_hash:
+        source_file = _get_reusable_source_file(content_hash, total_size)
+        if source_file:
+            new_file = _clone_existing_file(
+                source_file,
+                filename=filename,
+                uploader_id=uploader_id,
+                parent_id=parent_id,
+                mime_type=mime_type,
+                content_hash=content_hash,
+            )
+            return {
+                "upload_id": None,
+                "chunk_size": chunk_size,
+                "total_chunks": total_chunks,
+                "uploaded_chunks": [],
+                "instant_upload": True,
+                "file": new_file.to_dict(),
+            }
 
     upload_id = data.get("upload_id") or uuid.uuid4().hex
     upload_id = _safe_upload_id(upload_id)
@@ -294,6 +470,7 @@ def init_multipart_upload(uploader_id: int, data: Dict[str, Any]) -> Dict[str, A
             "total_chunks": total_chunks,
             "parent_id": parent_id,
             "mime_type": mime_type,
+            "content_hash": content_hash,
         }
         _write_multipart_meta(meta_path, meta)
 
@@ -302,6 +479,7 @@ def init_multipart_upload(uploader_id: int, data: Dict[str, Any]) -> Dict[str, A
         "chunk_size": int(meta["chunk_size"]),
         "total_chunks": int(meta["total_chunks"]),
         "uploaded_chunks": _list_uploaded_chunks(chunks_dir),
+        "instant_upload": False,
     }
 
 
@@ -382,6 +560,7 @@ def complete_multipart_upload(uploader_id: int, upload_id: str) -> File:
     filename = meta["filename"]
     parent_id = meta.get("parent_id")
     mime_type = meta.get("mime_type")
+    content_hash = _normalize_content_hash(meta.get("content_hash"))
 
     upload_dir = _multipart_upload_dir(uploader_id, safe_upload_id)
     chunks_dir = _multipart_chunks_dir(upload_dir)
@@ -430,12 +609,15 @@ def complete_multipart_upload(uploader_id: int, upload_id: str) -> File:
             file_path=unique_filename,
             file_size=total_size,
             mime_type=resolved_mime,
+            content_hash=content_hash or _calculate_file_hash(final_path),
             uploader_id=uploader_id,
             parent_id=parent_id,
         )
         db.session.add(new_file)
         db.session.commit()
-        file_access_bloom.add_file(new_file.id, new_file.uploader_id)
+        file_access_bloom.add_file(
+            cast(int, new_file.id), cast(int | None, new_file.uploader_id)
+        )
     except Exception as e:
         db.session.rollback()
         logger.exception(f"Failed to persist merged file: {e}")
@@ -445,18 +627,9 @@ def complete_multipart_upload(uploader_id: int, upload_id: str) -> File:
     finally:
         shutil.rmtree(upload_dir, ignore_errors=True)
 
-    change_log_service.log_event(
-        user_id=uploader_id,
-        entity_type="file",
-        entity_id=new_file.id,
-        action="create",
-        old_parent_id=None,
-        new_parent_id=new_file.parent_id,
-        old_name=None,
-        new_name=new_file.name,
-    )
+    _log_file_created(new_file)
 
-    _push_processing_queue([new_file.id], uploader_id)
+    _push_processing_queue([cast(int, new_file.id)], uploader_id)
     return new_file
 
 
@@ -589,7 +762,11 @@ def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
     abs_path = file_obj.get_abs_path()
     if os.path.exists(abs_path):
         try:
-            os.remove(abs_path)
+            remaining_ref = File.query.filter(
+                File.file_path == file_obj.file_path, File.id != file_obj.id
+            ).first()
+            if not remaining_ref:
+                os.remove(abs_path)
         except OSError as e:
             logger.error(f"Error deleting file {abs_path}: {e}")
 
@@ -772,9 +949,7 @@ def embedding_desc(desc: str, config: Dict[str, str]) -> List[float]:
         return []
 
 
-def batch_embedding_desc(
-    texts: List[str], config: Dict[str, str]
-) -> List[List[float]]:
+def batch_embedding_desc(texts: List[str], config: Dict[str, str]) -> List[List[float]]:
     """批量生成 embedding 向量，一次 API 调用处理多条文本"""
     if not texts:
         return []

@@ -1,11 +1,16 @@
 import {
     completeMultipartUpload,
     initMultipartUpload,
+    preflightFileUpload,
     uploadFile,
     uploadMultipartChunk
 } from '../api/file'
 
 type ProgressCallback = (percent: number) => void
+
+interface UploadResult {
+    instantUpload: boolean
+}
 
 const LARGE_FILE_THRESHOLD = 20 * 1024 * 1024
 const CLIENT_DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024
@@ -31,6 +36,14 @@ function getUploadId(file: File, parentId?: number | null): string {
 
 function sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function calculateFileHash(file: File): Promise<string> {
+    const buffer = await file.arrayBuffer()
+    const digest = await crypto.subtle.digest('SHA-256', buffer)
+    return Array.from(new Uint8Array(digest))
+        .map(value => value.toString(16).padStart(2, '0'))
+        .join('')
 }
 
 function getChunkSize(file: File, chunkIndex: number, chunkSize: number): number {
@@ -68,9 +81,22 @@ async function uploadChunkWithRetry(
 
 async function uploadSmallFile(
     file: File,
+    contentHash: string,
     parentId?: number | null,
     onProgress?: ProgressCallback
-) {
+) : Promise<UploadResult> {
+    const preflight = await preflightFileUpload({
+        filename: file.name,
+        total_size: file.size,
+        parent_id: parentId ?? undefined,
+        mime_type: file.type || undefined,
+        content_hash: contentHash
+    })
+    if (preflight.instant_upload) {
+        onProgress?.(100)
+        return {instantUpload: true}
+    }
+
     const formData = new FormData()
     formData.append('file', file)
     if (parentId !== undefined && parentId !== null) {
@@ -86,23 +112,30 @@ async function uploadSmallFile(
         }
     })
     onProgress?.(100)
+    return {instantUpload: false}
 }
 
 async function uploadLargeFile(
     file: File,
+    contentHash: string,
     parentId?: number | null,
     onProgress?: ProgressCallback
-) {
+) : Promise<UploadResult> {
     const initRes = await initMultipartUpload({
         filename: file.name,
         total_size: file.size,
         chunk_size: CLIENT_DEFAULT_CHUNK_SIZE,
         parent_id: parentId ?? undefined,
         mime_type: file.type || undefined,
+        content_hash: contentHash,
         upload_id: getUploadId(file, parentId)
     })
 
     const uploadMeta = initRes as any
+    if (uploadMeta.instant_upload) {
+        onProgress?.(100)
+        return {instantUpload: true}
+    }
     const uploadId = uploadMeta.upload_id as string
     const chunkSize = uploadMeta.chunk_size as number
     const totalChunks = uploadMeta.total_chunks as number
@@ -156,6 +189,7 @@ async function uploadLargeFile(
 
     await completeMultipartUpload(uploadId)
     onProgress?.(100)
+    return {instantUpload: false}
 }
 
 export async function uploadFileOptimized(
@@ -163,8 +197,9 @@ export async function uploadFileOptimized(
     parentId?: number | null,
     onProgress?: ProgressCallback
 ) {
+    const contentHash = await calculateFileHash(file)
     if (file.size <= LARGE_FILE_THRESHOLD) {
-        return uploadSmallFile(file, parentId, onProgress)
+        return uploadSmallFile(file, contentHash, parentId, onProgress)
     }
-    return uploadLargeFile(file, parentId, onProgress)
+    return uploadLargeFile(file, contentHash, parentId, onProgress)
 }

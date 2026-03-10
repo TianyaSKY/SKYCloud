@@ -1,4 +1,5 @@
 import os
+from typing import cast
 
 from fastapi import (
     APIRouter,
@@ -17,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from app.dependencies import ensure_owner_or_admin, get_current_user
 from app.schemas import (
     BatchDeleteRequest,
+    FilePreflightRequest,
     FileUpdateRequest,
     MultipartCompleteRequest,
     MultipartInitRequest,
@@ -36,7 +38,9 @@ def _ensure_file_access(current_user, file_id: int):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
                 )
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="File not found"
+            )
 
     file_obj = file_service.get_file(file_id)
     if current_user.role != "admin" and file_obj.uploader_id != current_user.id:
@@ -48,9 +52,9 @@ def _ensure_file_access(current_user, file_id: int):
 
 @router.post("/files")
 def create_file(
-        current_user=Depends(get_current_user),
-        file: UploadFile = FastAPIFile(...),
-        parent_id: int | None = Form(default=None),
+    current_user=Depends(get_current_user),
+    file: UploadFile = FastAPIFile(...),
+    parent_id: int | None = Form(default=None),
 ):
     if not file.filename:
         raise HTTPException(
@@ -73,9 +77,9 @@ def create_file(
 
 @router.post("/files/batch")
 def batch_upload_files(
-        current_user=Depends(get_current_user),
-        files: list[UploadFile] | None = FastAPIFile(default=None),
-        parent_id: int | None = Form(default=None),
+    current_user=Depends(get_current_user),
+    files: list[UploadFile] | None = FastAPIFile(default=None),
+    parent_id: int | None = Form(default=None),
 ):
     valid_files = [f for f in (files or []) if f and f.filename]
     if not valid_files:
@@ -99,10 +103,27 @@ def batch_upload_files(
         ) from exc
 
 
+@router.post("/files/preflight")
+def preflight_file_upload(
+    payload: FilePreflightRequest,
+    current_user=Depends(get_current_user),
+):
+    try:
+        return file_service.preflight_file_upload(
+            current_user.id, payload.model_dump(exclude_none=True)
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+        ) from exc
+
+
 @router.post("/files/multipart/init")
 def init_multipart_upload(
-        payload: MultipartInitRequest,
-        current_user=Depends(get_current_user),
+    payload: MultipartInitRequest,
+    current_user=Depends(get_current_user),
 ):
     try:
         return file_service.init_multipart_upload(
@@ -118,10 +139,10 @@ def init_multipart_upload(
 
 @router.post("/files/multipart/chunk")
 def upload_multipart_chunk(
-        upload_id: str = Form(...),
-        chunk_index: int = Form(...),
-        chunk: UploadFile = FastAPIFile(...),
-        current_user=Depends(get_current_user),
+    upload_id: str = Form(...),
+    chunk_index: int = Form(...),
+    chunk: UploadFile = FastAPIFile(...),
+    current_user=Depends(get_current_user),
 ):
     if not chunk.filename:
         raise HTTPException(
@@ -145,8 +166,8 @@ def upload_multipart_chunk(
 
 @router.post("/files/multipart/complete")
 def complete_multipart_upload(
-        payload: MultipartCompleteRequest,
-        current_user=Depends(get_current_user),
+    payload: MultipartCompleteRequest,
+    current_user=Depends(get_current_user),
 ):
     try:
         new_file = file_service.complete_multipart_upload(
@@ -165,16 +186,16 @@ def complete_multipart_upload(
 
 @router.get("/files/multipart/{upload_id}")
 def get_multipart_upload_status(
-        upload_id: str,
-        current_user=Depends(get_current_user),
+    upload_id: str,
+    current_user=Depends(get_current_user),
 ):
     return file_service.get_multipart_upload_status(current_user.id, upload_id)
 
 
 @router.delete("/files/multipart/{upload_id}")
 def abort_multipart_upload(
-        upload_id: str,
-        current_user=Depends(get_current_user),
+    upload_id: str,
+    current_user=Depends(get_current_user),
 ):
     file_service.abort_multipart_upload(current_user.id, upload_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -182,13 +203,13 @@ def abort_multipart_upload(
 
 @router.get("/files/list")
 def list_files(
-        current_user=Depends(get_current_user),
-        parent_id: int | None = Query(default=None),
-        page: int = Query(default=1),
-        page_size: int = Query(default=10),
-        name: str | None = Query(default=None),
-        sort_by: str = Query(default="created_at"),
-        order: str = Query(default="desc"),
+    current_user=Depends(get_current_user),
+    parent_id: int | None = Query(default=None),
+    page: int = Query(default=1),
+    page_size: int = Query(default=10),
+    name: str | None = Query(default=None),
+    sort_by: str = Query(default="created_at"),
+    order: str = Query(default="desc"),
 ):
     return file_service.get_files_and_folders(
         current_user.id, parent_id, page, page_size, name, sort_by, order
@@ -197,11 +218,11 @@ def list_files(
 
 @router.get("/files/search")
 async def search_files(
-        current_user=Depends(get_current_user),
-        q: str = Query(default=""),
-        page: int = Query(default=1),
-        page_size: int = Query(default=10),
-        type: str = Query(default="fuzzy"),
+    current_user=Depends(get_current_user),
+    q: str = Query(default=""),
+    page: int = Query(default=1),
+    page_size: int = Query(default=10),
+    type: str = Query(default="fuzzy"),
 ):
     if not q:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
@@ -210,7 +231,7 @@ async def search_files(
 
 @router.put("/files/{id}")
 def update_file(
-        id: int, payload: FileUpdateRequest, current_user=Depends(get_current_user)
+    id: int, payload: FileUpdateRequest, current_user=Depends(get_current_user)
 ):
     _ensure_file_access(current_user, id)
     file_obj = file_service.update_file(id, payload.model_dump(exclude_none=True))
@@ -234,16 +255,20 @@ def download_file(id: int, current_user=Depends(get_current_user)):
             status_code=status.HTTP_404_NOT_FOUND, detail="File not found on server"
         )
 
-    return FileResponse(abs_path, filename=file_obj.name, media_type=file_obj.mime_type)
+    return FileResponse(
+        abs_path,
+        filename=cast(str | None, file_obj.name),
+        media_type=cast(str | None, file_obj.mime_type),
+    )
 
 
 @router.post("/files/upload/avatar/{id}")
 async def upload_avatar(
-        id: int,
-        request: Request,
-        avatar: UploadFile | None = FastAPIFile(default=None),
-        avatar_base64: str | None = Form(default=None),
-        current_user=Depends(get_current_user),
+    id: int,
+    request: Request,
+    avatar: UploadFile | None = FastAPIFile(default=None),
+    avatar_base64: str | None = Form(default=None),
+    current_user=Depends(get_current_user),
 ):
     ensure_owner_or_admin(current_user, id)
 
@@ -280,7 +305,7 @@ async def upload_avatar(
 
 @router.post("/files/batch-delete")
 def batch_delete_files(
-        payload: BatchDeleteRequest, current_user=Depends(get_current_user)
+    payload: BatchDeleteRequest, current_user=Depends(get_current_user)
 ):
     for item in payload.items:
         if not item.is_folder:
@@ -290,7 +315,11 @@ def batch_delete_files(
         from app.services import folder_service
 
         folder = folder_service.get_folder(item.id)
-        if folder and current_user.role != "admin" and folder.user_id != current_user.id:
+        if (
+            folder
+            and current_user.role != "admin"
+            and folder.user_id != current_user.id
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
             )
@@ -302,10 +331,10 @@ def batch_delete_files(
 
 @router.post("/files/retry_embedding")
 def retry_embedding(
-        payload: RetryEmbeddingRequest, current_user=Depends(get_current_user)
+    payload: RetryEmbeddingRequest, current_user=Depends(get_current_user)
 ):
     file_obj = _ensure_file_access(current_user, payload.file_id)
-    file_service.retry_embedding(file_obj.id)
+    file_service.retry_embedding(cast(int, file_obj.id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

@@ -66,11 +66,20 @@ class MultipartInitRequest(BaseModel):
     chunk_size: int | None = Field(default=None, gt=0)
     parent_id: int | None = None
     mime_type: str | None = None
+    content_hash: str | None = Field(default=None, min_length=64, max_length=64)
     upload_id: str | None = None
 
 
 class MultipartCompleteRequest(BaseModel):
     upload_id: str
+
+
+class FilePreflightRequest(BaseModel):
+    filename: str
+    total_size: int = Field(gt=0)
+    parent_id: int | None = None
+    mime_type: str | None = None
+    content_hash: str = Field(min_length=64, max_length=64)
 
 
 class ShareCreateRequest(BaseModel):

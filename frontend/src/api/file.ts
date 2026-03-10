@@ -32,14 +32,31 @@ export interface MultipartInitRequest {
     chunk_size?: number
     parent_id?: number | null
     mime_type?: string
+    content_hash?: string
     upload_id?: string
 }
 
 export interface MultipartInitResponse {
-    upload_id: string
+    upload_id: string | null
     chunk_size: number
     total_chunks: number
     uploaded_chunks: number[]
+    instant_upload?: boolean
+    file?: any
+}
+
+export interface FilePreflightRequest {
+    filename: string
+    total_size: number
+    parent_id?: number | null
+    mime_type?: string
+    content_hash: string
+}
+
+export interface FilePreflightResponse {
+    instant_upload: boolean
+    exists: boolean
+    file?: any
 }
 
 export const getFiles = (params?: ListFilesParams) => {
@@ -74,6 +91,12 @@ export const batchUploadFiles = (data: FormData, config?: AxiosRequestConfig) =>
 
 export const initMultipartUpload = (data: MultipartInitRequest) => {
     return request.post<MultipartInitResponse>('/files/multipart/init', data, {
+        timeout: 0
+    })
+}
+
+export const preflightFileUpload = (data: FilePreflightRequest) => {
+    return request.post<FilePreflightResponse>('/files/preflight', data, {
         timeout: 0
     })
 }

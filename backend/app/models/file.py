@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from typing import cast
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, Integer, String, BigInteger, DateTime, ForeignKey, Index
@@ -16,6 +17,7 @@ class File(Base):
     file_path = Column(String(512), nullable=False)  # 现在只保存文件名
     file_size = Column(BigInteger)  # 使用 BigInteger 存储字节数，方便计算容量
     mime_type = Column(String(255))  # 如 'image/jpeg', 'application/pdf'
+    content_hash = Column(String(64))  # 文件内容 SHA-256，用于秒传去重
 
     # AI 相关字段
     # pending, processing, success, fail
@@ -31,8 +33,7 @@ class File(Base):
     uploader = relationship("User", backref="files")
 
     # 级联删除：当文件被删除时，自动删除关联的分享记录
-    shares = relationship("Share", back_populates="file",
-                          cascade="all, delete-orphan")
+    shares = relationship("Share", back_populates="file", cascade="all, delete-orphan")
 
     # 添加 query 属性用于兼容 Flask-SQLAlchemy 风格的查询
     query = _scoped_session.query_property()
@@ -48,19 +49,21 @@ class File(Base):
 
     def get_abs_path(self):
         """获取文件的绝对路径"""
-        return os.path.join(UPLOAD_FOLDER, self.file_path)
+        return os.path.join(UPLOAD_FOLDER, cast(str, self.file_path))
 
     def to_dict(self):
+        created_at = cast(datetime | None, self.created_at)
         return {
-            "id": self.id,
-            "name": self.name,
-            "status": self.status,
-            "description": self.description,
-            "file_size": self.file_size,
-            "mime_type": self.mime_type,
-            "uploader_id": self.uploader_id,
-            "parent_id": self.parent_id,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "id": cast(int | None, self.id),
+            "name": cast(str, self.name),
+            "status": cast(str | None, self.status),
+            "description": cast(str | None, self.description),
+            "file_size": cast(int | None, self.file_size),
+            "mime_type": cast(str | None, self.mime_type),
+            "content_hash": cast(str | None, self.content_hash),
+            "uploader_id": cast(int | None, self.uploader_id),
+            "parent_id": cast(int | None, self.parent_id),
+            "created_at": created_at.isoformat() if created_at else None,
         }
 
     @classmethod
@@ -72,9 +75,10 @@ class File(Base):
             description=d.get("description"),
             file_size=d.get("file_size"),
             mime_type=d.get("mime_type"),
+            content_hash=d.get("content_hash"),
             uploader_id=d.get("uploader_id"),
             parent_id=d.get("parent_id"),
-            created_at=datetime.fromisoformat(d.get("created_at"))
-            if d.get("created_at")
+            created_at=datetime.fromisoformat(cast(str, d.get("created_at")))
+            if cast(str | None, d.get("created_at"))
             else None,
         )

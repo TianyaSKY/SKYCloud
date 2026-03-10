@@ -49,7 +49,7 @@ export function useFileDrag(currentParentId: any, fetchFiles: () => Promise<void
                     duration: 0,
                     closable: false
                 })
-                await uploadFileOptimized(file, currentParentId.value, (percent) => {
+                const result = await uploadFileOptimized(file, currentParentId.value, (percent) => {
                     Notification.info({
                         id: notificationId,
                         title: '上传中',
@@ -60,8 +60,8 @@ export function useFileDrag(currentParentId: any, fetchFiles: () => Promise<void
                 })
                 Notification.success({
                     id: notificationId,
-                    title: '上传完成',
-                    content: `${file.name} 上传成功`,
+                    title: result.instantUpload ? '秒传完成' : '上传完成',
+                    content: `${file.name} ${result.instantUpload ? '秒传成功' : '上传成功'}`,
                     duration: 3000,
                     closable: true
                 })
