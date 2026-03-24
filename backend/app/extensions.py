@@ -10,8 +10,8 @@ load_dotenv()
 # 数据库配置
 POSTGRES_USER = os.getenv("POSTGRES_USER")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
-POSTGRES_PORT = os.getenv("POSTGRES_PORT")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST") or os.getenv("DATABASE_HOST", "localhost")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT") or os.getenv("DATABASE_PORT")
 POSTGRES_DB = os.getenv("POSTGRES_DB")
 
 # Redis 配置
@@ -36,7 +36,9 @@ if not SECRET_KEY:
     SECRET_KEY = "sky_cloud_secret_key_dev_only"
 
 # 数据库连接 URL
-DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+DATABASE_URL = os.getenv("DATABASE_URL") or (
+    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+)
 
 # 创建 SQLAlchemy 引擎
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
