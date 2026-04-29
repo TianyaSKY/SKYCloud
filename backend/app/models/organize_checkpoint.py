@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer
 from sqlalchemy.orm import relationship
 
-from app.extensions import Base, _scoped_session
+from app.extensions import Base
 
 
 class OrganizeCheckpoint(Base):
@@ -12,9 +12,9 @@ class OrganizeCheckpoint(Base):
     user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
     last_event_id = Column(Integer, nullable=False, default=0)
     last_full_scan_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
-    query = _scoped_session.query_property()
+
     user = relationship("User", backref="organize_checkpoint")
 
     def to_dict(self) -> dict:

@@ -4,7 +4,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException as FastAPIHTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from werkzeug.exceptions import HTTPException as WerkzeugHTTPException
+
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +53,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             content={"message": msg, "detail": msg, "errors": compact_errors},
         )
 
-    @app.exception_handler(WerkzeugHTTPException)
-    async def handle_werkzeug_http_exception(_: Request, exc: WerkzeugHTTPException):
-        message = exc.description if isinstance(exc.description, str) else "Request failed"
-        return JSONResponse(status_code=exc.code or 500, content={"message": message, "detail": message})
+
 
     @app.exception_handler(Exception)
     async def handle_unexpected_exception(_: Request, exc: Exception):

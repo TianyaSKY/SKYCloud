@@ -52,14 +52,14 @@ def create_folder(data):
 
 
 def get_folder(id):
-    folder = Folder.query.get(id)
+    folder = db.session.get(Folder, id)
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
     return folder
 
 
 def update_folder(id, data):
-    folder = Folder.query.get(id)
+    folder = db.session.get(Folder, id)
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
     try:
@@ -102,7 +102,7 @@ def update_folder(id, data):
 
 
 def delete_folder(id):
-    folder = Folder.query.get(id)
+    folder = db.session.get(Folder, id)
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
     user_id = folder.user_id
@@ -139,7 +139,7 @@ def delete_folder(id):
 
 
 def _delete_folder_recursive(folder, deleted_events: list[dict]):
-    files = File.query.filter_by(parent_id=folder.id).all()
+    files = db.session.query(File).filter_by(parent_id=folder.id).all()
     for file in files:
         deleted_events.append(
             {
@@ -156,7 +156,7 @@ def _delete_folder_recursive(folder, deleted_events: list[dict]):
         delete_file(file.id, commit=False, log_event=False)
 
     # 递归删除子文件夹
-    subfolders = Folder.query.filter_by(parent_id=folder.id).all()
+    subfolders = db.session.query(Folder).filter_by(parent_id=folder.id).all()
     for subfolder in subfolders:
         _delete_folder_recursive(subfolder, deleted_events)
         deleted_events.append(
@@ -175,7 +175,7 @@ def _delete_folder_recursive(folder, deleted_events: list[dict]):
 
 @cache(expire=3600)
 async def get_root_folder_id(user_id) -> int | None:
-    root_folder = Folder.query.filter_by(user_id=user_id, parent_id=None).first()
+    root_folder = db.session.query(Folder).filter_by(user_id=user_id, parent_id=None).first()
     if root_folder:
         return root_folder.id
     return None
@@ -187,13 +187,13 @@ async def get_files_in_root_folder(user_id) -> List[dict]:
     if not root_folder_id:
         return []
 
-    files = File.query.filter_by(parent_id=root_folder_id).all()
+    files = db.session.query(File).filter_by(parent_id=root_folder_id).all()
     return [f.to_dict() for f in files]
 
 
 @cache(expire=3600)
 async def get_folders(user_id) -> List[dict]:
-    folders = Folder.query.filter_by(user_id=user_id).all()
+    folders = db.session.query(Folder).filter_by(user_id=user_id).all()
     return [f.to_dict() for f in folders]
 
 

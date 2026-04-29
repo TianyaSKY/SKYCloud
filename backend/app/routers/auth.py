@@ -25,7 +25,7 @@ def login(payload: LoginRequest):
         return {
             "token": token,
             "message": "Login successful",
-            "user": role,
+            "role": role,
             "user_id": user_id,
         }
 

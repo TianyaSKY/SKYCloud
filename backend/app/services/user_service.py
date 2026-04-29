@@ -22,7 +22,7 @@ def create_user(data):
 
 @cache(expire=3600)
 async def _get_user_data(id: int) -> dict:
-    user = User.query.get(id)
+    user = db.session.get(User, id)
     if not user:
         return None
     return user.to_dict()
@@ -36,7 +36,7 @@ async def get_user(id: int) -> User:
 
 
 def update_user(id, data):
-    user = User.query.get(id)
+    user = db.session.get(User, id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     user.username = data.get("username", user.username)
@@ -52,7 +52,7 @@ def update_user(id, data):
 
 
 def delete_user(id):
-    user = User.query.get(id)
+    user = db.session.get(User, id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     db.session.delete(user)

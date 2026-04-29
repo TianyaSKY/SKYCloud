@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 
 from app.dependencies import ensure_owner_or_admin, get_current_user
+from app.extensions import db
 from app.models.user import User
 from app.schemas import UserCreateRequest, UserPasswordUpdateRequest, UserUpdateRequest
 from app.services import user_service
@@ -37,7 +38,7 @@ def update_user_password(
 ):
     ensure_owner_or_admin(current_user, id)
 
-    user = User.query.get(id)
+    user = db.session.get(User, id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"

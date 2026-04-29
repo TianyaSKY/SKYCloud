@@ -18,7 +18,7 @@ def create_inbox_message(data):
 
 def get_user_inbox(user_id, page=1, per_page=20):
     """获取用户收件箱消息，手动分页"""
-    base_query = Inbox.query.filter_by(user_id=user_id, is_deleted=False).order_by(
+    base_query = db.session.query(Inbox).filter_by(user_id=user_id, is_deleted=False).order_by(
         Inbox.created_at.desc()
     )
 
@@ -37,14 +37,14 @@ def get_user_inbox(user_id, page=1, per_page=20):
 
 
 def get_inbox_message(id):
-    message = Inbox.query.get(id)
+    message = db.session.get(Inbox, id)
     if not message:
         raise HTTPException(status_code=404, detail="Inbox message not found")
     return message
 
 
 def mark_as_read(id, user_id):
-    message = Inbox.query.filter_by(id=id, user_id=user_id).first()
+    message = db.session.query(Inbox).filter_by(id=id, user_id=user_id).first()
     if not message:
         raise HTTPException(status_code=404, detail="Inbox message not found")
     message.is_read = True
@@ -53,7 +53,7 @@ def mark_as_read(id, user_id):
 
 
 def delete_inbox_message(id, user_id):
-    message = Inbox.query.filter_by(id=id, user_id=user_id).first()
+    message = db.session.query(Inbox).filter_by(id=id, user_id=user_id).first()
     if not message:
         raise HTTPException(status_code=404, detail="Inbox message not found")
     message.is_deleted = True
@@ -61,5 +61,5 @@ def delete_inbox_message(id, user_id):
 
 
 def mark_all_as_read(user_id):
-    Inbox.query.filter_by(user_id=user_id, is_read=False).update({"is_read": True})
+    db.session.query(Inbox).filter_by(user_id=user_id, is_read=False).update({"is_read": True})
     db.session.commit()

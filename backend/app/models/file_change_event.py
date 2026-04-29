@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
-from app.extensions import Base, _scoped_session
+from app.extensions import Base
 
 
 class FileChangeEvent(Base):
@@ -19,9 +19,9 @@ class FileChangeEvent(Base):
     old_name = Column(String(255), nullable=True)
     new_name = Column(String(255), nullable=True)
     payload = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
 
-    query = _scoped_session.query_property()
+
     user = relationship("User", backref="file_change_events")
 
     def to_dict(self) -> dict:

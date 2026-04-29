@@ -30,7 +30,7 @@ def create_sys_dict(data):
 
 
 def update_sys_dict(id, data):
-    sys_dict = SysDict.query.get(id)
+    sys_dict = db.session.get(SysDict, id)
     if not sys_dict:
         raise HTTPException(status_code=404, detail="SysDict not found")
     next_key = data.get("key", sys_dict.key)
@@ -47,7 +47,7 @@ def update_sys_dict(id, data):
 
 
 def delete_sys_dict(id):
-    sys_dict = SysDict.query.get(id)
+    sys_dict = db.session.get(SysDict, id)
     if not sys_dict:
         raise HTTPException(status_code=404, detail="SysDict not found")
     db.session.delete(sys_dict)
@@ -57,7 +57,7 @@ def delete_sys_dict(id):
 
 @cache(key_builder=lambda *args, **kwargs: CACHE_KEY, expire=CACHE_EXPIRE)
 async def get_sys_dict_all():
-    sys_dicts = SysDict.query.all()
+    sys_dicts = db.session.query(SysDict).all()
     data = [
         sys_dict.to_dict()
         for sys_dict in sys_dicts
@@ -81,7 +81,7 @@ def get_sys_dict_by_key_sync(key):
     if is_model_config_sys_dict_key(key):
         return None
     return (
-        SysDict.query.filter_by(key=key, enable=True)
+        db.session.query(SysDict).filter_by(key=key, enable=True)
         .order_by(SysDict.id.desc())
         .first()
     )

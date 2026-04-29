@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from app.extensions import db
@@ -40,13 +40,13 @@ def _resolve_changed_details(
 ) -> dict[str, Any]:
     """查询变化文件/文件夹的详细信息，包括名称和完整路径。"""
     # 查询所有文件夹用于构建路径
-    all_folders = Folder.query.filter_by(user_id=user_id).all()
+    all_folders = db.session.query(Folder).filter_by(user_id=user_id).all()
     folder_map: dict[int, Folder] = {f.id: f for f in all_folders}
 
     # 变化文件详情
     changed_files_detail: list[dict[str, Any]] = []
     if changed_file_ids:
-        files = File.query.filter(
+        files = db.session.query(File).filter(
             File.id.in_(changed_file_ids),
             File.uploader_id == user_id,
         ).all()
@@ -160,7 +160,7 @@ def log_events_batch(user_id: int, events: list[dict[str, Any]]) -> int:
 
 def get_latest_event_id(user_id: int) -> int:
     row = (
-        FileChangeEvent.query.filter_by(user_id=user_id)
+        db.session.query(FileChangeEvent).filter_by(user_id=user_id)
         .order_by(FileChangeEvent.id.desc())
         .first()
     )
@@ -168,7 +168,7 @@ def get_latest_event_id(user_id: int) -> int:
 
 
 def get_checkpoint_event_id(user_id: int) -> int:
-    checkpoint = OrganizeCheckpoint.query.filter_by(user_id=user_id).first()
+    checkpoint = db.session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
     if not checkpoint:
         return 0
     return int(checkpoint.last_event_id or 0)
@@ -178,18 +178,18 @@ def update_checkpoint(
     user_id: int, event_id: int, *, mark_full_scan: bool = False
 ) -> None:
     target_event_id = max(0, int(event_id or 0))
-    checkpoint = OrganizeCheckpoint.query.filter_by(user_id=user_id).first()
+    checkpoint = db.session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
     if checkpoint is None:
         checkpoint = OrganizeCheckpoint(
             user_id=user_id, last_event_id=target_event_id)
         if mark_full_scan:
-            checkpoint.last_full_scan_at = datetime.utcnow()
+            checkpoint.last_full_scan_at = datetime.now(timezone.utc)
         db.session.add(checkpoint)
     else:
         checkpoint.last_event_id = max(
             int(checkpoint.last_event_id or 0), target_event_id)
         if mark_full_scan:
-            checkpoint.last_full_scan_at = datetime.utcnow()
+            checkpoint.last_full_scan_at = datetime.now(timezone.utc)
 
     try:
         db.session.commit()
@@ -204,7 +204,7 @@ def load_incremental_context(
 ) -> dict[str, Any]:
     max_events = max(1, int(max_events or DEFAULT_MAX_INCREMENTAL_EVENTS))
 
-    checkpoint = OrganizeCheckpoint.query.filter_by(user_id=user_id).first()
+    checkpoint = db.session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
     has_checkpoint = checkpoint is not None
     checkpoint_event_id = int(
         checkpoint.last_event_id or 0) if checkpoint else 0
@@ -226,7 +226,7 @@ def load_incremental_context(
         }
 
     query = (
-        FileChangeEvent.query.filter(FileChangeEvent.user_id == user_id)
+        db.session.query(FileChangeEvent).filter(FileChangeEvent.user_id == user_id)
         .filter(FileChangeEvent.id > checkpoint_event_id)
         .filter(FileChangeEvent.id <= target_event_id)
         .order_by(FileChangeEvent.id.asc())

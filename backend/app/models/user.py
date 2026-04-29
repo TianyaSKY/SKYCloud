@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, DateTime, Enum
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from app.extensions import Base, _scoped_session
+from app.extensions import Base
 
 
 class User(Base):
@@ -16,8 +16,7 @@ class User(Base):
     avatar = Column(String(255), default=None)  # 头像 URL，默认为空
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    # 添加 query 属性用于兼容 Flask-SQLAlchemy 风格的查询
-    query = _scoped_session.query_property()
+
 
     def __repr__(self):
         return f"<User {self.username}>"

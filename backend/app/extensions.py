@@ -75,25 +75,7 @@ class DatabaseManager:
         """移除当前线程的 session"""
         self._session.remove()
 
-    # 提供常用 SQLAlchemy 类型的快捷访问
-    Column = property(lambda self: __import__("sqlalchemy").Column)
-    Integer = property(lambda self: __import__("sqlalchemy").Integer)
-    String = property(lambda self: __import__("sqlalchemy").String)
-    BigInteger = property(lambda self: __import__("sqlalchemy").BigInteger)
-    DateTime = property(lambda self: __import__("sqlalchemy").DateTime)
-    ForeignKey = property(lambda self: __import__("sqlalchemy").ForeignKey)
-    Index = property(lambda self: __import__("sqlalchemy").Index)
-    Text = property(lambda self: __import__("sqlalchemy").Text)
 
-    def relationship(self, *args, **kwargs):
-        from sqlalchemy.orm import relationship
-
-        return relationship(*args, **kwargs)
-
-    def backref(self, *args, **kwargs):
-        from sqlalchemy.orm import backref
-
-        return backref(*args, **kwargs)
 
 
 # 全局数据库实例

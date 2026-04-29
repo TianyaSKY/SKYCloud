@@ -1,10 +1,10 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 
-from app.extensions import Base, _scoped_session
+from app.extensions import Base
 
 
 class Share(Base):
@@ -16,11 +16,10 @@ class Share(Base):
     )
     file_id = Column(Integer, ForeignKey("files.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     expires_at = Column(DateTime, nullable=True)  # 可选：过期时间
 
-    # 添加 query 属性用于兼容 Flask-SQLAlchemy 风格的查询
-    query = _scoped_session.query_property()
+
 
     file = relationship("File", back_populates="shares")
     user = relationship("User")

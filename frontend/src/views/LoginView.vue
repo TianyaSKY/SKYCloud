@@ -41,7 +41,7 @@ const handleSubmit = async ({values, errors}: { values: any, errors: any }) => {
       // 根据后端返回的字段存储用户信息
       const userInfo = {
         id: res.user_id,
-        role: res.user,
+        role: res.role,
         username: values.username // 登录时输入的用户名先存起来
       }
       localStorage.setItem('user', JSON.stringify(userInfo))

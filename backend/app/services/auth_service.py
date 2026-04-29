@@ -1,9 +1,9 @@
-import datetime
+import datetime as _dt
 import logging
 
 import jwt
 
-from app.extensions import SECRET_KEY
+from app.extensions import SECRET_KEY, db
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -17,8 +17,8 @@ def generate_token(user_id):
     """
     try:
         payload = {
-            "exp": datetime.datetime.utcnow() + datetime.timedelta(days=1),
-            "iat": datetime.datetime.utcnow(),
+            "exp": _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=1),
+            "iat": _dt.datetime.now(_dt.timezone.utc),
             "sub": str(user_id),
         }
         return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
@@ -50,7 +50,7 @@ def authenticate_user(username, password):
     :param password: 密码
     :return: token,role 或 None,role
     """
-    user = User.query.filter_by(username=username).first()
+    user = db.session.query(User).filter_by(username=username).first()
     if user and user.check_password(password):
         return generate_token(user.id), user.role, user.id
     return None, "common", None

@@ -77,7 +77,7 @@ def handle_file_indexing(file_id: int) -> None:
         logger.error(f"Error indexing file {file_id}: {e}")
         db.session.rollback()
 
-        file = File.query.get(file_id)
+        file = db.session.get(File, file_id)
         if file:
             file.status = "fail"
             db.session.commit()
@@ -102,7 +102,7 @@ def _mark_file_failed(file_id: int, error: Exception) -> None:
     """将文件标记为处理失败并发送通知"""
     try:
         db.session.rollback()
-        file = File.query.get(file_id)
+        file = db.session.get(File, file_id)
         if file:
             file.status = "fail"
             db.session.commit()

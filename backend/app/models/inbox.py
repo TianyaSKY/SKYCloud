@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean, Text
 from sqlalchemy.orm import relationship, backref
 
-from app.extensions import Base, _scoped_session
+from app.extensions import Base
 
 
 class Inbox(Base):
@@ -15,11 +15,10 @@ class Inbox(Base):
     content = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False)
     type = Column(String(50), default="system")  # e.g., 'system', 'notification'
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_deleted = Column(Boolean, default=False)  # 是否删除占位
 
-    # 添加 query 属性用于兼容 Flask-SQLAlchemy 风格的查询
-    query = _scoped_session.query_property()
+
 
     # 关联用户
     user = relationship("User", backref=backref("inbox_messages", lazy="dynamic"))

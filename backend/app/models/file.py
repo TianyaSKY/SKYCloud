@@ -6,7 +6,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, Integer, String, BigInteger, DateTime, ForeignKey, Index
 from sqlalchemy.orm import relationship
 
-from app.extensions import Base, UPLOAD_FOLDER, _scoped_session
+from app.extensions import Base, UPLOAD_FOLDER
 
 
 class File(Base):
@@ -35,8 +35,7 @@ class File(Base):
     # 级联删除：当文件被删除时，自动删除关联的分享记录
     shares = relationship("Share", back_populates="file", cascade="all, delete-orphan")
 
-    # 添加 query 属性用于兼容 Flask-SQLAlchemy 风格的查询
-    query = _scoped_session.query_property()
+
 
     __table_args__ = (
         Index(

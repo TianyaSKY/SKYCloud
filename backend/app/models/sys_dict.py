@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean
 
-from app.extensions import Base, _scoped_session
+from app.extensions import Base
 
 
 class SysDict(Base):
@@ -12,8 +12,7 @@ class SysDict(Base):
     des = Column(String(2048))
     enable = Column(Boolean, default=True)
 
-    # 添加 query 属性用于兼容 Flask-SQLAlchemy 风格的查询
-    query = _scoped_session.query_property()
+
 
     def to_dict(self):
         return {

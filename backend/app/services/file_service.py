@@ -8,12 +8,11 @@ import re
 import shutil
 import uuid
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, cast
 
 from fastapi import HTTPException
 from fastapi_cache.decorator import cache
 from openai import OpenAI
-from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
 from app.extensions import UPLOAD_FOLDER, db, redis_client
@@ -62,13 +61,18 @@ def _generate_unique_filename(original_filename: str) -> str:
     return f"{uuid.uuid4().hex}{extension}"
 
 
-def _resolve_mime_type(path: str, provided: Optional[str] = None) -> Optional[str]:
+def _resolve_mime_type(path: str, provided: str | None = None) -> str | None:
     if provided:
         return provided
     return mimetypes.guess_type(path)[0]
 
 
-def _normalize_content_hash(content_hash: Optional[str]) -> Optional[str]:
+def _escape_like(value: str) -> str:
+    """Escape special characters for SQL LIKE/ILIKE patterns."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _normalize_content_hash(content_hash: str | None) -> str | None:
     if not content_hash:
         return None
     normalized = content_hash.strip().lower()
@@ -88,9 +92,9 @@ def _calculate_file_hash(path: str) -> str:
     return digest.hexdigest()
 
 
-def _get_reusable_source_file(content_hash: str, file_size: int) -> Optional[File]:
+def _get_reusable_source_file(content_hash: str, file_size: int) -> File | None:
     source_file = (
-        File.query.filter_by(content_hash=content_hash, file_size=file_size)
+        db.session.query(File).filter_by(content_hash=content_hash, file_size=file_size)
         .order_by(File.id.asc())
         .first()
     )
@@ -106,12 +110,12 @@ def _persist_file_record(
     name: str,
     file_path: str,
     file_size: int,
-    mime_type: Optional[str],
-    uploader_id: Optional[int],
-    parent_id: Optional[int],
-    content_hash: Optional[str],
+    mime_type: str | None,
+    uploader_id: int | None,
+    parent_id: int | None,
+    content_hash: str | None,
     status: str = "pending",
-    description: Optional[str] = None,
+    description: str | None = None,
     vector_info: Any = None,
 ) -> File:
     new_file = File(
@@ -155,8 +159,8 @@ def _clone_existing_file(
     *,
     filename: str,
     uploader_id: int,
-    parent_id: Optional[int],
-    mime_type: Optional[str],
+    parent_id: int | None,
+    mime_type: str | None,
     content_hash: str,
 ) -> File:
     resolved_mime = mime_type or cast(str | None, source_file.mime_type)
@@ -193,7 +197,7 @@ def _clone_existing_file(
     return new_file
 
 
-def preflight_file_upload(uploader_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
+def preflight_file_upload(uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
     filename = (data.get("filename") or "").strip()
     if not filename:
         raise HTTPException(status_code=400, detail="filename is required")
@@ -221,7 +225,7 @@ def preflight_file_upload(uploader_id: int, data: Dict[str, Any]) -> Dict[str, A
     return {"instant_upload": True, "exists": True, "file": new_file.to_dict()}
 
 
-def _push_processing_queue(file_ids: List[int], uploader_id: Optional[int]) -> None:
+def _push_processing_queue(file_ids: list[int], uploader_id: int | None) -> None:
     if not file_ids:
         return
     try:
@@ -254,7 +258,7 @@ def _safe_upload_id(upload_id: str) -> str:
     return candidate
 
 
-def _list_uploaded_chunks(chunks_dir: str) -> List[int]:
+def _list_uploaded_chunks(chunks_dir: str) -> list[int]:
     uploaded = []
     if not os.path.isdir(chunks_dir):
         return uploaded
@@ -268,7 +272,7 @@ def _list_uploaded_chunks(chunks_dir: str) -> List[int]:
     return uploaded
 
 
-def _load_multipart_meta(uploader_id: int, upload_id: str) -> Dict[str, Any]:
+def _load_multipart_meta(uploader_id: int, upload_id: str) -> dict[str, Any]:
     safe_upload_id = _safe_upload_id(upload_id)
     upload_dir = _multipart_upload_dir(uploader_id, safe_upload_id)
     meta_path = _multipart_meta_path(upload_dir)
@@ -286,12 +290,12 @@ def _load_multipart_meta(uploader_id: int, upload_id: str) -> Dict[str, Any]:
     return meta
 
 
-def _write_multipart_meta(meta_path: str, meta: Dict[str, Any]) -> None:
+def _write_multipart_meta(meta_path: str, meta: dict[str, Any]) -> None:
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False)
 
 
-def create_file(file_obj: Union[FileStorage, Any], data: Dict[str, Any]) -> File:
+def create_file(file_obj: Any, data: dict[str, Any]) -> File:
     upload_folder = UPLOAD_FOLDER
     os.makedirs(upload_folder, exist_ok=True)
 
@@ -329,8 +333,8 @@ def create_file(file_obj: Union[FileStorage, Any], data: Dict[str, Any]) -> File
 
 
 def batch_create_files(
-    file_objs: List[Union[FileStorage, Any]], data: Dict[str, Any]
-) -> List[File]:
+    file_objs: list[Any], data: dict[str, Any]
+) -> list[File]:
     upload_folder = UPLOAD_FOLDER
     os.makedirs(upload_folder, exist_ok=True)
 
@@ -392,7 +396,7 @@ def batch_create_files(
     return new_files
 
 
-def init_multipart_upload(uploader_id: int, data: Dict[str, Any]) -> Dict[str, Any]:
+def init_multipart_upload(uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
     filename = (data.get("filename") or "").strip()
     if not filename:
         raise HTTPException(status_code=400, detail="filename is required")
@@ -483,7 +487,7 @@ def init_multipart_upload(uploader_id: int, data: Dict[str, Any]) -> Dict[str, A
     }
 
 
-def get_multipart_upload_status(uploader_id: int, upload_id: str) -> Dict[str, Any]:
+def get_multipart_upload_status(uploader_id: int, upload_id: str) -> dict[str, Any]:
     meta = _load_multipart_meta(uploader_id, upload_id)
     upload_dir = _multipart_upload_dir(uploader_id, _safe_upload_id(upload_id))
     chunks_dir = _multipart_chunks_dir(upload_dir)
@@ -499,8 +503,8 @@ def save_multipart_chunk(
     uploader_id: int,
     upload_id: str,
     chunk_index: int,
-    chunk_obj: Union[FileStorage, Any],
-) -> Dict[str, Any]:
+    chunk_obj: Any,
+) -> dict[str, Any]:
     safe_upload_id = _safe_upload_id(upload_id)
     meta = _load_multipart_meta(uploader_id, safe_upload_id)
 
@@ -640,7 +644,7 @@ def abort_multipart_upload(uploader_id: int, upload_id: str) -> None:
 
 
 def get_file(id: int) -> File:
-    file_obj = File.query.get(id)
+    file_obj = db.session.get(File, id)
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
     return file_obj
@@ -648,27 +652,27 @@ def get_file(id: int) -> File:
 
 def get_files_and_folders(
     user_id: int,
-    parent_id: Optional[int],
+    parent_id: int | None,
     page: int = 1,
     page_size: int = 10,
-    name: Optional[str] = None,
+    name: str | None = None,
     sort_by: str = "created_at",
     order: str = "desc",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if page < 1:
         page = 1
 
-    folder_query = Folder.query.filter_by(user_id=user_id, parent_id=parent_id)
+    folder_query = db.session.query(Folder).filter_by(user_id=user_id, parent_id=parent_id)
     if name:
-        folder_query = folder_query.filter(Folder.name.ilike(f"%{name}%"))
+        folder_query = folder_query.filter(Folder.name.ilike(f"%{_escape_like(name)}%", escape="\\"))
     if order == "asc":
         folder_query = folder_query.order_by(Folder.name.asc())
     else:
         folder_query = folder_query.order_by(Folder.name.desc())
 
-    file_query = File.query.filter_by(uploader_id=user_id, parent_id=parent_id)
+    file_query = db.session.query(File).filter_by(uploader_id=user_id, parent_id=parent_id)
     if name:
-        file_query = file_query.filter(File.name.ilike(f"%{name}%"))
+        file_query = file_query.filter(File.name.ilike(f"%{_escape_like(name)}%", escape="\\"))
 
     if sort_by == "name":
         sort_column = File.name
@@ -713,8 +717,8 @@ def get_files_and_folders(
     }
 
 
-def update_file(id: int, data: Dict[str, Any]) -> File:
-    file_obj = File.query.get(id)
+def update_file(id: int, data: dict[str, Any]) -> File:
+    file_obj = db.session.get(File, id)
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -751,7 +755,7 @@ def update_file(id: int, data: Dict[str, Any]) -> File:
 
 
 def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
-    file_obj = File.query.get(id)
+    file_obj = db.session.get(File, id)
     if not file_obj:
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -762,7 +766,7 @@ def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
     abs_path = file_obj.get_abs_path()
     if os.path.exists(abs_path):
         try:
-            remaining_ref = File.query.filter(
+            remaining_ref = db.session.query(File).filter(
                 File.file_path == file_obj.file_path, File.id != file_obj.id
             ).first()
             if not remaining_ref:
@@ -793,7 +797,7 @@ async def search_files(
     page: int = 1,
     page_size: int = 10,
     search_type: str = "fuzzy",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if not query:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
@@ -805,9 +809,9 @@ async def search_files(
 @cache(expire=CACHE_EXPIRATION)
 async def _search_files_fuzzy(
     user_id: int, query: str, page: int, page_size: int
-) -> Dict[str, Any]:
-    base_query = File.query.filter(
-        File.uploader_id == user_id, File.name.ilike(f"%{query}%")
+) -> dict[str, Any]:
+    base_query = db.session.query(File).filter(
+        File.uploader_id == user_id, File.name.ilike(f"%{_escape_like(query)}%", escape="\\")
     )
     total = base_query.count()
     offset = (page - 1) * page_size
@@ -823,7 +827,7 @@ async def _search_files_fuzzy(
 
 async def _search_files_vector(
     user_id: int, query: str, page: int, page_size: int
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     try:
         emb_config = get_embedding_model_config()
         embeddings = embedding_desc(query, emb_config)
@@ -838,14 +842,14 @@ async def _search_files_vector(
 
         offset = (page - 1) * page_size
         items = (
-            File.query.filter(File.uploader_id == user_id, File.vector_info.isnot(None))
+            db.session.query(File).filter(File.uploader_id == user_id, File.vector_info.isnot(None))
             .order_by(File.vector_info.cosine_distance(embeddings))
             .limit(page_size)
             .offset(offset)
             .all()
         )
 
-        total = File.query.filter(
+        total = db.session.query(File).filter(
             File.uploader_id == user_id, File.vector_info.isnot(None)
         ).count()
 
@@ -876,26 +880,26 @@ def _clear_search_cache(user_id: int) -> None:
         logger.error(f"Redis clear cache error: {e}")
 
 
-def get_root_file_id(user_id: int) -> Optional[int]:
+def get_root_file_id(user_id: int) -> int | None:
     cache_key = f"user:root:file:{user_id}"
     cached_id = redis_client.get(cache_key)
     if cached_id:
         return int(cached_id)
 
-    root_file = File.query.filter_by(uploader_id=user_id, parent_id=None).first()
+    root_file = db.session.query(File).filter_by(uploader_id=user_id, parent_id=None).first()
     if root_file:
         redis_client.set(cache_key, root_file.id)
         return root_file.id
     return None
 
 
-def upload_avatar(img_file: Union[FileStorage, Any], user_id: int) -> Dict[str, Any]:
+def upload_avatar(img_file: Any, user_id: int) -> dict[str, Any]:
     from app.services import folder_service, share_service, user_service
 
-    root_folder = Folder.query.filter_by(user_id=1, parent_id=None).first()
+    root_folder = db.session.query(Folder).filter_by(user_id=1, parent_id=None).first()
     root_folder_id = root_folder.id if root_folder else None
 
-    folder = Folder.query.filter_by(
+    folder = db.session.query(Folder).filter_by(
         user_id=1, parent_id=root_folder_id, name="所有用户头像"
     ).first()
     if folder:
@@ -916,7 +920,7 @@ def upload_avatar(img_file: Union[FileStorage, Any], user_id: int) -> Dict[str, 
     return result
 
 
-def batch_delete_items(items: List[Dict[str, Any]]) -> None:
+def batch_delete_items(items: list[dict[str, Any]]) -> None:
     from app.services import folder_service
 
     for item in items:
@@ -928,7 +932,7 @@ def batch_delete_items(items: List[Dict[str, Any]]) -> None:
             delete_file(item_id)
 
 
-def _get_embedding_client(config: Dict[str, str]) -> OpenAI:
+def _get_embedding_client(config: dict[str, str]) -> OpenAI:
     """获取或复用 Embedding OpenAI 客户端"""
     cache_key = (config.get("api"), config.get("key"))
     if cache_key not in _embedding_client_cache:
@@ -938,7 +942,7 @@ def _get_embedding_client(config: Dict[str, str]) -> OpenAI:
     return _embedding_client_cache[cache_key]
 
 
-def embedding_desc(desc: str, config: Dict[str, str]) -> List[float]:
+def embedding_desc(desc: str, config: dict[str, str]) -> list[float]:
     model = config.get("model", "Qwen/Qwen3-Embedding-8B")
     try:
         client = _get_embedding_client(config)
@@ -949,7 +953,7 @@ def embedding_desc(desc: str, config: Dict[str, str]) -> List[float]:
         return []
 
 
-def batch_embedding_desc(texts: List[str], config: Dict[str, str]) -> List[List[float]]:
+def batch_embedding_desc(texts: list[str], config: dict[str, str]) -> list[list[float]]:
     """批量生成 embedding 向量，一次 API 调用处理多条文本"""
     if not texts:
         return []
@@ -966,14 +970,14 @@ def batch_embedding_desc(texts: List[str], config: Dict[str, str]) -> List[List[
 
 
 def retry_embedding(file_id: int) -> None:
-    file_obj = File.query.get(file_id)
+    file_obj = db.session.get(File, file_id)
     if not file_obj:
         return
     redis_client.rpush(FILE_PROCESS_QUEUE, file_obj.id)
 
 
-def rebuild_failed_indexes(user_id: Optional[int] = None) -> int:
-    query = File.query.filter(File.status == "fail")
+def rebuild_failed_indexes(user_id: int | None = None) -> int:
+    query = db.session.query(File).filter(File.status == "fail")
     if user_id is not None:
         query = query.filter(File.uploader_id == user_id)
 
@@ -983,7 +987,7 @@ def rebuild_failed_indexes(user_id: Optional[int] = None) -> int:
 
     file_ids = [f.id for f in failed_files]
     try:
-        File.query.filter(File.id.in_(file_ids)).update(
+        db.session.query(File).filter(File.id.in_(file_ids)).update(
             {File.status: "pending"}, synchronize_session=False
         )
         db.session.commit()
@@ -1002,12 +1006,12 @@ def rebuild_failed_indexes(user_id: Optional[int] = None) -> int:
     return pushed
 
 
-def get_all_files(user_id: int) -> List[File]:
-    return File.query.filter_by(uploader_id=user_id).all()
+def get_all_files(user_id: int) -> list[File]:
+    return db.session.query(File).filter_by(uploader_id=user_id).all()
 
 
 @cache(expire=60)
-async def process_status(id: int) -> Dict[str, int]:
+async def process_status(id: int) -> dict[str, int]:
     files = get_all_files(id)
     cnt = defaultdict(int)
     for file_obj in files:

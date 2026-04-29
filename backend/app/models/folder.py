@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship, backref
 
-from app.extensions import Base, _scoped_session
+from app.extensions import Base
 
 
 class Folder(Base):
@@ -11,8 +11,7 @@ class Folder(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     parent_id = Column(Integer, ForeignKey("folder.id"))
 
-    # 添加 query 属性用于兼容 Flask-SQLAlchemy 风格的查询
-    query = _scoped_session.query_property()
+
 
     # 递归建立子文件夹关系，并设置级联删除
     sub_folder = relationship(
