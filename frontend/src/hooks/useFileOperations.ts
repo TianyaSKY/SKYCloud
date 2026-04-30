@@ -1,5 +1,5 @@
 import { reactive, ref } from "vue";
-import { Message, Notification } from "@arco-design/web-vue";
+import { Message } from "@arco-design/web-vue";
 import {
   batchDeleteFiles,
   createFolder,
@@ -15,12 +15,12 @@ import {
   updateFolder,
 } from "../api/file";
 import { createShare } from "../api/share";
-import { uploadFileOptimized } from "../utils/upload";
 
 export function useFileOperations(
   currentParentId: any,
   fetchFiles: () => Promise<void>,
   selectedKeys: any,
+  startUpload: (files: File[]) => Promise<void>,
   fileList?: any,
 ) {
   const folderForm = reactive({ name: "" });
@@ -41,159 +41,8 @@ export function useFileOperations(
   const shareUrl = ref("");
   const shareForm = reactive({ expires_at: "" });
 
-  const BATCH_UPLOAD_CONCURRENCY = 3;
-
-  const handleUpload = async (options: any) => {
-    const { fileItem, onSuccess, onError, onProgress } = options;
-    const rawFile = fileItem?.file as File;
-    if (!rawFile) {
-      onError?.(new Error("Invalid upload file"));
-      return;
-    }
-
-    const notificationId = `upload-${fileItem.uid || Date.now()}`;
-    Notification.info({
-      id: notificationId,
-      title: "上传中",
-      content: `正在准备上传 ${fileItem.name}...`,
-      duration: 0,
-      closable: false,
-    });
-
-    // 让浏览器先完成 Notification 渲染，避免 UI 卡顿
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    uploadFileOptimized(rawFile, currentParentId.value, (percent) => {
-      if (typeof onProgress === "function") {
-        onProgress(percent);
-      }
-      Notification.info({
-        id: notificationId,
-        title: "上传中",
-        content: `正在上传 ${fileItem.name}: ${Math.round(percent)}%`,
-        duration: 0,
-        closable: false,
-      });
-    })
-      .then((result) => {
-        Notification.success({
-          id: notificationId,
-          title: result.instantUpload ? "秒传完成" : "上传完成",
-          content: `${fileItem.name} ${result.instantUpload ? "秒传成功" : "上传成功"}`,
-          duration: 3000,
-          closable: true,
-        });
-        fetchFiles();
-        onSuccess?.();
-      })
-      .catch((error) => {
-        Notification.error({
-          id: notificationId,
-          title: "上传失败",
-          content: `${fileItem.name} 上传失败: ${error.message || "未知错误"}`,
-          duration: 4000,
-          closable: true,
-        });
-        onError?.(error);
-      });
-  };
-
-  /**
-   * 批量上传文件 —— 使用并发队列 + 聚合通知，避免大量文件时 UI 卡顿
-   */
-  const handleBatchUpload = async (files: File[]) => {
-    if (!files || files.length === 0) return;
-
-    // 单文件走原有逻辑（保留独立进度通知）
-    if (files.length === 1) {
-      const file = files[0];
-      handleUpload({
-        fileItem: {
-          file,
-          name: file.name,
-          uid: `${file.name}-${Date.now()}`,
-        },
-        onSuccess: () => {},
-        onError: () => {},
-        onProgress: () => {},
-      });
-      return;
-    }
-
-    // 多文件 —— 聚合通知 + 并发队列
-    const batchId = `batch-upload-${Date.now()}`;
-    const total = files.length;
-    let completed = 0;
-    let failed = 0;
-    let currentFileName = "";
-
-    const updateNotification = () => {
-      const inProgress = total - completed - failed;
-      Notification.info({
-        id: batchId,
-        title: "批量上传中",
-        content: `总计 ${total} 个文件：已完成 ${completed}，失败 ${failed}，进行中 ${inProgress}${currentFileName ? `\n当前：${currentFileName}` : ""}`,
-        duration: 0,
-        closable: false,
-      });
-    };
-
-    // 先显示初始通知，然后让出主线程让 UI 渲染
-    updateNotification();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    // 并发队列
-    let cursor = 0;
-    const worker = async () => {
-      while (true) {
-        const current = cursor++;
-        if (current >= files.length) return;
-        const file = files[current];
-        if (!file) return;
-
-        currentFileName = file.name;
-        updateNotification();
-
-        try {
-          await uploadFileOptimized(file, currentParentId.value);
-          completed++;
-        } catch {
-          failed++;
-        }
-        updateNotification();
-
-        // 每完成一个文件让出主线程，避免长时间阻塞 UI
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-    };
-
-    const workers = Array.from(
-      { length: Math.min(BATCH_UPLOAD_CONCURRENCY, files.length) },
-      () => worker(),
-    );
-    await Promise.all(workers);
-
-    // 最终通知
-    if (failed === 0) {
-      Notification.success({
-        id: batchId,
-        title: "批量上传完成",
-        content: `全部 ${total} 个文件上传成功`,
-        duration: 4000,
-        closable: true,
-      });
-    } else {
-      Notification.warning({
-        id: batchId,
-        title: "批量上传完成",
-        content: `共 ${total} 个文件：成功 ${completed}，失败 ${failed}`,
-        duration: 6000,
-        closable: true,
-      });
-    }
-
-    await fetchFiles();
-  };
+  /** 批量上传文件 —— 委托给统一的上传管理器 */
+  const handleBatchUpload = (files: File[]) => startUpload(files);
 
   const handleCreateFolder = async () => {
     if (!folderForm.name) return;
@@ -409,7 +258,6 @@ export function useFileOperations(
     selectedFile,
     shareUrl,
     shareForm,
-    handleUpload,
     handleBatchUpload,
     handleCreateFolder,
     handleDelete,

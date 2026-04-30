@@ -49,15 +49,20 @@
                 <div v-if="msg.role === 'assistant'">
                   <!-- 关键词展示 -->
                   <div v-if="msg.keywords" class="keywords-tag">
-                    <icon-search/>
-                    搜索关键词：{{ msg.keywords }}
+                    <span class="keywords-tag__icon">
+                      <icon-filter />
+                    </span>
+                    <span class="keywords-tag__label">检索词</span>
+                    <span class="keywords-tag__divider"></span>
+                    <span class="keywords-tag__text">{{ msg.keywords }}</span>
                   </div>
                   <MarkdownRenderer :content="msg.content"/>
                 </div>
                 <div v-else class="user-text">{{ msg.content }}</div>
               </div>
               <div v-if="msg.status" class="status-info">
-                <icon-loading v-if="msg.loading"/>
+                <span v-if="msg.loading" class="status-dot"></span>
+                <icon-exclamation-circle v-else class="status-error-icon" />
                 {{ msg.status }}
               </div>
             </div>
@@ -85,10 +90,10 @@ import {Message} from '@arco-design/web-vue';
 import {
   IconClose,
   IconDelete,
-  IconLoading,
+  IconExclamationCircle,
+  IconFilter,
   IconMessage,
   IconRobot,
-  IconSearch,
   IconUser
 } from '@arco-design/web-vue/es/icon';
 import MarkdownRenderer from './MarkdownRenderer.vue';
@@ -192,6 +197,7 @@ const handleSend = async () => {
     loading: true
   };
   messages.value.push(aiMsg);
+  const aiIndex = messages.value.length - 1;
 
   loading.value = true;
   await scrollToBottom();
@@ -215,28 +221,41 @@ const handleSend = async () => {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    let buffer = '';
 
-    aiMsg.status = '';
-    aiMsg.loading = false;
+    messages.value[aiIndex] = {...messages.value[aiIndex], status: '', loading: false};
 
     while (true) {
       const {value, done} = await reader.read();
       if (done) break;
 
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
+      buffer += decoder.decode(value, {stream: true});
+      const lines = buffer.split('\n');
+      // 保留最后一个可能不完整的行
+      buffer = lines.pop() || '';
 
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           try {
             const data = JSON.parse(line.slice(6));
             if (data.type === 'token') {
-              aiMsg.content += data.content;
+              messages.value[aiIndex] = {
+                ...messages.value[aiIndex],
+                content: messages.value[aiIndex].content + data.content,
+                status: '',
+                loading: false
+              };
               void scrollToBottom();
             } else if (data.type === 'keywords') {
-              aiMsg.keywords = cleanSpecialTokens(data.content);
+              messages.value[aiIndex] = {
+                ...messages.value[aiIndex],
+                keywords: cleanSpecialTokens(data.content)
+              };
             } else if (data.type === 'status') {
-              aiMsg.status = data.content;
+              messages.value[aiIndex] = {
+                ...messages.value[aiIndex],
+                status: data.content
+              };
             }
           } catch (e) {
             console.error('Error parsing SSE data', e);
@@ -247,11 +266,10 @@ const handleSend = async () => {
   } catch (error) {
     console.error('Chat error:', error);
     Message.error('发送失败，请稍后重试');
-    aiMsg.content = '抱歉，发生了错误。';
+    messages.value[aiIndex] = {...messages.value[aiIndex], content: '抱歉，发生了错误。'};
   } finally {
     loading.value = false;
-    aiMsg.status = '';
-    aiMsg.loading = false;
+    messages.value[aiIndex] = {...messages.value[aiIndex], status: '', loading: false};
   }
 };
 
@@ -400,16 +418,52 @@ onUnmounted(() => {
 
 .keywords-tag {
   font-size: 12px;
-  color: rgb(var(--arcoblue-6));
-  background-color: rgb(var(--arcoblue-1));
-  padding: 4px 8px;
-  border-radius: 4px;
+  color: var(--color-text-2);
+  background: linear-gradient(135deg, rgba(var(--arcoblue-1), 0.6), rgba(var(--arcoblue-1), 0.3));
+  padding: 5px 10px;
+  border-radius: 6px;
   margin-bottom: 8px;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  border: 1px solid rgb(var(--arcoblue-2));
+  gap: 0;
+  border: 1px solid rgba(var(--arcoblue-3), 0.4);
   user-select: none;
+  backdrop-filter: blur(4px);
+  line-height: 1.4;
+  max-width: 100%;
+}
+
+.keywords-tag__icon {
+  display: flex;
+  align-items: center;
+  color: rgb(var(--arcoblue-5));
+  font-size: 13px;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.keywords-tag__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgb(var(--arcoblue-5));
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.keywords-tag__divider {
+  width: 1px;
+  height: 12px;
+  background-color: rgba(var(--arcoblue-3), 0.5);
+  margin: 0 8px;
+  flex-shrink: 0;
+}
+
+.keywords-tag__text {
+  color: var(--color-text-2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-info {
@@ -417,8 +471,28 @@ onUnmounted(() => {
   color: var(--color-text-3);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   user-select: none;
+  padding-top: 2px;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: rgb(var(--arcoblue-5));
+  animation: status-pulse 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.status-error-icon {
+  color: rgb(var(--red-5));
+  font-size: 13px;
+}
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.1); }
 }
 
 .chat-input {

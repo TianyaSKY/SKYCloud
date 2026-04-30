@@ -71,7 +71,6 @@ import {
 } from "@arco-design/web-vue/es/icon";
 
 const props = defineProps<{
-  handleUpload: (options: any) => void;
   handleBatchUpload: (files: File[]) => void;
 }>();
 

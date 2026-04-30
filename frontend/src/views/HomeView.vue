@@ -23,7 +23,6 @@
       <FileDragOverlay :is-dragging="isDragging" />
 
       <FileToolbar
-        :handle-upload="handleUpload"
         :handle-batch-upload="handleBatchUpload"
         @organize="handleOrganize"
         @refresh="fetchFiles"
@@ -94,6 +93,7 @@ import { useFileDrag } from "../hooks/useFileDrag";
 import { useFilePreview } from "../hooks/useFilePreview";
 import { useFileOperations } from "../hooks/useFileOperations";
 import { useFileBrowser } from "../hooks/useFileBrowser";
+import { useUploadManager } from "../hooks/useUploadManager";
 
 // 文件浏览相关
 const {
@@ -118,9 +118,12 @@ const {
   saveSearchType,
 } = useFileBrowser();
 
+// 统一上传管理
+const { startUpload } = useUploadManager(currentParentId, fetchFiles);
+
 // 拖拽上传相关
 const { isDragging, handleDragEnter, handleDragLeave, handleDrop } =
-  useFileDrag(currentParentId, fetchFiles);
+  useFileDrag(currentParentId, startUpload);
 
 // 预览相关
 const {
@@ -146,7 +149,6 @@ const {
   selectedFile,
   shareUrl,
   shareForm,
-  handleUpload,
   handleBatchUpload,
   handleCreateFolder,
   handleDelete,
@@ -162,7 +164,7 @@ const {
   handleFolderSelect,
   confirmMove,
   handleOrganize,
-} = useFileOperations(currentParentId, fetchFiles, selectedKeys, fileList);
+} = useFileOperations(currentParentId, fetchFiles, selectedKeys, startUpload, fileList);
 
 const handleFileClickWrapper = async (record: any) => {
   if (record.is_folder) {

@@ -1,7 +1,13 @@
 <template>
-  <a-layout-sider :width="220" breakpoint="lg" class="sidebar">
-    <div class="logo">
-      <span class="title">SKYCloud</span>
+  <a-layout-sider 
+    :width="220" 
+    breakpoint="lg" 
+    class="sidebar"
+    collapsible
+    v-model:collapsed="collapsed"
+  >
+    <div class="logo" :style="{ paddingLeft: collapsed ? '0' : '20px', justifyContent: collapsed ? 'center' : 'flex-start' }">
+      <span class="title" v-if="!collapsed">SKYCloud</span>
     </div>
     <a-menu
         :selected-keys="[activeMenu]"
@@ -37,7 +43,7 @@
 </template>
 
 <script lang="ts" setup>
-import {computed} from 'vue'
+import {computed, ref} from 'vue'
 import {IconEmail, IconFile, IconSettings, IconShareAlt} from '@arco-design/web-vue/es/icon'
 
 defineProps<{
@@ -45,6 +51,8 @@ defineProps<{
 }>()
 
 const emit = defineEmits(['menu-click'])
+
+const collapsed = ref(false)
 
 const isAdmin = computed(() => {
   const userStr = localStorage.getItem('user')
@@ -67,8 +75,8 @@ const handleMenuClick = (key: string) => {
   height: 64px;
   display: flex;
   align-items: center;
-  padding-left: 20px;
   border-bottom: 1px solid var(--color-border);
+  transition: all 0.2s;
 }
 
 .title {
@@ -77,3 +85,4 @@ const handleMenuClick = (key: string) => {
   color: var(--color-text-1);
 }
 </style>
+

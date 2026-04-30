@@ -371,8 +371,8 @@ async def generate_chat_events(user_id, query: str, history: list):
 
             # 处理状态
             elif kind == "on_retriever_start" or (kind == "on_chain_start" and event["name"] == "custom_db_retriever"):
-                yield f"data: {json.dumps({'type': 'status', 'content': '🔍 正在检索相关文件...'})}\n\n"
+                yield f"data: {json.dumps({'type': 'status', 'content': '正在检索相关文件...'})}\n\n"
 
     except Exception as e:
         logger.error(f"Chat error: {e}", exc_info=True)
-        yield f"data: {json.dumps({'type': 'status', 'content': f'❌ 错误: {str(e)}'})}\n\n"
+        yield f"data: {json.dumps({'type': 'status', 'content': f'出错了: {str(e)}'})}\n\n"
