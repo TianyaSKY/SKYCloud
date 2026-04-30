@@ -44,6 +44,8 @@ class File(Base):
             postgresql_using="hnsw",
             postgresql_ops={"vector_info": "vector_cosine_ops"},
         ),
+        Index("idx_files_uploader_parent", "uploader_id", "parent_id"),
+        Index("idx_files_uploader_status", "uploader_id", "status"),
     )
 
     def get_abs_path(self):

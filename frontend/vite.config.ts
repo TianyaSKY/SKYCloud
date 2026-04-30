@@ -8,10 +8,10 @@ import Components from 'unplugin-vue-components/vite'
 import {ArcoResolver} from 'unplugin-vue-components/resolvers'
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({mode}) => ({
     plugins: [
         vue(),
-        vueDevTools(),
+        ...(mode !== 'production' ? [vueDevTools()] : []),
         AutoImport({
             resolvers: [ArcoResolver()],
         }),
@@ -28,6 +28,18 @@ export default defineConfig({
             '@': fileURLToPath(new URL('./src', import.meta.url))
         },
     },
+    build: {
+        rollupOptions: {
+            output: {
+                manualChunks: {
+                    'vendor-vue': ['vue', 'vue-router'],
+                    'vendor-arco': ['@arco-design/web-vue'],
+                    'vendor-office': ['@vue-office/docx', '@vue-office/excel', '@vue-office/pdf'],
+                    'vendor-markdown': ['marked'],
+                }
+            }
+        }
+    },
     server: {
         proxy: {
             '/api': {
@@ -37,4 +49,4 @@ export default defineConfig({
             }
         }
     }
-})
+}))

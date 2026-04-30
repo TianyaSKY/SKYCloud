@@ -7,12 +7,12 @@ import os
 import re
 import shutil
 import uuid
-from collections import defaultdict
 from typing import Any, cast
 
 from fastapi import HTTPException
 from fastapi_cache.decorator import cache
 from openai import OpenAI
+from sqlalchemy import func
 from werkzeug.utils import secure_filename
 
 from app.extensions import UPLOAD_FOLDER, db, redis_client
@@ -31,7 +31,7 @@ CACHE_EXPIRATION = 3600
 COPY_BUFFER_SIZE = 1024 * 1024
 
 # Embedding 客户端缓存，避免每次调用都新建连接
-_embedding_client_cache: Dict[tuple, OpenAI] = {}
+_embedding_client_cache: dict[tuple, OpenAI] = {}
 DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024
 MAX_CHUNK_SIZE = 64 * 1024 * 1024
 MAX_UPLOAD_SIZE = 0
@@ -686,8 +686,8 @@ def get_files_and_folders(
     else:
         file_query = file_query.order_by(sort_column.desc())
 
-    total_folders = folder_query.count()
-    total_files = file_query.count()
+    total_folders = folder_query.with_entities(func.count()).scalar() or 0
+    total_files = file_query.with_entities(func.count()).scalar() or 0
     total_items = total_folders + total_files
     total_pages = (total_items + page_size - 1) // page_size if page_size > 0 else 1
     offset = (page - 1) * page_size
@@ -1011,16 +1011,19 @@ def get_all_files(user_id: int) -> list[File]:
 
 
 @cache(expire=60)
-async def process_status(id: int) -> dict[str, int]:
-    files = get_all_files(id)
-    cnt = defaultdict(int)
-    for file_obj in files:
-        cnt[file_obj.status] += 1
-
+async def process_status(user_id: int) -> dict[str, int]:
+    """使用 SQL GROUP BY 聚合统计文件状态，避免全量加载 ORM 对象。"""
+    rows = (
+        db.session.query(File.status, func.count(File.id))
+        .filter(File.uploader_id == user_id)
+        .group_by(File.status)
+        .all()
+    )
+    cnt = dict(rows)
     return {
-        "处理中": cnt["pending"] + cnt["processing"],
-        "成功": cnt["success"],
-        "失败": cnt["fail"],
+        "处理中": cnt.get("pending", 0) + cnt.get("processing", 0),
+        "成功": cnt.get("success", 0),
+        "失败": cnt.get("fail", 0),
     }
 
 

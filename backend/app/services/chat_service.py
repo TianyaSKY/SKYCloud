@@ -201,19 +201,24 @@ async def multi_query_db_retriever(
         t2 = time.perf_counter()
         logger.info(f"[计时] 批量 embedding {len(queries)} 条: {t2 - t1:.2f}s")
 
-    # ---- 阶段 2: 顺序数据库向量检索 ----
+    # ---- 阶段 2: 并行数据库向量检索 ----
+    async def _search_one(q_text: str, vec: list[float]) -> list[Document]:
+        return await loop.run_in_executor(
+            None, _db_search_by_vector, vec, q_text, user_id, RAG_VECTOR_FETCH_K
+        )
+
+    search_tasks = [_search_one(qt, v) for qt, v in zip(queries, all_vectors)]
+    raw_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+
     result_sets: list[list[Document]] = []
-    for query_text, vector in zip(queries, all_vectors):
-        try:
-            docs = _db_search_by_vector(
-                vector, query_text, user_id, RAG_VECTOR_FETCH_K)
-            if docs:
-                result_sets.append(docs)
-        except Exception as exc:
+    for qt, res in zip(queries, raw_results):
+        if isinstance(res, Exception):
             logger.warning(
-                f"Multi-query recall failed for query='{query_text}': {exc}")
+                f"Multi-query recall failed for query='{qt}': {res}")
+        elif res:
+            result_sets.append(res)
     t3 = time.perf_counter()
-    logger.info(f"[计时] DB 向量检索 {len(queries)} 条: {t3 - t2:.2f}s")
+    logger.info(f"[计时] DB 向量检索 {len(queries)} 条 (并行): {t3 - t2:.2f}s")
 
     # ---- 阶段 3: RRF 融合 ----
     fused_docs = _fuse_docs_with_rrf(

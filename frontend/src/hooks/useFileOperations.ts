@@ -5,7 +5,6 @@ import {
   createFolder,
   deleteFile,
   deleteFolder,
-  downloadFile,
   getAllFolders,
   getRootFolderId,
   organizeFiles,
@@ -93,19 +92,16 @@ export function useFileOperations(
     }
   };
 
-  const handleDownload = async (record: any) => {
-    try {
-      const blob = await downloadFile(record.id);
-      const url = window.URL.createObjectURL(new Blob([blob as any]));
-      const link = document.createElement("a");
-      link.href = url;
-      link.setAttribute("download", record.name);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-    } catch {
-      // handled by interceptor
-    }
+  const handleDownload = (record: any) => {
+    // 使用直接 URL 跳转触发浏览器原生下载，避免大文件 Blob 占用内存
+    const token = localStorage.getItem("token");
+    const url = `/api/files/${record.id}/download${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", record.name);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
   };
 
   const handleShare = (record: any) => {

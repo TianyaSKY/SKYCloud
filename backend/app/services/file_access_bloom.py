@@ -125,7 +125,11 @@ def _maybe_contains(user_id: int | None, file_id: int) -> bool:
             return True
 
         positions = _hash_positions(file_id, bitmap_size, hash_count)
-        bits = [redis_client.getbit(_bits_key(user_id), position) for position in positions]
+        key = _bits_key(user_id)
+        pipe = redis_client.pipeline(transaction=False)
+        for position in positions:
+            pipe.getbit(key, position)
+        bits = pipe.execute()
         return all(bit == 1 for bit in bits)
     except Exception as exc:
         logger.warning("Failed bloom membership check for %s: %s", _scope_name(user_id), exc)

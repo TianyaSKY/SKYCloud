@@ -8,6 +8,20 @@ from app.services.model_config import get_rerank_model_config, get_rerank_top_k
 
 logger = logging.getLogger(__name__)
 
+# 模块级复用的 HTTP 客户端，避免每次 rerank 都建立新连接
+_rerank_client: httpx.AsyncClient | None = None
+
+
+def _get_rerank_client() -> httpx.AsyncClient:
+    """获取或创建复用的 rerank HTTP 客户端。"""
+    global _rerank_client
+    if _rerank_client is None or _rerank_client.is_closed:
+        _rerank_client = httpx.AsyncClient(
+            timeout=30,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+    return _rerank_client
+
 
 def _get_index(item: dict[str, Any]) -> int | None:
     for key in ("index", "document_index", "doc_index"):
@@ -86,14 +100,14 @@ async def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
                "Content-Type": "application/json"}
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                f"{api_url}/rerank",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-            result = response.json()
+        client = _get_rerank_client()
+        response = await client.post(
+            f"{api_url}/rerank",
+            headers=headers,
+            json=payload,
+        )
+        response.raise_for_status()
+        result = response.json()
         ranked_indices = _extract_ranked_indices(result)
         if not ranked_indices:
             logger.warning(
@@ -109,3 +123,4 @@ async def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
     except Exception as e:
         logger.warning(f"Rerank failed, fallback to vector rank: {e}")
         return docs
+
