@@ -89,6 +89,35 @@ services:
     networks:
       - skycloud-network
 
+  backend-mcp:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: skycloud-backend-mcp
+    restart: always
+    command: python mcp_run.py
+    ports:
+      - "${MCP_PORT:-5001}:5001"
+    volumes:
+      - ${UPLOAD_HOST_PATH}:/data/uploads
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_HOST=db
+      - DATABASE_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MCP_PORT=5001
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - skycloud-network
+
   frontend:
     build:
       context: ./frontend

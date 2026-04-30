@@ -28,6 +28,27 @@ def generate_token(user_id):
         return None
 
 
+def generate_mcp_token(user_id: int) -> str | None:
+    """
+    生成 MCP 专用长效 JWT Token（365 天有效期）。
+    用于 MCP 客户端（Claude Desktop、Cursor 等）的长期配置。
+
+    :param user_id: 用户 ID
+    :return: token 字符串
+    """
+    try:
+        payload = {
+            "exp": _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365),
+            "iat": _dt.datetime.now(_dt.timezone.utc),
+            "sub": str(user_id),
+            "type": "mcp",
+        }
+        return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    except Exception as e:
+        logger.error(f"Error generating MCP token: {e}")
+        return None
+
+
 def decode_token(token):
     """
     解析 JWT Token

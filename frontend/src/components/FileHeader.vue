@@ -34,6 +34,11 @@
         />
       </a-space>
 
+      <a-button type="text" @click="$emit('go-docs')" style="color: var(--color-text-2); display: flex; align-items: center; gap: 4px;">
+        <template #icon><icon-book /></template>
+        项目文档
+      </a-button>
+
       <a-dropdown trigger="click">
         <div class="user-info">
           <span class="username">{{ userInfo.username || '未登录' }}</span>
@@ -58,7 +63,7 @@
 </template>
 
 <script lang="ts" setup>
-import {IconUser} from '@arco-design/web-vue/es/icon'
+import {IconUser, IconBook} from '@arco-design/web-vue/es/icon'
 
 interface UserInfo {
   id: number | null
@@ -91,6 +96,7 @@ const emit = defineEmits([
   'update:searchKey',
   'search',
   'search-clear',
+  'go-docs',
   'logout',
   'click-avatar',
   'click-password',

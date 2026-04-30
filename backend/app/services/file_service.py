@@ -686,8 +686,8 @@ def get_files_and_folders(
     else:
         file_query = file_query.order_by(sort_column.desc())
 
-    total_folders = folder_query.with_entities(func.count()).scalar() or 0
-    total_files = file_query.with_entities(func.count()).scalar() or 0
+    total_folders = folder_query.order_by(None).with_entities(func.count()).scalar() or 0
+    total_files = file_query.order_by(None).with_entities(func.count()).scalar() or 0
     total_items = total_folders + total_files
     total_pages = (total_items + page_size - 1) // page_size if page_size > 0 else 1
     offset = (page - 1) * page_size

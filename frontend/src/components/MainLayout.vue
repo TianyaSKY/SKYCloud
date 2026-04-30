@@ -10,6 +10,7 @@
             @logout="handleLogout"
             @click-avatar="showAvatarModal = true"
             @click-password="showPasswordModal = true"
+            @go-docs="handleMenuClick('docs')"
         />
         <a-layout-content class="content">
           <slot></slot>
@@ -241,6 +242,10 @@ const handleMenuClick = (key: string) => {
     router.push('/shares')
   } else if (key === 'inbox') {
     router.push('/inbox')
+  } else if (key === 'docs') {
+    router.push('/docs')
+  } else if (key === 'mcp') {
+    router.push('/mcp')
   } else if (key === 'sys-dicts') {
     router.push('/sys_dicts')
   }

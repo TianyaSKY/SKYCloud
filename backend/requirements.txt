@@ -1,8 +1,11 @@
-﻿# --- Web 框架与 API ---
+# --- Web 框架与 API ---
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 PyJWT==2.10.1
+
+# --- MCP Server ---
+mcp[cli]>=1.8,<2.0
 
 # --- 大模型与 AI Agent ---
 langchain==0.3.27

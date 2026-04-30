@@ -4,10 +4,17 @@
     breakpoint="lg" 
     class="sidebar"
     collapsible
+    :hide-trigger="true"
     v-model:collapsed="collapsed"
   >
-    <div class="logo" :style="{ paddingLeft: collapsed ? '0' : '20px', justifyContent: collapsed ? 'center' : 'flex-start' }">
+    <div class="logo" :style="{ padding: collapsed ? '0' : '0 16px', justifyContent: collapsed ? 'center' : 'space-between' }">
       <span class="title" v-if="!collapsed">SKYCloud</span>
+      <a-button type="text" @click="collapsed = !collapsed" style="color: var(--color-text-2); font-size: 16px; padding: 0 8px;">
+        <template #icon>
+          <icon-menu-unfold v-if="collapsed" />
+          <icon-menu-fold v-else />
+        </template>
+      </a-button>
     </div>
     <a-menu
         :selected-keys="[activeMenu]"
@@ -32,6 +39,13 @@
         </template>
         收件箱
       </a-menu-item>
+
+      <a-menu-item key="mcp">
+        <template #icon>
+          <icon-command/>
+        </template>
+        MCP 服务
+      </a-menu-item>
       <a-menu-item v-if="isAdmin" key="sys-dicts">
         <template #icon>
           <icon-settings/>
@@ -44,7 +58,7 @@
 
 <script lang="ts" setup>
 import {computed, ref} from 'vue'
-import {IconEmail, IconFile, IconSettings, IconShareAlt} from '@arco-design/web-vue/es/icon'
+import {IconCommand, IconEmail, IconFile, IconSettings, IconShareAlt, IconMenuFold, IconMenuUnfold} from '@arco-design/web-vue/es/icon'
 
 defineProps<{
   activeMenu: string

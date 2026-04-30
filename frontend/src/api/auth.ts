@@ -7,3 +7,7 @@ export const login = (data: any) => {
 export const register = (data: any) => {
     return request.post('/auth/register', data)
 }
+
+export const generateMcpToken = () => {
+    return request.post('/auth/mcp-token')
+}

@@ -126,3 +126,73 @@ docker-compose up -d --build
 - 密码：`admin123`
 
 为安全起见，非演示环境请首次登录后立即修改。
+
+## MCP 服务（AI 客户端接入）
+
+SKYCloud 提供 [MCP (Model Context Protocol)](https://modelcontextprotocol.io) 服务，使 Claude Desktop、Cursor、Cline 等 AI 客户端可以直接访问云盘的文件管理功能。
+
+MCP Server 作为独立容器 `backend-mcp` 运行，默认端口 **5001**。
+
+### 获取 MCP Token
+
+1. 先使用普通登录接口获取短期 Token：
+
+```bash
+curl -X POST http://localhost:5000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "admin123"}'
+```
+
+2. 用登录 Token 调用 MCP Token 生成接口：
+
+```bash
+curl -X POST http://localhost:5000/api/auth/mcp-token \
+  -H "Authorization: Bearer <LOGIN_TOKEN>"
+```
+
+返回的 `mcp_token` 有效期 365 天，用于 MCP 客户端长期配置。
+
+### Claude Desktop 配置
+
+编辑 `claude_desktop_config.json`：
+
+```json
+{
+  "mcpServers": {
+    "skycloud": {
+      "url": "http://your-server:5001/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_MCP_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+### Cursor IDE 配置
+
+在项目根目录创建 `.cursor/mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "skycloud": {
+      "url": "http://your-server:5001/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_MCP_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+### MCP 可用工具
+
+| 工具 | 功能 |
+|---|---|
+| `search_files` | 模糊/语义搜索文件 |
+| `list_files` | 列出目录下文件和文件夹 |
+| `get_file_info` | 获取文件详细元数据 |
+| `create_folder` | 创建文件夹 |
+| `move_file` | 移动/重命名文件 |
+| `delete_file` | 删除文件 |

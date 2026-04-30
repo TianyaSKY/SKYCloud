@@ -5,6 +5,8 @@ import ShareView from '../views/ShareView.vue'
 import MySharesView from '../views/MySharesView.vue'
 import InboxView from '../views/InboxView.vue'
 import SysDictView from '../views/SysDictView.vue'
+import DocView from '../views/DocView.vue'
+import McpView from '../views/McpView.vue'
 
 const router = createRouter({
     history: createWebHistory(import.meta.env.BASE_URL),
@@ -30,6 +32,18 @@ const router = createRouter({
             path: '/inbox',
             name: 'inbox',
             component: InboxView,
+            meta: {requiresAuth: true}
+        },
+        {
+            path: '/docs',
+            name: 'docs',
+            component: DocView,
+            meta: {requiresAuth: true}
+        },
+        {
+            path: '/mcp',
+            name: 'mcp',
+            component: McpView,
             meta: {requiresAuth: true}
         },
         {
@@ -67,3 +81,4 @@ router.beforeEach((to, from, next) => {
 })
 
 export default router
+
