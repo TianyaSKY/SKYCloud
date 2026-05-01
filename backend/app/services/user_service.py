@@ -1,9 +1,12 @@
 from fastapi import HTTPException
-from fastapi_cache.decorator import cache
 
-from app.extensions import db, redis_client
+from app.cache import cacheable, evict_cache
+from app.extensions import db
 from app.models.user import User
 from app.services import folder_service
+
+USER_CACHE_PREFIX = "user:profile"
+USER_CACHE_EXPIRE = 3600
 
 
 def create_user(data):
@@ -20,16 +23,15 @@ def create_user(data):
     return new_user
 
 
-@cache(expire=3600)
-async def _get_user_data(id: int) -> dict:
+@cacheable(prefix=USER_CACHE_PREFIX, expire=USER_CACHE_EXPIRE)
+def _get_user_data(id: int) -> dict | None:
+    """缓存层：返回 dict 或 None（None 不会被缓存）"""
     user = db.session.get(User, id)
-    if not user:
-        return None
-    return user.to_dict()
+    return user.to_dict() if user else None
 
 
 async def get_user(id: int) -> User:
-    user_data = await _get_user_data(id)
+    user_data = _get_user_data(id)
     if not user_data:
         raise HTTPException(status_code=404, detail="User not found")
     return User.from_cache(user_data)
@@ -45,9 +47,7 @@ def update_user(id, data):
         user.set_password(data["password"])
     db.session.commit()
 
-    cacher_key = f"user:profile:{id}"
-    redis_client.delete(cacher_key)
-
+    evict_cache(USER_CACHE_PREFIX, id)
     return user
 
 
@@ -58,5 +58,4 @@ def delete_user(id):
     db.session.delete(user)
     db.session.commit()
 
-    cacher_key = f"user:profile:{id}"
-    redis_client.delete(cacher_key)
+    evict_cache(USER_CACHE_PREFIX, id)

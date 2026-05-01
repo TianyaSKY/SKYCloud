@@ -1,12 +1,12 @@
 from fastapi import HTTPException
-from fastapi_cache.decorator import cache
 
-from app.extensions import db, redis_client
+from app.cache import cacheable, evict_cache
+from app.extensions import db
 from app.models.sys_dict import SysDict
 from app.services.model_config import is_model_config_sys_dict_key
 
-CACHE_KEY = "sys_dict:all"
-CACHE_EXPIRE = 3600
+SYS_DICT_CACHE_PREFIX = "sys_dict:all"
+SYS_DICT_CACHE_EXPIRE = 3600
 MODEL_CONFIG_DB_ERROR = (
     "Model configuration must be managed by environment variables, "
     "not stored in sys_dict."
@@ -18,6 +18,10 @@ def _ensure_non_model_config_key(key: str | None) -> None:
         raise HTTPException(status_code=400, detail=MODEL_CONFIG_DB_ERROR)
 
 
+def _invalidate_sys_dict_cache() -> None:
+    evict_cache(SYS_DICT_CACHE_PREFIX)
+
+
 def create_sys_dict(data):
     _ensure_non_model_config_key(data.get("key"))
     new_dict = SysDict(
@@ -25,7 +29,7 @@ def create_sys_dict(data):
     )
     db.session.add(new_dict)
     db.session.commit()
-    redis_client.delete(CACHE_KEY)
+    _invalidate_sys_dict_cache()
     return new_dict
 
 
@@ -42,7 +46,7 @@ def update_sys_dict(id, data):
     sys_dict.des = data.get("des", sys_dict.des)
     sys_dict.enable = data.get("enable", sys_dict.enable)
     db.session.commit()
-    redis_client.delete(CACHE_KEY)
+    _invalidate_sys_dict_cache()
     return sys_dict
 
 
@@ -52,18 +56,21 @@ def delete_sys_dict(id):
         raise HTTPException(status_code=404, detail="SysDict not found")
     db.session.delete(sys_dict)
     db.session.commit()
-    redis_client.delete(CACHE_KEY)
+    _invalidate_sys_dict_cache()
 
 
-@cache(key_builder=lambda *args, **kwargs: CACHE_KEY, expire=CACHE_EXPIRE)
-async def get_sys_dict_all():
+@cacheable(prefix=SYS_DICT_CACHE_PREFIX, expire=SYS_DICT_CACHE_EXPIRE)
+def _get_sys_dict_all_cached() -> list[dict]:
     sys_dicts = db.session.query(SysDict).all()
-    data = [
+    return [
         sys_dict.to_dict()
         for sys_dict in sys_dicts
         if not is_model_config_sys_dict_key(sys_dict.key)
     ]
-    return data
+
+
+async def get_sys_dict_all():
+    return _get_sys_dict_all_cached()
 
 
 async def get_sys_dict_by_key(key):

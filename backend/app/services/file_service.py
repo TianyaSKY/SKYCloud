@@ -10,7 +10,7 @@ import uuid
 from typing import Any, cast
 
 from fastapi import HTTPException
-from fastapi_cache.decorator import cache
+from app.cache import cacheable, evict_cache_pattern
 from sqlalchemy import func
 from werkzeug.utils import secure_filename
 
@@ -25,6 +25,7 @@ from app.task_queue import publish_file_tasks
 logger = logging.getLogger(__name__)
 
 CACHE_EXPIRATION = 3600
+SEARCH_CACHE_PREFIX = "search:fuzzy"
 
 COPY_BUFFER_SIZE = 1024 * 1024
 
@@ -797,11 +798,11 @@ async def search_files(
 
     if search_type == "vector":
         return await _search_files_vector(user_id, query, page, page_size)
-    return await _search_files_fuzzy(user_id, query, page, page_size)
+    return _search_files_fuzzy(user_id, query, page, page_size)
 
 
-@cache(expire=CACHE_EXPIRATION)
-async def _search_files_fuzzy(
+@cacheable(prefix=SEARCH_CACHE_PREFIX, expire=CACHE_EXPIRATION)
+def _search_files_fuzzy(
     user_id: int, query: str, page: int, page_size: int
 ) -> dict[str, Any]:
     base_query = db.session.query(File).filter(
@@ -865,13 +866,7 @@ async def _search_files_vector(
 
 
 def _clear_search_cache(user_id: int) -> None:
-    try:
-        pattern = f"search:*:{user_id}:*"
-        keys = list(redis_client.scan_iter(match=pattern))
-        if keys:
-            redis_client.delete(*keys)
-    except Exception as e:
-        logger.error(f"Redis clear cache error: {e}")
+    evict_cache_pattern(SEARCH_CACHE_PREFIX)
 
 
 def get_root_file_id(user_id: int) -> int | None:

@@ -1,30 +1,18 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi_cache import FastAPICache
-from fastapi_cache.backends.redis import RedisBackend
-from redis import asyncio as aioredis
 
 from app import initialize_application
 from app.exceptions import register_exception_handlers
-from app.extensions import db, REDIS_HOST, REDIS_PORT
+from app.extensions import db
 from app.routers import auth, chat, file, folder, inbox, share, sys_dict, token_usage, user
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_application()
-
-    # Initialize FastAPI Cache with Redis
-    # fastapi-cache expects raw bytes from Redis for its default coder.
-    redis = aioredis.from_url(
-        f"redis://{REDIS_HOST}:{REDIS_PORT}", decode_responses=False
-    )
-    FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
-
     yield
     db.remove_session()
-    await redis.close()
 
 
 def create_fastapi_app() -> FastAPI:

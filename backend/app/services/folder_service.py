@@ -2,8 +2,8 @@ import uuid
 from typing import List
 
 from fastapi import HTTPException
-from fastapi_cache.decorator import cache
 
+from app.cache import cacheable, evict_cache
 from app.extensions import db, redis_client
 from app.models.file import File
 from app.models.folder import Folder
@@ -14,9 +14,21 @@ from app.task_queue import publish_organize_task
 ORGANIZE_TASK_LOCK_PREFIX = "organize:task:lock"
 ORGANIZE_TASK_LOCK_TTL_SECONDS = 6 * 60 * 60
 
+FOLDER_CACHE_PREFIX = "user:folders"
+ROOT_FOLDER_CACHE_PREFIX = "user:root_folder"
+ROOT_FILES_CACHE_PREFIX = "user:root_files"
+FOLDER_CACHE_EXPIRE = 3600
+
 
 def _organize_task_lock_key(user_id: int) -> str:
     return f"{ORGANIZE_TASK_LOCK_PREFIX}:{user_id}"
+
+
+def _invalidate_folder_caches(user_id: int) -> None:
+    """Invalidate all folder-related caches for a user."""
+    evict_cache(FOLDER_CACHE_PREFIX, user_id)
+    evict_cache(ROOT_FOLDER_CACHE_PREFIX, user_id)
+    evict_cache(ROOT_FILES_CACHE_PREFIX, user_id)
 
 
 def create_folder(data):
@@ -43,7 +55,7 @@ def create_folder(data):
 
         # Invalidate cache
         if new_folder.user_id:
-            redis_client.delete(f"user:folders:{new_folder.user_id}")
+            _invalidate_folder_caches(new_folder.user_id)
 
         return new_folder
     except Exception as e:
@@ -92,7 +104,7 @@ def update_folder(id, data):
 
         # Invalidate cache
         if folder.user_id:
-            redis_client.delete(f"user:folders:{folder.user_id}")
+            _invalidate_folder_caches(folder.user_id)
 
         return folder
     except Exception as e:
@@ -131,7 +143,7 @@ def delete_folder(id):
 
         # Invalidate cache
         if user_id:
-            redis_client.delete(f"user:folders:{user_id}")
+            _invalidate_folder_caches(user_id)
             _clear_search_cache(user_id)
     except Exception as e:
         db.session.rollback()
@@ -173,17 +185,17 @@ def _delete_folder_recursive(folder, deleted_events: list[dict]):
         db.session.delete(subfolder)
 
 
-@cache(expire=3600)
-async def get_root_folder_id(user_id) -> int | None:
+@cacheable(prefix=ROOT_FOLDER_CACHE_PREFIX, expire=FOLDER_CACHE_EXPIRE)
+def get_root_folder_id(user_id) -> int | None:
     root_folder = db.session.query(Folder).filter_by(user_id=user_id, parent_id=None).first()
     if root_folder:
         return root_folder.id
     return None
 
 
-@cache(expire=3600)
-async def get_files_in_root_folder(user_id) -> List[dict]:
-    root_folder_id = await get_root_folder_id(user_id)
+@cacheable(prefix=ROOT_FILES_CACHE_PREFIX, expire=FOLDER_CACHE_EXPIRE)
+def get_files_in_root_folder(user_id) -> List[dict]:
+    root_folder_id = get_root_folder_id(user_id)
     if not root_folder_id:
         return []
 
@@ -191,8 +203,8 @@ async def get_files_in_root_folder(user_id) -> List[dict]:
     return [f.to_dict() for f in files]
 
 
-@cache(expire=3600)
-async def get_folders(user_id) -> List[dict]:
+@cacheable(prefix=FOLDER_CACHE_PREFIX, expire=FOLDER_CACHE_EXPIRE)
+def get_folders(user_id) -> List[dict]:
     folders = db.session.query(Folder).filter_by(user_id=user_id).all()
     return [f.to_dict() for f in folders]
 

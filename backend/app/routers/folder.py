@@ -42,9 +42,9 @@ def delete_folder(id: int, current_user=Depends(get_current_user)):
 
 
 @router.get("/folder/root_id")
-async def get_root_folder_id(current_user=Depends(get_current_user)):
+def get_root_folder_id(current_user=Depends(get_current_user)):
     return {
-        "root_folder_id": await folder_service.get_root_folder_id(current_user.id),
+        "root_folder_id": folder_service.get_root_folder_id(current_user.id),
         "code": 200,
     }
 
@@ -56,8 +56,8 @@ def get_folder(id: int, current_user=Depends(get_current_user)):
 
 
 @router.get("/folder/all")
-async def get_folders(current_user=Depends(get_current_user)):
-    folders = await folder_service.get_folders(current_user.id)
+def get_folders(current_user=Depends(get_current_user)):
+    folders = folder_service.get_folders(current_user.id)
     return {
         "folders": folders,
         "code": 200,
