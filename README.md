@@ -185,3 +185,7 @@ MCP Server 作为独立容器 `backend-mcp` 运行，默认端口 **5001**。
 | `create_folder` | 创建文件夹 |
 | `move_file` | 移动/重命名文件 |
 | `delete_file` | 删除文件 |
+| `get_file_download_url` | 生成临时下载链接（可设置过期时间，最长 7 天） |
+| `read_file_content` | 读取文本文件内容（txt/md/csv/json/代码等，最大 512KB） |
+
+> **注意**：`get_file_download_url` 生成的下载链接依赖 `SKYCLOUD_BASE_URL` 环境变量（默认 `http://localhost:5000`）。部署时请在 `.env` 中设置为实际的 API 访问地址，例如 `SKYCLOUD_BASE_URL=https://your-domain.com`。
