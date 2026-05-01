@@ -6,12 +6,15 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 
 from app import initialize_application
-from app.extensions import redis_client, db
+from app.extensions import db
 from app.services import folder_service
 from app.services.file_service import (
+    cleanup_expired_uploads,
+)
+from app.task_queue import (
     FILE_PROCESS_QUEUE,
     ORGANIZE_FILE_QUEUE,
-    cleanup_expired_uploads,
+    RabbitMQTaskConsumer,
 )
 from worker.indexing_handler import handle_file_indexing as handle_file_process
 from worker.indexing_handler import handle_batch_indexing
@@ -55,14 +58,11 @@ def process_task(file_id, semaphore: threading.Semaphore):
         semaphore.release()
 
 
-def drain_file_queue(max_batch: int) -> list[int]:
-    """从 Redis 一次性取最多 max_batch 个 file_id（不阻塞）"""
+def drain_file_queue(consumer: RabbitMQTaskConsumer, max_batch: int) -> list[int]:
+    """从 RabbitMQ 一次性取最多 max_batch 个 file_id（不阻塞）"""
     ids = []
-    for _ in range(max_batch):
-        data = redis_client.lpop(FILE_PROCESS_QUEUE)
-        if data is None:
-            break
-        ids.append(int(data))
+    for message in consumer.drain_messages(FILE_PROCESS_QUEUE, max_batch):
+        ids.append(int(message.body))
     return ids
 
 
@@ -110,6 +110,7 @@ def run_worker(max_workers):
 
     # 信号量：限制同时运行的任务数，防止主循环提交速度超过处理速度
     semaphore = threading.Semaphore(max_workers)
+    consumer = RabbitMQTaskConsumer()
 
     # 使用线程池处理并发
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -118,59 +119,53 @@ def run_worker(max_workers):
             semaphore.acquire()
 
             try:
-                # blpop 返回一个元组 (queue_name, data)
-                task = redis_client.blpop(
-                    [FILE_PROCESS_QUEUE, ORGANIZE_FILE_QUEUE], timeout=0
-                )
+                message = consumer.get_next_message()
+                queue_name = message.queue_name
+                data = message.body
+                try:
+                    if queue_name == FILE_PROCESS_QUEUE:
+                        # 取到第一个 file_id 后，尝试 drain 更多
+                        first_id = int(data)
+                        extra_ids = drain_file_queue(consumer, BATCH_SIZE - 1)
+                        all_ids = [first_id] + extra_ids
 
-                if task:
-                    queue_name, data = task
-                    try:
-                        if queue_name == FILE_PROCESS_QUEUE:
-                            # 取到第一个 file_id 后，尝试 drain 更多
-                            first_id = int(data)
-                            extra_ids = drain_file_queue(BATCH_SIZE - 1)
-                            all_ids = [first_id] + extra_ids
+                        if len(all_ids) > 1:
+                            # 多个文件：用批量处理
+                            logger.info(
+                                f"[Worker] Submitting batch of {len(all_ids)} files")
+                            executor.submit(
+                                process_batch_task, all_ids, semaphore)
+                        else:
+                            # 单个文件：保持原有逻辑
+                            executor.submit(
+                                process_task, first_id, semaphore)
+                    elif queue_name == ORGANIZE_FILE_QUEUE:
+                        lock_token = None
+                        user_id = None
+                        try:
+                            payload = json.loads(data)
+                            if isinstance(payload, dict):
+                                user_id = int(payload["user_id"])
+                                lock_token = str(
+                                    payload.get("lock_token") or "")
+                        except (json.JSONDecodeError, TypeError, KeyError, ValueError):
+                            user_id = int(data)
 
-                            if len(all_ids) > 1:
-                                # 多个文件：用批量处理
-                                logger.info(
-                                    f"[Worker] Submitting batch of {len(all_ids)} files")
-                                executor.submit(
-                                    process_batch_task, all_ids, semaphore)
-                            else:
-                                # 单个文件：保持原有逻辑
-                                executor.submit(
-                                    process_task, first_id, semaphore)
-                        elif queue_name == ORGANIZE_FILE_QUEUE:
-                            lock_token = None
-                            user_id = None
-                            try:
-                                payload = json.loads(data)
-                                if isinstance(payload, dict):
-                                    user_id = int(payload["user_id"])
-                                    lock_token = str(
-                                        payload.get("lock_token") or "")
-                            except (json.JSONDecodeError, TypeError, KeyError, ValueError):
-                                user_id = int(data)
+                        if user_id is None:
+                            raise ValueError(
+                                f"Invalid organize queue payload: {data}")
 
-                            if user_id is None:
-                                raise ValueError(
-                                    f"Invalid organize queue payload: {data}")
-
-                            executor.submit(process_organize_task,
-                                            user_id, lock_token, semaphore)
-                    except ValueError:
-                        logger.exception(
-                            f"Invalid data received from queue {queue_name}: {data}"
-                        )
-                        semaphore.release()  # 提交失败时释放信号量
-                    except Exception as e:
-                        logger.exception(
-                            f"Error submitting task from {queue_name}: {e}")
-                        semaphore.release()  # 提交失败时释放信号量
-                else:
-                    semaphore.release()  # blpop 超时无数据时释放信号量
+                        executor.submit(process_organize_task,
+                                        user_id, lock_token, semaphore)
+                except ValueError:
+                    logger.exception(
+                        f"Invalid data received from queue {queue_name}: {data}"
+                    )
+                    semaphore.release()  # 提交失败时释放信号量
+                except Exception as e:
+                    logger.exception(
+                        f"Error submitting task from {queue_name}: {e}")
+                    semaphore.release()  # 提交失败时释放信号量
             except Exception:
                 semaphore.release()  # 任何异常都释放信号量
                 raise

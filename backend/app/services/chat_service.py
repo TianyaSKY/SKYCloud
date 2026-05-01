@@ -5,13 +5,17 @@ import os
 from collections import defaultdict
 from functools import lru_cache
 from operator import itemgetter
+from typing import TYPE_CHECKING
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableParallel, RunnableLambda
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from sqlalchemy import text
+
+if TYPE_CHECKING:
+    from langchain_openai import OpenAIEmbeddings
 
 from app.extensions import SessionLocal
 from app.services.model_config import get_chat_model_config, get_embedding_model_config
@@ -55,9 +59,10 @@ def get_chat_model():
 
 @lru_cache(maxsize=1)
 def get_embeddings_model():
+    from app.services.llm_client import TrackingOpenAIEmbeddings
     config = get_embedding_model_config()
 
-    return OpenAIEmbeddings(
+    return TrackingOpenAIEmbeddings(
         api_key=config["key"],
         base_url=config["api"],
         model=config["model"],
@@ -67,7 +72,7 @@ def get_embeddings_model():
 def _vector_search_docs(
         query_text: str,
         user_id: int,
-        embeddings: OpenAIEmbeddings,
+        embeddings: "OpenAIEmbeddings",
         limit: int,
 ) -> list[Document]:
     """单条查询的完整向量检索（embedding + DB），保留向后兼容。"""
@@ -280,8 +285,15 @@ async def retrieve_docs_with_rewrite(payload: dict):
 
 async def generate_chat_events(user_id, query: str, history: list):
     """异步生成器，用于 SSE 流式输出"""
+    from app.services.llm_client import record_llm_usage, TrackingOpenAIEmbeddings
+
     llm = get_chat_model()
     formatted_history = format_history(history)
+
+    # 设置 embedding 模型的用户 ID，用于 token 追踪
+    emb_model = get_embeddings_model()
+    if isinstance(emb_model, TrackingOpenAIEmbeddings):
+        emb_model.set_tracking_user(user_id)
 
     # 关键词重写链：多维度提取，统一输出 JSON，便于下游检索拼接
     rewrite_prompt = ChatPromptTemplate.from_template("""
@@ -354,6 +366,14 @@ async def generate_chat_events(user_id, query: str, history: list):
         | answer_chain
     )
 
+    # ---- Token 用量追踪 ----
+    usage_accumulator: dict[str, int] = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+    }
+    model_name_seen: str | None = None
+
     try:
         async for event in rag_chain.astream_events(
                 {"question": query, "history": formatted_history, "user_id": user_id},
@@ -378,6 +398,30 @@ async def generate_chat_events(user_id, query: str, history: list):
             elif kind == "on_retriever_start" or (kind == "on_chain_start" and event["name"] == "custom_db_retriever"):
                 yield f"data: {json.dumps({'type': 'status', 'content': '正在检索相关文件...'})}\n\n"
 
+            # 捕获 LLM 的 token 使用信息（每个 on_chat_model_end 事件都包含 usage_metadata）
+            elif kind == "on_chat_model_end":
+                output = event.get("data", {}).get("output")
+                if output and hasattr(output, "usage_metadata") and output.usage_metadata:
+                    um = output.usage_metadata
+                    usage_accumulator["prompt_tokens"] += um.get("input_tokens", 0)
+                    usage_accumulator["completion_tokens"] += um.get("output_tokens", 0)
+                    usage_accumulator["total_tokens"] += um.get("total_tokens", 0)
+                # 记录模型名
+                if not model_name_seen:
+                    run_meta = event.get("metadata", {}) or {}
+                    model_name_seen = run_meta.get("ls_model_name")
+
     except Exception as e:
         logger.error(f"Chat error: {e}", exc_info=True)
         yield f"data: {json.dumps({'type': 'status', 'content': f'出错了: {str(e)}'})}\n\n"
+    finally:
+        # 无论成功或异常，都通过统一接口记录本次 token 消耗
+        record_llm_usage(
+            user_id=user_id,
+            action="chat",
+            model_name=model_name_seen,
+            prompt_tokens=usage_accumulator["prompt_tokens"],
+            completion_tokens=usage_accumulator["completion_tokens"],
+            total_tokens=usage_accumulator["total_tokens"],
+            query_summary=query,
+        )

@@ -8,7 +8,7 @@ from redis import asyncio as aioredis
 from app import initialize_application
 from app.exceptions import register_exception_handlers
 from app.extensions import db, REDIS_HOST, REDIS_PORT
-from app.routers import auth, chat, file, folder, inbox, share, sys_dict, user
+from app.routers import auth, chat, file, folder, inbox, share, sys_dict, token_usage, user
 
 
 @asynccontextmanager
@@ -50,6 +50,7 @@ def create_fastapi_app() -> FastAPI:
     app.include_router(share.router, prefix="/api")
     app.include_router(inbox.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")
+    app.include_router(token_usage.router, prefix="/api")
 
     @app.get("/api/health")
     def health():

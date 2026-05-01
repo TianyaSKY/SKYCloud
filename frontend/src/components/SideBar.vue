@@ -46,6 +46,12 @@
         </template>
         MCP 服务
       </a-menu-item>
+      <a-menu-item key="token-usage">
+        <template #icon>
+          <icon-bar-chart/>
+        </template>
+        用量统计
+      </a-menu-item>
       <a-menu-item v-if="isAdmin" key="sys-dicts">
         <template #icon>
           <icon-settings/>
@@ -58,7 +64,7 @@
 
 <script lang="ts" setup>
 import {computed, ref, watch} from 'vue'
-import {IconCommand, IconEmail, IconFile, IconSettings, IconShareAlt, IconMenuFold, IconMenuUnfold} from '@arco-design/web-vue/es/icon'
+import {IconBarChart, IconCommand, IconEmail, IconFile, IconSettings, IconShareAlt, IconMenuFold, IconMenuUnfold} from '@arco-design/web-vue/es/icon'
 
 defineProps<{
   activeMenu: string

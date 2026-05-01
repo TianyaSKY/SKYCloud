@@ -11,7 +11,6 @@ from typing import Any, cast
 
 from fastapi import HTTPException
 from fastapi_cache.decorator import cache
-from openai import OpenAI
 from sqlalchemy import func
 from werkzeug.utils import secure_filename
 
@@ -21,17 +20,15 @@ from app.models.folder import Folder
 from app.services import change_log_service
 from app.services import file_access_bloom
 from app.services.model_config import get_embedding_model_config
+from app.task_queue import publish_file_tasks
 
 logger = logging.getLogger(__name__)
 
-FILE_PROCESS_QUEUE = "file_process_queue"
-ORGANIZE_FILE_QUEUE = "organize_file_queue"
 CACHE_EXPIRATION = 3600
 
 COPY_BUFFER_SIZE = 1024 * 1024
 
-# Embedding 客户端缓存，避免每次调用都新建连接
-_embedding_client_cache: dict[tuple, OpenAI] = {}
+
 DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024
 MAX_CHUNK_SIZE = 64 * 1024 * 1024
 MAX_UPLOAD_SIZE = 0
@@ -229,14 +226,11 @@ def _push_processing_queue(file_ids: list[int], uploader_id: int | None) -> None
     if not file_ids:
         return
     try:
-        pipe = redis_client.pipeline()
-        for file_id in file_ids:
-            pipe.rpush(FILE_PROCESS_QUEUE, file_id)
-        pipe.execute()
+        publish_file_tasks(file_ids)
         if uploader_id:
             _clear_search_cache(uploader_id)
     except Exception as e:
-        logger.exception(f"Error pushing to Redis queue: {e}")
+        logger.exception(f"Error publishing to RabbitMQ queue: {e}")
 
 
 def _multipart_upload_dir(uploader_id: int, upload_id: str) -> str:
@@ -830,7 +824,7 @@ async def _search_files_vector(
 ) -> dict[str, Any]:
     try:
         emb_config = get_embedding_model_config()
-        embeddings = embedding_desc(query, emb_config)
+        embeddings = embedding_desc(query, emb_config, user_id=user_id)
         if not embeddings:
             return {
                 "items": [],
@@ -932,38 +926,34 @@ def batch_delete_items(items: list[dict[str, Any]]) -> None:
             delete_file(item_id)
 
 
-def _get_embedding_client(config: dict[str, str]) -> OpenAI:
-    """获取或复用 Embedding OpenAI 客户端"""
-    cache_key = (config.get("api"), config.get("key"))
-    if cache_key not in _embedding_client_cache:
-        _embedding_client_cache[cache_key] = OpenAI(
-            api_key=config["key"], base_url=config["api"], timeout=120
-        )
-    return _embedding_client_cache[cache_key]
-
-
-def embedding_desc(desc: str, config: dict[str, str]) -> list[float]:
-    model = config.get("model", "Qwen/Qwen3-Embedding-8B")
+def embedding_desc(desc: str, config: dict[str, str], user_id: int = 0) -> list[float]:
+    """生成单条文本的 embedding 向量（通过统一 LLM 接口）"""
     try:
-        client = _get_embedding_client(config)
-        resp = client.embeddings.create(model=model, input=desc)
-        return resp.data[0].embedding[:1024]
+        from app.services.llm_client import embed_texts
+        vectors = embed_texts(
+            texts=desc,
+            config=config,
+            user_id=user_id,
+            query_summary=desc[:100] if desc else None,
+        )
+        return vectors[0] if vectors else []
     except Exception as e:
         logger.exception(f"Embedding failed: {e}")
         return []
 
 
-def batch_embedding_desc(texts: list[str], config: dict[str, str]) -> list[list[float]]:
-    """批量生成 embedding 向量，一次 API 调用处理多条文本"""
+def batch_embedding_desc(texts: list[str], config: dict[str, str], user_id: int = 0) -> list[list[float]]:
+    """批量生成 embedding 向量（通过统一 LLM 接口）"""
     if not texts:
         return []
-    model = config.get("model", "Qwen/Qwen3-Embedding-8B")
     try:
-        client = _get_embedding_client(config)
-        resp = client.embeddings.create(model=model, input=texts)
-        # 按 index 排序确保结果顺序与输入一致
-        sorted_data = sorted(resp.data, key=lambda x: x.index)
-        return [item.embedding[:1024] for item in sorted_data]
+        from app.services.llm_client import embed_texts
+        return embed_texts(
+            texts=texts,
+            config=config,
+            user_id=user_id,
+            query_summary=f"batch({len(texts)} texts)",
+        )
     except Exception as e:
         logger.exception(f"Batch embedding failed: {e}")
         return [[] for _ in texts]
@@ -973,7 +963,7 @@ def retry_embedding(file_id: int) -> None:
     file_obj = db.session.get(File, file_id)
     if not file_obj:
         return
-    redis_client.rpush(FILE_PROCESS_QUEUE, file_obj.id)
+    publish_file_tasks([cast(int, file_obj.id)])
 
 
 def rebuild_failed_indexes(user_id: int | None = None) -> int:
@@ -996,21 +986,18 @@ def rebuild_failed_indexes(user_id: int | None = None) -> int:
         logger.exception("Failed to update file status to pending")
         return 0
 
-    pushed = 0
-    for file_id in file_ids:
-        try:
-            redis_client.rpush(FILE_PROCESS_QUEUE, file_id)
-            pushed += 1
-        except Exception:
-            logger.exception(f"Failed to push file {file_id} to redis")
-    return pushed
+    try:
+        publish_file_tasks([int(file_id) for file_id in file_ids])
+    except Exception:
+        logger.exception("Failed to publish failed files to RabbitMQ")
+        return 0
+    return len(file_ids)
 
 
 def get_all_files(user_id: int) -> list[File]:
     return db.session.query(File).filter_by(uploader_id=user_id).all()
 
 
-@cache(expire=60)
 async def process_status(user_id: int) -> dict[str, int]:
     """使用 SQL GROUP BY 聚合统计文件状态，避免全量加载 ORM 对象。"""
     rows = (

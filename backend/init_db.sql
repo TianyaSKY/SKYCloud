@@ -8,12 +8,16 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- 2. 创建用户表
 CREATE TABLE IF NOT EXISTS users
 (
-    id            SERIAL PRIMARY KEY,
-    username      VARCHAR(80) UNIQUE NOT NULL,
-    password_hash VARCHAR(1024)      NOT NULL,
-    role          VARCHAR(10) DEFAULT 'common', -- admin, common
-    avatar        VARCHAR(255),
-    created_at    TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    id                     SERIAL PRIMARY KEY,
+    username               VARCHAR(80) UNIQUE NOT NULL,
+    password_hash          VARCHAR(1024)      NOT NULL,
+    role                   VARCHAR(10) DEFAULT 'common', -- admin, common
+    avatar                 VARCHAR(255),
+    created_at             TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    total_prompt_tokens    BIGINT DEFAULT 0,
+    total_completion_tokens BIGINT DEFAULT 0,
+    total_tokens           BIGINT DEFAULT 0,
+    last_active_at         TIMESTAMP WITH TIME ZONE
 );
 
 -- 3. 创建文件夹表
@@ -129,6 +133,24 @@ CREATE TABLE IF NOT EXISTS mcp_tokens
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_tokens_user_id ON mcp_tokens (user_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_tokens_token_hash ON mcp_tokens (token_hash);
+
+-- 11. 创建 Token 使用记录表
+CREATE TABLE IF NOT EXISTS token_usage_logs
+(
+    id                SERIAL PRIMARY KEY,
+    user_id           INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    action            VARCHAR(50) NOT NULL,          -- chat / embedding / rewrite / vl_describe / organize
+    model_name        VARCHAR(255),
+    prompt_tokens     INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0,
+    total_tokens      INTEGER DEFAULT 0,
+    query_summary     VARCHAR(200),
+    extra_info        TEXT,
+    created_at        TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_token_usage_logs_user_id ON token_usage_logs (user_id);
+CREATE INDEX IF NOT EXISTS idx_token_usage_logs_user_action ON token_usage_logs (user_id, action);
+CREATE INDEX IF NOT EXISTS idx_token_usage_logs_created_at ON token_usage_logs (user_id, created_at);
 
 -- ==========================================
 -- 初始化数据

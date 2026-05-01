@@ -31,7 +31,7 @@ SKYCloud is an AI-enabled cloud file management system with:
 
 ## Tech Stack
 
-- Backend: FastAPI, SQLAlchemy, Redis, PostgreSQL (pgvector)
+- Backend: FastAPI, SQLAlchemy, Redis, RabbitMQ, PostgreSQL (pgvector)
 - Frontend: Vue 3, TypeScript, Vite, Arco Design
 - Worker: Python multi-thread worker for async file indexing/organizing
 - Deployment: Docker Compose
@@ -78,6 +78,7 @@ cp .env.example .env
 3. Update key variables in `.env`:
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`
 - `REDIS_PORT`
+- `RABBITMQ_PORT`, `RABBITMQ_MANAGEMENT_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, `RABBITMQ_VHOST`
 - `BACKEND_API_PORT`
 - `UPLOAD_HOST_PATH` (host path for uploaded files)
 - `WORKER_MAX_THREADS`
@@ -101,7 +102,7 @@ RAG now supports an optional rerank model (vector recall first, then reranking).
 The current RAG pipeline is "file-level description retrieval + multi-query fusion":
 
 1. Offline indexing
-- After upload, files are pushed to a Redis queue and processed by `backend/tasks.py` workers.
+- After upload, files are pushed to RabbitMQ and processed by `backend/tasks.py` workers.
 - Workers generate file descriptions (`files.description`) and embeddings (`files.vector_info`, 1024-dim pgvector).
 - Retrieval is user-scoped: only files owned by the current user are searched.
 
@@ -149,7 +150,7 @@ docker-compose up -d --build
 
 ### 1. Start backend dependencies
 
-Start PostgreSQL + Redis first (locally or via Docker).
+Start PostgreSQL + Redis + RabbitMQ first (locally or via Docker).
 
 ### 2. Run backend API
 

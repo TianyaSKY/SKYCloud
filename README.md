@@ -32,7 +32,7 @@ SKYCloud 是一个 AI 增强的云文件管理系统，支持：
 
 ## 技术栈
 
-- 后端：FastAPI、SQLAlchemy、Redis、PostgreSQL (pgvector)
+- 后端：FastAPI、SQLAlchemy、Redis、RabbitMQ、PostgreSQL (pgvector)
 - 前端：Vue 3、TypeScript、Vite、Arco Design
 - Worker：Python 多线程任务进程（异步索引/整理）
 - 部署：Docker Compose
@@ -83,7 +83,7 @@ cp .env.example .env
 当前 RAG 是“文件级描述检索 + 多查询融合”，核心流程如下：
 
 1. 文件索引（离线）
-- 文件上传后由 `backend/tasks.py` worker 异步处理。
+- 文件上传后写入 RabbitMQ 队列，并由 `backend/tasks.py` worker 异步处理。
 - 为文件生成描述并写入 `files.description`，再生成 embedding 写入 `files.vector_info`（1024 维 pgvector）。
 - 依赖 `files` 表上的向量索引。
 

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, Integer, String, DateTime, Enum
+from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Enum
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from app.extensions import Base
@@ -16,7 +16,11 @@ class User(Base):
     avatar = Column(String(255), default=None)  # 头像 URL，默认为空
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-
+    # ---- Token 使用量累计统计 ----
+    total_prompt_tokens = Column(BigInteger, default=0)
+    total_completion_tokens = Column(BigInteger, default=0)
+    total_tokens = Column(BigInteger, default=0)
+    last_active_at = Column(DateTime, default=None)
 
     def __repr__(self):
         return f"<User {self.username}>"
@@ -34,16 +38,26 @@ class User(Base):
             "role": self.role,
             "avatar": self.avatar,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "total_prompt_tokens": self.total_prompt_tokens or 0,
+            "total_completion_tokens": self.total_completion_tokens or 0,
+            "total_tokens": self.total_tokens or 0,
+            "last_active_at": self.last_active_at.isoformat() if self.last_active_at else None,
         }
 
     @classmethod
     def from_cache(cls, d: dict) -> "User":
         created_at_str = d.get("created_at")
         created_at = datetime.fromisoformat(created_at_str) if created_at_str else None
+        last_active_str = d.get("last_active_at")
+        last_active_at = datetime.fromisoformat(last_active_str) if last_active_str else None
         return cls(
             id=d.get("id"),
             username=d.get("username"),
             role=d.get("role"),
             avatar=d.get("avatar"),
             created_at=created_at,
+            total_prompt_tokens=d.get("total_prompt_tokens", 0),
+            total_completion_tokens=d.get("total_completion_tokens", 0),
+            total_tokens=d.get("total_tokens", 0),
+            last_active_at=last_active_at,
         )

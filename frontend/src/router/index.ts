@@ -7,6 +7,7 @@ import InboxView from '../views/InboxView.vue'
 import SysDictView from '../views/SysDictView.vue'
 import DocView from '../views/DocView.vue'
 import McpView from '../views/McpView.vue'
+import TokenUsageView from '../views/TokenUsageView.vue'
 
 const router = createRouter({
     history: createWebHistory(import.meta.env.BASE_URL),
@@ -44,6 +45,12 @@ const router = createRouter({
             path: '/mcp',
             name: 'mcp',
             component: McpView,
+            meta: {requiresAuth: true}
+        },
+        {
+            path: '/token-usage',
+            name: 'token-usage',
+            component: TokenUsageView,
             meta: {requiresAuth: true}
         },
         {

@@ -59,14 +59,14 @@ def handle_file_indexing(file_id: int) -> None:
 
         # 生成描述（纯文本文件使用 chat 模型，其他使用 VL 模型）
         description = generate_file_description(
-            abs_path, vl_config, chat_config)
+            abs_path, vl_config, chat_config, user_id=file.uploader_id or 0)
         file.description = description
         db.session.commit()
 
         # 生成向量嵌入（文件名 + 描述 拼接，使文件名也参与语义检索）
         embedding_text = f"文件名: {file.name}\n{description}"
         file.vector_info = file_service.embedding_desc(
-            embedding_text, emb_config)
+            embedding_text, emb_config, user_id=file.uploader_id or 0)
 
         # 更新状态为成功
         file.status = "success"
@@ -161,7 +161,7 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
 
             abs_path = file.get_abs_path()
             description = generate_file_description(
-                abs_path, vl_config, chat_config)
+                abs_path, vl_config, chat_config, user_id=file.uploader_id or 0)
             file.description = description
             db.session.commit()
 
@@ -182,7 +182,9 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
     texts = [f"文件名: {f.name}\n{desc}" for f, desc in described_files]
     logger.info(f"[Batch] Sending {len(texts)} texts for batch embedding...")
 
-    vectors = file_service.batch_embedding_desc(texts, emb_config)
+    # 批量 embedding 的 user_id 取第一个文件的 uploader_id
+    batch_user_id = described_files[0][0].uploader_id or 0 if described_files else 0
+    vectors = file_service.batch_embedding_desc(texts, emb_config, user_id=batch_user_id)
     logger.info(f"[Batch] Received {len(vectors)} embedding vectors.")
 
     # Phase 3: 写回数据库

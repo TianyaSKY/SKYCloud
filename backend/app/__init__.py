@@ -88,6 +88,7 @@ def initialize_application():
         McpToken,
         FileChangeEvent,
         OrganizeCheckpoint,
+        TokenUsageLog,
     )
 
     # 确保上传目录存在

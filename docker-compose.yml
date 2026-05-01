@@ -36,6 +36,27 @@ services:
     networks:
       - skycloud-network
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: skycloud-rabbitmq
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-skycloud}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-skycloud}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - skycloud-network
+
   backend-api:
     build:
       context: ./backend
@@ -56,10 +77,17 @@ services:
       - DATABASE_PORT=5432
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=${RABBITMQ_USER:-skycloud}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-skycloud}
+      - RABBITMQ_VHOST=${RABBITMQ_VHOST:-/}
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     networks:
       - skycloud-network
@@ -82,10 +110,17 @@ services:
       - DATABASE_PORT=5432
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=${RABBITMQ_USER:-skycloud}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-skycloud}
+      - RABBITMQ_VHOST=${RABBITMQ_VHOST:-/}
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     networks:
       - skycloud-network
@@ -110,11 +145,18 @@ services:
       - DATABASE_PORT=5432
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=${RABBITMQ_USER:-skycloud}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-skycloud}
+      - RABBITMQ_VHOST=${RABBITMQ_VHOST:-/}
       - MCP_PORT=5001
     depends_on:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     networks:
       - skycloud-network
@@ -139,3 +181,4 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  rabbitmq_data:

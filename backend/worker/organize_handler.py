@@ -321,6 +321,25 @@ def handle_organize_process(user_id: int):
             "以下为模型调用的详细操作：\n"
             f"{results}"
         )
+
+        # 记录 organize 的 token 用量
+        if token_usage.get("total_tokens", 0) > 0:
+            try:
+                from app.services.llm_client import record_llm_usage
+                from app.services.model_config import get_chat_model_config
+                chat_config = get_chat_model_config()
+                record_llm_usage(
+                    user_id=user_id,
+                    action="organize",
+                    model_name=chat_config.get("model", "unknown"),
+                    prompt_tokens=token_usage.get("input_tokens", 0),
+                    completion_tokens=token_usage.get("output_tokens", 0),
+                    total_tokens=token_usage.get("total_tokens", 0),
+                    query_summary="文件整理任务",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record organize token usage: {e}")
+
     except Exception as exc:
         logger.exception("文件整理失败")
         token_usage = {}

@@ -5,6 +5,8 @@
 - 支持文档、图片、视频等多种格式
 - 将文件转换为图片后调用 VL 模型分析
 - 生成结构化的英文描述用于后续向量化
+
+所有 LLM 调用统一通过 llm_client.chat_completion() 发起。
 """
 
 import base64
@@ -15,7 +17,6 @@ from pathlib import Path
 
 import cv2
 from docx import Document
-from openai import OpenAI
 
 from .format_converter import (
     convert_office_to_pdf,
@@ -120,17 +121,20 @@ def _get_visual_urls(local_path: str) -> list:
     return image_uris
 
 
-def _generate_text_description(local_path: str, config: dict) -> str:
+def _generate_text_description(local_path: str, config: dict, user_id: int = 0) -> str:
     """
     使用对话模型为纯文本文件生成描述（比 VL 模型更快更便宜）。
 
     Args:
         local_path: 文件本地路径
         config: Chat 模型配置，包含 api、key、model
+        user_id: 文件上传者 ID
 
     Returns:
         str: 生成的中文描述文本
     """
+    from app.services.llm_client import chat_completion
+
     text_content = _extract_text_content(local_path)
     if not text_content.strip():
         return "空文件"
@@ -138,13 +142,7 @@ def _generate_text_description(local_path: str, config: dict) -> str:
     # 截断过长的文本，避免超出模型上下文
     max_chars = 8000
     if len(text_content) > max_chars:
-        text_content = text_content[:max_chars] + "\n...（内容已截断）"
-
-    api = config.get("api")
-    key = config.get("key")
-    model = config.get("model")
-
-    client = OpenAI(api_key=key, base_url=api, timeout=120)
+        text_content = text_content[:max_chars] + "\n...(内容已截断)"
 
     prompt = (
         "你是一个专业的文件分析助手。请根据以下文本内容，生成准确、专业、简洁的描述。"
@@ -153,12 +151,15 @@ def _generate_text_description(local_path: str, config: dict) -> str:
     )
 
     try:
-        response = client.chat.completions.create(
-            model=model,
+        response = chat_completion(
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": text_content},
             ],
+            config=config,
+            user_id=user_id,
+            action="describe_text",
+            query_summary=Path(local_path).name,
         )
         ans = response.choices[0].message.content
         if not ans:
@@ -171,38 +172,38 @@ def _generate_text_description(local_path: str, config: dict) -> str:
 
 
 def generate_file_description(
-    local_path: str, config: dict, chat_config: dict | None = None
+    local_path: str, config: dict, chat_config: dict | None = None, user_id: int = 0
 ) -> str:
     """
     生成文件描述。纯文本文件使用对话模型，其他文件使用 VL 多模态模型。
+
+    所有 LLM 调用通过 llm_client.chat_completion() 统一发起。
 
     Args:
         local_path: 文件本地路径
         config: VL 模型配置，包含 api、key、model
         chat_config: Chat 模型配置（可选），纯文本文件使用
+        user_id: 文件上传者 ID
 
     Returns:
         str: 生成的中文描述文本
     """
+    from app.services.llm_client import chat_completion
+
     path = Path(local_path)
     ext = path.suffix.lower()
 
     # 纯文本文件：使用对话模型（更快更便宜）
     if ext in TEXT_EXTENSIONS:
         text_config = chat_config or config
-        return _generate_text_description(local_path, text_config)
+        return _generate_text_description(local_path, text_config, user_id=user_id)
 
     # 非文本文件：使用 VL 多模态模型
-    api = config.get("api")
-    key = config.get("key")
-    model = config.get("model")
 
     # 获取图片的 Base64 Data URI 列表
     visual_contents = _get_visual_urls(local_path)
     if not visual_contents:
         logger.info(f"No visual content for {local_path}")
-
-    client = OpenAI(api_key=key, base_url=api, timeout=120)
 
     prompt = (
         "你是一个专业的文件分析助手。请仔细观察提供的文件内容"
@@ -212,7 +213,7 @@ def generate_file_description(
         "不需要描述图片的顺序。"
     )
 
-    content = [{"type": "text", "text": prompt}]
+    content: list[dict] = [{"type": "text", "text": prompt}]
     for uri in visual_contents:
         content.append({"type": "image_url", "image_url": {"url": uri}})
     content.append(
@@ -220,8 +221,12 @@ def generate_file_description(
     )  # 加入文本信息
 
     try:
-        response = client.chat.completions.create(
-            model=model, messages=[{"role": "user", "content": content}]
+        response = chat_completion(
+            messages=[{"role": "user", "content": content}],
+            config=config,
+            user_id=user_id,
+            action="describe_vl",
+            query_summary=Path(local_path).name,
         )
         ans = response.choices[0].message.content
         if not ans:

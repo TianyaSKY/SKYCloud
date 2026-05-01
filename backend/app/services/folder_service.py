@@ -1,4 +1,3 @@
-import json
 import uuid
 from typing import List
 
@@ -9,7 +8,8 @@ from app.extensions import db, redis_client
 from app.models.file import File
 from app.models.folder import Folder
 from app.services import change_log_service
-from app.services.file_service import ORGANIZE_FILE_QUEUE, delete_file, _clear_search_cache
+from app.services.file_service import delete_file, _clear_search_cache
+from app.task_queue import publish_organize_task
 
 ORGANIZE_TASK_LOCK_PREFIX = "organize:task:lock"
 ORGANIZE_TASK_LOCK_TTL_SECONDS = 6 * 60 * 60
@@ -199,29 +199,25 @@ async def get_folders(user_id) -> List[dict]:
 
 def _acquire_organize_task_lock_and_enqueue(user_id: int, lock_token: str) -> bool:
     """
-    原子加锁并入队：仅当锁不存在时设置锁并入队。
+    加锁并入队：仅当锁不存在时设置锁并发布 RabbitMQ 任务。
     锁值格式: "<token>:<state>"，state 为 queued/running。
     """
     lock_key = _organize_task_lock_key(user_id)
-    queue_payload = json.dumps({"user_id": user_id, "lock_token": lock_token})
-    script = """
-    if redis.call('EXISTS', KEYS[1]) == 1 then
-        return 0
-    end
-    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
-    redis.call('RPUSH', KEYS[2], ARGV[3])
-    return 1
-    """
-    result = redis_client.eval(
-        script,
-        2,
+    acquired = redis_client.set(
         lock_key,
-        ORGANIZE_FILE_QUEUE,
         f"{lock_token}:queued",
-        ORGANIZE_TASK_LOCK_TTL_SECONDS,
-        queue_payload,
+        nx=True,
+        ex=ORGANIZE_TASK_LOCK_TTL_SECONDS,
     )
-    return bool(result)
+    if not acquired:
+        return False
+
+    try:
+        publish_organize_task(user_id, lock_token)
+    except Exception:
+        release_organize_task_lock(user_id, lock_token)
+        raise
+    return True
 
 
 def mark_organize_task_running(user_id: int, lock_token: str) -> None:
