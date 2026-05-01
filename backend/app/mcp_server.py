@@ -7,11 +7,12 @@ SKYCloud MCP Server
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from app.datetime_utils import beijing_now
 from app.extensions import db
 from app.services import file_service, folder_service, share_service
 from app.services.auth_service import decode_token
@@ -267,7 +268,7 @@ async def get_file_download_url(
 
         # 限制最大过期时间为 7 天
         hours = max(1, min(expires_hours, 168))
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=hours)
+        expires_at = beijing_now() + timedelta(hours=hours)
 
         share = share_service.create_share_link(user_id, file_id, expires_at)
         share_dict = share.to_dict()

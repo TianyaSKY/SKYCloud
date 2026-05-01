@@ -15,9 +15,11 @@
 # SKYCloud
 
 SKYCloud is an AI-enabled cloud file management system with:
+- **Modern and Refined UI** (elegant hover actions and intuitive breadcrumbs)
 - File upload, preview, and organization
 - Share links and inbox-style collaboration
 - LLM chat capabilities based on LangChain/OpenAI
+- AI-driven file classification and organization using LangGraph
 
 ## Screenshots
 

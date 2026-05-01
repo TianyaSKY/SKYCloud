@@ -15,10 +15,11 @@
 # SKYCloud
 
 SKYCloud 是一个 AI 增强的云文件管理系统，支持：
-- 文件上传、预览
+- **现代化的精致 UI**（悬浮操作按钮、直观的面包屑导航）
+- 文件上传、预览、断点续传、秒传
 - 分享链接与收件箱协作
-- 基于 LangChain/OpenAI 增强RAG 的智能对话
-- 基于 LangGraph的文件智能分类整理
+- 基于 LangChain/OpenAI 增强 RAG 的智能对话
+- 基于 LangGraph 的文件智能分类整理
 
 ## 功能截图
 

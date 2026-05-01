@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 
 from app.dependencies import get_current_user
 from app.schemas import LoginRequest, McpTokenCreateRequest, RegisterRequest
+from app.datetime_utils import beijing_now
 from app.services.auth_service import authenticate_user, generate_mcp_token
 from app.services import mcp_token_service
 from app.services.user_service import create_user
@@ -67,8 +68,9 @@ def create_mcp_token(
 
     已登录用户调用此接口获取 Token，配置到 Claude Desktop / Cursor 等 MCP 客户端中。
     """
-    expires_at = datetime.now(timezone.utc) + timedelta(days=365)
-    token = generate_mcp_token(current_user.id, expires_at)
+    token_expires_at = datetime.now(timezone.utc) + timedelta(days=365)
+    db_expires_at = beijing_now() + timedelta(days=365)
+    token = generate_mcp_token(current_user.id, token_expires_at)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -77,7 +79,7 @@ def create_mcp_token(
     token_record = mcp_token_service.create_mcp_token(
         current_user.id,
         token,
-        expires_at,
+        db_expires_at,
         payload.name if payload else None,
     )
     return {

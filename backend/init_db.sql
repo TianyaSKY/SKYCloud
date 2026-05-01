@@ -13,11 +13,11 @@ CREATE TABLE IF NOT EXISTS users
     password_hash          VARCHAR(1024)      NOT NULL,
     role                   VARCHAR(10) DEFAULT 'common', -- admin, common
     avatar                 VARCHAR(255),
-    created_at             TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at             TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()),
     total_prompt_tokens    BIGINT DEFAULT 0,
     total_completion_tokens BIGINT DEFAULT 0,
     total_tokens           BIGINT DEFAULT 0,
-    last_active_at         TIMESTAMP WITH TIME ZONE
+    last_active_at         TIMESTAMP
 );
 
 -- 3. 创建文件夹表
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS folder
     name       VARCHAR(255) NOT NULL,
     parent_id  INTEGER REFERENCES folder (id) ON DELETE CASCADE,
     user_id    INTEGER REFERENCES users (id) ON DELETE CASCADE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
 
 -- 4. 创建文件表
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS files
     description  VARCHAR(4096),
     uploader_id  INTEGER REFERENCES users (id),
     parent_id    INTEGER REFERENCES folder (id),
-    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at   TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
 
 -- 创建向量索引 (HNSW, cosine distance)
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS shares
     token      VARCHAR(512) UNIQUE NOT NULL,
     file_id    INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
     user_id    INTEGER NOT NULL REFERENCES users (id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()),
     expires_at TIMESTAMP
 );
 
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS inbox
     content    TEXT NOT NULL,
     is_read    BOOLEAN DEFAULT FALSE,
     type       VARCHAR(50) DEFAULT 'system',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()),
     is_deleted BOOLEAN DEFAULT FALSE
 );
 
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS sys_dict
     value      VARCHAR(2048),
     des        VARCHAR(255),
     enable     BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
 
 -- 8. 创建文件变更事件表（用于增量整理）
@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS file_change_events
     old_name      VARCHAR(255),
     new_name      VARCHAR(255),
     payload       TEXT,
-    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at    TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
 CREATE INDEX IF NOT EXISTS idx_file_change_events_user_created
     ON file_change_events (user_id, created_at);
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS organize_checkpoints
     user_id          INTEGER PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
     last_event_id    INTEGER DEFAULT 0 NOT NULL,
     last_full_scan_at TIMESTAMP,
-    updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at       TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
 
 -- 10. 创建 MCP Token 表
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS mcp_tokens
     name          VARCHAR(80)  NOT NULL DEFAULT 'MCP Token',
     token_hash    VARCHAR(64)  UNIQUE NOT NULL,
     token_preview VARCHAR(32)  NOT NULL,
-    created_at    TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at    TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()),
     expires_at    TIMESTAMP    NOT NULL,
     last_used_at  TIMESTAMP,
     revoked_at    TIMESTAMP
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS token_usage_logs
     total_tokens      INTEGER DEFAULT 0,
     query_summary     VARCHAR(200),
     extra_info        TEXT,
-    created_at        TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at        TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
 CREATE INDEX IF NOT EXISTS idx_token_usage_logs_user_id ON token_usage_logs (user_id);
 CREATE INDEX IF NOT EXISTS idx_token_usage_logs_user_action ON token_usage_logs (user_id, action);

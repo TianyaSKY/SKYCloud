@@ -23,8 +23,8 @@
         <div class="feature-grid">
           <div class="feature-card">
             <div class="feature-icon"><icon-folder style="font-size: 28px; color: #165dff;" /></div>
-            <h3>文件管理</h3>
-            <p>支持文件上传、下载、预览、分片上传和秒传。拖拽上传，批量操作，文件夹树形结构管理。</p>
+            <h3>文件管理与现代化 UI</h3>
+            <p>支持拖拽与分片上传。具备精致的面包屑导航、悬浮操作按钮与折叠菜单，提供极简清爽的云盘体验。</p>
           </div>
           <div class="feature-card">
             <div class="feature-icon"><icon-robot style="font-size: 28px; color: #722ed1;" /></div>

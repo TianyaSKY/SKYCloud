@@ -1,6 +1,10 @@
-from sqlalchemy import Column, Integer, String, ForeignKey
+from datetime import datetime
+from typing import cast
+
+from sqlalchemy import Column, DateTime, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship, backref
 
+from app.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
 
 
@@ -10,6 +14,7 @@ class Folder(Base):
     name = Column(String(128), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))
     parent_id = Column(Integer, ForeignKey("folder.id"))
+    created_at = Column(DateTime, default=beijing_now)
 
 
 
@@ -41,6 +46,7 @@ class Folder(Base):
             "user_id": self.user_id,
             "parent_id": self.parent_id,
             "path": path,
+            "created_at": local_isoformat(cast(datetime | None, self.created_at)),
         }
 
     @classmethod
@@ -50,4 +56,7 @@ class Folder(Base):
             name=d.get("name"),
             user_id=d.get("user_id"),
             parent_id=d.get("parent_id"),
+            created_at=datetime.fromisoformat(cast(str, d.get("created_at")))
+            if cast(str | None, d.get("created_at"))
+            else None,
         )

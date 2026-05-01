@@ -6,6 +6,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, Integer, String, BigInteger, DateTime, ForeignKey, Index
 from sqlalchemy.orm import relationship
 
+from app.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base, UPLOAD_FOLDER
 
 
@@ -27,7 +28,7 @@ class File(Base):
 
     uploader_id = Column(Integer, ForeignKey("users.id"))
     parent_id = Column(Integer, ForeignKey("folder.id"), nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=beijing_now)
 
     # 关系映射
     uploader = relationship("User", backref="files")
@@ -64,7 +65,7 @@ class File(Base):
             "content_hash": cast(str | None, self.content_hash),
             "uploader_id": cast(int | None, self.uploader_id),
             "parent_id": cast(int | None, self.parent_id),
-            "created_at": created_at.isoformat() if created_at else None,
+            "created_at": local_isoformat(created_at),
         }
 
     @classmethod

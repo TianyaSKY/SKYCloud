@@ -8,6 +8,7 @@ import SysDictView from '../views/SysDictView.vue'
 import DocView from '../views/DocView.vue'
 import McpView from '../views/McpView.vue'
 import TokenUsageView from '../views/TokenUsageView.vue'
+import AdminTokenUsageView from '../views/AdminTokenUsageView.vue'
 
 const router = createRouter({
     history: createWebHistory(import.meta.env.BASE_URL),
@@ -52,6 +53,12 @@ const router = createRouter({
             name: 'token-usage',
             component: TokenUsageView,
             meta: {requiresAuth: true}
+        },
+        {
+            path: '/admin/token-usage',
+            name: 'admin-token-usage',
+            component: AdminTokenUsageView,
+            meta: {requiresAuth: true, requiresAdmin: true}
         },
         {
             path: '/sys_dicts',

@@ -1,8 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
+from app.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
 
 
@@ -19,7 +20,7 @@ class FileChangeEvent(Base):
     old_name = Column(String(255), nullable=True)
     new_name = Column(String(255), nullable=True)
     payload = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    created_at = Column(DateTime, default=beijing_now, nullable=False, index=True)
 
 
     user = relationship("User", backref="file_change_events")
@@ -36,5 +37,5 @@ class FileChangeEvent(Base):
             "old_name": self.old_name,
             "new_name": self.new_name,
             "payload": self.payload,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": local_isoformat(self.created_at),
         }

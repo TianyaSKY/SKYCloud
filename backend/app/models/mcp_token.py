@@ -1,16 +1,11 @@
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
+from app.datetime_utils import beijing_now, local_isoformat, to_beijing_naive
 from app.extensions import Base
-
-
-def _as_aware_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 class McpToken(Base):
@@ -21,7 +16,7 @@ class McpToken(Base):
     name = Column(String(80), nullable=False, default="MCP Token")
     token_hash = Column(String(64), unique=True, nullable=False, index=True)
     token_preview = Column(String(32), nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=beijing_now)
     expires_at = Column(DateTime, nullable=False)
     last_used_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
@@ -44,7 +39,8 @@ class McpToken(Base):
 
     @property
     def is_expired(self) -> bool:
-        return _as_aware_utc(self.expires_at) <= datetime.now(timezone.utc)
+        expires_at = to_beijing_naive(self.expires_at)
+        return bool(expires_at and expires_at <= beijing_now())
 
     def to_dict(self):
         return {
@@ -52,10 +48,10 @@ class McpToken(Base):
             "user_id": self.user_id,
             "name": self.name,
             "token_preview": self.token_preview,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
-            "last_used_at": self.last_used_at.isoformat() if self.last_used_at else None,
-            "revoked_at": self.revoked_at.isoformat() if self.revoked_at else None,
+            "created_at": local_isoformat(self.created_at),
+            "expires_at": local_isoformat(self.expires_at),
+            "last_used_at": local_isoformat(self.last_used_at),
+            "revoked_at": local_isoformat(self.revoked_at),
             "is_revoked": self.is_revoked,
             "is_expired": self.is_expired,
         }

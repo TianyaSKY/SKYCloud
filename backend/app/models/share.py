@@ -1,9 +1,10 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 
+from app.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
 
 
@@ -16,7 +17,7 @@ class Share(Base):
     )
     file_id = Column(Integer, ForeignKey("files.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=beijing_now)
     expires_at = Column(DateTime, nullable=True)  # 可选：过期时间
 
 
@@ -30,8 +31,8 @@ class Share(Base):
             "token": self.token,
             "file_id": self.file_id,
             "file_name": self.file.name if self.file else None,
-            "created_at": self.created_at.isoformat(),
-            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "created_at": local_isoformat(self.created_at),
+            "expires_at": local_isoformat(self.expires_at),
             "link": f"/api/share/{self.token}",
         }
 

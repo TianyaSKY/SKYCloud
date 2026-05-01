@@ -1,15 +1,23 @@
 <template>
   <a-layout-header class="header">
     <div class="header-left">
-      <a-breadcrumb v-if="showBreadcrumbs">
-        <a-breadcrumb-item class="breadcrumb-link" @click="$emit('go-root')">全部文件</a-breadcrumb-item>
+      <a-breadcrumb v-if="showBreadcrumbs" class="custom-breadcrumb">
+        <a-breadcrumb-item
+            :class="['breadcrumb-item', { 'breadcrumb-link': breadcrumbs.length > 0, 'breadcrumb-current': breadcrumbs.length === 0 }]"
+            @click="breadcrumbs.length > 0 && $emit('go-root')"
+        >
+          <icon-home class="breadcrumb-icon" />
+          <span>全部文件</span>
+        </a-breadcrumb-item>
         <a-breadcrumb-item
             v-for="(item, index) in breadcrumbs"
             :key="item.id"
-            class="breadcrumb-link"
-            @click="$emit('go-breadcrumb', index)"
+            :class="['breadcrumb-item', { 'breadcrumb-link': index !== breadcrumbs.length - 1, 'breadcrumb-current': index === breadcrumbs.length - 1 }]"
+            @click="index !== breadcrumbs.length - 1 && $emit('go-breadcrumb', index)"
         >
-          {{ item.name }}
+          <icon-folder class="breadcrumb-icon" v-if="index !== breadcrumbs.length - 1" />
+          <icon-folder class="breadcrumb-icon" v-else style="color: rgb(var(--primary-6));" />
+          <span>{{ item.name }}</span>
         </a-breadcrumb-item>
       </a-breadcrumb>
       <div v-else class="page-title">{{ title }}</div>
@@ -63,7 +71,7 @@
 </template>
 
 <script lang="ts" setup>
-import {IconUser, IconBook} from '@arco-design/web-vue/es/icon'
+import {IconUser, IconBook, IconHome, IconFolder} from '@arco-design/web-vue/es/icon'
 
 interface UserInfo {
   id: number | null
@@ -151,12 +159,44 @@ const handleToggleSearchType = (type: 'fuzzy' | 'vector') => {
   font-weight: 500;
 }
 
+.custom-breadcrumb {
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+}
+
+:deep(.arco-breadcrumb-item) {
+  display: inline-flex;
+  align-items: center;
+}
+
+.breadcrumb-item {
+  display: inline-flex;
+  align-items: center;
+  transition: all 0.2s ease;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.breadcrumb-icon {
+  margin-right: 4px;
+  font-size: 16px;
+  transform: translateY(-1px);
+}
+
 .breadcrumb-link {
   cursor: pointer;
+  color: var(--color-text-3);
 }
 
 .breadcrumb-link:hover {
-  color: var(--color-primary-light-4);
+  color: rgb(var(--primary-6));
+  background-color: var(--color-fill-2);
+}
+
+.breadcrumb-current {
+  font-weight: 600;
+  color: var(--color-text-1);
 }
 
 .page-title {

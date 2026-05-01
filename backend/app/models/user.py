@@ -1,8 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Enum
 from werkzeug.security import generate_password_hash, check_password_hash
 
+from app.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
 
 
@@ -14,7 +15,7 @@ class User(Base):
     password_hash = Column(String(1024), nullable=False)
     role = Column(Enum("admin", "common", name="user_roles"), default="common")
     avatar = Column(String(255), default=None)  # 头像 URL，默认为空
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=beijing_now)
 
     # ---- Token 使用量累计统计 ----
     total_prompt_tokens = Column(BigInteger, default=0)
@@ -37,11 +38,11 @@ class User(Base):
             "username": self.username,
             "role": self.role,
             "avatar": self.avatar,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": local_isoformat(self.created_at),
             "total_prompt_tokens": self.total_prompt_tokens or 0,
             "total_completion_tokens": self.total_completion_tokens or 0,
             "total_tokens": self.total_tokens or 0,
-            "last_active_at": self.last_active_at.isoformat() if self.last_active_at else None,
+            "last_active_at": local_isoformat(self.last_active_at),
         }
 
     @classmethod

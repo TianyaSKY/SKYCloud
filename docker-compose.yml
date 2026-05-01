@@ -3,10 +3,12 @@ services:
     image: pgvector/pgvector:pg15
     container_name: skycloud-db
     restart: always
+    command: ["postgres", "-c", "timezone=Asia/Shanghai"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      TZ: Asia/Shanghai
     ports:
       - "${POSTGRES_PORT}:5432"
     volumes:

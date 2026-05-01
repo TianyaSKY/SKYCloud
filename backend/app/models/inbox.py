@@ -1,8 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean, Text
 from sqlalchemy.orm import relationship, backref
 
+from app.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
 
 
@@ -15,7 +16,7 @@ class Inbox(Base):
     content = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False)
     type = Column(String(50), default="system")  # e.g., 'system', 'notification'
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=beijing_now)
     is_deleted = Column(Boolean, default=False)  # 是否删除占位
 
 
@@ -31,7 +32,7 @@ class Inbox(Base):
             "content": self.content,
             "is_read": self.is_read,
             "type": self.type,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": local_isoformat(self.created_at),
         }
 
     @classmethod

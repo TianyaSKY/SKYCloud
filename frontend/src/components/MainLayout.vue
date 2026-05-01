@@ -248,6 +248,8 @@ const handleMenuClick = (key: string) => {
     router.push('/mcp')
   } else if (key === 'token-usage') {
     router.push('/token-usage')
+  } else if (key === 'admin-token-usage') {
+    router.push('/admin/token-usage')
   } else if (key === 'sys-dicts') {
     router.push('/sys_dicts')
   }

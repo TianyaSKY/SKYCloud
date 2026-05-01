@@ -1,5 +1,4 @@
-from datetime import datetime, timezone
-
+from app.datetime_utils import beijing_now, to_beijing_naive
 from app.extensions import db
 from app.models.file import File
 from app.models.share import Share
@@ -28,7 +27,8 @@ def get_share_by_token(token):
         return None
 
     # 检查是否过期
-    if share.expires_at and share.expires_at < datetime.now(timezone.utc):
+    expires_at = to_beijing_naive(share.expires_at)
+    if expires_at and expires_at < beijing_now():
         return None
 
     return share

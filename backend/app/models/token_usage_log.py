@@ -1,7 +1,8 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import Column, Integer, String, DateTime, BigInteger, Text
 
+from app.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
 
 
@@ -21,7 +22,7 @@ class TokenUsageLog(Base):
     query_summary = Column(String(200), default=None)
     # 可选：附加信息，如检索文件数、rerank 结果数等
     extra_info = Column(Text, default=None)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=beijing_now)
 
     def to_dict(self):
         return {
@@ -34,5 +35,5 @@ class TokenUsageLog(Base):
             "total_tokens": self.total_tokens,
             "query_summary": self.query_summary,
             "extra_info": self.extra_info,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "created_at": local_isoformat(self.created_at),
         }

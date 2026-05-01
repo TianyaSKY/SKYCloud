@@ -53,3 +53,56 @@ export function getMyUsageLogs(params: {
 export function getMyDailyStats(days = 30) {
   return request.get<DailyStat[]>('/token-usage/daily', { params: { days } })
 }
+
+// ===================== 管理员接口 =====================
+
+export interface UserTokenStats {
+  user_id: number
+  username: string
+  role: string
+  avatar: string | null
+  total_prompt_tokens: number
+  total_completion_tokens: number
+  total_tokens: number
+  last_active_at: string | null
+  created_at: string | null
+}
+
+export interface AdminTokenUsageLog extends TokenUsageLog {
+  username: string
+}
+
+export interface AdminTokenUsageLogsResponse {
+  total: number
+  page: number
+  page_size: number
+  items: AdminTokenUsageLog[]
+}
+
+export interface PerUserDailyStat extends DailyStat {
+  user_id: number
+  username: string
+}
+
+export function getAdminAllUsersStats() {
+  return request.get<UserTokenStats[]>('/admin/token-usage/users')
+}
+
+export function getAdminAllUsageLogs(params: {
+  page?: number
+  page_size?: number
+  action?: string
+  user_id?: number
+  start_date?: string
+  end_date?: string
+}) {
+  return request.get<AdminTokenUsageLogsResponse>('/admin/token-usage/logs', { params })
+}
+
+export function getAdminDailyStats(days = 30) {
+  return request.get<DailyStat[]>('/admin/token-usage/daily', { params: { days } })
+}
+
+export function getAdminPerUserDailyStats(days = 30) {
+  return request.get<PerUserDailyStat[]>('/admin/token-usage/daily/per-user', { params: { days } })
+}

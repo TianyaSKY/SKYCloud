@@ -1,8 +1,8 @@
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
+from app.datetime_utils import beijing_now
 from app.extensions import db
 from app.models.file import File
 from app.models.file_change_event import FileChangeEvent
@@ -183,13 +183,13 @@ def update_checkpoint(
         checkpoint = OrganizeCheckpoint(
             user_id=user_id, last_event_id=target_event_id)
         if mark_full_scan:
-            checkpoint.last_full_scan_at = datetime.now(timezone.utc)
+            checkpoint.last_full_scan_at = beijing_now()
         db.session.add(checkpoint)
     else:
         checkpoint.last_event_id = max(
             int(checkpoint.last_event_id or 0), target_event_id)
         if mark_full_scan:
-            checkpoint.last_full_scan_at = datetime.now(timezone.utc)
+            checkpoint.last_full_scan_at = beijing_now()
 
     try:
         db.session.commit()

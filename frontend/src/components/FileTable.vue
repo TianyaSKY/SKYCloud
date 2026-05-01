@@ -48,31 +48,40 @@
           {{ formatDate(record.updated_at) }}
         </template>
       </a-table-column>
-      <a-table-column :width="280" title="操作">
+      <a-table-column :width="160" title="操作" align="center">
         <template #cell="{ record }">
-          <a-space>
-            <a-button v-if="!record.is_folder" size="small" type="text" @click="$emit('download', record)">
-              下载
-            </a-button>
-            <a-button v-if="!record.is_folder" size="small" type="text" @click="$emit('share', record)">
-              分享
-            </a-button>
-            <a-button size="small" type="text" @click="$emit('rename', record)">
-              重命名
-            </a-button>
-            <a-button size="small" type="text" @click="$emit('move', record)">
-              移动
-            </a-button>
-            <a-button v-if="!record.is_folder && record.status === 'fail'" size="small" type="text"
-                      @click="$emit('retry-embedding', record)">
-              重试
-            </a-button>
-            <a-popconfirm content="确定删除吗？" @ok="$emit('delete', record)">
-              <a-button size="small" status="danger" type="text">
-                删除
+          <div class="row-actions">
+            <a-tooltip content="下载" position="top" v-if="!record.is_folder">
+              <a-button size="small" type="text" @click="$emit('download', record)" class="action-btn">
+                <template #icon><icon-download /></template>
               </a-button>
-            </a-popconfirm>
-          </a-space>
+            </a-tooltip>
+            <a-tooltip content="分享" position="top" v-if="!record.is_folder">
+              <a-button size="small" type="text" @click="$emit('share', record)" class="action-btn">
+                <template #icon><icon-share-alt /></template>
+              </a-button>
+            </a-tooltip>
+
+            <a-dropdown trigger="click" position="br">
+              <a-button size="small" type="text" class="action-btn">
+                <template #icon><icon-more /></template>
+              </a-button>
+              <template #content>
+                <a-doption @click="$emit('rename', record)">
+                  <template #icon><icon-edit /></template>重命名
+                </a-doption>
+                <a-doption @click="$emit('move', record)">
+                  <template #icon><icon-drag-arrow /></template>移动
+                </a-doption>
+                <a-doption v-if="!record.is_folder && record.status === 'fail'" @click="$emit('retry-embedding', record)">
+                  <template #icon><icon-refresh /></template>重试
+                </a-doption>
+                <a-doption style="color: rgb(var(--danger-6))" @click="confirmDelete(record)">
+                  <template #icon><icon-delete /></template>删除
+                </a-doption>
+              </template>
+            </a-dropdown>
+          </div>
         </template>
       </a-table-column>
     </template>
@@ -97,7 +106,11 @@
 
 <script lang="ts" setup>
 import {computed, reactive, ref} from 'vue'
-import {IconFile, IconFolder} from '@arco-design/web-vue/es/icon'
+import { Modal } from '@arco-design/web-vue'
+import {
+  IconFile, IconFolder, IconDownload, IconShareAlt, 
+  IconMore, IconEdit, IconDragArrow, IconRefresh, IconDelete
+} from '@arco-design/web-vue/es/icon'
 
 const props = defineProps<{
   data: any[]
@@ -123,6 +136,17 @@ const rowSelection = reactive({
   showCheckedAll: true,
   onlyCurrent: false
 })
+
+const confirmDelete = (record: any) => {
+  Modal.warning({
+    title: '确认删除',
+    content: '确定要删除这个文件吗？',
+    hideCancel: false,
+    onOk: () => {
+      emit('delete', record)
+    }
+  })
+}
 
 const handleSorterChange = (dataIndex: string, direction: string) => {
   emit('sorter-change', {dataIndex, direction})
@@ -171,3 +195,27 @@ const getStatusTip = (status: string) => {
   }
 }
 </script>
+
+<style scoped>
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+:deep(.arco-table-tr:hover) .row-actions {
+  opacity: 1;
+}
+
+.action-btn {
+  color: var(--color-text-2);
+}
+
+.action-btn:hover {
+  color: rgb(var(--primary-6));
+  background-color: var(--color-fill-2);
+}
+</style>

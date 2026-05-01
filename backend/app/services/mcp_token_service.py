@@ -1,8 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException, status
 
+from app.datetime_utils import beijing_now
 from app.extensions import db
 from app.models.mcp_token import McpToken
 
@@ -43,7 +44,7 @@ def revoke_mcp_token(user_id: int, token_id: int) -> McpToken:
             status_code=status.HTTP_404_NOT_FOUND, detail="MCP token not found"
         )
     if not token.revoked_at:
-        token.revoked_at = datetime.now(timezone.utc)
+        token.revoked_at = beijing_now()
         db.session.commit()
     return token
 
@@ -56,6 +57,6 @@ def get_active_mcp_token(token: str) -> McpToken | None:
     )
     if not token_record or token_record.is_revoked or token_record.is_expired:
         return None
-    token_record.last_used_at = datetime.now(timezone.utc)
+    token_record.last_used_at = beijing_now()
     db.session.commit()
     return token_record
