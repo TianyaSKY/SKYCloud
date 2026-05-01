@@ -20,9 +20,34 @@ export function useFilePreview() {
             const url = window.URL.createObjectURL(new Blob([blob as any]))
             previewUrl.value = url
 
-            if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext)) {
+            if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) {
                 previewType.value = 'image'
-            } else if (['txt', 'md', 'js', 'json', 'ts', 'py', 'java', 'c', 'cpp', 'html', 'css', 'csv', 'log'].includes(ext)) {
+            } else if (['md', 'markdown'].includes(ext)) {
+                previewType.value = 'markdown'
+                const reader = new FileReader()
+                reader.onload = (e) => {
+                    textContent.value = e.target?.result as string
+                }
+                reader.readAsText(blob as any)
+            } else if ([
+                'js', 'ts', 'jsx', 'tsx', 'vue', 'py', 'java', 'c', 'cpp', 'h', 'hpp',
+                'go', 'rs', 'rb', 'php', 'sh', 'bash', 'sql', 'r', 'swift', 'kt',
+                'scala', 'lua', 'pl', 'dart', 'groovy',
+                'html', 'htm', 'css', 'scss', 'less', 'sass',
+                'xml', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf',
+                'json', 'jsonl', 'graphql', 'proto',
+                'dockerfile', 'makefile', 'cmake',
+            ].includes(ext)) {
+                previewType.value = 'code'
+                const reader = new FileReader()
+                reader.onload = (e) => {
+                    textContent.value = e.target?.result as string
+                }
+                reader.readAsText(blob as any)
+            } else if ([
+                'txt', 'csv', 'tsv', 'log', 'env', 'gitignore', 'editorconfig',
+                'properties', 'lock', 'pid', 'out',
+            ].includes(ext)) {
                 previewType.value = 'text'
                 const reader = new FileReader()
                 reader.onload = (e) => {

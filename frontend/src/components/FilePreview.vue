@@ -8,6 +8,26 @@
         <a-image :preview-visible="false" :src="url"/>
       </div>
 
+      <!-- Markdown 渲染预览 -->
+      <div v-else-if="type === 'markdown'"
+           style="width: 100%; background: #fff; padding: 24px 32px; border-radius: 4px; box-shadow: 0 2px 12px 0 rgba(0,0,0,0.1);">
+        <MarkdownRenderer :content="textContent"/>
+      </div>
+
+      <!-- 代码预览（带行号） -->
+      <div v-else-if="type === 'code'"
+           class="code-preview-container">
+        <div class="code-header">
+          <span class="code-lang">{{ title.split('.').pop()?.toUpperCase() }}</span>
+        </div>
+        <div class="code-body">
+          <div class="line-numbers">
+            <span v-for="n in lineCount" :key="n">{{ n }}</span>
+          </div>
+          <pre class="code-content"><code>{{ textContent }}</code></pre>
+        </div>
+      </div>
+
       <!-- 文本/CSV 预览 -->
       <div v-else-if="type === 'text'"
            style="width: 100%; background: #fff; padding: 20px; border-radius: 4px; box-shadow: 0 2px 12px 0 rgba(0,0,0,0.1);">
@@ -52,14 +72,16 @@
 </template>
 
 <script lang="ts" setup>
+import {computed} from 'vue'
 import VueOfficeDocx from '@vue-office/docx'
 import VueOfficeExcel from '@vue-office/excel'
 import VueOfficePdf from '@vue-office/pdf'
 import '@vue-office/docx/lib/index.css'
 import '@vue-office/excel/lib/index.css'
 import {IconMusic} from '@arco-design/web-vue/es/icon'
+import MarkdownRenderer from './MarkdownRenderer.vue'
 
-defineProps<{
+const props = defineProps<{
   visible: boolean
   title: string
   url: string
@@ -68,6 +90,11 @@ defineProps<{
 }>()
 
 const emit = defineEmits(['update:visible', 'close'])
+
+const lineCount = computed(() => {
+  if (!props.textContent) return 0
+  return props.textContent.split('\n').length
+})
 
 const handleClose = () => {
   emit('update:visible', false)
@@ -103,4 +130,72 @@ const handleClose = () => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 代码预览样式 */
+.code-preview-container {
+  width: 100%;
+  background: #1e1e1e;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.15);
+}
+
+.code-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  background: #2d2d2d;
+  border-bottom: 1px solid #3e3e3e;
+}
+
+.code-lang {
+  font-size: 12px;
+  color: #858585;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  letter-spacing: 0.5px;
+}
+
+.code-body {
+  display: flex;
+  overflow: auto;
+}
+
+.line-numbers {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 0;
+  min-width: 50px;
+  text-align: right;
+  user-select: none;
+  background: #1e1e1e;
+  border-right: 1px solid #3e3e3e;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.line-numbers span {
+  display: block;
+  padding: 0 12px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #858585;
+}
+
+.code-content {
+  margin: 0;
+  padding: 16px;
+  flex: 1;
+  overflow-x: auto;
+}
+
+.code-content code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #d4d4d4;
+  tab-size: 4;
+}
 </style>
+
