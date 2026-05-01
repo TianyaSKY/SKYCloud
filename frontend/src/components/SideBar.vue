@@ -57,7 +57,7 @@
 </template>
 
 <script lang="ts" setup>
-import {computed, ref} from 'vue'
+import {computed, ref, watch} from 'vue'
 import {IconCommand, IconEmail, IconFile, IconSettings, IconShareAlt, IconMenuFold, IconMenuUnfold} from '@arco-design/web-vue/es/icon'
 
 defineProps<{
@@ -66,7 +66,11 @@ defineProps<{
 
 const emit = defineEmits(['menu-click'])
 
-const collapsed = ref(false)
+const collapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
+
+watch(collapsed, (newVal) => {
+  localStorage.setItem('sidebar_collapsed', String(newVal))
+})
 
 const isAdmin = computed(() => {
   const userStr = localStorage.getItem('user')

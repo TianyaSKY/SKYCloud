@@ -1,5 +1,6 @@
 import datetime as _dt
 import logging
+import uuid
 
 import jwt
 
@@ -28,7 +29,9 @@ def generate_token(user_id):
         return None
 
 
-def generate_mcp_token(user_id: int) -> str | None:
+def generate_mcp_token(
+    user_id: int, expires_at: _dt.datetime | None = None
+) -> str | None:
     """
     生成 MCP 专用长效 JWT Token（365 天有效期）。
     用于 MCP 客户端（Claude Desktop、Cursor 等）的长期配置。
@@ -37,11 +40,15 @@ def generate_mcp_token(user_id: int) -> str | None:
     :return: token 字符串
     """
     try:
+        expires_at = expires_at or (
+            _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365)
+        )
         payload = {
-            "exp": _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365),
+            "exp": expires_at,
             "iat": _dt.datetime.now(_dt.timezone.utc),
             "sub": str(user_id),
             "type": "mcp",
+            "jti": str(uuid.uuid4()),
         }
         return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
     except Exception as e:
@@ -57,6 +64,11 @@ def decode_token(token):
     """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        if payload.get("type") == "mcp":
+            from app.services import mcp_token_service
+
+            if not mcp_token_service.get_active_mcp_token(token):
+                return "MCP token revoked or expired. Please create a new token."
         return payload["sub"]
     except jwt.ExpiredSignatureError:
         return "Token expired. Please log in again."

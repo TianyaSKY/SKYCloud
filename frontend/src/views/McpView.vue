@@ -17,8 +17,9 @@
             <p>点击下方按钮生成一个 MCP 专用 Token（有效期 365 天）。</p>
             <p class="token-warning">
               <icon-exclamation-circle-fill style="color: #ff7d00; margin-right: 6px;" />
-              Token 仅显示一次，请妥善保管。如需新 Token，可重新生成（旧 Token 仍有效直到过期）。
+              Token 仅显示一次，请妥善保管。如不再使用，可在下方列表撤销。
             </p>
+            <a-input v-model="tokenName" class="token-name-input" placeholder="Token 名称，例如 Cursor / Claude Desktop" allow-clear />
             <a-button type="primary" size="large" :loading="generating" @click="handleGenerateToken">
               <template #icon><icon-lock /></template>
               生成 MCP Token
@@ -43,52 +44,47 @@
             <a-button type="text" size="small" @click="mcpToken = ''">隐藏 Token</a-button>
           </div>
         </div>
-      </div>
 
-      <!-- Connection Config Section -->
-      <div class="mcp-section">
-        <div class="section-header">
-          <icon-settings class="section-icon" style="color: #722ed1;" />
-          <div>
-            <h2 class="section-title">客户端配置</h2>
-            <p class="section-desc">将以下配置添加到你的 AI 客户端中</p>
+        <div class="token-list-card">
+          <div class="token-list-header">
+            <div>
+              <h3>已生成 Token</h3>
+              <p>管理当前账号下的 MCP Token，可撤销不再使用的配置。</p>
+            </div>
+            <a-button size="small" :loading="loadingTokens" @click="loadTokens">刷新</a-button>
           </div>
-        </div>
-
-        <div class="config-grid">
-          <!-- Claude Desktop -->
-          <div class="config-card">
-            <div class="config-card-header">
-              <icon-mind-mapping style="font-size: 22px; color: #722ed1;" />
-              <h3>Claude Desktop</h3>
-            </div>
-            <p class="config-path">
-              编辑 <code>claude_desktop_config.json</code>：
-            </p>
-            <div class="code-block-wrapper">
-              <pre class="code-block">{{ claudeConfig }}</pre>
-              <a-button class="copy-btn" type="text" size="mini" @click="handleCopy(claudeConfig)">
-                <template #icon><icon-copy /></template>
-              </a-button>
-            </div>
-          </div>
-
-          <!-- Cursor -->
-          <div class="config-card">
-            <div class="config-card-header">
-              <icon-thunderbolt style="font-size: 22px; color: #165dff;" />
-              <h3>Cursor IDE</h3>
-            </div>
-            <p class="config-path">
-              在项目根目录创建 <code>.cursor/mcp.json</code>：
-            </p>
-            <div class="code-block-wrapper">
-              <pre class="code-block">{{ cursorConfig }}</pre>
-              <a-button class="copy-btn" type="text" size="mini" @click="handleCopy(cursorConfig)">
-                <template #icon><icon-copy /></template>
-              </a-button>
-            </div>
-          </div>
+          <a-table :data="mcpTokens" :pagination="false" :loading="loadingTokens" row-key="id">
+            <template #columns>
+              <a-table-column title="名称" data-index="name" />
+              <a-table-column title="Token" data-index="token_preview" />
+              <a-table-column title="创建时间">
+                <template #cell="{ record }">{{ formatDate(record.created_at) }}</template>
+              </a-table-column>
+              <a-table-column title="过期时间">
+                <template #cell="{ record }">{{ formatDate(record.expires_at) }}</template>
+              </a-table-column>
+              <a-table-column title="状态">
+                <template #cell="{ record }">
+                  <a-tag v-if="record.is_revoked" color="gray">已撤销</a-tag>
+                  <a-tag v-else-if="record.is_expired" color="red">已过期</a-tag>
+                  <a-tag v-else color="green">有效</a-tag>
+                </template>
+              </a-table-column>
+              <a-table-column title="操作" :width="100">
+                <template #cell="{ record }">
+                  <a-button
+                    type="text"
+                    status="danger"
+                    size="small"
+                    :disabled="record.is_revoked || record.is_expired"
+                    @click="handleRevokeToken(record.id)"
+                  >
+                    撤销
+                  </a-button>
+                </template>
+              </a-table-column>
+            </template>
+          </a-table>
         </div>
       </div>
 
@@ -177,8 +173,8 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, reactive, computed } from 'vue'
-import { Message } from '@arco-design/web-vue'
+import { ref, reactive, computed, onMounted } from 'vue'
+import { Message, Modal } from '@arco-design/web-vue'
 import {
   IconBulb,
   IconCopy,
@@ -192,10 +188,23 @@ import {
   IconWifi,
 } from '@arco-design/web-vue/es/icon'
 import MainLayout from '../components/MainLayout.vue'
-import { generateMcpToken } from '@/api/auth'
+import { createMcpToken, listMcpTokens, revokeMcpToken } from '@/api/auth'
+
+interface McpTokenRecord {
+  id: number
+  name: string
+  token_preview: string
+  created_at: string | null
+  expires_at: string | null
+  is_revoked: boolean
+  is_expired: boolean
+}
 
 const mcpToken = ref('')
+const tokenName = ref('')
 const generating = ref(false)
+const loadingTokens = ref(false)
+const mcpTokens = ref<McpTokenRecord[]>([])
 
 const username = computed(() => {
   const userStr = localStorage.getItem('user')
@@ -237,14 +246,45 @@ const tools = reactive([
 const handleGenerateToken = async () => {
   generating.value = true
   try {
-    const res: any = await generateMcpToken()
+    const res: any = await createMcpToken({ name: tokenName.value })
     mcpToken.value = res.mcp_token
+    tokenName.value = ''
+    await loadTokens()
     Message.success('MCP Token 生成成功')
   } catch (err) {
     Message.error('Token 生成失败')
   } finally {
     generating.value = false
   }
+}
+
+const loadTokens = async () => {
+  loadingTokens.value = true
+  try {
+    const res: any = await listMcpTokens()
+    mcpTokens.value = res as McpTokenRecord[]
+  } finally {
+    loadingTokens.value = false
+  }
+}
+
+const handleRevokeToken = (id: number) => {
+  Modal.confirm({
+    title: '撤销 MCP Token',
+    content: '撤销后，使用该 Token 的 MCP 客户端将无法继续访问你的云盘。',
+    okText: '撤销',
+    okButtonProps: { status: 'danger' },
+    onOk: async () => {
+      await revokeMcpToken(id)
+      await loadTokens()
+      Message.success('MCP Token 已撤销')
+    }
+  })
+}
+
+const formatDate = (value: string | null) => {
+  if (!value) return '-'
+  return new Date(value).toLocaleString()
 }
 
 const handleCopyToken = () => {
@@ -256,6 +296,10 @@ const handleCopy = (text: string) => {
   navigator.clipboard.writeText(text)
   Message.success('已复制到剪贴板')
 }
+
+onMounted(() => {
+  loadTokens()
+})
 </script>
 
 <style scoped>
@@ -320,6 +364,39 @@ const handleCopy = (text: string) => {
   font-size: 13px;
   color: #ff7d00;
   margin-bottom: 20px !important;
+}
+
+.token-name-input {
+  max-width: 360px;
+  margin-bottom: 16px;
+}
+
+.token-list-card {
+  margin-top: 16px;
+  background: var(--color-fill-1);
+  border: 1px solid var(--color-border-1);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.token-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.token-list-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--color-text-1);
+}
+
+.token-list-header p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--color-text-3);
 }
 
 .token-result {

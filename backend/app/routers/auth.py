@@ -1,11 +1,13 @@
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from app.dependencies import get_current_user
-from app.schemas import LoginRequest, RegisterRequest
+from app.schemas import LoginRequest, McpTokenCreateRequest, RegisterRequest
 from app.services.auth_service import authenticate_user, generate_mcp_token
+from app.services import mcp_token_service
 from app.services.user_service import create_user
 
 logger = logging.getLogger(__name__)
@@ -57,20 +59,42 @@ def register(payload: RegisterRequest):
 
 
 @router.post("/auth/mcp-token")
-def create_mcp_token(current_user=Depends(get_current_user)):
+def create_mcp_token(
+    payload: McpTokenCreateRequest | None = None,
+    current_user=Depends(get_current_user),
+):
     """生成 MCP 专用长效 Token（365 天有效期）。
 
     已登录用户调用此接口获取 Token，配置到 Claude Desktop / Cursor 等 MCP 客户端中。
     """
-    token = generate_mcp_token(current_user.id)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=365)
+    token = generate_mcp_token(current_user.id, expires_at)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate MCP token",
         )
+    token_record = mcp_token_service.create_mcp_token(
+        current_user.id,
+        token,
+        expires_at,
+        payload.name if payload else None,
+    )
     return {
         "mcp_token": token,
+        "token": token_record.to_dict(),
         "user_id": current_user.id,
         "expires_in_days": 365,
         "usage": "Set as Authorization header: Bearer <mcp_token>",
     }
+
+
+@router.get("/auth/mcp-tokens")
+def list_mcp_tokens(current_user=Depends(get_current_user)):
+    return mcp_token_service.list_mcp_tokens(current_user.id)
+
+
+@router.delete("/auth/mcp-tokens/{token_id}")
+def revoke_mcp_token(token_id: int, current_user=Depends(get_current_user)):
+    token = mcp_token_service.revoke_mcp_token(current_user.id, token_id)
+    return token.to_dict()

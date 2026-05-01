@@ -1,17 +1,19 @@
 """
 SKYCloud MCP Server
-将云盘核心能力（文件搜索、文件夹浏览、文件管理）通过 MCP 协议对外暴露。
+将云盘核心能力（文件搜索、文件夹浏览、文件管理、文件下载/读取）通过 MCP 协议对外暴露。
 
 独立容器运行，复用 app.services 层，通过 JWT Token 认证用户身份。
 """
 import json
 import logging
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from app.extensions import db
-from app.services import file_service, folder_service
+from app.services import file_service, folder_service, share_service
 from app.services.auth_service import decode_token
 from app.services import user_service
 
@@ -21,7 +23,8 @@ mcp = FastMCP(
     "SKYCloud",
     instructions=(
         "SKYCloud 是一个智能云盘系统。你可以通过以下工具来搜索文件、浏览文件夹、"
-        "获取文件信息、创建文件夹、移动/重命名文件和删除文件。"
+        "获取文件信息、创建文件夹、移动/重命名文件、删除文件、"
+        "获取文件下载链接以及读取文本文件内容。"
         "所有操作都需要提供 user_id 来标识当前用户。"
     ),
 )
@@ -191,6 +194,157 @@ async def delete_file(user_id: int, file_id: int) -> str:
         return json.dumps(
             {"success": True, "message": f"File {file_id} deleted"},
             ensure_ascii=False,
+        )
+    finally:
+        _cleanup_session()
+
+
+# ---------------------------------------------------------------------------
+# 文本类 MIME 前缀白名单，用于 read_file_content 判断是否可读
+# ---------------------------------------------------------------------------
+_TEXT_MIME_PREFIXES: tuple[str, ...] = (
+    "text/",
+)
+_TEXT_MIME_EXACT: set[str] = {
+    "application/json",
+    "application/xml",
+    "application/javascript",
+    "application/x-yaml",
+    "application/yaml",
+    "application/toml",
+    "application/x-sh",
+    "application/sql",
+    "application/x-python",
+    "application/xhtml+xml",
+}
+# 按扩展名的兜底：某些系统 mime_type 可能为 application/octet-stream
+_TEXT_EXTENSIONS: set[str] = {
+    ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".jsonl",
+    ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp",
+    ".h", ".hpp", ".go", ".rs", ".rb", ".php", ".sh", ".bash",
+    ".sql", ".html", ".htm", ".css", ".scss", ".less", ".vue",
+    ".log", ".env", ".gitignore", ".dockerfile",
+}
+
+_MAX_READ_BYTES = 512 * 1024  # 最大读取 512KB，避免超大文件撑爆上下文
+
+
+def _is_text_file(mime_type: str | None, filename: str | None) -> bool:
+    """判断文件是否为可直接读取的文本文件。"""
+    if mime_type:
+        mt = mime_type.lower()
+        if any(mt.startswith(p) for p in _TEXT_MIME_PREFIXES):
+            return True
+        if mt in _TEXT_MIME_EXACT:
+            return True
+    if filename:
+        _, ext = os.path.splitext(filename)
+        if ext.lower() in _TEXT_EXTENSIONS:
+            return True
+    return False
+
+
+@mcp.tool()
+async def get_file_download_url(
+    user_id: int,
+    file_id: int,
+    expires_hours: int = 24,
+) -> str:
+    """生成文件的临时下载链接（通过分享链接实现，自带过期时间）。
+
+    返回的链接可以直接在浏览器中打开下载。
+
+    Args:
+        user_id: 用户 ID（用于权限验证）
+        file_id: 文件 ID
+        expires_hours: 链接有效时长，单位小时（默认 24，最大 168）
+    """
+    try:
+        file_obj = file_service.get_file(file_id)
+        if file_obj.uploader_id != user_id:
+            return json.dumps({"error": "Permission denied"}, ensure_ascii=False)
+
+        # 限制最大过期时间为 7 天
+        hours = max(1, min(expires_hours, 168))
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=hours)
+
+        share = share_service.create_share_link(user_id, file_id, expires_at)
+        share_dict = share.to_dict()
+
+        # 构建下载 URL：使用环境变量或默认值
+        base_url = os.getenv("SKYCLOUD_BASE_URL", "http://localhost:5000")
+        download_url = f"{base_url}/api/share/{share_dict['token']}"
+
+        return json.dumps(
+            {
+                "download_url": download_url,
+                "token": share_dict["token"],
+                "expires_at": share_dict.get("expires_at"),
+                "file_name": str(file_obj.name),
+                "file_size": file_obj.file_size,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+    finally:
+        _cleanup_session()
+
+
+@mcp.tool()
+async def read_file_content(
+    user_id: int,
+    file_id: int,
+    encoding: str = "utf-8",
+) -> str:
+    """读取文本文件的内容并返回。仅支持文本类文件（txt, md, csv, json, 代码文件等）。
+
+    对于非文本文件（图片、视频、PDF 等），请使用 get_file_download_url 获取下载链接。
+    内容最大返回 512KB，超出部分会被截断。
+
+    Args:
+        user_id: 用户 ID（用于权限验证）
+        file_id: 文件 ID
+        encoding: 文件编码（默认 utf-8）
+    """
+    try:
+        file_obj = file_service.get_file(file_id)
+        if file_obj.uploader_id != user_id:
+            return json.dumps({"error": "Permission denied"}, ensure_ascii=False)
+
+        # 判断是否为文本文件
+        if not _is_text_file(file_obj.mime_type, file_obj.name):
+            return json.dumps(
+                {
+                    "error": "Not a text file",
+                    "mime_type": file_obj.mime_type,
+                    "hint": "Use get_file_download_url for non-text files.",
+                },
+                ensure_ascii=False,
+            )
+
+        abs_path = file_obj.get_abs_path()
+        if not os.path.exists(abs_path):
+            return json.dumps(
+                {"error": "File not found on server"}, ensure_ascii=False
+            )
+
+        file_size = os.path.getsize(abs_path)
+        truncated = file_size > _MAX_READ_BYTES
+
+        with open(abs_path, "r", encoding=encoding, errors="replace") as f:
+            content = f.read(_MAX_READ_BYTES)
+
+        return json.dumps(
+            {
+                "file_name": str(file_obj.name),
+                "file_size": file_size,
+                "truncated": truncated,
+                "encoding": encoding,
+                "content": content,
+            },
+            ensure_ascii=False,
+            default=str,
         )
     finally:
         _cleanup_session()

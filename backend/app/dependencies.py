@@ -28,6 +28,14 @@ async def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token!"
             )
+        if payload.get("type") == "mcp":
+            from app.services import mcp_token_service
+
+            if not mcp_token_service.get_active_mcp_token(token):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="MCP token is revoked or expired!",
+                )
         user_id = int(user_id)
         current_user = await user_service.get_user(user_id)
         if not current_user:

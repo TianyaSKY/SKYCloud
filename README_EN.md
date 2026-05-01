@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
   <h1 style="letter-spacing:4px;">SKYCLOUD</h1>
   <p><strong>AI-powered cloud file management platform</strong></p>
   <p>
@@ -199,3 +199,61 @@ For security, change it after first login in non-demo environments.
 - There are currently no established automated tests in this repository.
 - If you modify core logic, add tests (recommended: `pytest` for backend, `vitest` for frontend).
 
+## MCP Service (AI Client Access)
+
+SKYCloud provides [MCP (Model Context Protocol)](https://modelcontextprotocol.io) services, allowing AI clients such as Claude Desktop, Cursor, and Cline to directly access the cloud drive's file management capabilities.
+
+The MCP Server runs as a standalone container `backend-mcp` with the default port **5001**.
+
+### Get an MCP Token
+
+1. Log in to the web dashboard and click on **"MCP Service"** in the left menu.
+2. Click **"Generate MCP Token"**, enter a name, and get a long-lasting token valid for 365 days.
+3. Copy the generated Token to replace `<YOUR_MCP_TOKEN>` in the configurations below.
+
+*(For programmatic access, you can also use the `/api/auth/mcp-token` API endpoint)*
+
+### Claude Desktop Configuration
+
+Edit `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "skycloud": {
+      "url": "http://your-server:5001/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_MCP_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+### Cursor IDE Configuration
+
+Create `.cursor/mcp.json` in the root of your project:
+
+```json
+{
+  "mcpServers": {
+    "skycloud": {
+      "url": "http://your-server:5001/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_MCP_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+### Available Tools
+
+| Tool | Function |
+|---|---|
+| `search_files` | Fuzzy or semantic search of files |
+| `list_files` | List files and folders in a directory |
+| `get_file_info` | Get detailed metadata of a file |
+| `create_folder` | Create a new folder |
+| `move_file` | Move or rename a file |
+| `delete_file` | Permanently delete a file |

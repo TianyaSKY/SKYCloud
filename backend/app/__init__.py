@@ -85,6 +85,7 @@ def initialize_application():
         SysDict,
         Share,
         Inbox,
+        McpToken,
         FileChangeEvent,
         OrganizeCheckpoint,
     )
@@ -132,3 +133,4 @@ def initialize_application():
 
     # 确保向量索引与检索距离度量保持一致
     _ensure_file_vector_index()
+

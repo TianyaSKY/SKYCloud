@@ -135,22 +135,11 @@ MCP Server 作为独立容器 `backend-mcp` 运行，默认端口 **5001**。
 
 ### 获取 MCP Token
 
-1. 先使用普通登录接口获取短期 Token：
+1. 登录网页端，在左侧菜单点击进入 **“MCP 服务”** 页面。
+2. 点击 **“生成 MCP Token”**，输入名称后即可获取一个有效期 365 天的长效 Token。
+3. 复制生成的 Token，用于替换下方配置中的 `<YOUR_MCP_TOKEN>`。
 
-```bash
-curl -X POST http://localhost:5000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "admin123"}'
-```
-
-2. 用登录 Token 调用 MCP Token 生成接口：
-
-```bash
-curl -X POST http://localhost:5000/api/auth/mcp-token \
-  -H "Authorization: Bearer <LOGIN_TOKEN>"
-```
-
-返回的 `mcp_token` 有效期 365 天，用于 MCP 客户端长期配置。
+*(如需通过 API 自动化获取，也可调用 `/api/auth/mcp-token` 接口)*
 
 ### Claude Desktop 配置
 

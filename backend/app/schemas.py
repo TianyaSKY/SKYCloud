@@ -31,6 +31,10 @@ class UserPasswordUpdateRequest(BaseModel):
     new_password: str
 
 
+class McpTokenCreateRequest(BaseModel):
+    name: str | None = Field(default="MCP Token", max_length=80)
+
+
 class FolderCreateRequest(BaseModel):
     name: str
     parent_id: int | None = None
