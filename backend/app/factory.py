@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from app import initialize_application
 from app.exceptions import register_exception_handlers
 from app.extensions import db
-from app.routers import auth, chat, file, folder, inbox, share, sys_dict, token_usage, user
+from app.routers import auth, chat, file, folder, inbox, share, sys_dict, token_usage, user, workspace
 
 
 @asynccontextmanager
@@ -39,6 +39,7 @@ def create_fastapi_app() -> FastAPI:
     app.include_router(inbox.router, prefix="/api")
     app.include_router(chat.router, prefix="/api")
     app.include_router(token_usage.router, prefix="/api")
+    app.include_router(workspace.router, prefix="/api")
 
     @app.get("/api/health")
     def health():

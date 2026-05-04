@@ -70,6 +70,7 @@ services:
       - "${BACKEND_API_PORT}:5000"
     volumes:
       - ${UPLOAD_HOST_PATH}:/data/uploads
+      - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
     environment:
@@ -84,6 +85,8 @@ services:
       - RABBITMQ_USER=${RABBITMQ_USER:-skycloud}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-skycloud}
       - RABBITMQ_VHOST=${RABBITMQ_VHOST:-/}
+      - OPENCODE_IMAGE=${OPENCODE_IMAGE:-skycloud/opencode-workspace:latest}
+      - SKYCLOUD_DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-skycloud}_skycloud-network
     depends_on:
       db:
         condition: service_healthy

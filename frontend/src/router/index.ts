@@ -9,6 +9,7 @@ import DocView from '../views/DocView.vue'
 import McpView from '../views/McpView.vue'
 import TokenUsageView from '../views/TokenUsageView.vue'
 import AdminTokenUsageView from '../views/AdminTokenUsageView.vue'
+import WorkspaceView from '../views/WorkspaceView.vue'
 
 const router = createRouter({
     history: createWebHistory(import.meta.env.BASE_URL),
@@ -65,6 +66,12 @@ const router = createRouter({
             name: 'sys-dicts',
             component: SysDictView,
             meta: {requiresAuth: true, requiresAdmin: true}
+        },
+        {
+            path: '/workspace',
+            name: 'workspace',
+            component: WorkspaceView,
+            meta: {requiresAuth: true}
         },
         {
             path: '/s/:token',

@@ -246,6 +246,8 @@ const handleMenuClick = (key: string) => {
     router.push('/docs')
   } else if (key === 'mcp') {
     router.push('/mcp')
+  } else if (key === 'workspace') {
+    router.push('/workspace')
   } else if (key === 'token-usage') {
     router.push('/token-usage')
   } else if (key === 'admin-token-usage') {

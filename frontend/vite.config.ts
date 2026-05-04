@@ -45,6 +45,7 @@ export default defineConfig(({mode}) => ({
             '/api': {
                 target: 'http://localhost:5000',
                 changeOrigin: true,
+                ws: true,
                 // rewrite: (path) => path.replace(/^\/api/, ''), // If the backend doesn't have /api prefix, uncomment this
             }
         }

@@ -46,6 +46,12 @@
         </template>
         MCP 服务
       </a-menu-item>
+      <a-menu-item key="workspace">
+        <template #icon>
+          <icon-desktop/>
+        </template>
+        工作区
+      </a-menu-item>
       <a-menu-item key="token-usage">
         <template #icon>
           <icon-bar-chart/>
@@ -70,7 +76,7 @@
 
 <script lang="ts" setup>
 import {computed, ref, watch} from 'vue'
-import {IconBarChart, IconCommand, IconDashboard, IconEmail, IconFile, IconSettings, IconShareAlt, IconMenuFold, IconMenuUnfold} from '@arco-design/web-vue/es/icon'
+import {IconBarChart, IconCommand, IconDashboard, IconDesktop, IconEmail, IconFile, IconSettings, IconShareAlt, IconMenuFold, IconMenuUnfold} from '@arco-design/web-vue/es/icon'
 
 defineProps<{
   activeMenu: string

@@ -89,6 +89,7 @@ def initialize_application():
         FileChangeEvent,
         OrganizeCheckpoint,
         TokenUsageLog,
+        Workspace,
     )
 
     # 确保上传目录存在
