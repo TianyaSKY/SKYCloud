@@ -10,6 +10,18 @@
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </p>
   <p><a href="./README.md">Chinese README</a></p>
+<div align="center">
+  <h1 style="letter-spacing:4px;">SKYCLOUD</h1>
+  <p><strong>AI-powered cloud file management platform</strong></p>
+  <p>
+    <img src="https://img.shields.io/badge/Python-3.10%2B-blue" alt="Python">
+    <img src="https://img.shields.io/badge/Vue.js-3.x-4FC08D" alt="Vue">
+    <img src="https://img.shields.io/badge/FastAPI-0.115-009688" alt="FastAPI">
+    <img src="https://img.shields.io/badge/PostgreSQL-15-336791" alt="PostgreSQL">
+    <img src="https://img.shields.io/badge/Docker-Enabled-2496ED" alt="Docker">
+    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  </p>
+  <p><a href="./README.md">Chinese README</a></p>
 </div>
 
 # SKYCloud
@@ -20,6 +32,7 @@ SKYCloud is an AI-enabled cloud file management system with:
 - Share links and inbox-style collaboration
 - LLM chat capabilities based on LangChain/OpenAI
 - AI-driven file classification and organization using LangGraph
+- **Manus-Style AI Workspace**: A fully equipped autonomous execution sandbox and cloud development environment
 
 ## Screenshots
 
@@ -153,54 +166,21 @@ docker-compose up -d --build
 ### 1. Start backend dependencies
 
 Start PostgreSQL + Redis + RabbitMQ first (locally or via Docker).
-
-### 2. Run backend API
-
-```bash
-cd backend
-pip install -r requirements.txt
-python run.py
-# or
-uvicorn run:app --reload --port 5000
-```
-
-### 3. Run backend worker
-
-```bash
-cd backend
-python tasks.py
-```
-
-### 4. Run frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Frontend dev server proxies `/api` requests to `http://localhost:5000`.
-
-## Build & Type Check
-
-```bash
-cd frontend
-npm run type-check
-npm run build
-```
-
-## Default Account
-
-`backend/init_db.sql` contains default admin initialization data:
-- Username: `admin`
-- Password: `admin123`
-
 For security, change it after first login in non-demo environments.
 
 ## Notes
 
 - There are currently no established automated tests in this repository.
 - If you modify core logic, add tests (recommended: `pytest` for backend, `vitest` for frontend).
+
+## 🤖 Manus-style Autonomous Workspace (OpenCode)
+
+SKYCloud provides a **Manus-inspired** all-in-one cloud workspace, giving AI the power to not just chat, but execute and build:
+
+- **All-in-One AI Sandbox**: Each workspace runs in an isolated Docker container (e.g., `skycloud-workspace-*`), providing a complete and secure environment for tool execution and coding.
+- **Autonomous Execution Engine**: Combined with the MCP protocol, AI agents can act like real developers—reading/writing cloud files, executing code, and automating complex workflows directly in the cloud.
+- **One-Click Summoning**: Launch your personal AI execution engine directly from the frontend UI in seconds.
+- **Limitless Extensibility**: Build custom environments for your "cloud Manus" using your own `Dockerfile.skycloud` to install any system dependencies you need.
 
 ## MCP Service (AI Client Access)
 

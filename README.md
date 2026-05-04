@@ -20,6 +20,7 @@ SKYCloud 是一个 AI 增强的云文件管理系统，支持：
 - 分享链接与收件箱协作
 - 基于 LangChain/OpenAI 增强 RAG 的智能对话
 - 基于 LangGraph 的文件智能分类整理
+- **Manus 智能工作区**：媲美 Manus 的云端 AI 独立执行沙箱与开发环境
 
 ## 功能截图
 
@@ -119,6 +120,15 @@ docker-compose up -d --build
 - 前端：`http://localhost:${FRONTEND_PORT}`（默认 `http://localhost:80`）
 - 后端健康检查：`http://localhost:${BACKEND_API_PORT}/api/health`（默认 `http://localhost:5000/api/health`）
 
+
+## 🤖 Manus 风格全能工作区 (OpenCode Workspace)
+
+SKYCloud 提供媲美 **Manus** 的云端全栈 AI 工作区，打破只“聊”不“做”的界限，赋予 AI 完整的执行力：
+
+- **All-in-One 智能沙箱**：每个工作区运行在独立的 Docker 容器中（如 `skycloud-workspace-*`），提供完整的代码运行和工具执行环境，安全隔离。
+- **AI 自主执行力**：结合 MCP 协议，让 AI Agent 可以像真人一样在云端工作区内读写云盘、运行代码、自动化处理复杂任务。
+- **开箱即用**：前端一键召唤，秒级拉起属于你的个人云端 AI 执行引擎。
+- **无限可扩展**：基于 `Dockerfile.skycloud`，你可以为你的“云端 Manus”自定义任何所需的系统环境与依赖。
 
 ## 默认账号
 
