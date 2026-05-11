@@ -1,3 +1,4 @@
+import asyncio
 import json
 import hashlib
 import logging
@@ -796,9 +797,15 @@ async def search_files(
     if not query:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
-    if search_type == "vector":
-        return await _search_files_vector(user_id, query, page, page_size)
-    return _search_files_fuzzy(user_id, query, page, page_size)
+    target = _search_files_vector if search_type == "vector" else _search_files_fuzzy
+
+    def _work():
+        try:
+            return target(user_id, query, page, page_size)
+        finally:
+            db.session.remove()
+
+    return await asyncio.to_thread(_work)
 
 
 @cacheable(prefix=SEARCH_CACHE_PREFIX, expire=CACHE_EXPIRATION)
@@ -820,7 +827,7 @@ def _search_files_fuzzy(
     }
 
 
-async def _search_files_vector(
+def _search_files_vector(
     user_id: int, query: str, page: int, page_size: int
 ) -> dict[str, Any]:
     try:

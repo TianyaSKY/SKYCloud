@@ -8,10 +8,6 @@ export const register = (data: any) => {
     return request.post('/auth/register', data)
 }
 
-export const generateMcpToken = () => {
-    return request.post('/auth/mcp-token')
-}
-
 export const createMcpToken = (data: { name?: string }) => {
     return request.post('/auth/mcp-token', data)
 }

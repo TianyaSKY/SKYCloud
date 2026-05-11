@@ -16,6 +16,7 @@ declare module 'vue' {
     AButtonGroup: typeof import('@arco-design/web-vue')['ButtonGroup']
     ACard: typeof import('@arco-design/web-vue')['Card']
     ADatePicker: typeof import('@arco-design/web-vue')['DatePicker']
+    ADivider: typeof import('@arco-design/web-vue')['Divider']
     ADoption: typeof import('@arco-design/web-vue')['Doption']
     ADropdown: typeof import('@arco-design/web-vue')['Dropdown']
     AEmpty: typeof import('@arco-design/web-vue')['Empty']
