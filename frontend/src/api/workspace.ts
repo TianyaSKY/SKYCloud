@@ -12,6 +12,14 @@ export interface WorkspaceInfo {
   updated_at: string
 }
 
+export interface McpSetupResult {
+  success: boolean
+  message: string
+  mcp_url: string
+  token_id: number
+  config_path: string
+}
+
 export const listWorkspaces = () => {
   return request.get('/workspace')
 }
@@ -34,4 +42,12 @@ export const stopWorkspace = (id: number) => {
 
 export const deleteWorkspace = (id: number) => {
   return request.delete(`/workspace/${id}`)
+}
+
+export const restartWorkspace = (id: number) => {
+  return request.post(`/workspace/${id}/restart`, null, { timeout: 30000 })
+}
+
+export const setupMcpConnection = (id: number) => {
+  return request.post<McpSetupResult>(`/workspace/${id}/setup-mcp`, null, { timeout: 30000 })
 }

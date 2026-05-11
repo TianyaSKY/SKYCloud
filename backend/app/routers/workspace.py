@@ -101,6 +101,34 @@ async def delete_workspace(
         raise HTTPException(status_code=404, detail="工作区不存在")
 
 
+@router.post("/workspace/{workspace_id}/restart")
+async def restart_workspace(
+    workspace_id: int,
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        ws = workspace_service.restart_workspace(workspace_id, current_user.id)
+        return ws.to_dict()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/workspace/{workspace_id}/setup-mcp")
+async def setup_mcp_connection(
+    workspace_id: int,
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        result = workspace_service.setup_mcp_connection(workspace_id, current_user.id)
+        return result
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="工作区不存在")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 # ---------------------------------------------------------------------------
 # Reverse proxy helpers
 # ---------------------------------------------------------------------------

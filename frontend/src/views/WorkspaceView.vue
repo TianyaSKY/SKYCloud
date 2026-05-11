@@ -100,6 +100,27 @@
               <template #icon><icon-pause /></template>
               停止
             </a-button>
+            <a-button
+              v-if="ws.status === 'running'"
+              type="outline"
+              size="small"
+              :loading="actionLoading[ws.id] === 'restart'"
+              @click="handleRestart(ws)"
+            >
+              <template #icon><icon-sync /></template>
+              重启
+            </a-button>
+            <a-button
+              v-if="ws.status === 'running'"
+              type="outline"
+              status="normal"
+              size="small"
+              :loading="actionLoading[ws.id] === 'mcp'"
+              @click="handleSetupMcp(ws)"
+            >
+              <template #icon><icon-thunderbolt /></template>
+              连接 MCP
+            </a-button>
             <a-popconfirm
               content="确定删除该工作区？容器和数据将被永久删除。"
               @ok="handleDelete(ws)"
@@ -157,6 +178,34 @@
           </a-form-item>
         </a-form>
       </a-modal>
+
+      <!-- MCP 连接成功弹窗 -->
+      <a-modal
+        v-model:visible="mcpResultVisible"
+        title="MCP 连接配置成功"
+        :footer="false"
+        :width="520"
+      >
+        <div class="mcp-result">
+          <div class="mcp-result__icon">
+            <icon-check-circle-fill style="font-size: 48px; color: rgb(var(--green-6));" />
+          </div>
+          <p class="mcp-result__message">已自动将 MCP 连接配置写入工作区容器</p>
+          <div class="mcp-result__details">
+            <div class="mcp-result__item">
+              <span class="mcp-result__label">MCP 地址</span>
+              <span class="mcp-result__value">{{ mcpResult?.mcp_url }}</span>
+            </div>
+            <div class="mcp-result__item">
+              <span class="mcp-result__label">配置路径</span>
+              <span class="mcp-result__value">{{ mcpResult?.config_path }}</span>
+            </div>
+          </div>
+          <a-alert type="info" style="margin-top: 16px;">
+            MCP Token 已自动生成并配置。重启 opencode 后即可使用 SKYCLOUD MCP 工具。
+          </a-alert>
+        </div>
+      </a-modal>
     </div>
   </MainLayout>
 </template>
@@ -176,6 +225,9 @@ import {
   IconPlayArrow,
   IconPause,
   IconDelete,
+  IconSync,
+  IconThunderbolt,
+  IconCheckCircleFill,
 } from '@arco-design/web-vue/es/icon'
 import MainLayout from '../components/MainLayout.vue'
 import {
@@ -184,7 +236,10 @@ import {
   startWorkspace as apiStart,
   stopWorkspace as apiStop,
   deleteWorkspace as apiDelete,
+  restartWorkspace as apiRestart,
+  setupMcpConnection as apiSetupMcp,
   type WorkspaceInfo,
+  type McpSetupResult,
 } from '@/api/workspace'
 
 const workspaces = ref<WorkspaceInfo[]>([])
@@ -203,6 +258,10 @@ const actionLoading = ref<Record<number, string>>({})
 const iframeVisible = ref(false)
 const activeWorkspace = ref<WorkspaceInfo | null>(null)
 const iframeSrc = ref('')
+
+// MCP result modal
+const mcpResultVisible = ref(false)
+const mcpResult = ref<McpSetupResult | null>(null)
 
 // Auto-refresh timer
 let refreshTimer: ReturnType<typeof setInterval> | null = null
@@ -255,6 +314,31 @@ const handleStop = async (ws: WorkspaceInfo) => {
     await apiStop(ws.id)
     Message.success('工作区已停止')
     await fetchWorkspaces()
+  } finally {
+    delete actionLoading.value[ws.id]
+  }
+}
+
+const handleRestart = async (ws: WorkspaceInfo) => {
+  actionLoading.value[ws.id] = 'restart'
+  try {
+    await apiRestart(ws.id)
+    Message.success('工作区已重启')
+    await fetchWorkspaces()
+  } finally {
+    delete actionLoading.value[ws.id]
+  }
+}
+
+const handleSetupMcp = async (ws: WorkspaceInfo) => {
+  actionLoading.value[ws.id] = 'mcp'
+  try {
+    const res: any = await apiSetupMcp(ws.id)
+    mcpResult.value = res as McpSetupResult
+    mcpResultVisible.value = true
+    Message.success('MCP 连接配置成功')
+  } catch {
+    // handled by interceptor
   } finally {
     delete actionLoading.value[ws.id]
   }
@@ -434,6 +518,7 @@ onUnmounted(() => {
 .workspace-card__actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
   padding-top: 12px;
   border-top: 1px solid var(--color-border-1);
 }
@@ -448,5 +533,53 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   border: none;
+}
+
+/* MCP result modal */
+.mcp-result {
+  text-align: center;
+  padding: 8px 0;
+}
+
+.mcp-result__icon {
+  margin-bottom: 16px;
+}
+
+.mcp-result__message {
+  font-size: 15px;
+  color: var(--color-text-1);
+  margin-bottom: 20px;
+}
+
+.mcp-result__details {
+  background: var(--color-fill-1);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: left;
+}
+
+.mcp-result__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.mcp-result__item + .mcp-result__item {
+  border-top: 1px solid var(--color-border-1);
+}
+
+.mcp-result__label {
+  font-size: 13px;
+  color: var(--color-text-3);
+  min-width: 72px;
+  flex-shrink: 0;
+}
+
+.mcp-result__value {
+  font-size: 13px;
+  color: var(--color-text-1);
+  font-family: 'Monaco', 'Menlo', monospace;
+  word-break: break-all;
 }
 </style>

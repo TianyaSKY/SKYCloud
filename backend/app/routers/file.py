@@ -61,6 +61,11 @@ def create_file(
             status_code=status.HTTP_400_BAD_REQUEST, detail="No selected file"
         )
 
+    # 未指定 parent_id 时，默认上传到用户的根文件夹
+    if parent_id is None:
+        from app.services import folder_service
+        parent_id = folder_service.get_root_folder_id(current_user.id)
+
     data = {"uploader_id": current_user.id, "parent_id": parent_id}
     try:
         new_file = file_service.create_file(FastAPIUploadAdapter(file), data)
@@ -86,6 +91,11 @@ def batch_upload_files(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="No selected files"
         )
+
+    # 未指定 parent_id 时，默认上传到用户的根文件夹
+    if parent_id is None:
+        from app.services import folder_service
+        parent_id = folder_service.get_root_folder_id(current_user.id)
 
     data = {"uploader_id": current_user.id, "parent_id": parent_id}
     adapters = [FastAPIUploadAdapter(f) for f in valid_files]

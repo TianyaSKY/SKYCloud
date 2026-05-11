@@ -1,8 +1,10 @@
 """Workspace service — Docker container lifecycle management for opencode."""
 
+import json
 import logging
 import os
 import secrets
+import time
 
 import docker
 from docker.errors import DockerException, NotFound as ContainerNotFound
@@ -250,7 +252,9 @@ def _start_container(ws: Workspace) -> "docker.models.containers.Container":
         image=OPENCODE_IMAGE,
         name=name,
         detach=True,
-        environment={},
+        environment={
+            "SKYCLOUD_WORKSPACE_ID": str(ws.id),
+        },
         # Resource limits
         mem_limit=WORKSPACE_MEM_LIMIT,
         cpu_quota=WORKSPACE_CPU_QUOTA,
@@ -290,3 +294,155 @@ def _sync_status(ws: Workspace) -> None:
             db.session.commit()
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Restart
+# ---------------------------------------------------------------------------
+
+
+def restart_workspace(workspace_id: int, user_id: int) -> Workspace:
+    """Restart a workspace container (docker restart)."""
+    ws = get_workspace(workspace_id, user_id)
+    if not ws:
+        raise FileNotFoundError("工作区不存在")
+    if not ws.container_id:
+        raise ValueError("工作区容器不存在，请删除后重新创建")
+    try:
+        client = _get_docker_client()
+        container = client.containers.get(ws.container_id)
+        container.restart(timeout=3)
+        ws.status = "running"
+        ws.error_message = None
+    except ContainerNotFound:
+        # Container was removed — recreate
+        try:
+            container = _start_container(ws)
+            ws.container_id = container.id
+            ws.status = "running"
+            ws.error_message = None
+        except Exception as exc:
+            ws.status = "error"
+            ws.error_message = str(exc)[:500]
+    except Exception as exc:
+        ws.status = "error"
+        ws.error_message = str(exc)[:500]
+    db.session.commit()
+    return ws
+
+
+# ---------------------------------------------------------------------------
+# Auto-connect MCP
+# ---------------------------------------------------------------------------
+
+# MCP server port visible from inside the workspace container.
+# In Docker, the MCP container name is skycloud-backend-mcp and it listens
+# on port 5001. The workspace container connects via host.docker.internal
+# which resolves to the Docker host — matching the port mapping in
+# docker-compose.yml.
+_MCP_EXTERNAL_PORT = int(os.getenv("MCP_PORT", "5001"))
+
+# Config file path inside the opencode workspace container
+_OPENCODE_CONFIG_PATH = "/root/.config/opencode/opencode.json"
+
+
+def setup_mcp_connection(workspace_id: int, user_id: int) -> dict:
+    """Generate an MCP token and write opencode.json into the container.
+
+    Returns a dict with the generated token and connection status.
+    """
+    from app.services.auth_service import generate_mcp_token
+    from app.services import mcp_token_service
+    from app.datetime_utils import beijing_now
+    from datetime import timedelta
+
+    ws = get_workspace(workspace_id, user_id)
+    if not ws:
+        raise FileNotFoundError("工作区不存在")
+    if ws.status != "running":
+        raise ValueError("工作区必须处于运行状态才能配置 MCP 连接")
+
+    # 1) Generate a long-lived MCP token for this user
+    from datetime import datetime, timezone
+    token_expires_at_jwt = datetime.now(timezone.utc) + timedelta(days=365)
+    db_expires_at = beijing_now() + timedelta(days=365)
+
+    mcp_token = generate_mcp_token(user_id, token_expires_at_jwt)
+    if not mcp_token:
+        raise ValueError("生成 MCP Token 失败")
+
+    # Persist to DB
+    token_record = mcp_token_service.create_mcp_token(
+        user_id, mcp_token, db_expires_at, f"Workspace-{ws.name}-AutoMCP"
+    )
+
+    # 2) Build opencode.json config
+    # Determine the MCP URL that the workspace container should use.
+    # Inside Docker, use the MCP container name directly on the Docker network.
+    in_docker = os.path.exists("/.dockerenv")
+    if in_docker:
+        mcp_url = f"http://skycloud-backend-mcp:{_MCP_EXTERNAL_PORT}/mcp"
+    else:
+        mcp_url = f"http://host.docker.internal:{_MCP_EXTERNAL_PORT}/mcp"
+
+    opencode_config = {
+        "$schema": "https://opencode.ai/config.json",
+        "mcp": {
+            "SKYCLOUD": {
+                "type": "remote",
+                "url": mcp_url,
+                "enabled": True,
+                "oauth": False,
+                "headers": {
+                    "Authorization": f"Bearer {mcp_token}"
+                }
+            }
+        }
+    }
+
+    config_json = json.dumps(opencode_config, indent=2, ensure_ascii=False)
+
+    # 3) Write config into the running container via docker exec
+    try:
+        client = _get_docker_client()
+        container = client.containers.get(ws.container_id)
+
+        # Ensure the config directory exists
+        container.exec_run(
+            cmd=["mkdir", "-p", "/root/.config/opencode"],
+            user="root",
+        )
+
+        # Write the config file — use sh -c with heredoc-style echo
+        # Escape single quotes in the JSON just in case
+        escaped_json = config_json.replace("'", "'\\''")
+        container.exec_run(
+            cmd=["sh", "-c", f"echo '{escaped_json}' > {_OPENCODE_CONFIG_PATH}"],
+            user="root",
+        )
+
+        # Verify the file was written
+        exit_code, output = container.exec_run(
+            cmd=["cat", _OPENCODE_CONFIG_PATH],
+            user="root",
+        )
+        if exit_code != 0:
+            raise RuntimeError("Failed to verify config file in container")
+
+        logger.info(
+            "MCP connection configured for workspace %s (user %s)",
+            workspace_id, user_id,
+        )
+
+        return {
+            "success": True,
+            "message": "MCP 连接配置成功",
+            "mcp_url": mcp_url,
+            "token_id": token_record.id,
+            "config_path": _OPENCODE_CONFIG_PATH,
+        }
+    except ContainerNotFound:
+        raise ValueError("工作区容器不存在")
+    except Exception as exc:
+        logger.exception("Failed to setup MCP connection for workspace %s", workspace_id)
+        raise ValueError(f"配置 MCP 连接失败: {str(exc)[:300]}")

@@ -291,6 +291,7 @@ const activeClient = computed(() => {
 })
 
 const tools = reactive([
+  { name: 'get_current_user', description: '获取当前用户信息（用户名、角色、Token 用量）', params: '无' },
   { name: 'search_files', description: '模糊搜索或 AI 语义搜索用户文件', params: 'query, page, page_size, search_type' },
   { name: 'list_files', description: '列出指定目录下的文件和文件夹', params: 'parent_id, page, page_size, name, sort_by, order' },
   { name: 'get_file_info', description: '获取文件的详细元数据和描述信息', params: 'file_id' },
@@ -299,6 +300,11 @@ const tools = reactive([
   { name: 'delete_file', description: '永久删除文件（不可恢复）', params: 'file_id' },
   { name: 'get_file_download_url', description: '生成文件的临时下载链接', params: 'file_id, expires_hours' },
   { name: 'read_file_content', description: '读取文本文件内容（txt, md, csv, json, 代码文件等）', params: 'file_id, encoding' },
+  { name: 'move_folder', description: '移动或重命名文件夹', params: 'folder_id, new_name, new_parent_id' },
+  { name: 'delete_folder', description: '删除文件夹及其所有内容（不可恢复）', params: 'folder_id' },
+  { name: 'get_storage_overview', description: '获取云盘存储概览（文件数、大小、状态统计）', params: '无' },
+  { name: 'batch_delete', description: '批量删除多个文件和/或文件夹', params: 'items: [{id, is_folder}]' },
+  { name: 'get_folder_tree', description: '获取文件夹树形结构，了解目录布局', params: 'max_depth' },
 ])
 
 const handleGenerateToken = async () => {
@@ -430,18 +436,25 @@ onMounted(() => {
 
 .token-display {
   display: flex;
-  align-items: center;
-  gap: 16px;
+  align-items: flex-start;
+  gap: 12px;
   margin: 16px 0;
+  min-width: 0;
 }
 
 .token-value {
   font-family: 'JetBrains Mono', Monaco, monospace;
-  font-size: 16px;
+  font-size: 13px;
   color: var(--color-text-1);
   background: var(--color-fill-2);
   padding: 8px 12px;
   border-radius: 4px;
+  word-break: break-all;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.6;
+  max-height: 80px;
+  overflow-y: auto;
 }
 
 .token-meta {

@@ -24,6 +24,7 @@ from typing import Any
 
 from fastapi import HTTPException
 from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel, Field
 
 from app.datetime_utils import beijing_now
 from app.extensions import db
@@ -141,6 +142,26 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+async def get_current_user() -> str:
+    """获取当前已认证用户的基本信息，包括用户名、角色、Token 用量统计等。"""
+    user_id = _get_authenticated_user_id()
+
+    def _work():
+        try:
+            from app.models.user import User
+            user = db.session.get(User, user_id)
+            if not user:
+                return _error_json("User not found")
+            info = user.to_dict()
+            # 移除敏感字段
+            info.pop("password_hash", None)
+            return json.dumps(info, ensure_ascii=False, default=str)
+        finally:
+            db.session.remove()
+
+    return await asyncio.to_thread(_work)
+
+@mcp.tool()
 async def search_files(
     query: str,
     page: int = 1,
@@ -153,7 +174,10 @@ async def search_files(
         query: 搜索关键词
         page: 页码（默认 1）
         page_size: 每页条数（默认 10）
-        search_type: 搜索类型，"fuzzy"（模糊匹配文件名）或 "vector"（AI 语义搜索）
+        search_type: 搜索类型。
+            - "fuzzy"：仅对文件名进行模糊匹配，不搜索文件内容或描述。
+            - "vector"：AI 语义搜索，可匹配文件内容和描述。
+              如果需要按文件内容查找，请使用 vector 模式。
     """
     user_id = _get_authenticated_user_id()
     # search_files 是 async 函数，内部已通过 to_thread 卸载同步 DB 操作
@@ -183,10 +207,21 @@ async def list_files(
         order: 排序方向，"asc" 或 "desc"（默认）
     """
     user_id = _get_authenticated_user_id()
-    result = await _run_sync(
-        file_service.get_files_and_folders,
-        user_id, parent_id, page, page_size, name, sort_by, order,
-    )
+
+    def _work():
+        try:
+            resolved_parent_id = parent_id
+            # 未指定 parent_id 时，自动解析为用户根文件夹的 ID，
+            # 这样返回的是根目录下的内容而非根文件夹本身
+            if resolved_parent_id is None:
+                resolved_parent_id = folder_service.get_root_folder_id(user_id)
+            return file_service.get_files_and_folders(
+                user_id, resolved_parent_id, page, page_size, name, sort_by, order,
+            )
+        finally:
+            db.session.remove()
+
+    result = await asyncio.to_thread(_work)
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
@@ -228,8 +263,14 @@ async def create_folder(
 
     def _work():
         try:
+            # 未指定 parent_id 时，自动解析为用户根文件夹的 ID，
+            # 与 list_files 行为一致，避免创建出 parent_id=None 的伪根目录
+            resolved_parent_id = parent_id
+            if resolved_parent_id is None:
+                resolved_parent_id = folder_service.get_root_folder_id(user_id)
+
             folder = folder_service.create_folder(
-                {"name": name, "user_id": user_id, "parent_id": parent_id},
+                {"name": name, "user_id": user_id, "parent_id": resolved_parent_id},
             )
             return json.dumps(folder.to_dict(), ensure_ascii=False, default=str)
         except HTTPException as e:
@@ -461,6 +502,306 @@ async def read_file_content(
             )
         except HTTPException as e:
             return _error_json(e.detail)
+        finally:
+            db.session.remove()
+
+    return await asyncio.to_thread(_work)
+
+
+@mcp.tool()
+async def move_folder(
+    folder_id: int,
+    new_name: str | None = None,
+    new_parent_id: int | None = None,
+) -> str:
+    """移动或重命名文件夹。至少提供 new_name 或 new_parent_id 之一。
+
+    Args:
+        folder_id: 文件夹 ID
+        new_name: 新文件夹名称（可选）
+        new_parent_id: 新的父文件夹 ID（可选，用于移动文件夹）
+    """
+    user_id = _get_authenticated_user_id()
+
+    def _work():
+        try:
+            folder = folder_service.get_folder(folder_id)
+            if folder.user_id != user_id:
+                return _error_json("Permission denied")
+
+            update_data: dict[str, Any] = {}
+            if new_name is not None:
+                update_data["name"] = new_name
+            if new_parent_id is not None:
+                update_data["parent_id"] = new_parent_id
+
+            if not update_data:
+                return _error_json("Please provide new_name or new_parent_id")
+
+            updated = folder_service.update_folder(folder_id, update_data)
+            return json.dumps(updated.to_dict(), ensure_ascii=False, default=str)
+        except HTTPException as e:
+            return _error_json(e.detail)
+        finally:
+            db.session.remove()
+
+    return await asyncio.to_thread(_work)
+
+
+@mcp.tool()
+async def delete_folder(folder_id: int) -> str:
+    """删除一个文件夹及其下所有内容（子文件夹和文件）。此操作不可恢复。
+
+    Args:
+        folder_id: 文件夹 ID
+    """
+    user_id = _get_authenticated_user_id()
+
+    def _work():
+        try:
+            folder = folder_service.get_folder(folder_id)
+            if folder.user_id != user_id:
+                return _error_json("Permission denied")
+
+            folder_name = folder.name
+            folder_service.delete_folder(folder_id)
+            return json.dumps(
+                {"success": True, "message": f"Folder '{folder_name}' (ID: {folder_id}) deleted"},
+                ensure_ascii=False,
+            )
+        except HTTPException as e:
+            return _error_json(e.detail)
+        finally:
+            db.session.remove()
+
+    return await asyncio.to_thread(_work)
+
+
+@mcp.tool()
+async def get_storage_overview() -> str:
+    """获取用户的云盘存储概览，包括文件总数、各状态文件数、总存储大小等。"""
+    user_id = _get_authenticated_user_id()
+
+    def _work():
+        try:
+            from sqlalchemy import func
+            from app.models.file import File
+            from app.models.folder import Folder
+
+            # 文件统计
+            file_stats = (
+                db.session.query(
+                    func.count(File.id).label("total_files"),
+                    func.coalesce(func.sum(File.file_size), 0).label("total_size"),
+                )
+                .filter(File.uploader_id == user_id)
+                .first()
+            )
+            # 按状态统计
+            status_rows = (
+                db.session.query(File.status, func.count(File.id))
+                .filter(File.uploader_id == user_id)
+                .group_by(File.status)
+                .all()
+            )
+            status_counts = dict(status_rows)
+
+            # 文件夹数量
+            folder_count = (
+                db.session.query(func.count(Folder.id))
+                .filter(Folder.user_id == user_id)
+                .scalar()
+            ) or 0
+
+            total_size = int(file_stats.total_size) if file_stats else 0
+
+            # 人类可读的大小
+            def _human_size(size_bytes: int) -> str:
+                for unit in ("B", "KB", "MB", "GB", "TB"):
+                    if abs(size_bytes) < 1024:
+                        return f"{size_bytes:.1f} {unit}"
+                    size_bytes /= 1024
+                return f"{size_bytes:.1f} PB"
+
+            return json.dumps(
+                {
+                    "total_files": file_stats.total_files if file_stats else 0,
+                    "total_folders": folder_count,
+                    "total_size_bytes": total_size,
+                    "total_size_human": _human_size(total_size),
+                    "status_breakdown": {
+                        "success": status_counts.get("success", 0),
+                        "pending": status_counts.get("pending", 0),
+                        "processing": status_counts.get("processing", 0),
+                        "fail": status_counts.get("fail", 0),
+                    },
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+        finally:
+            db.session.remove()
+
+    return await asyncio.to_thread(_work)
+
+
+class BatchDeleteItem(BaseModel):
+    """批量删除操作中的单个项目。"""
+    id: int = Field(description="文件或文件夹的 ID")
+    is_folder: bool = Field(default=False, description="是否为文件夹。true 表示文件夹，false 表示文件")
+
+
+@mcp.tool()
+async def batch_delete(
+    items: list[BatchDeleteItem],
+) -> str:
+    """批量删除多个文件和/或文件夹。
+
+    Args:
+        items: 要删除的项目列表，每项包含 id（文件或文件夹ID）和 is_folder（是否为文件夹）
+    """
+    user_id = _get_authenticated_user_id()
+
+    def _work():
+        try:
+            deleted = []
+            errors = []
+            for item in items:
+                item_id = item.id
+                is_folder = item.is_folder
+                try:
+                    if is_folder:
+                        folder = folder_service.get_folder(item_id)
+                        if folder.user_id != user_id:
+                            errors.append({"id": item_id, "error": "Permission denied"})
+                            continue
+                        folder_service.delete_folder(item_id)
+                    else:
+                        file_obj = file_service.get_file(item_id)
+                        if file_obj.uploader_id != user_id:
+                            errors.append({"id": item_id, "error": "Permission denied"})
+                            continue
+                        file_service.delete_file(item_id)
+                    deleted.append(item_id)
+                except HTTPException as e:
+                    errors.append({"id": item_id, "error": e.detail})
+
+            return json.dumps(
+                {
+                    "deleted_count": len(deleted),
+                    "deleted_ids": deleted,
+                    "errors": errors,
+                },
+                ensure_ascii=False,
+            )
+        finally:
+            db.session.remove()
+
+    return await asyncio.to_thread(_work)
+
+
+@mcp.tool()
+async def get_folder_tree(max_depth: int = 3) -> str:
+    """获取用户的文件夹树形结构，用于了解云盘的整体目录布局。
+
+    Args:
+        max_depth: 最大递归深度（默认 3，最大 10）
+    """
+    user_id = _get_authenticated_user_id()
+
+    def _work():
+        try:
+            from app.models.folder import Folder
+
+            depth = max(1, min(max_depth, 10))
+            all_folders = (
+                db.session.query(Folder)
+                .filter(Folder.user_id == user_id)
+                .all()
+            )
+
+            # 构建 parent_id -> children 映射
+            children_map: dict[int | None, list] = {}
+            for f in all_folders:
+                pid = f.parent_id
+                if pid not in children_map:
+                    children_map[pid] = []
+                children_map[pid].append(f)
+
+            def _build_tree(parent_id: int | None, current_depth: int) -> list[dict]:
+                if current_depth > depth:
+                    return []
+                nodes = []
+                for f in children_map.get(parent_id, []):
+                    node: dict[str, Any] = {
+                        "id": f.id,
+                        "name": f.name,
+                    }
+                    sub = _build_tree(f.id, current_depth + 1)
+                    if sub:
+                        node["children"] = sub
+                    nodes.append(node)
+                return nodes
+
+            tree = _build_tree(None, 1)
+            return json.dumps(tree, ensure_ascii=False, default=str)
+        finally:
+            db.session.remove()
+
+    return await asyncio.to_thread(_work)
+
+
+@mcp.tool()
+async def get_upload_url(parent_id: int | None = None) -> str:
+    """获取文件上传所需的 API 地址和认证信息。
+
+    返回上传 URL、认证 Token 和示例 curl 命令。
+    在 opencode 工作区中，可直接在终端使用返回的 curl 命令上传文件到 SKYCloud 云盘。
+    上传后文件会自动进行 AI 处理（描述生成、向量索引）。
+
+    Args:
+        parent_id: 目标文件夹 ID（None 表示上传到根目录）
+    """
+    user_id = _get_authenticated_user_id()
+
+    def _work():
+        try:
+            # 构建 API URL（工作区容器通过 Docker 网络访问 API）
+            in_docker = os.path.exists("/.dockerenv")
+            if in_docker:
+                api_base = "http://skycloud-backend-api:5000"
+            else:
+                api_base = os.getenv("SKYCLOUD_BASE_URL", "http://host.docker.internal:5000")
+            upload_url = f"{api_base}/api/files"
+
+            # 复用当前请求的 MCP token（已在 opencode.json 中配置）
+            # 生成示例 curl 命令
+            parent_flag = ""
+            if parent_id is not None:
+                parent_flag = f' -F "parent_id={parent_id}"'
+
+            curl_example = (
+                f'curl -X POST "{upload_url}" '
+                f'-H "Authorization: Bearer $TOKEN" '
+                f'-F "file=@/path/to/your/file"'
+                f'{parent_flag}'
+            )
+
+            hint = (
+                "你的 MCP Token 就是当前连接 SKYCLOUD MCP 时使用的那个 Bearer Token。"
+                "可以从 /root/.config/opencode/opencode.json 中的 "
+                'mcp.SKYCLOUD.headers.Authorization 字段读取。'
+            )
+
+            return json.dumps(
+                {
+                    "upload_url": upload_url,
+                    "curl_example": curl_example,
+                    "hint": hint,
+                    "parent_id": parent_id,
+                },
+                ensure_ascii=False,
+            )
         finally:
             db.session.remove()
 
