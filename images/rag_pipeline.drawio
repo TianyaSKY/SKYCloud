@@ -1,0 +1,88 @@
+<mxfile>
+  <diagram name="RAG Pipeline" id="rag">
+    <mxGraphModel dx="1600" dy="480" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="480" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="n1" value="&lt;b style=&quot;font-size:12px;&quot;&gt;用户提问&lt;/b&gt;&lt;br&gt;&lt;i style=&quot;font-size:11px;&quot;&gt;User Query&lt;/i&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#002855;strokeColor=none;fontFamily=Microsoft YaHei;fontSize=12;fontColor=#FFFFFF;align=center;verticalAlign=middle;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="195" width="140" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="n2" value="&lt;b style=&quot;font-size:12px;&quot;&gt;关键词改写&lt;/b&gt;&lt;br&gt;&lt;i style=&quot;font-size:11px;&quot;&gt;Keyword Rewrite&lt;/i&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;strokeWidth=1.5;fontFamily=Microsoft YaHei;fontSize=12;fontColor=#000000;align=center;verticalAlign=middle;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="280" y="100" width="150" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="n3" value="&lt;b style=&quot;font-size:12px;&quot;&gt;问题 Embedding&lt;/b&gt;&lt;br&gt;&lt;i style=&quot;font-size:11px;&quot;&gt;Query Embedding&lt;/i&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;strokeWidth=1.5;fontFamily=Microsoft YaHei;fontSize=12;fontColor=#000000;align=center;verticalAlign=middle;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="280" y="290" width="150" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="n4" value="&lt;b style=&quot;font-size:12px;&quot;&gt;多查询生成&lt;/b&gt;&lt;br&gt;&lt;i style=&quot;font-size:11px;&quot;&gt;Multi-Query Gen&lt;/i&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;strokeWidth=1.5;fontFamily=Microsoft YaHei;fontSize=12;fontColor=#000000;align=center;verticalAlign=middle;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="530" y="100" width="150" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="n5" value="&lt;b style=&quot;font-size:12px;&quot;&gt;多路向量召回&lt;/b&gt;&lt;br&gt;&lt;i style=&quot;font-size:11px;&quot;&gt;Vector Recall&lt;/i&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;strokeWidth=1.5;fontFamily=Microsoft YaHei;fontSize=12;fontColor=#000000;align=center;verticalAlign=middle;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="780" y="195" width="150" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="n6" value="&lt;b style=&quot;font-size:12px;&quot;&gt;RRF 融合排序&lt;/b&gt;&lt;br&gt;&lt;i style=&quot;font-size:11px;&quot;&gt;RRF Fusion&lt;/i&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;strokeWidth=2;fontFamily=Microsoft YaHei;fontSize=12;fontStyle=1;fontColor=#000000;align=center;verticalAlign=middle;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="1030" y="195" width="150" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="n7" value="&lt;b style=&quot;font-size:12px;&quot;&gt;Rerank 重排序&lt;/b&gt;&lt;br&gt;&lt;i style=&quot;font-size:11px;&quot;&gt;Rerank (Optional)&lt;/i&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F8F9FA;strokeColor=#999999;strokeWidth=1;fontFamily=Microsoft YaHei;fontSize=12;fontColor=#000000;align=center;verticalAlign=middle;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="195" width="150" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="n8" value="&lt;b style=&quot;font-size:12px;&quot;&gt;SSE 流式输出&lt;/b&gt;&lt;br&gt;&lt;i style=&quot;font-size:11px;&quot;&gt;SSE Streaming&lt;/i&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#002855;strokeColor=none;fontFamily=Microsoft YaHei;fontSize=12;fontColor=#FFFFFF;align=center;verticalAlign=middle;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="290" width="150" height="50" as="geometry"/>
+        </mxCell>
+        <!-- 并行标注 -->
+        <mxCell id="lbl1" value="&lt;i style=&quot;font-size:10px;color:#6C8EBF;&quot;&gt;并行 Parallel&lt;/i&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Microsoft YaHei;" vertex="1" parent="1">
+          <mxGeometry x="190" y="205" width="90" height="30" as="geometry"/>
+        </mxCell>
+        <!-- LLM 标注 -->
+        <mxCell id="lbl2" value="&lt;i style=&quot;font-size:10px;color:#999;&quot;&gt;LLM&lt;/i&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Microsoft YaHei;" vertex="1" parent="1">
+          <mxGeometry x="280" y="75" width="40" height="25" as="geometry"/>
+        </mxCell>
+        <!-- pgvector 标注 -->
+        <mxCell id="lbl3" value="&lt;i style=&quot;font-size:10px;color:#999;&quot;&gt;pgvector&lt;/i&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Microsoft YaHei;" vertex="1" parent="1">
+          <mxGeometry x="780" y="250" width="60" height="25" as="geometry"/>
+        </mxCell>
+
+        <!-- 连线: 用 waypoints 保证直角 -->
+        <!-- n1→n2: 右出→上拐→右入 -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=1.5;endArrow=classic;endFill=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="n1" target="n2" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="230" y="220"/><mxPoint x="230" y="125"/></Array>
+          </mxGeometry>
+        </mxCell>
+        <!-- n1→n3: 右出→下拐→右入 -->
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=1.5;endArrow=classic;endFill=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="n1" target="n3" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="230" y="220"/><mxPoint x="230" y="315"/></Array>
+          </mxGeometry>
+        </mxCell>
+        <!-- n2→n4: 纯水平 -->
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=1.5;endArrow=classic;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="n2" target="n4" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- n4→n5: 右出→下拐→右入 -->
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=1.5;endArrow=classic;endFill=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="n4" target="n5" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="730" y="125"/><mxPoint x="730" y="220"/></Array>
+          </mxGeometry>
+        </mxCell>
+        <!-- n3→n5: 右出→上拐→右入 -->
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=1.5;endArrow=classic;endFill=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" source="n3" target="n5" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="730" y="315"/><mxPoint x="730" y="220"/></Array>
+          </mxGeometry>
+        </mxCell>
+        <!-- n5→n6: 纯水平 -->
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=1.5;endArrow=classic;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="n5" target="n6" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- n6→n7: 纯水平 -->
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=1.5;endArrow=classic;endFill=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="n6" target="n7" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <!-- n7→n8: 纯垂直 -->
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#000000;strokeWidth=1.5;endArrow=classic;endFill=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" source="n7" target="n8" parent="1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

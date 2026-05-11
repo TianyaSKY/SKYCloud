@@ -1,5 +1,5 @@
 <div align="center">
-  <h1 style="letter-spacing:4px;">SKYCLOUD</h1>
+  <h1>SKYCLOUD</h1>
   <p><strong>AI-powered cloud file management platform</strong></p>
   <p>
     <img src="https://img.shields.io/badge/Python-3.10%2B-blue" alt="Python">
@@ -9,238 +9,120 @@
     <img src="https://img.shields.io/badge/Docker-Enabled-2496ED" alt="Docker">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </p>
-  <p><a href="./README.md">Chinese README</a></p>
-<div align="center">
-  <h1 style="letter-spacing:4px;">SKYCLOUD</h1>
-  <p><strong>AI-powered cloud file management platform</strong></p>
-  <p>
-    <img src="https://img.shields.io/badge/Python-3.10%2B-blue" alt="Python">
-    <img src="https://img.shields.io/badge/Vue.js-3.x-4FC08D" alt="Vue">
-    <img src="https://img.shields.io/badge/FastAPI-0.115-009688" alt="FastAPI">
-    <img src="https://img.shields.io/badge/PostgreSQL-15-336791" alt="PostgreSQL">
-    <img src="https://img.shields.io/badge/Docker-Enabled-2496ED" alt="Docker">
-    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  </p>
-  <p><a href="./README.md">Chinese README</a></p>
+  <p><a href="./README.md">Chinese</a></p>
 </div>
 
-# SKYCloud
+---
 
-SKYCloud is an AI-enabled cloud file management system with:
-- **Modern and Refined UI** (elegant hover actions and intuitive breadcrumbs)
-- File upload, preview, and organization
-- Share links and inbox-style collaboration
-- LLM chat capabilities based on LangChain/OpenAI
-- AI-driven file classification and organization using LangGraph
-- **Manus-Style AI Workspace**: A fully equipped autonomous execution sandbox and cloud development environment
+SKYCloud is an AI-enhanced cloud file management system that provides an all-in-one experience from file storage and intelligent retrieval to autonomous execution.
 
-## Screenshots
+## Highlights
 
-| Login / Dashboard | File Browser |
-| --- | --- |
-| ![Login Dashboard](images/img.png) | ![File Browser](images/img_1.png) |
+- **File management** - Uploads (chunked uploads / instant uploads), downloads, previews, batch operations, folder trees, and format conversion
+- **AI chat (RAG)** - Multi-dimensional keyword rewriting -> Multi-Query vector recall -> RRF fusion -> optional reranking -> SSE streaming output, with image references
+- **AI file organization** - LangGraph ReAct Agent automatic classification, incremental / full organization modes, and inbox notifications after organization
+- **All-in-one workspace** - Isolated Docker sandboxes + MCP protocol, allowing AI Agents to read/write cloud files, run code, and automate tasks in a Manus-style workflow
+- **MCP service** - 17 tools / 4 prompts / 2 resources, directly accessible from clients such as Claude Desktop and Cursor
+- **Sharing & inbox** - Expiring share links and system notification delivery
+- **Token usage tracking** - Consumption statistics for chat / indexing / organization, including an admin summary view
+- **Performance optimizations** - Bloom Filter permission pre-checks, Redis caching, RabbitMQ async indexing, and parallel embedding
 
-| Chat Assistant |
-| --- |
-| ![Chat Assistant](images/img_2.png) |
+| AI Assistant Chat | File Preview |
+| ----------------- | ------------ |
+| ![AI Assistant Chat](images/agent_chat.png) | ![File Preview](images/file_preview.png) |
 
-## Tech Stack
+## Architecture
 
-- Backend: FastAPI, SQLAlchemy, Redis, RabbitMQ, PostgreSQL (pgvector)
-- Frontend: Vue 3, TypeScript, Vite, Arco Design
-- Worker: Python multi-thread worker for async file indexing/organizing
-- Deployment: Docker Compose
+![System Architecture](images/architecture.png)
 
-## Repository Structure
+| Layer | Technology |
+| ----- | ---------- |
+| Backend | FastAPI · SQLAlchemy · Pydantic |
+| AI | LangChain · LangGraph · OpenAI API (compatible with SiliconFlow and others) |
+| Vector Database | PostgreSQL 15 + pgvector (1024 dimensions) |
+| Queue / Cache | RabbitMQ 3.13 · Redis 7 |
+| Frontend | Vue 3 · TypeScript · Vite · Arco Design |
+| MCP | FastMCP (Streamable HTTP) |
+| Deployment | Docker Compose |
 
-```text
-SKYCloud/
-|- backend/                # FastAPI app + worker
-|  |- app/                 # Routers, models, services, schemas
-|  |- worker/              # Background task handlers
-|  |- run.py               # FastAPI entry
-|  |- tasks.py             # Worker entry
-|  `- requirements.txt
-|- frontend/               # Vue 3 + Vite app
-|  |- src/
-|  `- package.json
-|- images/                 # README images
-|- docker-compose.yml
-`- .env.example
-```
+## Quick Start
 
-## Prerequisites
-
-- Python 3.10+
-- Node.js 20+
-- Docker + Docker Compose (optional, recommended for one-command startup)
-
-## Quick Start (Docker)
-
-1. Clone and enter project:
+> Requirements: Docker + Docker Compose
 
 ```bash
-git clone https://github.com/TianyaSKY/SKYCloud
-cd SKYCloud
-```
-
-2. Create environment file:
-
-```bash
+git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
 cp .env.example .env
-```
-
-3. Update key variables in `.env`:
-- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_PORT`
-- `REDIS_PORT`
-- `RABBITMQ_PORT`, `RABBITMQ_MANAGEMENT_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, `RABBITMQ_VHOST`
-- `BACKEND_API_PORT`
-- `UPLOAD_HOST_PATH` (host path for uploaded files)
-- `WORKER_MAX_THREADS`
-- `FRONTEND_PORT`
-- `DEFAULT_MODEL_PWD`
-- `CHAT_API_URL`, `CHAT_API_KEY`, `CHAT_API_MODEL`
-- `EMB_API_URL`, `EMB_API_KEY`, `EMB_MODEL_NAME`
-- `VL_API_URL`, `VL_API_KEY`, `VL_API_MODEL`
-- `RERANK_API_URL`, `RERANK_API_KEY`, `RERANK_MODEL`, `RERANK_TOP_K`
-- `RAG_VECTOR_FETCH_K`
-- `RAG_MULTI_QUERY_MAX_QUERIES`, `RAG_RRF_K`, `RAG_FUSION_TOP_K`
-- `SECRET_KEY` (strongly recommended in production)
-
-Note: the container upload directory is now fixed to `/data/uploads`, so `UPLOAD_FOLDER` is no longer an environment variable.
-
-Model configuration is now loaded from environment variables and is no longer stored in `sys_dict`.
-RAG now supports an optional rerank model (vector recall first, then reranking).
-
-## RAG (Current Implementation)
-
-The current RAG pipeline is "file-level description retrieval + multi-query fusion":
-
-1. Offline indexing
-- After upload, files are pushed to RabbitMQ and processed by `backend/tasks.py` workers.
-- Workers generate file descriptions (`files.description`) and embeddings (`files.vector_info`, 1024-dim pgvector).
-- Retrieval is user-scoped: only files owned by the current user are searched.
-
-2. Online query rewrite
-- `/api/chat` first asks the LLM to produce structured keywords across 6 dimensions:
-  - `topic_terms`
-  - `entity_terms`
-  - `time_terms`
-  - `file_type_terms`
-  - `action_terms`
-  - `synonym_terms`
-- The rewrite output is validated by a strict Pydantic schema (`extra=forbid`, `strict=True`).
-- Invalid schema output is rejected with an error (no silent fallback).
-
-3. Multi-Query Fusion retrieval
-- Multiple queries are generated from the original question plus structured terms (bounded by `RAG_MULTI_QUERY_MAX_QUERIES`).
-- Each query performs vector recall (`RAG_VECTOR_FETCH_K` per query).
-- Results from all queries are fused with RRF (`RAG_RRF_K`) and truncated to `RAG_FUSION_TOP_K`.
-- Fused results are optionally reranked via rerank model config (`RERANK_*`), then fed into answer generation.
-
-4. Generation and streaming
-- Final answer is returned via SSE. Frontend consumes:
-  - `keywords`: structured keyword preview
-  - `status`: retrieval/error status
-  - `token`: streaming answer tokens
-
-### RAG Tuning Tips
-
-- `RAG_VECTOR_FETCH_K`: recall size per query. Increase if recall is weak (e.g., 20 -> 40).
-- `RAG_MULTI_QUERY_MAX_QUERIES`: max generated queries. Recommended 4-8.
-- `RAG_RRF_K`: RRF smoothing factor. Typical range 50-100 (default 60).
-- `RAG_FUSION_TOP_K`: number of fused docs kept before final rerank/answering; keep it >= `RERANK_TOP_K`.
-
-4. Start all services:
-
-```bash
+# Edit .env and at least configure API_URL / API_KEY / MODEL for the Chat and Embedding models
 docker-compose up -d --build
 ```
 
-5. Access:
-- Frontend: `http://localhost:${FRONTEND_PORT}` (default `http://localhost:80`)
-- Backend health: `http://localhost:${BACKEND_API_PORT}/api/health` (default `http://localhost:5000/api/health`)
+After startup, visit `http://localhost` (default port 80). The default administrator account is `admin / admin123`.
+
+> For non-demo environments, change the password immediately after the first login. If `SECRET_KEY` is not configured, an insecure default value is used. Always configure it in production.
+
+## RAG Retrieval Augmentation
+
+![RAG Pipeline](images/rag_pipeline.png)
+
+**Offline**: File upload -> RabbitMQ -> Worker generates descriptions + 1024-dimensional embeddings -> pgvector
+
+**Online**: 6-dimensional keyword rewriting -> multi-query generation -> parallel vector recall -> RRF fusion -> reranking -> SSE streaming output
+
+## MCP Access
+
+The MCP Server runs in a standalone container on the default port **5001**. Log in to the web app -> MCP Service page -> generate a token.
+
+| MCP Service | Token Usage |
+| ----------- | ----------- |
+| ![MCP](images/mcp.png) | ![Token Usage](images/token-usage.png) |
+
+## All-In-One Workspace
+
+Each workspace runs in an isolated Docker container. Through the MCP protocol, AI can autonomously execute tasks inside the sandbox and interact with the cloud drive.
+
+| Share Management | Workspace |
+| ---------------- | --------- |
+| ![Share](images/share.png) | ![Workspace](images/workspace.png) |
 
 ## Local Development
 
-### 1. Start backend dependencies
+```bash
+# Backend (requires PostgreSQL / Redis / RabbitMQ)
+cd backend && pip install -r requirements.txt
+python run.py          # API
+python tasks.py        # Worker
+python mcp_run.py      # MCP Server
 
-Start PostgreSQL + Redis + RabbitMQ first (locally or via Docker).
-For security, change it after first login in non-demo environments.
-
-## Notes
-
-- There are currently no established automated tests in this repository.
-- If you modify core logic, add tests (recommended: `pytest` for backend, `vitest` for frontend).
-
-## 🤖 Manus-style Autonomous Workspace (OpenCode)
-
-SKYCloud provides a **Manus-inspired** all-in-one cloud workspace, giving AI the power to not just chat, but execute and build:
-
-- **All-in-One AI Sandbox**: Each workspace runs in an isolated Docker container (e.g., `skycloud-workspace-*`), providing a complete and secure environment for tool execution and coding.
-- **Autonomous Execution Engine**: Combined with the MCP protocol, AI agents can act like real developers—reading/writing cloud files, executing code, and automating complex workflows directly in the cloud.
-- **One-Click Summoning**: Launch your personal AI execution engine directly from the frontend UI in seconds.
-- **Limitless Extensibility**: Build custom environments for your "cloud Manus" using your own `Dockerfile.skycloud` to install any system dependencies you need.
-
-## MCP Service (AI Client Access)
-
-SKYCloud provides [MCP (Model Context Protocol)](https://modelcontextprotocol.io) services, allowing AI clients such as Claude Desktop, Cursor, and Cline to directly access the cloud drive's file management capabilities.
-
-The MCP Server runs as a standalone container `backend-mcp` with the default port **5001**.
-
-### Get an MCP Token
-
-1. Log in to the web dashboard and click on **"MCP Service"** in the left menu.
-2. Click **"Generate MCP Token"**, enter a name, and get a long-lasting token valid for 365 days.
-3. Copy the generated Token to replace `<YOUR_MCP_TOKEN>` in the configurations below.
-
-*(For programmatic access, you can also use the `/api/auth/mcp-token` API endpoint)*
-
-### Claude Desktop Configuration
-
-Edit `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "skycloud": {
-      "url": "http://your-server:5001/mcp",
-      "headers": {
-        "Authorization": "Bearer <YOUR_MCP_TOKEN>"
-      }
-    }
-  }
-}
+# Frontend (Vite dev proxy -> localhost:5000)
+cd frontend && npm ci && npm run dev
 ```
 
-### Cursor IDE Configuration
+## Project Structure
 
-Create `.cursor/mcp.json` in the root of your project:
-
-```json
-{
-  "mcpServers": {
-    "skycloud": {
-      "url": "http://your-server:5001/mcp",
-      "headers": {
-        "Authorization": "Bearer <YOUR_MCP_TOKEN>"
-      }
-    }
-  }
-}
+```
+SKYCloud/
+├── backend/
+│   ├── app/
+│   │   ├── models/         # SQLAlchemy models
+│   │   ├── routers/        # API routes
+│   │   ├── services/       # Business logic
+│   │   ├── factory.py      # Application factory
+│   │   ├── mcp_server.py   # MCP Server
+│   │   └── extensions.py   # Infrastructure
+│   ├── worker/             # Indexing / organization / format conversion
+│   ├── run.py              # API entry point
+│   ├── tasks.py            # Worker entry point
+│   └── mcp_run.py          # MCP entry point
+├── frontend/src/
+│   ├── api/                # Axios wrappers
+│   ├── components/         # Shared components
+│   ├── views/              # Pages
+│   ├── hooks/              # Composition API
+│   └── router/             # Routes
+├── docker-compose.yml
+└── .env.example
 ```
 
-### Available Tools
+## License
 
-| Tool | Function |
-|---|---|
-| `search_files` | Fuzzy or semantic search of files |
-| `list_files` | List files and folders in a directory |
-| `get_file_info` | Get detailed metadata of a file |
-| `create_folder` | Create a new folder |
-| `move_file` | Move or rename a file |
-| `delete_file` | Permanently delete a file |
-| `get_file_download_url` | Generate a temporary download link (configurable expiry, max 7 days) |
-| `read_file_content` | Read text file content (txt/md/csv/json/code files, max 512KB) |
-
-> **Note**: The download URL generated by `get_file_download_url` depends on the `SKYCLOUD_BASE_URL` environment variable (defaults to `http://localhost:5000`). For production deployments, set it in `.env` to your actual API address, e.g. `SKYCLOUD_BASE_URL=https://your-domain.com`.
+MIT

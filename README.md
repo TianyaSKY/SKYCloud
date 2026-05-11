@@ -1,5 +1,5 @@
 <div align="center">
-  <h1 style="letter-spacing:4px;">SKYCLOUD</h1>
+  <h1>SKYCLOUD</h1>
   <p><strong>AI 驱动的云文件管理平台</strong></p>
   <p>
     <img src="https://img.shields.io/badge/Python-3.10%2B-blue" alt="Python">
@@ -9,194 +9,120 @@
     <img src="https://img.shields.io/badge/Docker-Enabled-2496ED" alt="Docker">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </p>
-  <p><a href="./README_EN.md">English README</a></p>
+  <p><a href="./README_EN.md">English</a></p>
 </div>
 
-# SKYCloud
+---
 
-SKYCloud 是一个 AI 增强的云文件管理系统，支持：
-- **现代化的精致 UI**（悬浮操作按钮、直观的面包屑导航）
-- 文件上传、预览、断点续传、秒传
-- 分享链接与收件箱协作
-- 基于 LangChain/OpenAI 增强 RAG 的智能对话
-- 基于 LangGraph 的文件智能分类整理
-- **Manus 智能工作区**：媲美 Manus 的云端 AI 独立执行沙箱与开发环境
+SKYCloud 是一个 AI 增强的云文件管理系统，提供从文件存储、智能检索到自主执行的一站式体验。
 
-## 功能截图
+## 功能亮点
 
-| 登录 / 控制台 | 文件浏览 |
-| --- | --- |
-| ![登录控制台](images/img.png) | ![文件浏览](images/img_1.png) |
+- **文件管理** — 上传（分片 / 秒传）、下载、预览、批量操作、文件夹树、格式转换
+- **AI 对话（RAG）** — 多维关键词改写 → Multi-Query 向量召回 → RRF 融合 → 可选 Rerank → SSE 流式输出，支持图片引用
+- **AI 文件整理** — LangGraph ReAct Agent 自动分类，增量 / 全量模式，整理后收件箱通知
+- **全能工作区** — 独立 Docker 沙箱 + MCP 协议，AI Agent 可读写云盘、运行代码、自动化任务（Manus 风格）
+- **MCP 服务** — 17 个工具 / 4 个 Prompt / 2 个 Resource，Claude Desktop、Cursor 等客户端直接接入
+- **分享 & 收件箱** — 带过期时间的分享链接、系统通知推送
+- **Token 用量追踪** — 对话 / 索引 / 整理的消耗统计，含管理员汇总视图
+- **性能优化** — Bloom Filter 权限前置、Redis 缓存、RabbitMQ 异步索引、并行 Embedding
 
-| 智能助手 |
-| --- |
-| ![智能助手](images/img_2.png) |
+| 智能助手对话                           | 文件预览                             |
+| -------------------------------------- | ------------------------------------ |
+| ![智能助手对话](images/agent_chat.png) | ![文件预览](images/file_preview.png) |
 
-## 技术栈
+## 架构
 
-- 后端：FastAPI、SQLAlchemy、Redis、RabbitMQ、PostgreSQL (pgvector)
-- 前端：Vue 3、TypeScript、Vite、Arco Design
-- Worker：Python 多线程任务进程（异步索引/整理）
-- 部署：Docker Compose
+![系统架构](images/architecture.png)
 
-## 项目结构
+| 层级        | 技术                                                      |
+| ----------- | --------------------------------------------------------- |
+| 后端        | FastAPI · SQLAlchemy · Pydantic                           |
+| AI          | LangChain · LangGraph · OpenAI API（兼容 SiliconFlow 等） |
+| 向量库      | PostgreSQL 15 + pgvector（1024 维）                       |
+| 队列 / 缓存 | RabbitMQ 3.13 · Redis 7                                   |
+| 前端        | Vue 3 · TypeScript · Vite · Arco Design                   |
+| MCP         | FastMCP（Streamable HTTP）                                |
+| 部署        | Docker Compose                                            |
 
-```text
-SKYCloud/
-|- backend/                # FastAPI 应用 + worker
-|  |- app/                 # 路由、模型、服务、Schemas
-|  |- worker/              # 后台任务处理
-|  |- run.py               # FastAPI 入口
-|  |- tasks.py             # Worker 入口
-|  `- requirements.txt
-|- frontend/               # Vue 3 + Vite 应用
-|  |- src/
-|  `- package.json
-|- images/                 # README 图片
-|- docker-compose.yml
-`- .env.example
-```
+## 快速开始
 
-## 环境要求
-
-- Python 3.10+
-- Node.js 20+
-- Docker + Docker Compose（可选，推荐一键启动）
-
-## 快速开始 (Docker)
-
-1. 克隆并进入项目：
+> 环境要求：Docker + Docker Compose
 
 ```bash
-git clone https://github.com/TianyaSKY/SKYCloud
-cd SKYCloud
-```
-
-2. 创建环境变量文件：
-
-```bash
+git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
 cp .env.example .env
-```
-
-3. 修改 `.env` 关键配置：
-
-## RAG 说明
-
-当前 RAG 是“文件级描述检索 + 多查询融合”，核心流程如下：
-
-1. 文件索引（离线）
-- 文件上传后写入 RabbitMQ 队列，并由 `backend/tasks.py` worker 异步处理。
-- 为文件生成描述并写入 `files.description`，再生成 embedding 写入 `files.vector_info`（1024 维 pgvector）。
-- 依赖 `files` 表上的向量索引。
-
-2. 关键词重写（在线）
-- 聊天接口 `/api/chat` 收到问题后，先让 LLM 输出 6 维结构化关键词：
-  - `topic_terms`（主题词）
-  - `entity_terms`（实体词）
-  - `time_terms`（时间词）
-  - `file_type_terms`（文件类型词）
-  - `action_terms`（动作词）
-  - `synonym_terms`（同义扩展词）
-
-3. Multi-Query Fusion 检索
-- 基于“原问题 + 多维关键词”生成多条 query（上限由 `RAG_MULTI_QUERY_MAX_QUERIES` 控制）。
-- 每条 query 分别执行向量召回（每路 top-k 为 `RAG_VECTOR_FETCH_K`）。
-- 多路召回结果通过 RRF 融合排序（参数 `RAG_RRF_K`），再截断到 `RAG_FUSION_TOP_K`。
-- 融合结果可选经过 rerank 模型重排（`RERANK_*` 配置），然后作为上下文给回答模型。
-
-4. 生成与流式返回
-- 最终回答按 SSE 流式返回，前端会接收：
-  - `keywords`：结构化关键词展示
-  - `status`：检索/错误状态
-  - `token`：回答增量 token
-
-5. 启动全部服务：
-
-```bash
+# 编辑 .env，至少填写 Chat 和 Embedding 模型的 API_URL / API_KEY / MODEL
 docker-compose up -d --build
 ```
 
-6. 访问地址：
-- 前端：`http://localhost:${FRONTEND_PORT}`（默认 `http://localhost:80`）
-- 后端健康检查：`http://localhost:${BACKEND_API_PORT}/api/health`（默认 `http://localhost:5000/api/health`）
+启动后访问 `http://localhost`（默认端口 80），默认管理员 `admin / admin123`。
 
+> 非演示环境请首次登录后立即修改密码。`SECRET_KEY` 未设置时会使用不安全的默认值，生产环境务必配置。
 
-## 🤖 Manus 风格全能工作区 (OpenCode Workspace)
+## RAG 检索增强
 
-SKYCloud 提供媲美 **Manus** 的云端全栈 AI 工作区，打破只“聊”不“做”的界限，赋予 AI 完整的执行力：
+![RAG Pipeline](images/rag_pipeline.png)
 
-- **All-in-One 智能沙箱**：每个工作区运行在独立的 Docker 容器中（如 `skycloud-workspace-*`），提供完整的代码运行和工具执行环境，安全隔离。
-- **AI 自主执行力**：结合 MCP 协议，让 AI Agent 可以像真人一样在云端工作区内读写云盘、运行代码、自动化处理复杂任务。
-- **开箱即用**：前端一键召唤，秒级拉起属于你的个人云端 AI 执行引擎。
-- **无限可扩展**：基于 `Dockerfile.skycloud`，你可以为你的“云端 Manus”自定义任何所需的系统环境与依赖。
+**离线**：文件上传 → RabbitMQ → Worker 生成描述 + 1024 维 Embedding → pgvector
 
-## 默认账号
+**在线**：6 维关键词改写 → 多查询生成 → 并行向量召回 → RRF 融合 → Rerank → SSE 流式输出
 
-`backend/init_db.sql` 内包含默认管理员初始化数据：
-- 用户名：`admin`
-- 密码：`admin123`
+## MCP 接入
 
-为安全起见，非演示环境请首次登录后立即修改。
+MCP Server 独立容器运行，默认端口 **5001**。登录网页端 → MCP 服务页面 → 生成 Token。
 
-## MCP 服务（AI 客户端接入）
+| MCP 服务               | Token 用量                            |
+| ---------------------- | ------------------------------------- |
+| ![MCP](images/mcp.png) | ![Token 用量](images/token-usage.png) |
 
-SKYCloud 提供 [MCP (Model Context Protocol)](https://modelcontextprotocol.io) 服务，使 Claude Desktop、Cursor、Cline 等 AI 客户端可以直接访问云盘的文件管理功能。
+## 全能工作区
 
-MCP Server 作为独立容器 `backend-mcp` 运行，默认端口 **5001**。
+每个工作区运行在独立 Docker 容器中，通过 MCP 协议让 AI 在沙箱内自主执行任务并与云盘交互。
 
-### 获取 MCP Token
+| 分享管理                  | 工作区                          |
+| ------------------------- | ------------------------------- |
+| ![分享](images/share.png) | ![工作区](images/workspace.png) |
 
-1. 登录网页端，在左侧菜单点击进入 **“MCP 服务”** 页面。
-2. 点击 **“生成 MCP Token”**，输入名称后即可获取一个有效期 365 天的长效 Token。
-3. 复制生成的 Token，用于替换下方配置中的 `<YOUR_MCP_TOKEN>`。
+## 本地开发
 
-*(如需通过 API 自动化获取，也可调用 `/api/auth/mcp-token` 接口)*
+```bash
+# 后端（需 PostgreSQL / Redis / RabbitMQ）
+cd backend && pip install -r requirements.txt
+python run.py          # API
+python tasks.py        # Worker
+python mcp_run.py      # MCP Server
 
-### Claude Desktop 配置
-
-编辑 `claude_desktop_config.json`：
-
-```json
-{
-  "mcpServers": {
-    "skycloud": {
-      "url": "http://your-server:5001/mcp",
-      "headers": {
-        "Authorization": "Bearer <YOUR_MCP_TOKEN>"
-      }
-    }
-  }
-}
+# 前端（Vite dev proxy → localhost:5000）
+cd frontend && npm ci && npm run dev
 ```
 
-### Cursor IDE 配置
+## 项目结构
 
-在项目根目录创建 `.cursor/mcp.json`：
-
-```json
-{
-  "mcpServers": {
-    "skycloud": {
-      "url": "http://your-server:5001/mcp",
-      "headers": {
-        "Authorization": "Bearer <YOUR_MCP_TOKEN>"
-      }
-    }
-  }
-}
+```
+SKYCloud/
+├── backend/
+│   ├── app/
+│   │   ├── models/         # SQLAlchemy 模型
+│   │   ├── routers/        # API 路由
+│   │   ├── services/       # 业务逻辑
+│   │   ├── factory.py      # 应用工厂
+│   │   ├── mcp_server.py   # MCP Server
+│   │   └── extensions.py   # 基础设施
+│   ├── worker/             # 索引 / 整理 / 格式转换
+│   ├── run.py              # API 入口
+│   ├── tasks.py            # Worker 入口
+│   └── mcp_run.py          # MCP 入口
+├── frontend/src/
+│   ├── api/                # Axios 封装
+│   ├── components/         # 通用组件
+│   ├── views/              # 页面
+│   ├── hooks/              # Composition API
+│   └── router/             # 路由
+├── docker-compose.yml
+└── .env.example
 ```
 
-### MCP 可用工具
+## License
 
-| 工具 | 功能 |
-|---|---|
-| `search_files` | 模糊/语义搜索文件 |
-| `list_files` | 列出目录下文件和文件夹 |
-| `get_file_info` | 获取文件详细元数据 |
-| `create_folder` | 创建文件夹 |
-| `move_file` | 移动/重命名文件 |
-| `delete_file` | 删除文件 |
-| `get_file_download_url` | 生成临时下载链接（可设置过期时间，最长 7 天） |
-| `read_file_content` | 读取文本文件内容（txt/md/csv/json/代码等，最大 512KB） |
-
-> **注意**：`get_file_download_url` 生成的下载链接依赖 `SKYCLOUD_BASE_URL` 环境变量（默认 `http://localhost:5000`）。部署时请在 `.env` 中设置为实际的 API 访问地址，例如 `SKYCLOUD_BASE_URL=https://your-domain.com`。
+MIT

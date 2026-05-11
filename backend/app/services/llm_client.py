@@ -214,9 +214,14 @@ class TrackingOpenAIEmbeddings(OpenAIEmbeddings):
         self._tracking_user_id = user_id
 
     def _as_config(self) -> dict[str, str]:
+        api_key = self.openai_api_key
+        if hasattr(api_key, "get_secret_value"):
+            key_str = api_key.get_secret_value()
+        else:
+            key_str = str(api_key or "")
         return {
             "api": str(self.openai_api_base or ""),
-            "key": str(self.openai_api_key or ""),
+            "key": key_str,
             "model": self.model,
         }
 
