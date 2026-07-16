@@ -5,7 +5,7 @@ import {
     uploadFile,
     uploadMultipartChunk
 } from '../api/file'
-import type { FilePreflightResponse } from '../api/file'
+import type {FilePreflightResponse, MultipartInitResponse} from '../api/file'
 
 type ProgressCallback = (percent: number) => void
 
@@ -40,6 +40,9 @@ function sleep(ms: number) {
 }
 
 async function calculateFileHash(file: File): Promise<string> {
+    // TODO: 当前 file.arrayBuffer() 会将整个文件一次性读入内存，大文件可能造成内存峰值甚至 OOM。
+    //       后续可改造为基于 ReadableStream 的流式 SHA-256 分块哈希（逐块 digest 续算），
+    //       本次保持算法不变以避免引入风险。
     const buffer = await file.arrayBuffer()
     const digest = await crypto.subtle.digest('SHA-256', buffer)
     return Array.from(new Uint8Array(digest))
@@ -86,13 +89,13 @@ async function uploadSmallFile(
     parentId?: number | null,
     onProgress?: ProgressCallback
 ) : Promise<UploadResult> {
-    const preflight = await preflightFileUpload({
+    const preflight: FilePreflightResponse = await preflightFileUpload({
         filename: file.name,
         total_size: file.size,
         parent_id: parentId ?? undefined,
         mime_type: file.type || undefined,
         content_hash: contentHash
-    }) as unknown as FilePreflightResponse
+    })
     if (preflight.instant_upload) {
         onProgress?.(100)
         return {instantUpload: true}
@@ -122,7 +125,7 @@ async function uploadLargeFile(
     parentId?: number | null,
     onProgress?: ProgressCallback
 ) : Promise<UploadResult> {
-    const initRes = await initMultipartUpload({
+    const initRes: MultipartInitResponse = await initMultipartUpload({
         filename: file.name,
         total_size: file.size,
         chunk_size: CLIENT_DEFAULT_CHUNK_SIZE,
@@ -132,15 +135,17 @@ async function uploadLargeFile(
         upload_id: getUploadId(file, parentId)
     })
 
-    const uploadMeta = initRes as any
-    if (uploadMeta.instant_upload) {
+    if (initRes.instant_upload) {
         onProgress?.(100)
         return {instantUpload: true}
     }
-    const uploadId = uploadMeta.upload_id as string
-    const chunkSize = uploadMeta.chunk_size as number
-    const totalChunks = uploadMeta.total_chunks as number
-    const uploadedChunks = new Set<number>((uploadMeta.uploaded_chunks || []) as number[])
+    if (!initRes.upload_id) {
+        throw new Error('initMultipartUpload 未返回 upload_id')
+    }
+    const uploadId = initRes.upload_id
+    const chunkSize = initRes.chunk_size
+    const totalChunks = initRes.total_chunks
+    const uploadedChunks = new Set<number>(initRes.uploaded_chunks || [])
 
     let uploadedBytes = 0
     for (const idx of uploadedChunks) {
@@ -197,7 +202,7 @@ export async function uploadFileOptimized(
     file: File,
     parentId?: number | null,
     onProgress?: ProgressCallback
-) {
+): Promise<UploadResult> {
     const contentHash = await calculateFileHash(file)
     if (file.size <= LARGE_FILE_THRESHOLD) {
         return uploadSmallFile(file, contentHash, parentId, onProgress)

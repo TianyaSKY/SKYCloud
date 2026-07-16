@@ -9,7 +9,13 @@
   >
     <div class="logo" :style="{ padding: collapsed ? '0' : '0 16px', justifyContent: collapsed ? 'center' : 'space-between' }">
       <span class="title" v-if="!collapsed">SKYCloud</span>
-      <a-button type="text" @click="collapsed = !collapsed" style="color: var(--color-text-2); font-size: 16px; padding: 0 8px;">
+      <a-button
+          type="text"
+          :aria-label="collapsed ? '展开侧栏' : '折叠侧栏'"
+          :aria-expanded="!collapsed"
+          @click="collapsed = !collapsed"
+          style="color: var(--color-text-2); font-size: 16px; padding: 0 8px;"
+      >
         <template #icon>
           <icon-menu-unfold v-if="collapsed" />
           <icon-menu-fold v-else />

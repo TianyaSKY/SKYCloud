@@ -6,6 +6,7 @@ import {useRouter} from 'vue-router'
 import {login, register} from '@/api/auth'
 import {useAuthStore} from '@/stores/auth'
 import {loginSchema, registerSchema} from '@/schemas/auth'
+import {logger} from '@/utils/logger'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -25,7 +26,14 @@ const switchMode = () => {
   form.confirmPassword = ''
 }
 
-const handleSubmit = async ({values, errors}: { values: any, errors: any }) => {
+interface LoginFormSubmitPayload {
+  values: { username: string; password: string; confirmPassword: string }
+  errors: unknown
+}
+
+const handleSubmit = async ({values, errors}: LoginFormSubmitPayload) => {
+  // 防回车/连点二次提交：loading 期间直接忽略，避免重复登录或并发注册
+  if (loading.value) return
   if (errors) return
 
   // Zod 整体校验：登录只校验非空/长度；注册额外校验密码长度与二次一致
@@ -43,7 +51,7 @@ const handleSubmit = async ({values, errors}: { values: any, errors: any }) => {
   loading.value = true
   try {
     if (isLogin.value) {
-      const res: any = await login({
+      const res = await login({
         username: values.username,
         password: values.password
       })
@@ -55,15 +63,18 @@ const handleSubmit = async ({values, errors}: { values: any, errors: any }) => {
       Message.success('登录成功')
       await router.push('/home')
     } else {
+      // api 层 register(data: RegisterInput) 接收完整表单，内部仅发 username+password
       await register({
         username: values.username,
-        password: values.password
+        password: values.password,
+        confirmPassword: values.confirmPassword
       })
       Message.success('注册成功，请登录')
       isLogin.value = true
     }
   } catch (error) {
-    // 错误已在拦截器中处理
+    // 拦截器已弹唯一错误提示，此处只记日志并吞异常
+    logger.warn('登录/注册失败 isLogin={} error={}', isLogin.value, error)
   } finally {
     loading.value = false
   }

@@ -89,11 +89,13 @@ import FileModals from "../components/FileModals.vue";
 import FileToolbar from "../components/FileToolbar.vue";
 import FilePreview from "../components/FilePreview.vue";
 import FileDragOverlay from "../components/FileDragOverlay.vue";
+import { onUnmounted } from "vue";
 import { useFileDrag } from "../hooks/useFileDrag";
 import { useFilePreview } from "../hooks/useFilePreview";
 import { useFileOperations } from "../hooks/useFileOperations";
 import { useFileBrowser } from "../hooks/useFileBrowser";
 import { useUploadManager } from "../hooks/useUploadManager";
+import type { FileItem } from "../api/file";
 
 // 文件浏览相关
 const {
@@ -119,7 +121,7 @@ const {
 } = useFileBrowser();
 
 // 统一上传管理
-const { startUpload } = useUploadManager(currentParentId, fetchFiles);
+const { startUpload, cancelAll } = useUploadManager(currentParentId, fetchFiles);
 
 // 拖拽上传相关
 const { isDragging, handleDragEnter, handleDragLeave, handleDrop } =
@@ -166,13 +168,18 @@ const {
   handleOrganize,
 } = useFileOperations(currentParentId, fetchFiles, selectedKeys, startUpload, fileList);
 
-const handleFileClickWrapper = async (record: any) => {
+const handleFileClickWrapper = async (record: FileItem) => {
   if (record.is_folder) {
     enterFolder(record);
   } else {
     await handleFileClick(record);
   }
 };
+
+// 组件卸载时取消上传队列，避免后台继续派发新上传任务
+onUnmounted(() => {
+  cancelAll();
+});
 </script>
 
 <style scoped>

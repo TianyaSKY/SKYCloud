@@ -28,7 +28,7 @@
           </a-table-column>
           <a-table-column data-index="expires_at" title="过期时间">
             <template #cell="{ record }">
-              {{ formatDate(record.expires_at) }}
+              {{ formatExpiry(record.expires_at) }}
             </template>
           </a-table-column>
           <a-table-column data-index="created_at" title="创建时间">
@@ -56,29 +56,31 @@ import {onMounted, ref} from 'vue'
 import {Message} from '@arco-design/web-vue'
 import {IconFile, IconRefresh} from '@arco-design/web-vue/es/icon'
 import MainLayout from '../components/MainLayout.vue'
-import {cancelShare, getMyShares} from '../api/share'
+import {cancelShare, getMyShares, type ShareInfo} from '../api/share'
+import {formatDate} from '@/utils/format'
+import {logger} from '@/utils/logger'
 
 const loading = ref(false)
-const shareList = ref<any[]>([])
+const shareList = ref<ShareInfo[]>([])
 
 const fetchShares = async () => {
   loading.value = true
   try {
-    const res: any = await getMyShares()
-    shareList.value = res.data || res
+    shareList.value = await getMyShares()
   } catch (error) {
-    console.error('Fetch shares error:', error)
+    logger.warn('获取我的分享列表失败', {error})
   } finally {
     loading.value = false
   }
 }
 
-const handleCancelShare = async (record: any) => {
+const handleCancelShare = async (record: ShareInfo) => {
   try {
     await cancelShare(record.id)
     Message.success('已取消分享')
     await fetchShares()
   } catch (error) {
+    logger.warn('取消分享失败', {id: record.id, error})
   }
 }
 
@@ -86,11 +88,8 @@ const getShareUrl = (token: string) => {
   return `${window.location.origin}/s/${token}`
 }
 
-const formatDate = (dateStr: string) => {
-  if (!dateStr) return '永久有效'
-  const date = new Date(dateStr)
-  return date.toLocaleString()
-}
+// 过期为空表示永久有效，保留业务文案；其余时间走通用格式化
+const formatExpiry = (value: string) => (value ? formatDate(value) : '永久有效')
 
 onMounted(() => {
   fetchShares()

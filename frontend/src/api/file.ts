@@ -1,13 +1,17 @@
 import type {AxiosProgressEvent, AxiosRequestConfig} from 'axios'
 import request from './request'
 
+/** 后端契约：文件/文件夹实体；部分字段在不同接口中可能缺失，故按可选处理 */
 export interface FileItem {
     id: number
     name: string
-    size: number
-    type: string
-    updated_at: string
+    size?: number
+    file_size?: number
+    type?: string
+    updated_at?: string
+    created_at?: string
     is_folder: boolean
+    parent_id?: number | null
 }
 
 export interface ListFilesParams {
@@ -42,7 +46,7 @@ export interface MultipartInitResponse {
     total_chunks: number
     uploaded_chunks: number[]
     instant_upload?: boolean
-    file?: any
+    file?: FileItem
 }
 
 export interface FilePreflightRequest {
@@ -56,19 +60,76 @@ export interface FilePreflightRequest {
 export interface FilePreflightResponse {
     instant_upload: boolean
     exists: boolean
-    file?: any
+    file?: FileItem
+}
+
+/** 后端契约：/files/search 返回的标准分页结构 */
+export interface FilePageResult {
+    items: FileItem[]
+    total: number
+    page?: number
+    page_size?: number
+}
+
+/** 后端契约：/files/list 返回；files 可能为分页对象或数组（历史兼容），folders 为子文件夹 */
+export interface FileListResponse {
+    files?: FilePageResult | FileItem[]
+    folders?: FileItem[]
+    items?: FileItem[]
+    total?: number
+}
+
+export interface FolderListResult {
+    folders: FileItem[]
+}
+
+export interface RootFolderIdResult {
+    root_folder_id: number
+}
+
+export interface BatchDeleteItem {
+    id: number
+    is_folder: boolean
+}
+
+export interface CreateFolderParams {
+    name: string
+    parent_id?: number
+}
+
+export interface UpdateFileItemParams {
+    name?: string
+    parent_id?: number | null
+}
+
+/** 后端契约：/files/rebuild_failed_indexes 返回，count 为待重建文件数 */
+export interface RebuildIndexesResult {
+    count: number
+}
+
+/** 后端契约：/folder/organize 返回；queued=false 表示已有任务在进行中 */
+export interface OrganizeFilesResult {
+    message?: string
+    queued?: boolean
+}
+
+/** 后端契约：/files/process_status 返回各状态文件计数，键为中文状态名 */
+export interface ProcessStatusResult {
+    '处理中': number
+    '失败': number
+    [key: string]: number
 }
 
 export const getFiles = (params?: ListFilesParams) => {
-    return request.get('/files/list', {params})
+    return request.get<FileListResponse>('/files/list', {params})
 }
 
 export const searchFiles = (params: SearchFilesParams) => {
-    return request.get('/files/search', {params})
+    return request.get<FilePageResult>('/files/search', {params})
 }
 
 export const uploadFile = (data: FormData, config?: AxiosRequestConfig) => {
-    return request.post('/files', data, {
+    return request.post<void>('/files', data, {
         timeout: 0,
         ...config,
         headers: {
@@ -79,7 +140,7 @@ export const uploadFile = (data: FormData, config?: AxiosRequestConfig) => {
 }
 
 export const batchUploadFiles = (data: FormData, config?: AxiosRequestConfig) => {
-    return request.post('/files/batch', data, {
+    return request.post<void>('/files/batch', data, {
         timeout: 0,
         ...config,
         headers: {
@@ -105,7 +166,7 @@ export const uploadMultipartChunk = (
     data: FormData,
     onUploadProgress?: (progressEvent: AxiosProgressEvent) => void
 ) => {
-    return request.post('/files/multipart/chunk', data, {
+    return request.post<void>('/files/multipart/chunk', data, {
         timeout: 0,
         onUploadProgress,
         headers: {
@@ -115,7 +176,7 @@ export const uploadMultipartChunk = (
 }
 
 export const completeMultipartUpload = (upload_id: string) => {
-    return request.post('/files/multipart/complete', {upload_id}, {timeout: 0})
+    return request.post<void>('/files/multipart/complete', {upload_id}, {timeout: 0})
 }
 
 export const getMultipartUploadStatus = (upload_id: string) => {
@@ -123,57 +184,57 @@ export const getMultipartUploadStatus = (upload_id: string) => {
 }
 
 export const abortMultipartUpload = (upload_id: string) => {
-    return request.delete(`/files/multipart/${upload_id}`, {timeout: 0})
+    return request.delete<void>(`/files/multipart/${upload_id}`, {timeout: 0})
 }
 
 export const deleteFile = (id: number) => {
-    return request.delete(`/files/${id}`)
+    return request.delete<void>(`/files/${id}`)
 }
 
 export const deleteFolder = (id: number) => {
-    return request.delete(`/folder/${id}`)
+    return request.delete<void>(`/folder/${id}`)
 }
 
-export const batchDeleteFiles = (items: { id: number, is_folder: boolean }[]) => {
-    return request.post('/files/batch-delete', {items})
+export const batchDeleteFiles = (items: BatchDeleteItem[]) => {
+    return request.post<void>('/files/batch-delete', {items})
 }
 
-export const createFolder = (data: { name: string, parent_id?: number }) => {
-    return request.post('/folder', data)
+export const createFolder = (data: CreateFolderParams) => {
+    return request.post<void>('/folder', data)
 }
 
-export const updateFolder = (id: number, data: { name?: string, parent_id?: number | null }) => {
-    return request.put(`/folder/${id}`, data)
+export const updateFolder = (id: number, data: UpdateFileItemParams) => {
+    return request.put<void>(`/folder/${id}`, data)
 }
 
-export const updateFile = (id: number, data: { name?: string, parent_id?: number | null }) => {
-    return request.put(`/files/${id}`, data)
+export const updateFile = (id: number, data: UpdateFileItemParams) => {
+    return request.put<void>(`/files/${id}`, data)
 }
 
 export const downloadFile = (id: number) => {
-    return request.get(`/files/${id}/download`, {responseType: 'blob'})
+    return request.get<Blob>(`/files/${id}/download`, {responseType: 'blob'})
 }
 
 export const getRootFolderId = () => {
-    return request.get('/folder/root_id')
+    return request.get<RootFolderIdResult>('/folder/root_id')
 }
 
 export const getAllFolders = () => {
-    return request.get('/folder/all')
+    return request.get<FolderListResult>('/folder/all')
 }
 
 export const retryEmbedding = (file_id: number) => {
-    return request.post('/files/retry_embedding', {file_id})
+    return request.post<void>('/files/retry_embedding', {file_id})
 }
 
 export const rebuildFailedIndexes = () => {
-    return request.post('/files/rebuild_failed_indexes')
+    return request.post<RebuildIndexesResult>('/files/rebuild_failed_indexes')
 }
 
 export const organizeFiles = () => {
-    return request.post('/folder/organize')
+    return request.post<OrganizeFilesResult>('/folder/organize')
 }
 
 export const getProcessStatus = () => {
-    return request.get('/files/process_status')
+    return request.get<ProcessStatusResult>('/files/process_status')
 }

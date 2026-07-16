@@ -1,6 +1,8 @@
 import {ref} from 'vue'
-import {Message} from '@arco-design/web-vue'
 import {downloadFile} from '../api/file'
+import type {FileItem} from '../api/file'
+import {readBlobAsText, safeRevokeObjectURL} from '../utils/blob'
+import {logger} from '../utils/logger'
 
 export function useFilePreview() {
     const previewVisible = ref(false)
@@ -10,25 +12,26 @@ export function useFilePreview() {
     const textContent = ref('')
     const loading = ref(false)
 
-    const handleFileClick = async (record: any) => {
+    const handleFileClick = async (record: FileItem) => {
         previewTitle.value = record.name
-        const ext = record.name.split('.').pop().toLowerCase()
+        const ext = record.name.split('.').pop()?.toLowerCase() ?? ''
 
         try {
             loading.value = true
+            // 切换预览文件前先释放旧 Object URL，避免内存泄漏
+            safeRevokeObjectURL(previewUrl.value)
+            previewUrl.value = ''
+            textContent.value = ''
+
             const blob = await downloadFile(record.id)
-            const url = window.URL.createObjectURL(new Blob([blob as any]))
+            const url = window.URL.createObjectURL(blob)
             previewUrl.value = url
 
             if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) {
                 previewType.value = 'image'
             } else if (['md', 'markdown'].includes(ext)) {
                 previewType.value = 'markdown'
-                const reader = new FileReader()
-                reader.onload = (e) => {
-                    textContent.value = e.target?.result as string
-                }
-                reader.readAsText(blob as any)
+                textContent.value = await readBlobAsText(blob)
             } else if ([
                 'js', 'ts', 'jsx', 'tsx', 'vue', 'py', 'java', 'c', 'cpp', 'h', 'hpp',
                 'go', 'rs', 'rb', 'php', 'sh', 'bash', 'sql', 'r', 'swift', 'kt',
@@ -39,21 +42,13 @@ export function useFilePreview() {
                 'dockerfile', 'makefile', 'cmake',
             ].includes(ext)) {
                 previewType.value = 'code'
-                const reader = new FileReader()
-                reader.onload = (e) => {
-                    textContent.value = e.target?.result as string
-                }
-                reader.readAsText(blob as any)
+                textContent.value = await readBlobAsText(blob)
             } else if ([
                 'txt', 'csv', 'tsv', 'log', 'env', 'gitignore', 'editorconfig',
                 'properties', 'lock', 'pid', 'out',
             ].includes(ext)) {
                 previewType.value = 'text'
-                const reader = new FileReader()
-                reader.onload = (e) => {
-                    textContent.value = e.target?.result as string
-                }
-                reader.readAsText(blob as any)
+                textContent.value = await readBlobAsText(blob)
             } else if (['mp4', 'webm', 'ogg'].includes(ext)) {
                 previewType.value = 'video'
             } else if (['mp3', 'wav', 'aac', 'flac', 'm4a'].includes(ext)) {
@@ -69,17 +64,18 @@ export function useFilePreview() {
             }
             previewVisible.value = true
         } catch (error) {
-            Message.error('预览失败')
+            // 拦截器已弹唯一 Message.error，这里只做状态清理 + 日志
+            logger.warn('handleFileClick 预览失败 id={} error={}', record.id, error)
+            safeRevokeObjectURL(previewUrl.value)
+            previewUrl.value = ''
         } finally {
             loading.value = false
         }
     }
 
     const handlePreviewClose = () => {
-        if (previewUrl.value) {
-            window.URL.revokeObjectURL(previewUrl.value)
-            previewUrl.value = ''
-        }
+        safeRevokeObjectURL(previewUrl.value)
+        previewUrl.value = ''
         textContent.value = ''
         previewType.value = ''
     }

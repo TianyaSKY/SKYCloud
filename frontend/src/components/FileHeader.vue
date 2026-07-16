@@ -79,7 +79,10 @@ interface UserInfo {
   avatar: string
 }
 
-const props = withDefaults(defineProps<{
+// 注：searchType / isVectorSearch 默认值对齐 useFileBrowser 的初始值（'vector' / true），
+// 避免 HomeView 首屏渲染时父级状态尚未回灌导致 FileHeader 短暂显示「模糊搜索」高亮，
+// 与实际请求走 vector 检索不一致的视觉错位。
+withDefaults(defineProps<{
   breadcrumbs?: { id: number; name: string }[]
   searchKey?: string
   searchType?: 'fuzzy' | 'vector'
@@ -91,8 +94,8 @@ const props = withDefaults(defineProps<{
 }>(), {
   breadcrumbs: () => [],
   searchKey: '',
-  searchType: 'fuzzy',
-  isVectorSearch: false,
+  searchType: 'vector',
+  isVectorSearch: true,
   showSearch: false,
   showBreadcrumbs: false,
   title: ''

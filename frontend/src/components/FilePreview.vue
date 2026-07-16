@@ -58,13 +58,34 @@
       </div>
 
       <!-- Docx 预览 -->
-      <vue-office-docx v-else-if="type === 'docx'" :src="url" style="width: 100%; height: 100%;"/>
+      <div v-else-if="type === 'docx'" style="width: 100%; height: 100%;">
+        <div v-if="officeError" class="office-error">
+          <icon-exclamation-circle :style="{ fontSize: '40px', color: 'rgb(var(--danger-6))' }" />
+          <div class="office-error__text">预览加载失败</div>
+          <div class="office-error__hint">该文档无法在浏览器中预览，可尝试下载后查看</div>
+        </div>
+        <vue-office-docx v-else :src="url" style="width: 100%; height: 100%;" @error="handleOfficeError"/>
+      </div>
 
       <!-- PDF 预览 -->
-      <vue-office-pdf v-else-if="type === 'pdf'" :src="url" style="width: 100%; height: 100%;"/>
+      <div v-else-if="type === 'pdf'" style="width: 100%; height: 100%;">
+        <div v-if="officeError" class="office-error">
+          <icon-exclamation-circle :style="{ fontSize: '40px', color: 'rgb(var(--danger-6))' }" />
+          <div class="office-error__text">预览加载失败</div>
+          <div class="office-error__hint">该 PDF 无法在浏览器中预览，可尝试下载后查看</div>
+        </div>
+        <vue-office-pdf v-else :src="url" style="width: 100%; height: 100%;" @error="handleOfficeError"/>
+      </div>
 
       <!-- Excel 预览 -->
-      <vue-office-excel v-else-if="type === 'excel'" :src="url" style="width: 100%; height: 100%;"/>
+      <div v-else-if="type === 'excel'" style="width: 100%; height: 100%;">
+        <div v-if="officeError" class="office-error">
+          <icon-exclamation-circle :style="{ fontSize: '40px', color: 'rgb(var(--danger-6))' }" />
+          <div class="office-error__text">预览加载失败</div>
+          <div class="office-error__hint">该表格无法在浏览器中预览，可尝试下载后查看</div>
+        </div>
+        <vue-office-excel v-else :src="url" style="width: 100%; height: 100%;" @error="handleOfficeError"/>
+      </div>
 
       <a-empty v-else description="该文件类型暂不支持预览"/>
     </div>
@@ -72,14 +93,15 @@
 </template>
 
 <script lang="ts" setup>
-import {computed} from 'vue'
+import {computed, ref, watch} from 'vue'
 import VueOfficeDocx from '@vue-office/docx'
 import VueOfficeExcel from '@vue-office/excel'
 import VueOfficePdf from '@vue-office/pdf'
 import '@vue-office/docx/lib/index.css'
 import '@vue-office/excel/lib/index.css'
-import {IconMusic} from '@arco-design/web-vue/es/icon'
+import {IconMusic, IconExclamationCircle} from '@arco-design/web-vue/es/icon'
 import MarkdownRenderer from './MarkdownRenderer.vue'
+import {logger} from '@/utils/logger'
 
 const props = defineProps<{
   visible: boolean
@@ -90,6 +112,22 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits(['update:visible', 'close'])
+
+// vue-office（docx/pdf/excel）加载失败时的回退状态：src 切换或弹窗重新打开时重置
+const officeError = ref(false)
+
+const handleOfficeError = (err: unknown) => {
+  officeError.value = true
+  logger.warn('vue-office 预览加载失败 type={} url={}', props.type, props.url, err)
+}
+
+// 弹窗关闭或 url 切换时重置错误状态，避免下一次预览沿用旧错误
+watch(
+  () => [props.visible, props.url],
+  () => {
+    officeError.value = false
+  }
+)
 
 const lineCount = computed(() => {
   if (!props.textContent) return 0
@@ -138,6 +176,32 @@ const handleClose = () => {
   border-radius: 6px;
   overflow: hidden;
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.15);
+}
+
+/* vue-office 加载失败占位 */
+.office-error {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: #fff;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.office-error__text {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--color-text-1);
+  margin-top: 8px;
+}
+
+.office-error__hint {
+  font-size: 13px;
+  color: var(--color-text-3);
 }
 
 .code-header {

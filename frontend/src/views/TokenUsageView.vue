@@ -12,14 +12,14 @@
           </div>
         </div>
 
-        <div class="stats-grid">
+        <div v-if="!statsError" class="stats-grid">
           <div class="stat-card stat-total">
             <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #165dff 0%, #306fff 100%);">
               <icon-thunderbolt style="color: #fff;" />
             </div>
             <div class="stat-body">
               <span class="stat-label">总 Token</span>
-              <span class="stat-value">{{ formatNumber(stats.total_tokens) }}</span>
+              <span class="stat-value">{{ formatNumber(stats.total_tokens, 0) }}</span>
             </div>
           </div>
           <div class="stat-card">
@@ -28,7 +28,7 @@
             </div>
             <div class="stat-body">
               <span class="stat-label">输入 Token</span>
-              <span class="stat-value">{{ formatNumber(stats.total_prompt_tokens) }}</span>
+              <span class="stat-value">{{ formatNumber(stats.total_prompt_tokens, 0) }}</span>
             </div>
           </div>
           <div class="stat-card">
@@ -37,7 +37,7 @@
             </div>
             <div class="stat-body">
               <span class="stat-label">输出 Token</span>
-              <span class="stat-value">{{ formatNumber(stats.total_completion_tokens) }}</span>
+              <span class="stat-value">{{ formatNumber(stats.total_completion_tokens, 0) }}</span>
             </div>
           </div>
           <div class="stat-card">
@@ -50,6 +50,9 @@
             </div>
           </div>
         </div>
+        <a-empty v-else description="统计加载失败" style="padding: 32px 0;">
+          <a-button size="small" @click="fetchStats">点此重试</a-button>
+        </a-empty>
       </div>
 
       <!-- 每日趋势 -->
@@ -79,15 +82,15 @@
                   :key="day.date"
                   class="bar-item"
                 >
-                  <a-tooltip :content="`${day.date}\n总 Token: ${formatNumber(day.total_tokens)}\n请求次数: ${day.request_count}`">
+                  <a-tooltip :content="`${day.date}\n总 Token: ${formatNumber(day.total_tokens, 0)}\n请求次数: ${day.request_count}`">
                     <div class="bar-wrapper">
                       <div
                         class="bar-fill bar-prompt"
-                        :style="{ height: barHeight(day.prompt_tokens) + 'px' }"
+                        :style="{ height: barHeight(day.prompt_tokens, dailyMax, 160) + 'px' }"
                       ></div>
                       <div
                         class="bar-fill bar-completion"
-                        :style="{ height: barHeight(day.completion_tokens) + 'px' }"
+                        :style="{ height: barHeight(day.completion_tokens, dailyMax, 160) + 'px' }"
                       ></div>
                     </div>
                   </a-tooltip>
@@ -165,17 +168,17 @@
               <a-table-column title="模型" data-index="model_name" :width="200" ellipsis />
               <a-table-column title="输入" :width="100">
                 <template #cell="{ record }">
-                  <span class="token-num">{{ formatNumber(record.prompt_tokens) }}</span>
+                  <span class="token-num">{{ formatNumber(record.prompt_tokens, 0) }}</span>
                 </template>
               </a-table-column>
               <a-table-column title="输出" :width="100">
                 <template #cell="{ record }">
-                  <span class="token-num">{{ formatNumber(record.completion_tokens) }}</span>
+                  <span class="token-num">{{ formatNumber(record.completion_tokens, 0) }}</span>
                 </template>
               </a-table-column>
               <a-table-column title="总计" :width="100">
                 <template #cell="{ record }">
-                  <span class="token-num token-num-total">{{ formatNumber(record.total_tokens) }}</span>
+                  <span class="token-num token-num-total">{{ formatNumber(record.total_tokens, 0) }}</span>
                 </template>
               </a-table-column>
               <a-table-column title="内容摘要" ellipsis>
@@ -193,7 +196,7 @@
 </template>
 
 <script lang="ts" setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import {
   IconArrowRise,
   IconBarChart,
@@ -213,7 +216,12 @@ import {
   type TokenStats,
   type TokenUsageLog,
   type DailyStat,
+  type UsageLogQueryParams,
 } from '@/api/token_usage'
+import { usePagination } from '@/hooks/usePagination'
+import { maxDailyTokens, barHeight, actionColor } from '@/hooks/useUsageCharts'
+import { formatDate, formatNumber } from '@/utils/format'
+import { logger } from '@/utils/logger'
 
 // ---- 累计统计 ----
 const stats = reactive<TokenStats>({
@@ -223,13 +231,17 @@ const stats = reactive<TokenStats>({
   total_tokens: 0,
   last_active_at: null,
 })
+const statsError = ref(false)
 
 const fetchStats = async () => {
   try {
-    const res: any = await getMyTokenStats()
+    const res = await getMyTokenStats()
     Object.assign(stats, res)
+    statsError.value = false
   } catch (e) {
-    console.error('Failed to fetch token stats', e)
+    // 拦截器已弹唯一 Message.error，此处仅置错误标记并降级为占位
+    statsError.value = true
+    logger.warn('加载累计统计失败', { error: e })
   }
 }
 
@@ -241,25 +253,20 @@ const loadingDaily = ref(false)
 const fetchDailyStats = async () => {
   loadingDaily.value = true
   try {
-    const res: any = await getMyDailyStats(dailyDays.value)
-    dailyStats.value = res as DailyStat[]
+    const res = await getMyDailyStats(dailyDays.value)
+    dailyStats.value = res
   } catch (e) {
-    console.error('Failed to fetch daily stats', e)
+    // 拦截器已弹唯一 Message.error，此处只记录日志，保留旧趋势避免清空
+    logger.warn('加载每日趋势失败', { days: dailyDays.value, error: e })
   } finally {
     loadingDaily.value = false
   }
 }
 
-const maxDailyTokens = () => {
-  if (!dailyStats.value.length) return 1
-  return Math.max(...dailyStats.value.map(d => d.total_tokens), 1)
-}
-
-const barHeight = (tokens: number) => {
-  const max = maxDailyTokens()
-  const maxH = 160
-  return Math.max(Math.round((tokens / max) * maxH), 2)
-}
+// 缓存每日 Token 最大值，避免 barHeight 在每行重复计算导致 O(n²)
+const dailyMax = computed(() =>
+  maxDailyTokens(dailyStats.value.map(d => ({ tokens: d.total_tokens }))),
+)
 
 // ---- 使用明细 ----
 const logs = ref<TokenUsageLog[]>([])
@@ -273,19 +280,22 @@ const logFilter = reactive<{
   start_date: undefined,
   end_date: undefined,
 })
-const logsPagination = reactive({
-  current: 1,
-  pageSize: 15,
-  total: 0,
-  showTotal: true,
-  showPageSize: true,
+const {
+  pagination: logsPagination,
+  handlePageChange: handleLogPageChange,
+  handlePageSizeChange: handleLogPageSizeChange,
+  reset: resetLogsPagination,
+  setTotal: setLogsTotal,
+} = usePagination({
+  defaultPageSize: 15,
   pageSizeOptions: [15, 30, 50],
+  onChange: () => fetchLogs(),
 })
 
 const fetchLogs = async () => {
   loadingLogs.value = true
   try {
-    const params: any = {
+    const params: UsageLogQueryParams = {
       page: logsPagination.current,
       page_size: logsPagination.pageSize,
     }
@@ -293,33 +303,25 @@ const fetchLogs = async () => {
     if (logFilter.start_date) params.start_date = logFilter.start_date
     if (logFilter.end_date) params.end_date = logFilter.end_date
 
-    const res: any = await getMyUsageLogs(params)
-    logs.value = res.items || []
-    logsPagination.total = res.total || 0
+    const res = await getMyUsageLogs(params)
+    logs.value = res.items
+    setLogsTotal(res.total)
   } catch (e) {
-    console.error('Failed to fetch usage logs', e)
+    // 拦截器已弹唯一 Message.error，仅清理本地列表状态并记录日志
+    logger.warn('加载使用明细失败', { params: logFilter, error: e })
+    logs.value = []
+    setLogsTotal(0)
   } finally {
     loadingLogs.value = false
   }
 }
 
-const handleLogPageChange = (page: number) => {
-  logsPagination.current = page
-  fetchLogs()
-}
-
-const handleLogPageSizeChange = (size: number) => {
-  logsPagination.pageSize = size
-  logsPagination.current = 1
-  fetchLogs()
-}
-
 const handleFilterChange = () => {
-  logsPagination.current = 1
+  resetLogsPagination()
   fetchLogs()
 }
 
-const handleDateChange = (values: any) => {
+const handleDateChange = (values: string[] | undefined) => {
   if (values && values.length === 2) {
     logFilter.start_date = values[0]
     logFilter.end_date = values[1]
@@ -327,30 +329,8 @@ const handleDateChange = (values: any) => {
     logFilter.start_date = undefined
     logFilter.end_date = undefined
   }
-  logsPagination.current = 1
+  resetLogsPagination()
   fetchLogs()
-}
-
-// ---- 工具函数 ----
-const formatNumber = (n: number) => {
-  if (n == null) return '0'
-  return n.toLocaleString()
-}
-
-const formatDate = (value: string | null) => {
-  if (!value) return '-'
-  return new Date(value).toLocaleString()
-}
-
-const actionColor = (action: string) => {
-  const map: Record<string, string> = {
-    chat: 'arcoblue',
-    describe_text: 'green',
-    describe_vl: 'purple',
-    embedding: 'orangered',
-    organize: 'cyan',
-  }
-  return map[action] || 'gray'
 }
 
 onMounted(() => {

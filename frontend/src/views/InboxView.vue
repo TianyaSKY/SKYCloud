@@ -71,19 +71,21 @@ import {useRouter} from 'vue-router'
 import {Message} from '@arco-design/web-vue'
 import {IconCheck, IconNotification} from '@arco-design/web-vue/es/icon'
 import MainLayout from '../components/MainLayout.vue'
-import {deleteMessage, getInboxMessages, markAllAsRead, markAsRead} from '../api/inbox'
+import {deleteMessage, getInboxMessages, markAllAsRead, markAsRead, type Message as InboxMessage} from '../api/inbox'
+import {formatDate} from '@/utils/format'
+import {logger} from '@/utils/logger'
 
 const router = useRouter()
 const loading = ref(false)
-const messages = ref<any[]>([])
+const messages = ref<InboxMessage[]>([])
 const total = ref(0)
 const currentPage = ref(1)
 const pageSize = ref(10)
 
 const modalVisible = ref(false)
-const currentMessage = ref<any>({})
+const currentMessage = ref<InboxMessage | null>(null)
 
-const showDetail = (item: any) => {
+const showDetail = (item: InboxMessage) => {
   currentMessage.value = item
   modalVisible.value = true
   if (!item.is_read) {
@@ -94,12 +96,11 @@ const showDetail = (item: any) => {
 const fetchMessages = async () => {
   loading.value = true
   try {
-    const res: any = await getInboxMessages(currentPage.value, pageSize.value)
-    const data = res.data || res
-    messages.value = data.items || []
-    total.value = data.total || 0
+    const res = await getInboxMessages(currentPage.value, pageSize.value)
+    messages.value = res.items
+    total.value = res.total
   } catch (error) {
-    console.error('Fetch messages error:', error)
+    logger.warn('获取收件箱消息失败', {page: currentPage.value, pageSize: pageSize.value, error})
   } finally {
     loading.value = false
   }
@@ -110,6 +111,7 @@ const handleMarkRead = async (id: number) => {
     await markAsRead(id)
     await fetchMessages()
   } catch (error) {
+    logger.warn('标记消息已读失败', {id, error})
   }
 }
 
@@ -119,6 +121,7 @@ const handleMarkAllRead = async () => {
     Message.success('已全部标记为已读')
     await fetchMessages()
   } catch (error) {
+    logger.warn('全部标记已读失败', {error})
   }
 }
 
@@ -128,19 +131,13 @@ const handleDelete = async (id: number) => {
     Message.success('消息已删除')
     await fetchMessages()
   } catch (error) {
+    logger.warn('删除消息失败', {id, error})
   }
 }
 
 const handlePageChange = (page: number) => {
   currentPage.value = page
   fetchMessages()
-}
-
-const formatDate = (dateStr: string) => {
-  if (!dateStr) return ''
-  const date = new Date(dateStr)
-  if (isNaN(date.getTime())) return ''
-  return date.toLocaleString()
 }
 
 onMounted(() => {

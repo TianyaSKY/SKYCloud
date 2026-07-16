@@ -88,6 +88,7 @@
 import {onMounted, reactive, ref} from 'vue'
 import {useRouter} from 'vue-router'
 import {Message} from '@arco-design/web-vue'
+import type {FileItem as ArcoFileItem} from '@arco-design/web-vue'
 import {IconPlus} from '@arco-design/web-vue/es/icon'
 import 'vue-cropper/dist/index.css'
 import {VueCropper} from "vue-cropper";
@@ -135,8 +136,8 @@ const initUserInfo = async () => {
     avatar: auth.user.avatar || ''
   }
   try {
-    const res: any = await getUserInfo(userId)
-    const data = res.data || res
+    // 新 API：getUserInfo 已解包为 UserProfile，无需再读 res.data
+    const data = await getUserInfo(userId)
     if (data && data.username) {
       userInfo.value = {
         id: data.id,
@@ -150,15 +151,17 @@ const initUserInfo = async () => {
       })
     }
   } catch (apiError) {
-    logger.error('获取用户信息失败', apiError)
+    // 拦截器已弹唯一 Message.error，这里仅日志降级 + 吞异常，避免污染后续渲染
+    logger.warn('获取用户信息失败', apiError)
   }
 }
 
-const onFileChange = (fileList: any) => {
-  const file = fileList[0].file
+const onFileChange = (fileList: ArcoFileItem[]) => {
+  const file = fileList[0]?.file
+  if (!file) return
   const reader = new FileReader()
-  reader.onload = (e: any) => {
-    imgSrc.value = e.target.result
+  reader.onload = (e: ProgressEvent<FileReader>) => {
+    imgSrc.value = e.target?.result as string
   }
   reader.readAsDataURL(file)
 }
@@ -176,8 +179,8 @@ const handleUploadAvatar = () => {
     formData.append('avatar', blob, 'avatar.png')
 
     try {
-      const res: any = await uploadAvatar(userInfo.value.id!, formData)
-      const data = res.data || res
+      // 新 API：uploadAvatar 已解包为 UploadAvatarResult（含 avatar 或 url 字段）
+      const data = await uploadAvatar(userInfo.value.id!, formData)
       Message.success('头像更新成功')
 
       // 更新本地状态
@@ -188,12 +191,13 @@ const handleUploadAvatar = () => {
         newAvatarUrl = url + '?t=' + new Date().getTime()
       }
 
-      userInfo.value.avatar = newAvatarUrl
-      auth.setUser({avatar: newAvatarUrl})
+      userInfo.value.avatar = newAvatarUrl || ''
+      auth.setUser({avatar: newAvatarUrl || ''})
 
       handleCancelAvatar()
     } catch (error) {
-      Message.error('头像上传失败')
+      // 拦截器已弹唯一 Message.error，这里仅日志降级
+      logger.warn('头像上传失败', error)
     }
   })
 }
@@ -219,14 +223,17 @@ const handleUpdatePassword = async () => {
   }
 
   try {
+    // 新 API：updatePassword 入参为 PasswordChangeInput（camelCase），内部映射 snake_case
     await updatePassword(userInfo.value.id, {
-      old_password: passwordForm.oldPassword,
-      new_password: passwordForm.newPassword
+      oldPassword: passwordForm.oldPassword,
+      newPassword: passwordForm.newPassword,
+      confirmPassword: passwordForm.confirmPassword
     })
     Message.success('密码修改成功，请重新登录')
     handleLogout()
-  } catch (error: any) {
-    Message.error(error.response?.data?.message || '密码修改失败')
+  } catch (error) {
+    // 拦截器已弹唯一 Message.error，这里仅日志降级 + 吞异常
+    logger.warn('密码修改失败', error)
   }
 }
 
@@ -234,25 +241,23 @@ onMounted(() => {
   initUserInfo()
 })
 
+// 侧栏菜单 key 与路由的映射表，替代冗长的 if/else-if 链
+const MENU_ROUTE_MAP: Record<string, string> = {
+  'all': '/home',
+  'share': '/shares',
+  'inbox': '/inbox',
+  'docs': '/docs',
+  'mcp': '/mcp',
+  'workspace': '/workspace',
+  'token-usage': '/token-usage',
+  'admin-token-usage': '/admin/token-usage',
+  'sys-dicts': '/sys_dicts'
+}
+
 const handleMenuClick = (key: string) => {
-  if (key === 'all') {
-    router.push('/home')
-  } else if (key === 'share') {
-    router.push('/shares')
-  } else if (key === 'inbox') {
-    router.push('/inbox')
-  } else if (key === 'docs') {
-    router.push('/docs')
-  } else if (key === 'mcp') {
-    router.push('/mcp')
-  } else if (key === 'workspace') {
-    router.push('/workspace')
-  } else if (key === 'token-usage') {
-    router.push('/token-usage')
-  } else if (key === 'admin-token-usage') {
-    router.push('/admin/token-usage')
-  } else if (key === 'sys-dicts') {
-    router.push('/sys_dicts')
+  const target = MENU_ROUTE_MAP[key]
+  if (target) {
+    router.push(target)
   }
 }
 

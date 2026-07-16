@@ -48,7 +48,7 @@
       </a-table>
     </a-card>
 
-    <a-modal v-model:visible="visible" :title="form.id ? '编辑配置' : '新增配置'" @cancel="handleCancel" @ok="handleOk">
+    <a-modal v-model:visible="visible" :title="form.id ? '编辑配置' : '新增配置'" :confirm-loading="submitting" @cancel="handleCancel" @ok="handleOk">
       <a-form :model="form">
         <a-form-item :rules="[{required:true,message:'请输入配置键'}]" field="key" label="配置键">
           <a-input v-model="form.key" placeholder="例如: site_name"/>
@@ -79,6 +79,7 @@ import MainLayout from '../components/MainLayout.vue'
 
 const dicts = ref<SysDict[]>([])
 const loading = ref(false)
+const submitting = ref(false)
 const visible = ref(false)
 const form = reactive<SysDict>({
   id: undefined,
@@ -91,8 +92,7 @@ const form = reactive<SysDict>({
 const fetchDicts = async () => {
   loading.value = true
   try {
-    const res: any = await getSysDicts()
-    dicts.value = res
+    dicts.value = await getSysDicts()
   } catch (error) {
     logger.error('获取系统字典失败', error)
   } finally {
@@ -125,12 +125,15 @@ const handleDelete = async (id: number) => {
 }
 
 const handleOk = async () => {
+  // 提交防重入：避免用户连点 OK 重复创建/更新
+  if (submitting.value) return
   // Zod 校验：键值非空 + 长度限制
   const result = sysDictSchema.safeParse(form)
   if (!result.success) {
     Message.warning(result.error.issues[0]?.message ?? '请填写完整信息')
     return
   }
+  submitting.value = true
   try {
     if (form.id) {
       await updateSysDict(form.id, form)
@@ -143,6 +146,8 @@ const handleOk = async () => {
     fetchDicts()
   } catch (error) {
     logger.error('保存系统字典失败', error)
+  } finally {
+    submitting.value = false
   }
 }
 

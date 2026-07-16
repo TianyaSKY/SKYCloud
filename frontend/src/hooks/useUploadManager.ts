@@ -1,6 +1,7 @@
-import { Notification, Message } from '@arco-design/web-vue'
+import { Notification } from '@arco-design/web-vue'
 import { uploadFileOptimized } from '../utils/upload'
 import type { Ref } from 'vue'
+import { logger } from '../utils/logger'
 
 /** 并发上传数 */
 const UPLOAD_CONCURRENCY = 3
@@ -8,11 +9,23 @@ const UPLOAD_CONCURRENCY = 3
 /**
  * 统一的文件上传管理器。
  * 处理单文件 / 多文件上传，并提供一致的通知反馈。
+ *
+ * 卸载取消说明：组件卸载时调用 cancelAll() 可阻止批量队列继续派发新任务；
+ * 进行中的单个 HTTP 请求无法中断（uploadFileOptimized 的导出签名未暴露 signal，
+ * 保持签名不变以避免破坏调用方），但队列剩余文件不再上传，已开始的请求会自然完成。
  */
 export function useUploadManager(
   currentParentId: Ref<number | null>,
   fetchFiles: () => Promise<void>,
 ) {
+  /** 取消标志：cancelAll 置位后，批量队列停止派发新任务 */
+  let cancelled = false
+
+  /** 取消上传：阻止队列派发新任务，已发起的请求不中断 */
+  const cancelAll = () => {
+    cancelled = true
+  }
+
   /**
    * 上传一组文件（≥1 个）。
    * - 单文件：显示独立的实时进度通知
@@ -20,6 +33,7 @@ export function useUploadManager(
    */
   const startUpload = async (files: File[]) => {
     if (!files || files.length === 0) return
+    cancelled = false
 
     if (files.length === 1) {
       await uploadSingle(files[0]!)
@@ -31,6 +45,7 @@ export function useUploadManager(
   // ─── 单文件上传 ──────────────────────────────────────────
 
   const uploadSingle = async (file: File) => {
+    if (cancelled) return
     const nid = `upload-${file.name}-${Date.now()}`
 
     Notification.info({
@@ -65,11 +80,13 @@ export function useUploadManager(
       })
 
       await fetchFiles()
-    } catch (error: any) {
+    } catch (error) {
+      // 拦截器已弹唯一 Message.error，这里仅用 Notification 收尾「上传中」进度态
+      const msg = error instanceof Error ? error.message : '未知错误'
       Notification.error({
         id: nid,
         title: '上传失败',
-        content: `${file.name} 上传失败: ${error.message || '未知错误'}`,
+        content: `${file.name} 上传失败: ${msg}`,
         duration: 4000,
         closable: true,
       })
@@ -105,6 +122,7 @@ export function useUploadManager(
     let cursor = 0
     const worker = async () => {
       while (true) {
+        if (cancelled) return
         const current = cursor++
         if (current >= files.length) return
         const file = files[current]
@@ -116,8 +134,10 @@ export function useUploadManager(
         try {
           await uploadFileOptimized(file, currentParentId.value)
           completed++
-        } catch {
+        } catch (error) {
           failed++
+          // 拦截器已弹 Message.error，此处仅记日志，最终由汇总 Notification 呈现失败计数
+          logger.warn('uploadBatch 单文件上传失败 name={} error={}', file.name, error)
         }
         updateNotification()
 
@@ -154,10 +174,7 @@ export function useUploadManager(
     if (completed > 0) {
       await fetchFiles()
     }
-    if (failed > 0) {
-      Message.error(`有 ${failed} 个文件上传失败`)
-    }
   }
 
-  return { startUpload }
+  return { startUpload, cancelAll }
 }

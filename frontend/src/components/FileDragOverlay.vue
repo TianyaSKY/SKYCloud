@@ -1,5 +1,5 @@
 <template>
-  <div v-if="isDragging" class="drag-overlay">
+  <div v-if="isDragging" class="drag-overlay" role="status" aria-live="polite">
     <div class="drag-content">
       <icon-upload :style="{ fontSize: '48px', color: 'var(--color-primary-light-4)' }"/>
       <div style="margin-top: 16px; font-size: 18px; color: var(--color-text-1);">

@@ -22,13 +22,13 @@ export const getInboxMessages = (page = 1, per_page = 10) => {
 }
 
 export const markAsRead = (id: number) => {
-    return request.put(`/inbox/${id}/read`)
+    return request.put<void>(`/inbox/${id}/read`)
 }
 
 export const markAllAsRead = () => {
-    return request.put('/inbox/read-all')
+    return request.put<void>('/inbox/read-all')
 }
 
 export const deleteMessage = (id: number) => {
-    return request.delete(`/inbox/${id}`)
+    return request.delete<void>(`/inbox/${id}`)
 }

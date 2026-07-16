@@ -1,4 +1,5 @@
 import request from './request'
+import type {SysDictInput} from '../schemas/sys_dict'
 
 export interface SysDict {
     id?: number
@@ -9,38 +10,21 @@ export interface SysDict {
 }
 
 export function getSysDicts() {
-    return request({
-        url: '/sys_dicts',
-        method: 'get'
-    })
+    return request.get<SysDict[]>('/sys_dicts')
 }
 
 export function getSysDict(id: number) {
-    return request({
-        url: `/sys_dicts/${id}`,
-        method: 'get'
-    })
+    return request.get<SysDict>(`/sys_dicts/${id}`)
 }
 
-export function createSysDict(data: SysDict) {
-    return request({
-        url: '/sys_dicts',
-        method: 'post',
-        data
-    })
+export function createSysDict(data: SysDictInput) {
+    return request.post<SysDict>('/sys_dicts', data)
 }
 
-export function updateSysDict(id: number, data: SysDict) {
-    return request({
-        url: `/sys_dicts/${id}`,
-        method: 'put',
-        data
-    })
+export function updateSysDict(id: number, data: SysDictInput) {
+    return request.put<SysDict>(`/sys_dicts/${id}`, data)
 }
 
 export function deleteSysDict(id: number) {
-    return request({
-        url: `/sys_dicts/${id}`,
-        method: 'delete'
-    })
+    return request.delete<void>(`/sys_dicts/${id}`)
 }

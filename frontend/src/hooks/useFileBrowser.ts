@@ -1,10 +1,13 @@
-import {onMounted, reactive, ref} from 'vue'
+import {onMounted, reactive, ref, shallowRef} from 'vue'
 import {getFiles, getProcessStatus, getRootFolderId, searchFiles} from '../api/file'
+import type {FileItem} from '../api/file'
 import {Notification} from '@arco-design/web-vue'
+import {logger} from '../utils/logger'
 
 export function useFileBrowser() {
     const loading = ref(false)
-    const fileList = ref<any[]>([])
+    // 大列表使用 shallowRef 避免对每个元素深度代理，降低开销
+    const fileList = shallowRef<FileItem[]>([])
     const searchKey = ref('')
     const searchType = ref<'fuzzy' | 'vector'>('vector')
     const isVectorSearch = ref(true)
@@ -26,6 +29,9 @@ export function useFileBrowser() {
         sortBy: 'created_at',
         order: 'desc'
     })
+
+    // fetchFiles 请求序号：快速翻页/排序时丢弃过期响应，防止旧结果覆盖新结果
+    let fetchSeq = 0
 
     const initSearchType = () => {
         const savedType = localStorage.getItem('searchType')
@@ -57,8 +63,7 @@ export function useFileBrowser() {
 
     const checkProcessStatus = async () => {
         try {
-            const res: any = await getProcessStatus()
-            const data = res.data || res
+            const data = await getProcessStatus()
             if (data['处理中'] > 0 || data['失败'] > 0) {
                 Notification.info({
                     title: '文件处理状态',
@@ -68,67 +73,82 @@ export function useFileBrowser() {
                 })
             }
         } catch (error) {
-            console.error('Check process status error:', error)
+            logger.warn('checkProcessStatus 查询失败 error={}', error)
         }
     }
 
     const fetchFiles = async () => {
+        const myId = ++fetchSeq
         loading.value = true
         try {
-            let res: any
+            let folders: FileItem[] = []
+            let files: FileItem[] = []
+            let total = 0
+
             if (isSearching.value && searchKey.value) {
-                res = await searchFiles({
+                const data = await searchFiles({
                     q: searchKey.value,
                     page: pagination.current,
                     page_size: pagination.pageSize,
                     type: searchType.value
                 })
+                // 请求返回期间若已发起新请求，丢弃本次过期结果
+                if (myId !== fetchSeq) return
+                files = data.items
+                total = data.total
             } else {
-                res = await getFiles({
+                const data = await getFiles({
                     parent_id: currentParentId.value || undefined,
                     page: pagination.current,
                     page_size: pagination.pageSize,
                     sort_by: sortState.sortBy,
                     order: sortState.order as 'asc' | 'desc'
                 })
-            }
-
-            const data = res.data || res
-            let folders: any[] = []
-            let files: any[] = []
-            let total = 0
-
-            if (data.items) {
-                files = data.items
-                total = data.total
-            } else {
-                if (data.files?.items) {
-                    files = data.files.items
-                    total = data.files.total
-                } else if (Array.isArray(data.files)) {
-                    files = data.files
+                if (myId !== fetchSeq) return
+                // FileListResponse 为并集结构：优先 items，其次 files（分页或数组），再取 folders
+                if (data.items) {
+                    files = data.items
+                    total = data.total ?? 0
+                } else if (data.files) {
+                    if (Array.isArray(data.files)) {
+                        files = data.files
+                    } else {
+                        files = data.files.items
+                        total = data.files.total
+                    }
                 }
                 if (Array.isArray(data.folders)) {
                     folders = data.folders
                 }
             }
 
-            const processedFolders = folders.map((f: any) => ({
-                ...f, is_folder: true, size: 0, updated_at: f.updated_at || f.created_at
+            const processedFolders = folders.map((f): FileItem => ({
+                ...f,
+                is_folder: true,
+                size: 0,
+                updated_at: f.updated_at || f.created_at
             }))
-            const processedFiles = files.map((f: any) => ({
-                ...f, is_folder: false, size: f.file_size || f.size, updated_at: f.updated_at || f.created_at
+            const processedFiles = files.map((f): FileItem => ({
+                ...f,
+                is_folder: false,
+                size: f.file_size || f.size,
+                updated_at: f.updated_at || f.created_at
             }))
 
+            // shallowRef 需整体替换以触发响应
             fileList.value = [...processedFolders, ...processedFiles]
             pagination.total = total || fileList.value.length
 
             // 每次刷新或进入时检查状态
             await checkProcessStatus()
         } catch (error) {
-            console.error('Fetch files error:', error)
+            if (myId !== fetchSeq) return
+            logger.warn('fetchFiles 失败 error={}', error)
         } finally {
-            loading.value = false
+            // 仅当前最新请求负责复位 loading，避免被过期请求误清
+            if (myId === fetchSeq) {
+                loading.value = false
+            }
         }
     }
 
@@ -156,13 +176,13 @@ export function useFileBrowser() {
 
     const goRoot = async () => {
         try {
-            const res: any = await getRootFolderId()
-            currentParentId.value = res.root_folder_id || res
+            const res = await getRootFolderId()
+            currentParentId.value = res.root_folder_id
             breadcrumbs.value = []
             selectedKeys.value = []
             resetSearchAndFetch()
         } catch (error) {
-            console.error('Get root folder id error:', error)
+            logger.warn('goRoot 获取根目录失败 error={}', error)
         }
     }
 
@@ -176,7 +196,7 @@ export function useFileBrowser() {
         }
     }
 
-    const enterFolder = (record: any) => {
+    const enterFolder = (record: FileItem) => {
         currentParentId.value = record.id
         breadcrumbs.value.push({id: record.id, name: record.name})
         selectedKeys.value = []

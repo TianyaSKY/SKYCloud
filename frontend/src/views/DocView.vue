@@ -186,7 +186,6 @@
 </template>
 
 <script lang="ts" setup>
-import { reactive } from 'vue'
 import {
   IconApps,
   IconArrowDown,
@@ -201,14 +200,15 @@ import {
 } from '@arco-design/web-vue/es/icon'
 import MainLayout from '../components/MainLayout.vue'
 
-const mcpTools = reactive([
+// 纯静态展示数据，无需 reactive 代理
+const mcpTools = [
   { name: 'search_files', description: '模糊搜索或 AI 语义搜索文件', params: 'query, search_type' },
   { name: 'list_files', description: '列出指定目录下的文件和文件夹', params: 'parent_id, page, sort_by' },
   { name: 'get_file_info', description: '获取文件的详细元数据和描述', params: 'file_id' },
   { name: 'create_folder', description: '创建新文件夹', params: 'name, parent_id' },
   { name: 'move_file', description: '移动或重命名文件', params: 'file_id, new_name, new_parent_id' },
   { name: 'delete_file', description: '删除文件（不可恢复）', params: 'file_id' },
-])
+]
 </script>
 
 <style scoped>

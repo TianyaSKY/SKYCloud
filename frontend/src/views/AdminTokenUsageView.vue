@@ -18,6 +18,7 @@
           </div>
         </div>
 
+        <template v-if="!usersError">
         <!-- 全局汇总卡片 -->
         <div class="stats-grid">
           <div class="stat-card stat-total">
@@ -26,7 +27,7 @@
             </div>
             <div class="stat-body">
               <span class="stat-label">全局总 Token</span>
-              <span class="stat-value">{{ formatNumber(globalStats.totalTokens) }}</span>
+              <span class="stat-value">{{ formatNumber(globalStats.totalTokens, 0) }}</span>
             </div>
           </div>
           <div class="stat-card">
@@ -35,7 +36,7 @@
             </div>
             <div class="stat-body">
               <span class="stat-label">全局输入 Token</span>
-              <span class="stat-value">{{ formatNumber(globalStats.promptTokens) }}</span>
+              <span class="stat-value">{{ formatNumber(globalStats.promptTokens, 0) }}</span>
             </div>
           </div>
           <div class="stat-card">
@@ -44,7 +45,7 @@
             </div>
             <div class="stat-body">
               <span class="stat-label">全局输出 Token</span>
-              <span class="stat-value">{{ formatNumber(globalStats.completionTokens) }}</span>
+              <span class="stat-value">{{ formatNumber(globalStats.completionTokens, 0) }}</span>
             </div>
           </div>
           <div class="stat-card">
@@ -90,17 +91,17 @@
               </a-table-column>
               <a-table-column title="总 Token" :width="130" :sortable="{ sortDirections: ['descend', 'ascend'] }">
                 <template #cell="{ record }">
-                  <span class="token-num token-num-total">{{ formatNumber(record.total_tokens) }}</span>
+                  <span class="token-num token-num-total">{{ formatNumber(record.total_tokens, 0) }}</span>
                 </template>
               </a-table-column>
               <a-table-column title="输入 Token" :width="120">
                 <template #cell="{ record }">
-                  <span class="token-num">{{ formatNumber(record.total_prompt_tokens) }}</span>
+                  <span class="token-num">{{ formatNumber(record.total_prompt_tokens, 0) }}</span>
                 </template>
               </a-table-column>
               <a-table-column title="输出 Token" :width="120">
                 <template #cell="{ record }">
-                  <span class="token-num">{{ formatNumber(record.total_completion_tokens) }}</span>
+                  <span class="token-num">{{ formatNumber(record.total_completion_tokens, 0) }}</span>
                 </template>
               </a-table-column>
               <a-table-column title="占比" :width="150">
@@ -126,6 +127,10 @@
             </template>
           </a-table>
         </div>
+        </template>
+        <a-empty v-else description="用户统计加载失败" style="padding: 32px 0;">
+          <a-button size="small" @click="fetchUsersStats">点此重试</a-button>
+        </a-empty>
       </div>
 
       <!-- 全局每日趋势 -->
@@ -154,15 +159,15 @@
                   :key="day.date"
                   class="bar-item"
                 >
-                  <a-tooltip :content="`${day.date}\n总 Token: ${formatNumber(day.total_tokens)}\n请求次数: ${day.request_count}`">
+                  <a-tooltip :content="`${day.date}\n总 Token: ${formatNumber(day.total_tokens, 0)}\n请求次数: ${day.request_count}`">
                     <div class="bar-wrapper">
                       <div
                         class="bar-fill bar-prompt"
-                        :style="{ height: barHeight(day.prompt_tokens) + 'px' }"
+                        :style="{ height: barHeight(day.prompt_tokens, dailyMax, 160) + 'px' }"
                       ></div>
                       <div
                         class="bar-fill bar-completion"
-                        :style="{ height: barHeight(day.completion_tokens) + 'px' }"
+                        :style="{ height: barHeight(day.completion_tokens, dailyMax, 160) + 'px' }"
                       ></div>
                     </div>
                   </a-tooltip>
@@ -261,17 +266,17 @@
               <a-table-column title="模型" data-index="model_name" :width="200" ellipsis />
               <a-table-column title="输入" :width="100">
                 <template #cell="{ record }">
-                  <span class="token-num">{{ formatNumber(record.prompt_tokens) }}</span>
+                  <span class="token-num">{{ formatNumber(record.prompt_tokens, 0) }}</span>
                 </template>
               </a-table-column>
               <a-table-column title="输出" :width="100">
                 <template #cell="{ record }">
-                  <span class="token-num">{{ formatNumber(record.completion_tokens) }}</span>
+                  <span class="token-num">{{ formatNumber(record.completion_tokens, 0) }}</span>
                 </template>
               </a-table-column>
               <a-table-column title="总计" :width="100">
                 <template #cell="{ record }">
-                  <span class="token-num token-num-total">{{ formatNumber(record.total_tokens) }}</span>
+                  <span class="token-num token-num-total">{{ formatNumber(record.total_tokens, 0) }}</span>
                 </template>
               </a-table-column>
               <a-table-column title="内容摘要" ellipsis>
@@ -308,11 +313,17 @@ import {
   type UserTokenStats,
   type AdminTokenUsageLog,
   type DailyStat,
+  type AdminUsageLogQueryParams,
 } from '@/api/token_usage'
+import { usePagination } from '@/hooks/usePagination'
+import { maxDailyTokens, barHeight, actionColor } from '@/hooks/useUsageCharts'
+import { formatDate, formatNumber } from '@/utils/format'
+import { logger } from '@/utils/logger'
 
 // ---- 用户统计 ----
 const usersStats = ref<UserTokenStats[]>([])
 const loadingUsers = ref(false)
+const usersError = ref(false)
 
 const globalStats = computed(() => {
   let totalTokens = 0
@@ -329,10 +340,14 @@ const globalStats = computed(() => {
 const fetchUsersStats = async () => {
   loadingUsers.value = true
   try {
-    const res: any = await getAdminAllUsersStats()
-    usersStats.value = (res as UserTokenStats[]) || []
+    const res = await getAdminAllUsersStats()
+    usersStats.value = res
+    usersError.value = false
   } catch (e) {
-    console.error('Failed to fetch admin user stats', e)
+    // 拦截器已弹唯一 Message.error，此处仅置错误标记并降级为占位
+    usersError.value = true
+    usersStats.value = []
+    logger.warn('加载用户统计失败', { error: e })
   } finally {
     loadingUsers.value = false
   }
@@ -346,25 +361,20 @@ const loadingDaily = ref(false)
 const fetchDailyStats = async () => {
   loadingDaily.value = true
   try {
-    const res: any = await getAdminDailyStats(dailyDays.value)
-    dailyStats.value = res as DailyStat[]
+    const res = await getAdminDailyStats(dailyDays.value)
+    dailyStats.value = res
   } catch (e) {
-    console.error('Failed to fetch admin daily stats', e)
+    // 拦截器已弹唯一 Message.error，此处只记录日志，保留旧趋势避免清空
+    logger.warn('加载每日趋势失败', { days: dailyDays.value, error: e })
   } finally {
     loadingDaily.value = false
   }
 }
 
-const maxDailyTokens = () => {
-  if (!dailyStats.value.length) return 1
-  return Math.max(...dailyStats.value.map(d => d.total_tokens), 1)
-}
-
-const barHeight = (tokens: number) => {
-  const max = maxDailyTokens()
-  const maxH = 160
-  return Math.max(Math.round((tokens / max) * maxH), 2)
-}
+// 缓存每日 Token 最大值，避免 barHeight 在每行重复计算导致 O(n²)
+const dailyMax = computed(() =>
+  maxDailyTokens(dailyStats.value.map(d => ({ tokens: d.total_tokens }))),
+)
 
 // ---- 全局使用明细 ----
 const logs = ref<AdminTokenUsageLog[]>([])
@@ -380,19 +390,22 @@ const logFilter = reactive<{
   start_date: undefined,
   end_date: undefined,
 })
-const logsPagination = reactive({
-  current: 1,
-  pageSize: 15,
-  total: 0,
-  showTotal: true,
-  showPageSize: true,
+const {
+  pagination: logsPagination,
+  handlePageChange: handleLogPageChange,
+  handlePageSizeChange: handleLogPageSizeChange,
+  reset: resetLogsPagination,
+  setTotal: setLogsTotal,
+} = usePagination({
+  defaultPageSize: 15,
   pageSizeOptions: [15, 30, 50],
+  onChange: () => fetchLogs(),
 })
 
 const fetchLogs = async () => {
   loadingLogs.value = true
   try {
-    const params: any = {
+    const params: AdminUsageLogQueryParams = {
       page: logsPagination.current,
       page_size: logsPagination.pageSize,
     }
@@ -401,33 +414,25 @@ const fetchLogs = async () => {
     if (logFilter.start_date) params.start_date = logFilter.start_date
     if (logFilter.end_date) params.end_date = logFilter.end_date
 
-    const res: any = await getAdminAllUsageLogs(params)
-    logs.value = res.items || []
-    logsPagination.total = res.total || 0
+    const res = await getAdminAllUsageLogs(params)
+    logs.value = res.items
+    setLogsTotal(res.total)
   } catch (e) {
-    console.error('Failed to fetch admin usage logs', e)
+    // 拦截器已弹唯一 Message.error，仅清理本地列表状态并记录日志
+    logger.warn('加载使用明细失败', { params: logFilter, error: e })
+    logs.value = []
+    setLogsTotal(0)
   } finally {
     loadingLogs.value = false
   }
 }
 
-const handleLogPageChange = (page: number) => {
-  logsPagination.current = page
-  fetchLogs()
-}
-
-const handleLogPageSizeChange = (size: number) => {
-  logsPagination.pageSize = size
-  logsPagination.current = 1
-  fetchLogs()
-}
-
 const handleFilterChange = () => {
-  logsPagination.current = 1
+  resetLogsPagination()
   fetchLogs()
 }
 
-const handleDateChange = (values: any) => {
+const handleDateChange = (values: string[] | undefined) => {
   if (values && values.length === 2) {
     logFilter.start_date = values[0]
     logFilter.end_date = values[1]
@@ -435,30 +440,8 @@ const handleDateChange = (values: any) => {
     logFilter.start_date = undefined
     logFilter.end_date = undefined
   }
-  logsPagination.current = 1
+  resetLogsPagination()
   fetchLogs()
-}
-
-// ---- 工具函数 ----
-const formatNumber = (n: number) => {
-  if (n == null) return '0'
-  return n.toLocaleString()
-}
-
-const formatDate = (value: string | null) => {
-  if (!value) return '-'
-  return new Date(value).toLocaleString()
-}
-
-const actionColor = (action: string) => {
-  const map: Record<string, string> = {
-    chat: 'arcoblue',
-    describe_text: 'green',
-    describe_vl: 'purple',
-    embedding: 'orangered',
-    organize: 'cyan',
-  }
-  return map[action] || 'gray'
 }
 
 const AVATAR_COLORS = [

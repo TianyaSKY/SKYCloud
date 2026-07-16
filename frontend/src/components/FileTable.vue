@@ -52,18 +52,35 @@
         <template #cell="{ record }">
           <div class="row-actions">
             <a-tooltip content="下载" position="top" v-if="!record.is_folder">
-              <a-button size="small" type="text" @click="$emit('download', record)" class="action-btn">
+              <a-button
+                  size="small"
+                  type="text"
+                  aria-label="下载"
+                  @click="$emit('download', record)"
+                  class="action-btn"
+              >
                 <template #icon><icon-download /></template>
               </a-button>
             </a-tooltip>
             <a-tooltip content="分享" position="top" v-if="!record.is_folder">
-              <a-button size="small" type="text" @click="$emit('share', record)" class="action-btn">
+              <a-button
+                  size="small"
+                  type="text"
+                  aria-label="分享"
+                  @click="$emit('share', record)"
+                  class="action-btn"
+              >
                 <template #icon><icon-share-alt /></template>
               </a-button>
             </a-tooltip>
 
             <a-dropdown trigger="click" position="br">
-              <a-button size="small" type="text" class="action-btn">
+              <a-button
+                  size="small"
+                  type="text"
+                  aria-label="更多操作"
+                  class="action-btn"
+              >
                 <template #icon><icon-more /></template>
               </a-button>
               <template #content>
@@ -108,24 +125,42 @@
 import {computed, reactive, ref} from 'vue'
 import { Modal } from '@arco-design/web-vue'
 import {
-  IconFile, IconFolder, IconDownload, IconShareAlt, 
+  IconFile, IconFolder, IconDownload, IconShareAlt,
   IconMore, IconEdit, IconDragArrow, IconRefresh, IconDelete
 } from '@arco-design/web-vue/es/icon'
+import type {FileItem} from '@/api/file'
+import {formatDate} from '@/utils/format'
+
+// 后端 FileItem 不含 status，但列表渲染依赖 process_status 推送的待索引状态；
+// 这里本地扩展一个带 status 字段的展示行类型，承载表格所需的可选字段。
+interface FileTableRow extends FileItem {
+  status?: 'pending' | 'processing' | 'success' | 'fail' | string
+  size?: number
+}
+
+interface PaginationConfig {
+  current: number
+  pageSize: number
+  total: number
+  showTotal?: boolean
+  showPageSize?: boolean
+  pageSizeOptions?: number[]
+}
 
 const props = defineProps<{
-  data: any[]
+  data: FileTableRow[]
   loading: boolean
-  pagination: any
-  selectedKeys?: any[]
+  pagination: PaginationConfig
+  selectedKeys?: number[]
 }>()
 
 const emit = defineEmits(['file-click', 'download', 'share', 'delete', 'page-change', 'page-size-change', 'batch-delete', 'update:selectedKeys', 'sorter-change', 'retry-embedding', 'rename', 'move'])
 
-const internalSelectedKeys = ref([])
+const internalSelectedKeys = ref<number[]>([])
 
 const selection = computed({
   get: () => props.selectedKeys || internalSelectedKeys.value,
-  set: (val: any) => {
+  set: (val: number[]) => {
     internalSelectedKeys.value = val
     emit('update:selectedKeys', val)
   }
@@ -137,7 +172,7 @@ const rowSelection = reactive({
   onlyCurrent: false
 })
 
-const confirmDelete = (record: any) => {
+const confirmDelete = (record: FileTableRow) => {
   Modal.warning({
     title: '确认删除',
     content: '确定要删除这个文件吗？',
@@ -152,21 +187,16 @@ const handleSorterChange = (dataIndex: string, direction: string) => {
   emit('sorter-change', {dataIndex, direction})
 }
 
-const formatSize = (size: number) => {
+const formatSize = (size?: number) => {
   if (!size) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let n = size
   let i = 0
-  while (size >= 1024 && i < units.length - 1) {
-    size /= 1024
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024
     i++
   }
-  return `${size.toFixed(2)} ${units[i]}`
-}
-
-const formatDate = (dateStr: string) => {
-  if (!dateStr) return '-'
-  const date = new Date(dateStr)
-  return date.toLocaleString()
+  return `${n.toFixed(2)} ${units[i]}`
 }
 
 const getStatusBadgeStatus = (status: string) => {

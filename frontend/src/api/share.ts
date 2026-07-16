@@ -19,7 +19,7 @@ export const createShare = (data: CreateShareParams) => {
 }
 
 export const getShareInfo = (token: string) => {
-    return request.get(`/share/${token}`)
+    return request.get<ShareInfo>(`/share/${token}`)
 }
 
 export const getMyShares = () => {
@@ -27,5 +27,5 @@ export const getMyShares = () => {
 }
 
 export const cancelShare = (id: number) => {
-    return request.delete(`/share/${id}`)
+    return request.delete<void>(`/share/${id}`)
 }

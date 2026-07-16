@@ -1,5 +1,6 @@
 import {defineStore} from 'pinia'
 import {computed, ref} from 'vue'
+import {logger} from '../utils/logger'
 
 export interface UserInfo {
     id: number | null
@@ -29,6 +30,24 @@ function safeParseUser(str: string | null): UserInfo {
     }
 }
 
+/** 安全写入 localStorage：隐私模式 / 配额超限 / 禁用时仅记录日志，不中断内存状态更新 */
+function safeSetItem(key: string, value: string): void {
+    try {
+        localStorage.setItem(key, value)
+    } catch (err) {
+        logger.warn('localStorage 写入失败 key={} err={}', key, err)
+    }
+}
+
+/** 安全移除 localStorage：禁用或异常时仅记录日志，不影响内存状态清空 */
+function safeRemoveItem(key: string): void {
+    try {
+        localStorage.removeItem(key)
+    } catch (err) {
+        logger.warn('localStorage 移除失败 key={} err={}', key, err)
+    }
+}
+
 /**
  * 集中管理鉴权状态（token + 用户信息），替代此前散落在各组件的 localStorage 读写。
  * 路由守卫、侧边栏菜单、请求拦截器统一消费此 store，登录态变化可响应式刷新。
@@ -42,20 +61,20 @@ export const useAuthStore = defineStore('auth', () => {
 
     function setAuth(t: string, u: Partial<UserInfo>) {
         token.value = t
-        localStorage.setItem(TOKEN_KEY, t)
+        safeSetItem(TOKEN_KEY, t)
         setUser(u)
     }
 
     function setUser(u: Partial<UserInfo>) {
         user.value = {...user.value, ...u}
-        localStorage.setItem(USER_KEY, JSON.stringify(user.value))
+        safeSetItem(USER_KEY, JSON.stringify(user.value))
     }
 
     function logout() {
         token.value = null
         user.value = {...EMPTY_USER}
-        localStorage.removeItem(TOKEN_KEY)
-        localStorage.removeItem(USER_KEY)
+        safeRemoveItem(TOKEN_KEY)
+        safeRemoveItem(USER_KEY)
     }
 
     return {token, user, isAuthenticated, isAdmin, setAuth, setUser, logout}

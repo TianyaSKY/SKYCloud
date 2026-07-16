@@ -62,15 +62,25 @@
 </template>
 
 <script lang="ts" setup>
+import type {FileItem} from '@/api/file'
+
+// 移动文件弹窗文件夹树节点结构。与 useFileOperations 内部 FolderTreeNode 结构一致，
+// 用结构类型兼容，无需对方 export 接口。children 一定为数组（叶子节点为空数组）。
+interface FolderTreeNode {
+  id: number
+  name: string
+  children: FolderTreeNode[]
+}
+
 defineProps<{
   showCreateFolder: boolean
   folderForm: { name: string }
   showRenameModal: boolean
   renameForm: { name: string }
   showMoveModal: boolean
-  folderTree: any[]
+  folderTree: FolderTreeNode[]
   showShareModal: boolean
-  selectedFile: any
+  selectedFile: FileItem | null
   shareForm: { expires_at: string }
   showShareResult: boolean
   shareUrl: string
@@ -92,7 +102,7 @@ const emit = defineEmits([
   'update:showShareResult'
 ])
 
-const onFolderSelect = (selectedKeys: Array<string | number>, data: any) => {
+const onFolderSelect = (selectedKeys: Array<string | number>) => {
   if (selectedKeys.length > 0) {
     emit('folder-select', selectedKeys[0])
   }

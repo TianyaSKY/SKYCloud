@@ -9,12 +9,18 @@
     }"
       class="chat-widget"
   >
-    <!-- 悬浮球 -->
+    <!-- 悬浮球：作为按钮对外暴露给屏幕阅读器与键盘 -->
     <div
         :class="{ 'active': visible }"
         class="chat-trigger"
+        role="button"
+        tabindex="0"
+        :aria-label="visible ? '关闭 AI 助手' : '打开 AI 助手'"
+        :aria-expanded="visible"
         @click="handleClick"
         @mousedown="handleMouseDown"
+        @keydown.enter="handleClick"
+        @keydown.space.prevent="handleClick"
     >
       <icon-message v-if="!visible" :size="24"/>
       <icon-close v-else :size="24"/>
@@ -26,7 +32,7 @@
         <div class="chat-header">
           <div class="title">SKYCloud AI 助手</div>
           <div class="actions">
-            <a-button size="mini" type="text" @click="clearHistory">
+            <a-button size="mini" type="text" aria-label="清空历史" @click="clearHistory">
               <template #icon>
                 <icon-delete/>
               </template>
@@ -119,6 +125,11 @@ const isDragging = ref(false);
 const dragOffset = ref({x: 0, y: 0});
 let startTime = 0;
 
+// scrollToBottom 节流：SSE 每 token 触发会高频滚动，加 80ms 时间戳节流降低重排开销。
+// force=true 时跳过节流（例如用户主动展开/发送后需要立刻贴底，避免延迟感）。
+let lastScrollTime = 0;
+const SCROLL_THROTTLE_MS = 80;
+
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -171,11 +182,14 @@ const handleClick = () => {
 const toggleChat = () => {
   visible.value = !visible.value;
   if (visible.value) {
-    void scrollToBottom();
+    void scrollToBottom(true);
   }
 };
 
-const scrollToBottom = async () => {
+const scrollToBottom = async (force = false) => {
+  const now = Date.now();
+  if (!force && now - lastScrollTime < SCROLL_THROTTLE_MS) return;
+  lastScrollTime = now;
   await nextTick();
   if (messageContainer.value) {
     messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
@@ -205,7 +219,7 @@ const handleSend = async () => {
   const aiIndex = messages.value.length - 1;
 
   loading.value = true;
-  await scrollToBottom();
+  await scrollToBottom(true);
 
   try {
     const history = messages.value
@@ -225,7 +239,11 @@ const handleSend = async () => {
       signal: abortController.signal,
     });
 
-    if (!response.body) throw new Error('No response body');
+    // fetch 不走 axios 拦截器，这里手动校验 HTTP 状态；非 2xx 抛错由后续 catch 统一兜底
+    if (!response.ok) {
+      throw new Error(`AI 助手请求失败 status=${response.status} ${response.statusText}`);
+    }
+    if (!response.body) throw new Error('AI 助手响应无内容流');
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

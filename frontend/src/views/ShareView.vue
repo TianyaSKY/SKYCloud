@@ -24,29 +24,44 @@ import {useRoute} from 'vue-router'
 import {Message} from '@arco-design/web-vue'
 import {IconDownload, IconFile} from '@arco-design/web-vue/es/icon'
 import axios from 'axios'
+import {logger} from '@/utils/logger'
+import {safeRevokeObjectURL} from '@/utils/blob'
 
 const route = useRoute()
 const loading = ref(false)
 const token = route.params.token as string
 
+const DEFAULT_FILE_NAME = 'downloaded_file'
+
 const handleDownload = async () => {
   loading.value = true
   try {
-    // 直接通过浏览器跳转或者使用 axios 下载
-    // 由于后端 GET /share/{token} 直接返回文件，我们可以直接 window.open 或创建 a 标签
     const downloadUrl = `/api/share/${token}`
 
-    // 为了更好的体验，我们尝试用 blob 下载以处理错误
-    const response = await axios.get(downloadUrl, {
-      responseType: 'blob'
+    // 保留裸 axios 以拿到完整响应头：share token 下载响应的 content-disposition 携带原始文件名，
+    // 若改走 request 实例，响应拦截器 (response) => response.data 会剥离为 Blob，丢失文件名解析所需的头；
+    // 同时 request.ts 的 module 扩展把 axios.get 限定为单类型参数签名，
+    // 故这里用未受扩展影响的 axios.request（继承自 Axios 类，3 类型参数 + R 默认 AxiosResponse<T>）。
+    // 公开分享下载无需鉴权，不依赖 request 实例的 Authorization 注入。
+    const response = await axios.request<Blob>({
+      url: downloadUrl,
+      method: 'GET',
+      responseType: 'blob',
     })
 
+    let fileName = DEFAULT_FILE_NAME
     const contentDisposition = response.headers['content-disposition']
-    let fileName = 'downloaded_file'
     if (contentDisposition) {
       const fileNameMatch = contentDisposition.match(/filename="?(.+)"?/)
       if (fileNameMatch && fileNameMatch.length === 2) {
-        fileName = decodeURIComponent(fileNameMatch[1])
+        const rawName = fileNameMatch[1]
+        try {
+          // content-disposition 含非编码字符（如直接的中文名）会抛 URIError，需包裹
+          fileName = decodeURIComponent(rawName) || DEFAULT_FILE_NAME
+        } catch (err) {
+          logger.warn('解析分享文件名失败，回退默认名 rawName={} err={}', rawName, err)
+          fileName = rawName || DEFAULT_FILE_NAME
+        }
       }
     }
 
@@ -57,11 +72,12 @@ const handleDownload = async () => {
     document.body.appendChild(link)
     link.click()
     link.remove()
-    window.URL.revokeObjectURL(url)
+    safeRevokeObjectURL(url)
 
     Message.success('开始下载')
   } catch (error) {
-    console.error('Download error:', error)
+    // 裸 axios 不走 request 实例的响应拦截器，需自行向用户提示
+    logger.warn('分享下载失败 token={} err={}', token, error)
     Message.error('下载失败，分享链接可能已失效')
   } finally {
     loading.value = false

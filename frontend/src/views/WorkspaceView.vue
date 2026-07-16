@@ -56,7 +56,7 @@
           <div class="workspace-card__info">
             <div class="workspace-card__detail">
               <icon-clock-circle />
-              <span>创建于 {{ formatTime(ws.created_at) }}</span>
+              <span>创建于 {{ formatDate(ws.created_at) }}</span>
             </div>
             <div v-if="ws.container_id" class="workspace-card__detail">
               <icon-storage />
@@ -243,6 +243,8 @@ import {
 } from '@/api/workspace'
 import {useAuthStore} from '@/stores/auth'
 import {createWorkspaceSchema} from '@/schemas/workspace'
+import {formatDate} from '@/utils/format'
+import {logger} from '@/utils/logger'
 
 const workspaces = ref<WorkspaceInfo[]>([])
 const loading = ref(false)
@@ -271,10 +273,11 @@ let refreshTimer: ReturnType<typeof setInterval> | null = null
 const fetchWorkspaces = async () => {
   loading.value = true
   try {
-    const res: any = await apiList()
-    workspaces.value = res.workspaces || []
-  } catch {
-    // error handled by interceptor
+    const res = await apiList()
+    workspaces.value = res.workspaces
+  } catch (err) {
+    // 拦截器已弹唯一错误提示，此处仅记日志并吞异常，避免冒泡到全局 errorHandler 触发二次提示
+    logger.warn('加载工作区列表失败 err={}', err)
   } finally {
     loading.value = false
   }
@@ -293,8 +296,9 @@ const handleCreate = async () => {
     showCreateModal.value = false
     createForm.name = ''
     await fetchWorkspaces()
-  } catch {
-    // handled
+  } catch (err) {
+    // 拦截器已弹唯一错误提示
+    logger.warn('创建工作区失败 name={} err={}', result.data.name, err)
   } finally {
     createLoading.value = false
   }
@@ -306,6 +310,9 @@ const handleStart = async (ws: WorkspaceInfo) => {
     await apiStart(ws.id)
     Message.success('工作区已启动')
     await fetchWorkspaces()
+  } catch (err) {
+    // 拦截器已弹唯一错误提示，吞异常避免冒泡到全局 errorHandler 触发二次提示
+    logger.warn('工作区操作失败 id={} action=start err={}', ws.id, err)
   } finally {
     delete actionLoading.value[ws.id]
   }
@@ -317,6 +324,8 @@ const handleStop = async (ws: WorkspaceInfo) => {
     await apiStop(ws.id)
     Message.success('工作区已停止')
     await fetchWorkspaces()
+  } catch (err) {
+    logger.warn('工作区操作失败 id={} action=stop err={}', ws.id, err)
   } finally {
     delete actionLoading.value[ws.id]
   }
@@ -328,6 +337,8 @@ const handleRestart = async (ws: WorkspaceInfo) => {
     await apiRestart(ws.id)
     Message.success('工作区已重启')
     await fetchWorkspaces()
+  } catch (err) {
+    logger.warn('工作区操作失败 id={} action=restart err={}', ws.id, err)
   } finally {
     delete actionLoading.value[ws.id]
   }
@@ -336,12 +347,11 @@ const handleRestart = async (ws: WorkspaceInfo) => {
 const handleSetupMcp = async (ws: WorkspaceInfo) => {
   actionLoading.value[ws.id] = 'mcp'
   try {
-    const res: any = await apiSetupMcp(ws.id)
-    mcpResult.value = res as McpSetupResult
+    mcpResult.value = await apiSetupMcp(ws.id)
     mcpResultVisible.value = true
     Message.success('MCP 连接配置成功')
-  } catch {
-    // handled by interceptor
+  } catch (err) {
+    logger.warn('工作区操作失败 id={} action=setupMcp err={}', ws.id, err)
   } finally {
     delete actionLoading.value[ws.id]
   }
@@ -353,6 +363,8 @@ const handleDelete = async (ws: WorkspaceInfo) => {
     await apiDelete(ws.id)
     Message.success('工作区已删除')
     await fetchWorkspaces()
+  } catch (err) {
+    logger.warn('工作区操作失败 id={} action=delete err={}', ws.id, err)
   } finally {
     delete actionLoading.value[ws.id]
   }
@@ -409,25 +421,27 @@ const statusLabel = (s: string) => {
   }
 }
 
-const formatTime = (iso: string | null) => {
-  if (!iso) return '-'
-  const d = new Date(iso)
-  return d.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+// 标签页隐藏时不轮询，可见性切换回 visible 时立即刷新一次
+const onVisibilityChange = () => {
+  if (document.visibilityState === 'visible') {
+    fetchWorkspaces()
+  }
 }
 
 onMounted(() => {
   fetchWorkspaces()
-  // Auto-refresh every 15 seconds
-  refreshTimer = setInterval(fetchWorkspaces, 15000)
+  // 仅在页面可见时轮询；后台切换到可见时由 visibilitychange 监听立即拉取
+  refreshTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      fetchWorkspaces()
+    }
+  }, 15000)
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
 

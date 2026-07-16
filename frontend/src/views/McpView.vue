@@ -220,18 +220,11 @@ import {
   IconWifi,
 } from '@arco-design/web-vue/es/icon'
 import MainLayout from '../components/MainLayout.vue'
-import { createMcpToken, listMcpTokens, revokeMcpToken } from '@/api/auth'
+import { createMcpToken, listMcpTokens, revokeMcpToken, type McpTokenRecord } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
-
-interface McpTokenRecord {
-  id: number
-  name: string
-  token_preview: string
-  created_at: string | null
-  expires_at: string | null
-  is_revoked: boolean
-  is_expired: boolean
-}
+import {formatDate} from '@/utils/format'
+import {copyText} from '@/utils/clipboard'
+import {logger} from '@/utils/logger'
 
 const mcpToken = ref('')
 const tokenName = ref('')
@@ -303,15 +296,18 @@ const tools = reactive([
 ])
 
 const handleGenerateToken = async () => {
+  // 生成防重入：避免连点导致重复签发 Token
+  if (generating.value) return
   generating.value = true
   try {
-    const res: any = await createMcpToken({ name: tokenName.value })
+    const res = await createMcpToken({ name: tokenName.value })
     mcpToken.value = res.mcp_token
     tokenName.value = ''
     await loadTokens()
     Message.success('MCP Token 生成成功')
-  } catch (err) {
-    Message.error('Token 生成失败')
+  } catch (error) {
+    // 拦截器已弹全局错误提示，此处仅记录上下文
+    logger.warn('生成 MCP Token 失败', {name: tokenName.value, error})
   } finally {
     generating.value = false
   }
@@ -320,8 +316,10 @@ const handleGenerateToken = async () => {
 const loadTokens = async () => {
   loadingTokens.value = true
   try {
-    const res: any = await listMcpTokens()
-    mcpTokens.value = res as McpTokenRecord[]
+    const res = await listMcpTokens()
+    mcpTokens.value = res
+  } catch (error) {
+    logger.warn('加载 MCP Token 列表失败', {error})
   } finally {
     loadingTokens.value = false
   }
@@ -341,19 +339,22 @@ const handleRevokeToken = (id: number) => {
   })
 }
 
-const formatDate = (value: string | null) => {
-  if (!value) return '-'
-  return new Date(value).toLocaleString()
+const handleCopyToken = async () => {
+  const ok = await copyText(mcpToken.value)
+  if (ok) {
+    Message.success('Token 已复制到剪贴板')
+  } else {
+    Message.warning('复制失败，请手动复制')
+  }
 }
 
-const handleCopyToken = () => {
-  navigator.clipboard.writeText(mcpToken.value)
-  Message.success('Token 已复制到剪贴板')
-}
-
-const handleCopy = (text: string) => {
-  navigator.clipboard.writeText(text)
-  Message.success('已复制到剪贴板')
+const handleCopy = async (text: string) => {
+  const ok = await copyText(text)
+  if (ok) {
+    Message.success('已复制到剪贴板')
+  } else {
+    Message.warning('复制失败，请手动复制')
+  }
 }
 
 onMounted(() => {
