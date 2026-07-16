@@ -60,7 +60,6 @@ function formatWithPlaceholders(
 function logError(message: string, ...args: unknown[]): void {
     if (isDev) {
         const {text, rest} = formatWithPlaceholders(message, args)
-        // eslint-disable-next-line no-console
         console.error(`[ERROR] ${text}`, ...rest)
     }
 }
@@ -68,7 +67,6 @@ function logError(message: string, ...args: unknown[]): void {
 function logWarn(message: string, ...args: unknown[]): void {
     if (isDev) {
         const {text, rest} = formatWithPlaceholders(message, args)
-        // eslint-disable-next-line no-console
         console.warn(`[WARN] ${text}`, ...rest)
     }
 }
@@ -76,7 +74,6 @@ function logWarn(message: string, ...args: unknown[]): void {
 function logInfo(message: string, ...args: unknown[]): void {
     if (isDev) {
         const {text, rest} = formatWithPlaceholders(message, args)
-        // eslint-disable-next-line no-console
         console.info(`[INFO] ${text}`, ...rest)
     }
 }

@@ -67,7 +67,7 @@
 
 <script lang="ts" setup>
 import {onMounted, ref} from 'vue'
-import {useRouter} from 'vue-router'
+
 import {Message} from '@arco-design/web-vue'
 import {IconCheck, IconNotification} from '@arco-design/web-vue/es/icon'
 import MainLayout from '../components/MainLayout.vue'
@@ -75,7 +75,7 @@ import {deleteMessage, getInboxMessages, markAllAsRead, markAsRead, type Message
 import {formatDate} from '@/utils/format'
 import {logger} from '@/utils/logger'
 
-const router = useRouter()
+
 const loading = ref(false)
 const messages = ref<InboxMessage[]>([])
 const total = ref(0)
