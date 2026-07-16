@@ -11,8 +11,9 @@ from loguru import logger
 from sqlalchemy import and_
 
 from app.extensions import db
+from app.exceptions import BusinessRuleError, ResourceNotFoundError, ServiceOperationError
 from app.models.workspace import Workspace
-from app.services.workspace_types import CreateWorkspaceCommand
+from app.services.workspace_types import CreateWorkspaceCommand, McpConnectionResult, WorkspaceSummary
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +43,7 @@ def _get_docker_client() -> docker.DockerClient:
 # ---------------------------------------------------------------------------
 
 
-def list_workspaces(user_id: int) -> list[dict]:
+def list_workspaces(user_id: int) -> list[WorkspaceSummary]:
     """Return all workspaces belonging to *user_id*."""
     rows = (
         db.session.query(Workspace)
@@ -51,12 +52,10 @@ def list_workspaces(user_id: int) -> list[dict]:
         .all()
     )
     # Sync status from Docker for running containers
-    result = []
+    result: list[WorkspaceSummary] = []
     for ws in rows:
         _sync_status(ws)
-        d = ws.to_dict()
-        d["access_url"] = _get_access_url(ws) if ws.status == "running" else None
-        result.append(d)
+        result.append(_to_summary(ws))
     return result
 
 
@@ -71,6 +70,11 @@ def get_workspace(workspace_id: int, user_id: int) -> Workspace | None:
     return ws
 
 
+def to_summary(ws: Workspace) -> WorkspaceSummary:
+    """将 ORM 实体转换为明确的 API 输出类型。"""
+    return _to_summary(ws)
+
+
 def create_workspace(command: CreateWorkspaceCommand) -> Workspace:
     """Create a new workspace: persist DB row, then spin up Docker container."""
     user_id = command.user_id
@@ -81,14 +85,14 @@ def create_workspace(command: CreateWorkspaceCommand) -> Workspace:
         .count()
     )
     if count >= MAX_WORKSPACES_PER_USER:
-        raise ValueError(
+        raise BusinessRuleError(
             f"每个用户最多创建 {MAX_WORKSPACES_PER_USER} 个工作区"
         )
 
     password = secrets.token_urlsafe(24)
     ws = Workspace(
         user_id=user_id,
-        name=command.name or "My Workspace",
+        name=command.name,
         container_password=password,
         status="creating",
     )
@@ -99,8 +103,8 @@ def create_workspace(command: CreateWorkspaceCommand) -> Workspace:
         container = _start_container(ws)
         ws.container_id = container.id
         ws.status = "running"
-    except Exception as exc:
-        logger.exception("启动工作区容器失败")
+    except DockerException as exc:
+        logger.exception("启动工作区容器失败：workspace_id={} reason={}", ws.id, exc)
         ws.status = "error"
         ws.error_message = str(exc)[:500]
     db.session.commit()
@@ -110,7 +114,7 @@ def create_workspace(command: CreateWorkspaceCommand) -> Workspace:
 def start_workspace(workspace_id: int, user_id: int) -> Workspace:
     ws = get_workspace(workspace_id, user_id)
     if not ws:
-        raise FileNotFoundError("工作区不存在")
+        raise ResourceNotFoundError("工作区不存在")
     if ws.status == "running":
         return ws
     try:
@@ -126,10 +130,12 @@ def start_workspace(workspace_id: int, user_id: int) -> Workspace:
             ws.container_id = container.id
             ws.status = "running"
             ws.error_message = None
-        except Exception as exc:
+        except DockerException as exc:
+            logger.exception("重建工作区容器失败：workspace_id={} reason={}", ws.id, exc)
             ws.status = "error"
             ws.error_message = str(exc)[:500]
-    except Exception as exc:
+    except DockerException as exc:
+        logger.exception("启动工作区容器失败：workspace_id={} reason={}", ws.id, exc)
         ws.status = "error"
         ws.error_message = str(exc)[:500]
     db.session.commit()
@@ -139,7 +145,7 @@ def start_workspace(workspace_id: int, user_id: int) -> Workspace:
 def stop_workspace(workspace_id: int, user_id: int) -> Workspace:
     ws = get_workspace(workspace_id, user_id)
     if not ws:
-        raise FileNotFoundError("工作区不存在")
+        raise ResourceNotFoundError("工作区不存在")
     if ws.status == "stopped":
         return ws
     try:
@@ -149,7 +155,8 @@ def stop_workspace(workspace_id: int, user_id: int) -> Workspace:
         ws.status = "stopped"
     except ContainerNotFound:
         ws.status = "stopped"
-    except Exception as exc:
+    except DockerException as exc:
+        logger.exception("停止工作区容器失败：workspace_id={} reason={}", ws.id, exc)
         ws.status = "error"
         ws.error_message = str(exc)[:500]
     db.session.commit()
@@ -159,7 +166,7 @@ def stop_workspace(workspace_id: int, user_id: int) -> Workspace:
 def delete_workspace(workspace_id: int, user_id: int) -> None:
     ws = get_workspace(workspace_id, user_id)
     if not ws:
-        raise FileNotFoundError("工作区不存在")
+        raise ResourceNotFoundError("工作区不存在")
     # Remove container
     try:
         client = _get_docker_client()
@@ -167,8 +174,8 @@ def delete_workspace(workspace_id: int, user_id: int) -> None:
         container.remove(force=True, v=True)
     except (ContainerNotFound, DockerException):
         pass
-    except Exception:
-        logger.exception("删除工作区容器失败：{}", ws.container_id)
+    except DockerException as exc:
+        logger.exception("删除工作区容器失败：workspace_id={} reason={}", ws.id, exc)
     db.session.delete(ws)
     db.session.commit()
 
@@ -198,8 +205,8 @@ def get_container_url(ws: Workspace) -> str:
             host_port = mapping[0].get("HostPort")
             if host_port:
                 return f"http://127.0.0.1:{host_port}"
-    except Exception:
-        pass
+    except DockerException as exc:
+        logger.warning("读取工作区端口映射失败：workspace_id={} reason={}", ws.id, exc)
 
     # Fallback: try container name anyway
     container_name = _container_name(ws)
@@ -223,8 +230,8 @@ def _get_access_url(ws: Workspace) -> str | None:
             host_port = mapping[0].get("HostPort")
             if host_port:
                 return f"http://localhost:{host_port}"
-    except Exception:
-        pass
+    except DockerException as exc:
+        logger.warning("读取工作区访问地址失败：workspace_id={} reason={}", ws.id, exc)
     return None
 
 
@@ -235,6 +242,14 @@ def _get_access_url(ws: Workspace) -> str | None:
 
 def _container_name(ws: Workspace) -> str:
     return f"skycloud-workspace-{ws.id}"
+
+
+def _to_summary(ws: Workspace) -> WorkspaceSummary:
+    payload = ws.to_dict()
+    return WorkspaceSummary(
+        **payload,
+        access_url=_get_access_url(ws) if ws.status == "running" else None,
+    )
 
 
 def _start_container(ws: Workspace) -> "docker.models.containers.Container":
@@ -293,8 +308,8 @@ def _sync_status(ws: Workspace) -> None:
         if ws.status not in ("stopped", "error", "creating"):
             ws.status = "stopped"
             db.session.commit()
-    except Exception:
-        pass
+    except DockerException as exc:
+        logger.warning("同步工作区状态失败：workspace_id={} reason={}", ws.id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -306,9 +321,9 @@ def restart_workspace(workspace_id: int, user_id: int) -> Workspace:
     """Restart a workspace container (docker restart)."""
     ws = get_workspace(workspace_id, user_id)
     if not ws:
-        raise FileNotFoundError("工作区不存在")
+        raise ResourceNotFoundError("工作区不存在")
     if not ws.container_id:
-        raise ValueError("工作区容器不存在，请删除后重新创建")
+        raise BusinessRuleError("工作区容器不存在，请删除后重新创建")
     try:
         client = _get_docker_client()
         container = client.containers.get(ws.container_id)
@@ -322,10 +337,12 @@ def restart_workspace(workspace_id: int, user_id: int) -> Workspace:
             ws.container_id = container.id
             ws.status = "running"
             ws.error_message = None
-        except Exception as exc:
+        except DockerException as exc:
+            logger.exception("重建工作区容器失败：workspace_id={} reason={}", ws.id, exc)
             ws.status = "error"
             ws.error_message = str(exc)[:500]
-    except Exception as exc:
+    except DockerException as exc:
+        logger.exception("重启工作区容器失败：workspace_id={} reason={}", ws.id, exc)
         ws.status = "error"
         ws.error_message = str(exc)[:500]
     db.session.commit()
@@ -347,10 +364,10 @@ _MCP_EXTERNAL_PORT = int(os.getenv("MCP_PORT", "5001"))
 _OPENCODE_CONFIG_PATH = "/root/.config/opencode/opencode.json"
 
 
-def setup_mcp_connection(workspace_id: int, user_id: int) -> dict:
+def setup_mcp_connection(workspace_id: int, user_id: int) -> McpConnectionResult:
     """Generate an MCP token and write opencode.json into the container.
 
-    Returns a dict with the generated token and connection status.
+    返回配置结果，HTTP 响应由 API 层负责序列化。
     """
     from app.services.auth_service import generate_mcp_token
     from app.services import mcp_token_service
@@ -359,9 +376,9 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> dict:
 
     ws = get_workspace(workspace_id, user_id)
     if not ws:
-        raise FileNotFoundError("工作区不存在")
+        raise ResourceNotFoundError("工作区不存在")
     if ws.status != "running":
-        raise ValueError("工作区必须处于运行状态才能配置 MCP 连接")
+        raise BusinessRuleError("工作区必须处于运行状态才能配置 MCP 连接")
 
     # 1) Generate a long-lived MCP token for this user
     from datetime import datetime, timezone
@@ -370,7 +387,7 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> dict:
 
     mcp_token = generate_mcp_token(user_id, token_expires_at_jwt)
     if not mcp_token:
-        raise ValueError("生成 MCP Token 失败")
+        raise ServiceOperationError("生成 MCP Token 失败")
 
     # Persist to DB
     token_record = mcp_token_service.create_mcp_token(
@@ -436,15 +453,13 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> dict:
             user_id,
         )
 
-        return {
-            "success": True,
-            "message": "MCP 连接配置成功",
-            "mcp_url": mcp_url,
-            "token_id": token_record.id,
-            "config_path": _OPENCODE_CONFIG_PATH,
-        }
+        return McpConnectionResult(
+            mcp_url=mcp_url,
+            token_id=token_record.id,
+            config_path=_OPENCODE_CONFIG_PATH,
+        )
     except ContainerNotFound:
-        raise ValueError("工作区容器不存在")
-    except Exception as exc:
+        raise BusinessRuleError("工作区容器不存在")
+    except DockerException as exc:
         logger.exception("配置工作区 MCP 连接失败：workspace_id={}", workspace_id)
-        raise ValueError(f"配置 MCP 连接失败: {str(exc)[:300]}")
+        raise ServiceOperationError("配置 MCP 连接失败") from exc
