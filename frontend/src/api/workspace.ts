@@ -1,49 +1,34 @@
 import request from './request'
-import type {CreateWorkspaceInput} from '../schemas/workspace'
+import {
+    mcpSetupResultSchema,
+    workspaceInfoSchema,
+    workspaceListResponseSchema,
+    type CreateWorkspaceInput,
+    type McpSetupResult,
+    type WorkspaceInfo,
+    type WorkspaceListResult,
+} from '../schemas/workspace'
 
-export interface WorkspaceInfo {
-    id: number
-    user_id: number
-    name: string
-    container_id: string | null
-    status: 'creating' | 'running' | 'stopped' | 'error'
-    error_message: string | null
-    access_url: string | null
-    created_at: string
-    updated_at: string
-}
-
-export interface McpSetupResult {
-    success: boolean
-    message: string
-    mcp_url: string
-    token_id: number
-    config_path: string
-}
-
-/** 后端契约：/workspace 列表返回，workspaces 为当前用户的工作区数组 */
-export interface WorkspaceListResult {
-    workspaces: WorkspaceInfo[]
-}
+export type {McpSetupResult, WorkspaceInfo, WorkspaceListResult}
 
 export const listWorkspaces = () => {
-    return request.get<WorkspaceListResult>('/workspace')
+    return request.get<unknown>('/workspace').then(workspaceListResponseSchema.parse)
 }
 
 export const getWorkspace = (id: number) => {
-    return request.get<WorkspaceInfo>(`/workspace/${id}`)
+    return request.get<unknown>(`/workspace/${id}`).then(workspaceInfoSchema.parse)
 }
 
 export const createWorkspace = (data: CreateWorkspaceInput) => {
-    return request.post<WorkspaceInfo>('/workspace', data)
+    return request.post<unknown>('/workspace', data).then(workspaceInfoSchema.parse)
 }
 
 export const startWorkspace = (id: number) => {
-    return request.post<void>(`/workspace/${id}/start`)
+    return request.post<unknown>(`/workspace/${id}/start`).then(workspaceInfoSchema.parse)
 }
 
 export const stopWorkspace = (id: number) => {
-    return request.post<void>(`/workspace/${id}/stop`)
+    return request.post<unknown>(`/workspace/${id}/stop`).then(workspaceInfoSchema.parse)
 }
 
 export const deleteWorkspace = (id: number) => {
@@ -51,9 +36,9 @@ export const deleteWorkspace = (id: number) => {
 }
 
 export const restartWorkspace = (id: number) => {
-    return request.post<void>(`/workspace/${id}/restart`, null, {timeout: 30000})
+    return request.post<unknown>(`/workspace/${id}/restart`, null, {timeout: 30000}).then(workspaceInfoSchema.parse)
 }
 
 export const setupMcpConnection = (id: number) => {
-    return request.post<McpSetupResult>(`/workspace/${id}/setup-mcp`, null, {timeout: 30000})
+    return request.post<unknown>(`/workspace/${id}/setup-mcp`, null, {timeout: 30000}).then(mcpSetupResultSchema.parse)
 }
