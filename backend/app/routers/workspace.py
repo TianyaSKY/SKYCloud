@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from dataclasses import asdict
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
@@ -29,22 +30,19 @@ async def create_workspace(
     payload: WorkspaceCreateRequest,
     current_user: User = Depends(get_current_user),
 ):
-    try:
-        ws = workspace_service.create_workspace(
-            CreateWorkspaceCommand(user_id=current_user.id, name=payload.name)
-        )
-        return JSONResponse(
-            status_code=status.HTTP_201_CREATED,
-            content=ws.to_dict(),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    workspace = workspace_service.create_workspace(
+        CreateWorkspaceCommand(user_id=current_user.id, name=payload.name)
+    )
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content=asdict(workspace_service.to_summary(workspace)),
+    )
 
 
 @router.get("/workspace")
 async def list_workspaces(current_user: User = Depends(get_current_user)):
     workspaces = workspace_service.list_workspaces(current_user.id)
-    return {"workspaces": workspaces, "code": 200}
+    return {"workspaces": [asdict(workspace) for workspace in workspaces], "code": 200}
 
 
 @router.get("/workspace/{workspace_id}")
@@ -54,8 +52,9 @@ async def get_workspace(
 ):
     ws = workspace_service.get_workspace(workspace_id, current_user.id)
     if not ws:
-        raise HTTPException(status_code=404, detail="工作区不存在")
-    return ws.to_dict()
+        from app.exceptions import ResourceNotFoundError
+        raise ResourceNotFoundError("工作区不存在")
+    return asdict(workspace_service.to_summary(ws))
 
 
 @router.post("/workspace/{workspace_id}/start")
@@ -63,11 +62,8 @@ async def start_workspace(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
 ):
-    try:
-        ws = workspace_service.start_workspace(workspace_id, current_user.id)
-        return ws.to_dict()
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="工作区不存在")
+    workspace = workspace_service.start_workspace(workspace_id, current_user.id)
+    return asdict(workspace_service.to_summary(workspace))
 
 
 @router.post("/workspace/{workspace_id}/stop")
@@ -75,11 +71,8 @@ async def stop_workspace(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
 ):
-    try:
-        ws = workspace_service.stop_workspace(workspace_id, current_user.id)
-        return ws.to_dict()
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="工作区不存在")
+    workspace = workspace_service.stop_workspace(workspace_id, current_user.id)
+    return asdict(workspace_service.to_summary(workspace))
 
 
 @router.delete("/workspace/{workspace_id}")
@@ -87,11 +80,8 @@ async def delete_workspace(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
 ):
-    try:
-        workspace_service.delete_workspace(workspace_id, current_user.id)
-        return JSONResponse(status_code=200, content={"message": "已删除", "code": 200})
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="工作区不存在")
+    workspace_service.delete_workspace(workspace_id, current_user.id)
+    return JSONResponse(status_code=200, content={"message": "已删除", "code": 200})
 
 
 @router.post("/workspace/{workspace_id}/restart")
@@ -99,13 +89,8 @@ async def restart_workspace(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
 ):
-    try:
-        ws = workspace_service.restart_workspace(workspace_id, current_user.id)
-        return ws.to_dict()
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="工作区不存在")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    workspace = workspace_service.restart_workspace(workspace_id, current_user.id)
+    return asdict(workspace_service.to_summary(workspace))
 
 
 @router.post("/workspace/{workspace_id}/setup-mcp")
@@ -113,13 +98,8 @@ async def setup_mcp_connection(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
 ):
-    try:
-        result = workspace_service.setup_mcp_connection(workspace_id, current_user.id)
-        return result
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="工作区不存在")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    result = workspace_service.setup_mcp_connection(workspace_id, current_user.id)
+    return {"success": True, "message": "MCP 连接配置成功", **asdict(result)}
 
 
 # ---------------------------------------------------------------------------
