@@ -1,9 +1,8 @@
 import uuid
 from typing import List
 
-from fastapi import HTTPException
-
 from app.cache import cacheable, evict_cache
+from app.exceptions import PermissionDeniedError, ResourceNotFoundError
 from app.extensions import db, redis_client
 from app.models.file import File
 from app.models.folder import Folder
@@ -66,14 +65,21 @@ def create_folder(data):
 def get_folder(id):
     folder = db.session.get(Folder, id)
     if not folder:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        raise ResourceNotFoundError("Folder not found")
+    return folder
+
+
+def get_authorized_folder(user_id: int, role: str, folder_id: int) -> Folder:
+    folder = get_folder(folder_id)
+    if role != "admin" and folder.user_id != user_id:
+        raise PermissionDeniedError("Permission denied")
     return folder
 
 
 def update_folder(id, data):
     folder = db.session.get(Folder, id)
     if not folder:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        raise ResourceNotFoundError("Folder not found")
     try:
         old_name = folder.name
         old_parent_id = folder.parent_id
@@ -116,7 +122,7 @@ def update_folder(id, data):
 def delete_folder(id):
     folder = db.session.get(Folder, id)
     if not folder:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        raise ResourceNotFoundError("Folder not found")
     user_id = folder.user_id
     deleted_events: list[dict] = []
 

@@ -1,20 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import JSONResponse
 
 from app.dependencies import get_current_user
-from app.schemas import FolderCreateRequest, FolderUpdateRequest
+from app.api.schemas.folder import FolderCreateRequest, FolderUpdateRequest
 from app.services import folder_service
 
 router = APIRouter(tags=["folder"])
-
-
-def _ensure_folder_access(current_user, folder_id: int):
-    folder = folder_service.get_folder(folder_id)
-    if current_user.role != "admin" and folder.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
-        )
-    return folder
 
 
 @router.post("/folder")
@@ -29,14 +20,14 @@ def create_folder(payload: FolderCreateRequest, current_user=Depends(get_current
 def update_folder(
         id: int, payload: FolderUpdateRequest, current_user=Depends(get_current_user)
 ):
-    _ensure_folder_access(current_user, id)
+    folder_service.get_authorized_folder(current_user.id, current_user.role, id)
     folder = folder_service.update_folder(id, payload.model_dump(exclude_none=True))
     return folder.to_dict()
 
 
 @router.delete("/folder/{id}")
 def delete_folder(id: int, current_user=Depends(get_current_user)):
-    _ensure_folder_access(current_user, id)
+    folder_service.get_authorized_folder(current_user.id, current_user.role, id)
     folder_service.delete_folder(id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -51,7 +42,7 @@ def get_root_folder_id(current_user=Depends(get_current_user)):
 
 @router.get("/folder/{id}")
 def get_folder(id: int, current_user=Depends(get_current_user)):
-    folder = _ensure_folder_access(current_user, id)
+    folder = folder_service.get_authorized_folder(current_user.id, current_user.role, id)
     return folder.to_dict()
 
 

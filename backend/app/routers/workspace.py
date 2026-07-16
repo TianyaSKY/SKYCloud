@@ -2,30 +2,21 @@
 
 import asyncio
 import base64
-import logging
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
 from starlette.requests import Request
 from starlette.responses import StreamingResponse, Response
 
 from app.dependencies import get_current_user
+from app.api.schemas.workspace import WorkspaceCreateRequest
 from app.models.user import User
 from app.services import workspace_service
-
-logger = logging.getLogger(__name__)
+from app.services.workspace_types import CreateWorkspaceCommand
+from loguru import logger
 
 router = APIRouter(tags=["workspace"])
-
-
-# ---------------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------------
-
-class WorkspaceCreateRequest(BaseModel):
-    name: str = Field(default="My Workspace", max_length=120)
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +30,9 @@ async def create_workspace(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        ws = workspace_service.create_workspace(current_user.id, payload.name)
+        ws = workspace_service.create_workspace(
+            CreateWorkspaceCommand(user_id=current_user.id, name=payload.name)
+        )
         return JSONResponse(
             status_code=status.HTTP_201_CREATED,
             content=ws.to_dict(),
@@ -185,6 +178,7 @@ async def _resolve_proxy_user(request: Request) -> User:
 @router.api_route(
     "/workspace/{workspace_id}/proxy/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+    include_in_schema=False,
 )
 async def proxy_http(
     workspace_id: int,
@@ -198,8 +192,8 @@ async def proxy_http(
         raise
     except Exception as exc:
         tb = traceback.format_exc()
-        logger.error("proxy_http error: %s\n%s", exc, tb)
-        raise HTTPException(status_code=500, detail=f"Proxy error: {exc}")
+        logger.exception("工作区 HTTP 代理错误：{}\n{}", exc, tb)
+        raise HTTPException(status_code=500, detail="Proxy error") from exc
 
 
 async def _proxy_http_inner(
@@ -405,7 +399,7 @@ async def proxy_websocket(
                 task.cancel()
 
     except Exception as exc:
-        logger.warning("WebSocket proxy error: %s", exc)
+        logger.warning("工作区 WebSocket 代理错误：{}", exc)
     finally:
         try:
             await websocket.close()

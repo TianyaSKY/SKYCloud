@@ -1,5 +1,4 @@
-from fastapi import HTTPException
-
+from app.exceptions import ResourceNotFoundError
 from app.extensions import db
 from app.models.inbox import Inbox
 
@@ -39,14 +38,14 @@ def get_user_inbox(user_id, page=1, per_page=20):
 def get_inbox_message(id):
     message = db.session.get(Inbox, id)
     if not message:
-        raise HTTPException(status_code=404, detail="Inbox message not found")
+        raise ResourceNotFoundError("Inbox message not found")
     return message
 
 
 def mark_as_read(id, user_id):
     message = db.session.query(Inbox).filter_by(id=id, user_id=user_id).first()
     if not message:
-        raise HTTPException(status_code=404, detail="Inbox message not found")
+        raise ResourceNotFoundError("Inbox message not found")
     message.is_read = True
     db.session.commit()
     return message
@@ -55,7 +54,7 @@ def mark_as_read(id, user_id):
 def delete_inbox_message(id, user_id):
     message = db.session.query(Inbox).filter_by(id=id, user_id=user_id).first()
     if not message:
-        raise HTTPException(status_code=404, detail="Inbox message not found")
+        raise ResourceNotFoundError("Inbox message not found")
     message.is_deleted = True
     db.session.commit()
 

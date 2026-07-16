@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import JSONResponse
 
 from app.dependencies import require_admin
-from app.schemas import SysDictPayload
+from app.api.schemas.sys_dict import SysDictPayload
 from app.services import sys_dict_service
 
 router = APIRouter(tags=["sys_dict"])

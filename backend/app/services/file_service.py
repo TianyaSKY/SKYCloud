@@ -10,8 +10,16 @@ import shutil
 import uuid
 from typing import Any, cast
 
-from fastapi import HTTPException
 from app.cache import cacheable, evict_cache_pattern
+from app.exceptions import (
+    BusinessRuleError,
+    ConflictError,
+    DomainError,
+    PayloadTooLargeError,
+    PermissionDeniedError,
+    ResourceNotFoundError,
+    ServiceOperationError,
+)
 from sqlalchemy import func
 from werkzeug.utils import secure_filename
 
@@ -76,7 +84,7 @@ def _normalize_content_hash(content_hash: str | None) -> str | None:
         return None
     normalized = content_hash.strip().lower()
     if not re.fullmatch(r"[a-f0-9]{64}", normalized):
-        raise HTTPException(status_code=400, detail="Invalid content_hash")
+        raise BusinessRuleError("Invalid content_hash")
     return normalized
 
 
@@ -186,7 +194,7 @@ def _clone_existing_file(
     except Exception as e:
         db.session.rollback()
         logger.exception(f"Failed to create instant upload record: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save file metadata")
+        raise ServiceOperationError("Failed to save file metadata")
 
     _log_file_created(new_file)
     if status != "success":
@@ -199,15 +207,15 @@ def _clone_existing_file(
 def preflight_file_upload(uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
     filename = (data.get("filename") or "").strip()
     if not filename:
-        raise HTTPException(status_code=400, detail="filename is required")
+        raise BusinessRuleError("filename is required")
 
     total_size = int(data.get("total_size") or 0)
     if total_size <= 0:
-        raise HTTPException(status_code=400, detail="total_size must be positive")
+        raise BusinessRuleError("total_size must be positive")
 
     content_hash = _normalize_content_hash(data.get("content_hash"))
     if not content_hash:
-        raise HTTPException(status_code=400, detail="content_hash is required")
+        raise BusinessRuleError("content_hash is required")
 
     source_file = _get_reusable_source_file(content_hash, total_size)
     if not source_file:
@@ -250,7 +258,7 @@ def _multipart_meta_path(upload_dir: str) -> str:
 def _safe_upload_id(upload_id: str) -> str:
     candidate = (upload_id or "").strip()
     if not candidate or not UPLOAD_ID_PATTERN.fullmatch(candidate):
-        raise HTTPException(status_code=400, detail="Invalid upload_id")
+        raise BusinessRuleError("Invalid upload_id")
     return candidate
 
 
@@ -273,16 +281,16 @@ def _load_multipart_meta(uploader_id: int, upload_id: str) -> dict[str, Any]:
     upload_dir = _multipart_upload_dir(uploader_id, safe_upload_id)
     meta_path = _multipart_meta_path(upload_dir)
     if not os.path.exists(meta_path):
-        raise HTTPException(status_code=404, detail="Upload session not found")
+        raise ResourceNotFoundError("Upload session not found")
     try:
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
     except Exception as e:
         logger.exception(f"Failed to read upload metadata: {e}")
-        raise HTTPException(status_code=500, detail="Upload session corrupted")
+        raise ServiceOperationError("Upload session corrupted")
 
     if int(meta.get("uploader_id", -1)) != uploader_id:
-        raise HTTPException(status_code=403, detail="Permission denied")
+        raise PermissionDeniedError("Permission denied")
     return meta
 
 
@@ -319,13 +327,24 @@ def create_file(file_obj: Any, data: dict[str, Any]) -> File:
         if os.path.exists(full_path):
             os.remove(full_path)
         logger.exception(f"Failed to save uploaded file metadata: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save file metadata")
+        raise ServiceOperationError("Failed to save file metadata")
 
     _log_file_created(new_file)
     _push_processing_queue(
         [cast(int, new_file.id)], cast(int | None, new_file.uploader_id)
     )
     return new_file
+
+
+def create_uploaded_file(uploader_id: int, upload: Any, parent_id: int | None = None) -> File:
+    """处理单文件上传的归属、默认目录和文件名业务规则。"""
+    if not getattr(upload, "filename", None):
+        raise BusinessRuleError("No selected file")
+    if parent_id is None:
+        from app.services import folder_service
+
+        parent_id = folder_service.get_root_folder_id(uploader_id)
+    return create_file(upload, {"uploader_id": uploader_id, "parent_id": parent_id})
 
 
 def batch_create_files(
@@ -392,26 +411,41 @@ def batch_create_files(
     return new_files
 
 
+def create_uploaded_files(
+    uploader_id: int, uploads: list[Any], parent_id: int | None = None
+) -> list[File]:
+    valid_uploads = [upload for upload in uploads if getattr(upload, "filename", None)]
+    if not valid_uploads:
+        raise BusinessRuleError("No selected files")
+    if parent_id is None:
+        from app.services import folder_service
+
+        parent_id = folder_service.get_root_folder_id(uploader_id)
+    return batch_create_files(
+        valid_uploads, {"uploader_id": uploader_id, "parent_id": parent_id}
+    )
+
+
 def init_multipart_upload(uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
     filename = (data.get("filename") or "").strip()
     if not filename:
-        raise HTTPException(status_code=400, detail="filename is required")
+        raise BusinessRuleError("filename is required")
 
     total_size = int(data.get("total_size") or 0)
     if total_size <= 0:
-        raise HTTPException(status_code=400, detail="total_size must be positive")
+        raise BusinessRuleError("total_size must be positive")
     if 0 < MAX_UPLOAD_SIZE < total_size:
-        raise HTTPException(status_code=413, detail="File too large")
+        raise PayloadTooLargeError("File too large")
 
     chunk_size = int(data.get("chunk_size") or DEFAULT_CHUNK_SIZE)
     if chunk_size <= 0:
-        raise HTTPException(status_code=400, detail="chunk_size must be positive")
+        raise BusinessRuleError("chunk_size must be positive")
     if chunk_size > MAX_CHUNK_SIZE:
-        raise HTTPException(status_code=400, detail="chunk_size exceeds server limit")
+        raise BusinessRuleError("chunk_size exceeds server limit")
 
     total_chunks = math.ceil(total_size / chunk_size)
     if total_chunks <= 0 or total_chunks > MAX_TOTAL_CHUNKS:
-        raise HTTPException(status_code=400, detail="total_chunks exceeds server limit")
+        raise BusinessRuleError("total_chunks exceeds server limit")
 
     parent_id = data.get("parent_id")
     mime_type = data.get("mime_type")
@@ -456,10 +490,7 @@ def init_multipart_upload(uploader_id: int, data: dict[str, Any]) -> dict[str, A
         )
         current = (filename, total_size, chunk_size, parent_id)
         if expected != current:
-            raise HTTPException(
-                status_code=409,
-                detail="upload_id already exists with different file metadata",
-            )
+            raise ConflictError("upload_id already exists with different file metadata")
     else:
         meta = {
             "upload_id": upload_id,
@@ -507,14 +538,14 @@ def save_multipart_chunk(
     try:
         idx = int(chunk_index)
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid chunk_index")
+        raise BusinessRuleError("Invalid chunk_index")
 
     total_chunks = int(meta["total_chunks"])
     chunk_size = int(meta["chunk_size"])
     total_size = int(meta["total_size"])
 
     if idx < 0 or idx >= total_chunks:
-        raise HTTPException(status_code=400, detail="chunk_index out of range")
+        raise BusinessRuleError("chunk_index out of range")
 
     upload_dir = _multipart_upload_dir(uploader_id, safe_upload_id)
     chunks_dir = _multipart_chunks_dir(upload_dir)
@@ -537,9 +568,8 @@ def save_multipart_chunk(
 
     if actual_size != expected_size:
         os.remove(tmp_part_path)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid chunk size for index {idx}: expected {expected_size}, got {actual_size}",
+        raise BusinessRuleError(
+            f"Invalid chunk size for index {idx}: expected {expected_size}, got {actual_size}"
         )
 
     os.replace(tmp_part_path, part_path)
@@ -569,7 +599,7 @@ def complete_multipart_upload(uploader_id: int, upload_id: str) -> File:
     missing = [idx for idx in range(total_chunks) if idx not in uploaded_chunks]
     if missing:
         preview = ",".join(str(i) for i in missing[:10])
-        raise HTTPException(status_code=400, detail=f"Missing chunks: {preview}")
+        raise BusinessRuleError(f"Missing chunks: {preview}")
 
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     unique_filename = _generate_unique_filename(filename)
@@ -589,18 +619,17 @@ def complete_multipart_upload(uploader_id: int, upload_id: str) -> File:
         assembled_size = os.path.getsize(tmp_final_path)
         if assembled_size != total_size:
             os.remove(tmp_final_path)
-            raise HTTPException(
-                status_code=400,
-                detail=f"Assembled file size mismatch: expected {total_size}, got {assembled_size}",
+            raise BusinessRuleError(
+                f"Assembled file size mismatch: expected {total_size}, got {assembled_size}"
             )
         os.replace(tmp_final_path, final_path)
-    except HTTPException:
+    except DomainError:
         raise
     except Exception as e:
         if os.path.exists(tmp_final_path):
             os.remove(tmp_final_path)
         logger.exception(f"Failed to merge chunks: {e}")
-        raise HTTPException(status_code=500, detail="Failed to merge chunks")
+        raise ServiceOperationError("Failed to merge chunks")
 
     try:
         resolved_mime = _resolve_mime_type(final_path, mime_type)
@@ -623,7 +652,7 @@ def complete_multipart_upload(uploader_id: int, upload_id: str) -> File:
         logger.exception(f"Failed to persist merged file: {e}")
         if os.path.exists(final_path):
             os.remove(final_path)
-        raise HTTPException(status_code=500, detail="Failed to save file metadata")
+        raise ServiceOperationError("Failed to save file metadata")
     finally:
         shutil.rmtree(upload_dir, ignore_errors=True)
 
@@ -642,7 +671,26 @@ def abort_multipart_upload(uploader_id: int, upload_id: str) -> None:
 def get_file(id: int) -> File:
     file_obj = db.session.get(File, id)
     if not file_obj:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise ResourceNotFoundError("File not found")
+    return file_obj
+
+
+def get_authorized_file(user_id: int, role: str, file_id: int) -> File:
+    """在业务层验证文件存在性与归属关系。"""
+    if role != "admin" and not file_access_bloom.maybe_user_can_access_file(user_id, file_id):
+        if file_access_bloom.maybe_file_exists(file_id):
+            raise PermissionDeniedError("Permission denied")
+        raise ResourceNotFoundError("File not found")
+    file_obj = get_file(file_id)
+    if role != "admin" and file_obj.uploader_id != user_id:
+        raise PermissionDeniedError("Permission denied")
+    return file_obj
+
+
+def get_downloadable_file(user_id: int, role: str, file_id: int) -> File:
+    file_obj = get_authorized_file(user_id, role, file_id)
+    if not os.path.exists(file_obj.get_abs_path()):
+        raise ResourceNotFoundError("File not found on server")
     return file_obj
 
 
@@ -716,7 +764,7 @@ def get_files_and_folders(
 def update_file(id: int, data: dict[str, Any]) -> File:
     file_obj = db.session.get(File, id)
     if not file_obj:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise ResourceNotFoundError("File not found")
 
     old_name = file_obj.name
     old_parent_id = file_obj.parent_id
@@ -753,7 +801,7 @@ def update_file(id: int, data: dict[str, Any]) -> File:
 def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
     file_obj = db.session.get(File, id)
     if not file_obj:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise ResourceNotFoundError("File not found")
 
     uploader_id = file_obj.uploader_id
     old_parent_id = file_obj.parent_id
@@ -916,15 +964,25 @@ def upload_avatar(img_file: Any, user_id: int) -> dict[str, Any]:
     return result
 
 
-def batch_delete_items(items: list[dict[str, Any]]) -> None:
+def upload_avatar_for_user(
+    actor_id: int, actor_role: str, user_id: int, upload: Any
+) -> dict[str, Any]:
+    if actor_id != user_id and actor_role != "admin":
+        raise PermissionDeniedError("Permission denied")
+    return upload_avatar(upload, user_id)
+
+
+def batch_delete_items(user_id: int, role: str, items: list[dict[str, Any]]) -> None:
     from app.services import folder_service
 
     for item in items:
         item_id = item.get("id")
         is_folder = item.get("is_folder", False)
         if is_folder:
+            folder_service.get_authorized_folder(user_id, role, item_id)
             folder_service.delete_folder(item_id)
         else:
+            get_authorized_file(user_id, role, item_id)
             delete_file(item_id)
 
 

@@ -1,12 +1,45 @@
-import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException as FastAPIHTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from loguru import logger
 
 
-logger = logging.getLogger(__name__)
+class DomainError(Exception):
+    """预期的领域错误，由 API 层统一映射为 HTTP 响应。"""
+
+    status_code = 400
+
+
+class ResourceNotFoundError(DomainError):
+    status_code = 404
+
+
+class BusinessRuleError(DomainError):
+    status_code = 400
+
+
+class PermissionDeniedError(DomainError):
+    status_code = 403
+
+
+class PayloadTooLargeError(DomainError):
+    status_code = 413
+
+
+class ConflictError(DomainError):
+    status_code = 409
+
+
+class AuthenticationError(DomainError):
+    status_code = 401
+
+
+class ServiceOperationError(DomainError):
+    """外部资源或持久化操作失败，且服务无法安全恢复。"""
+
+    status_code = 500
 
 
 def _to_json_safe(value: Any) -> Any:
@@ -37,6 +70,13 @@ def _compact_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(DomainError)
+    async def handle_domain_error(_: Request, exc: DomainError):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"message": str(exc), "detail": str(exc)},
+        )
+
     @app.exception_handler(FastAPIHTTPException)
     async def handle_fastapi_http_exception(_: Request, exc: FastAPIHTTPException):
         detail = exc.detail if isinstance(exc.detail, str) else "Request failed"
@@ -57,6 +97,6 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def handle_unexpected_exception(_: Request, exc: Exception):
-        logger.exception("Unhandled server error: %s", exc)
+        logger.exception("未处理的服务器异常：{}", exc)
         message = "Internal server error"
         return JSONResponse(status_code=500, content={"message": message, "detail": message})

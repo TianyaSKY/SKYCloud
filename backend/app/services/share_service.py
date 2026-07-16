@@ -1,5 +1,9 @@
+import os
+from datetime import datetime
+
 from app.datetime_utils import beijing_now, to_beijing_naive
 from app.extensions import db
+from app.exceptions import BusinessRuleError, ResourceNotFoundError
 from app.models.file import File
 from app.models.share import Share
 
@@ -52,3 +56,31 @@ def cancel_share(share_id, user_id):
         db.session.commit()
         return True
     return False
+
+
+def create_share(user_id: int, file_id: int, expires_at_raw: str | None) -> Share:
+    expires_at = None
+    if expires_at_raw:
+        try:
+            expires_at = datetime.fromisoformat(expires_at_raw)
+        except ValueError as exc:
+            raise BusinessRuleError("Invalid date format") from exc
+    try:
+        return create_share_link(user_id, file_id, expires_at)
+    except ValueError as exc:
+        raise ResourceNotFoundError(str(exc)) from exc
+
+
+def cancel_share_for_user(share_id: int, user_id: int) -> None:
+    if not cancel_share(share_id, user_id):
+        raise ResourceNotFoundError("Share not found or permission denied")
+
+
+def resolve_shared_file(token: str) -> File:
+    share = get_share_by_token(token)
+    if not share:
+        raise ResourceNotFoundError("Link invalid or expired")
+    file = share.file
+    if not file or not os.path.exists(file.get_abs_path()):
+        raise ResourceNotFoundError("File not found")
+    return file

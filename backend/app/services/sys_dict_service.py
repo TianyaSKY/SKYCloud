@@ -1,6 +1,5 @@
-from fastapi import HTTPException
-
 from app.cache import cacheable, evict_cache
+from app.exceptions import BusinessRuleError, ResourceNotFoundError
 from app.extensions import db
 from app.models.sys_dict import SysDict
 from app.services.model_config import is_model_config_sys_dict_key
@@ -15,7 +14,7 @@ MODEL_CONFIG_DB_ERROR = (
 
 def _ensure_non_model_config_key(key: str | None) -> None:
     if is_model_config_sys_dict_key(key):
-        raise HTTPException(status_code=400, detail=MODEL_CONFIG_DB_ERROR)
+        raise BusinessRuleError(MODEL_CONFIG_DB_ERROR)
 
 
 def _invalidate_sys_dict_cache() -> None:
@@ -36,11 +35,11 @@ def create_sys_dict(data):
 def update_sys_dict(id, data):
     sys_dict = db.session.get(SysDict, id)
     if not sys_dict:
-        raise HTTPException(status_code=404, detail="SysDict not found")
+        raise ResourceNotFoundError("SysDict not found")
     next_key = data.get("key", sys_dict.key)
     _ensure_non_model_config_key(next_key)
     if is_model_config_sys_dict_key(sys_dict.key):
-        raise HTTPException(status_code=400, detail=MODEL_CONFIG_DB_ERROR)
+        raise BusinessRuleError(MODEL_CONFIG_DB_ERROR)
     sys_dict.key = data.get("key", sys_dict.key)
     sys_dict.value = data.get("value", sys_dict.value)
     sys_dict.des = data.get("des", sys_dict.des)
@@ -53,7 +52,7 @@ def update_sys_dict(id, data):
 def delete_sys_dict(id):
     sys_dict = db.session.get(SysDict, id)
     if not sys_dict:
-        raise HTTPException(status_code=404, detail="SysDict not found")
+        raise ResourceNotFoundError("SysDict not found")
     db.session.delete(sys_dict)
     db.session.commit()
     _invalidate_sys_dict_cache()
@@ -99,4 +98,4 @@ async def get_sys_dict(id):
     for item in all_dicts:
         if item["id"] == int(id):
             return item
-    raise HTTPException(status_code=404, detail="SysDict not found")
+    raise ResourceNotFoundError("SysDict not found")

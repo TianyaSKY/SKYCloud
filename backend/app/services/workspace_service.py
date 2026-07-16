@@ -1,19 +1,19 @@
 """Workspace service — Docker container lifecycle management for opencode."""
 
 import json
-import logging
 import os
 import secrets
 import time
 
 import docker
 from docker.errors import DockerException, NotFound as ContainerNotFound
+from loguru import logger
 from sqlalchemy import and_
 
 from app.extensions import db
 from app.models.workspace import Workspace
+from app.services.workspace_types import CreateWorkspaceCommand
 
-logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -71,8 +71,9 @@ def get_workspace(workspace_id: int, user_id: int) -> Workspace | None:
     return ws
 
 
-def create_workspace(user_id: int, name: str) -> Workspace:
+def create_workspace(command: CreateWorkspaceCommand) -> Workspace:
     """Create a new workspace: persist DB row, then spin up Docker container."""
+    user_id = command.user_id
     # Check limit
     count = (
         db.session.query(Workspace)
@@ -87,7 +88,7 @@ def create_workspace(user_id: int, name: str) -> Workspace:
     password = secrets.token_urlsafe(24)
     ws = Workspace(
         user_id=user_id,
-        name=name or "My Workspace",
+        name=command.name or "My Workspace",
         container_password=password,
         status="creating",
     )
@@ -99,7 +100,7 @@ def create_workspace(user_id: int, name: str) -> Workspace:
         ws.container_id = container.id
         ws.status = "running"
     except Exception as exc:
-        logger.exception("Failed to start workspace container")
+        logger.exception("启动工作区容器失败")
         ws.status = "error"
         ws.error_message = str(exc)[:500]
     db.session.commit()
@@ -167,7 +168,7 @@ def delete_workspace(workspace_id: int, user_id: int) -> None:
     except (ContainerNotFound, DockerException):
         pass
     except Exception:
-        logger.exception("Failed to remove container %s", ws.container_id)
+        logger.exception("删除工作区容器失败：{}", ws.container_id)
     db.session.delete(ws)
     db.session.commit()
 
@@ -268,7 +269,7 @@ def _start_container(ws: Workspace) -> "docker.models.containers.Container":
     )
 
     container = client.containers.run(**run_kwargs)
-    logger.info("Started workspace container %s (%s)", name, container.short_id)
+    logger.info("工作区容器已启动：{} ({})", name, container.short_id)
     return container
 
 
@@ -430,8 +431,9 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> dict:
             raise RuntimeError("Failed to verify config file in container")
 
         logger.info(
-            "MCP connection configured for workspace %s (user %s)",
-            workspace_id, user_id,
+            "工作区 MCP 连接已配置：workspace_id={}, user_id={}",
+            workspace_id,
+            user_id,
         )
 
         return {
@@ -444,5 +446,5 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> dict:
     except ContainerNotFound:
         raise ValueError("工作区容器不存在")
     except Exception as exc:
-        logger.exception("Failed to setup MCP connection for workspace %s", workspace_id)
+        logger.exception("配置工作区 MCP 连接失败：workspace_id={}", workspace_id)
         raise ValueError(f"配置 MCP 连接失败: {str(exc)[:300]}")

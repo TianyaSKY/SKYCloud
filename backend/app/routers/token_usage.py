@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, Query
 
-from app.dependencies import get_current_user, ensure_owner_or_admin, require_admin
+from app.dependencies import get_current_user, require_admin
 from app.services import token_usage_service
+from app.services import user_service
 
 router = APIRouter(tags=["token_usage"])
 
@@ -15,7 +16,7 @@ def my_token_stats(current_user=Depends(get_current_user)):
 @router.get("/token-usage/stats/{user_id}")
 def user_token_stats(user_id: int, current_user=Depends(get_current_user)):
     """获取指定用户的累计 token 使用统计（仅本人或管理员）"""
-    ensure_owner_or_admin(current_user, user_id)
+    user_service.ensure_user_access(current_user.id, current_user.role, user_id)
     return token_usage_service.get_user_token_stats(user_id)
 
 
@@ -50,7 +51,7 @@ def user_usage_logs(
     current_user=Depends(get_current_user),
 ):
     """获取指定用户的 token 使用明细（仅本人或管理员）"""
-    ensure_owner_or_admin(current_user, user_id)
+    user_service.ensure_user_access(current_user.id, current_user.role, user_id)
     return token_usage_service.get_usage_logs(
         user_id=user_id,
         page=page,
@@ -77,7 +78,7 @@ def user_daily_stats(
     current_user=Depends(get_current_user),
 ):
     """获取指定用户最近 N 天的每日统计（仅本人或管理员）"""
-    ensure_owner_or_admin(current_user, user_id)
+    user_service.ensure_user_access(current_user.id, current_user.role, user_id)
     return token_usage_service.get_daily_stats(user_id, days)
 
 

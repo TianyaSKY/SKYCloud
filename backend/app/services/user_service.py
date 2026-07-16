@@ -1,6 +1,5 @@
-from fastapi import HTTPException
-
 from app.cache import cacheable, evict_cache
+from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
 from app.extensions import db
 from app.models.user import User
 from app.services import folder_service
@@ -33,14 +32,14 @@ def _get_user_data(id: int) -> dict | None:
 async def get_user(id: int) -> User:
     user_data = _get_user_data(id)
     if not user_data:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise ResourceNotFoundError("User not found")
     return User.from_cache(user_data)
 
 
 def update_user(id, data):
     user = db.session.get(User, id)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise ResourceNotFoundError("User not found")
     user.username = data.get("username", user.username)
     user.avatar = data.get("avatar", user.avatar)
     if "password" in data:
@@ -54,8 +53,25 @@ def update_user(id, data):
 def delete_user(id):
     user = db.session.get(User, id)
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise ResourceNotFoundError("User not found")
     db.session.delete(user)
     db.session.commit()
 
     evict_cache(USER_CACHE_PREFIX, id)
+
+
+def change_password(actor_id: int, actor_role: str, user_id: int, old_password: str, new_password: str) -> None:
+    """验证操作者权限和旧密码后更新目标用户密码。"""
+    if actor_id != user_id and actor_role != "admin":
+        raise PermissionDeniedError("Permission denied")
+    user = db.session.get(User, user_id)
+    if not user:
+        raise ResourceNotFoundError("User not found")
+    if actor_role != "admin" and not user.check_password(old_password):
+        raise BusinessRuleError("Old password is incorrect")
+    update_user(user_id, {"password": new_password})
+
+
+def ensure_user_access(actor_id: int, actor_role: str, user_id: int) -> None:
+    if actor_id != user_id and actor_role != "admin":
+        raise PermissionDeniedError("Permission denied")

@@ -1,9 +1,8 @@
 from datetime import datetime
 from typing import Any
 
-from fastapi import HTTPException, status
-
 from app.datetime_utils import beijing_now
+from app.exceptions import ResourceNotFoundError
 from app.extensions import db
 from app.models.mcp_token import McpToken
 
@@ -40,9 +39,7 @@ def revoke_mcp_token(user_id: int, token_id: int) -> McpToken:
         .first()
     )
     if not token:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="MCP token not found"
-        )
+        raise ResourceNotFoundError("MCP token not found")
     if not token.revoked_at:
         token.revoked_at = beijing_now()
         db.session.commit()

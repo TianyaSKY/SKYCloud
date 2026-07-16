@@ -5,7 +5,11 @@ import uuid
 import jwt
 
 from app.extensions import SECRET_KEY, db
+from app.exceptions import AuthenticationError, BusinessRuleError, ServiceOperationError
 from app.models.user import User
+from app.services import mcp_token_service
+from app.services.user_service import create_user
+from app.datetime_utils import beijing_now
 
 logger = logging.getLogger(__name__)
 
@@ -87,3 +91,34 @@ def authenticate_user(username, password):
     if user and user.check_password(password):
         return generate_token(user.id), user.role, user.id
     return None, "common", None
+
+
+def login(username: str, password: str) -> dict:
+    """验证凭据并生成登录响应所需数据。"""
+    if not username or not password:
+        raise BusinessRuleError("Missing username or password")
+    token, role, user_id = authenticate_user(username, password)
+    if not token:
+        raise AuthenticationError("Invalid username or password")
+    return {"token": token, "role": role, "user_id": user_id}
+
+
+def register_user(username: str, password: str, avatar: str | None = None) -> User:
+    if not username or not password:
+        raise BusinessRuleError("Missing username or password")
+    try:
+        return create_user({"username": username, "password": password, "avatar": avatar})
+    except Exception as exc:
+        logger.exception("用户注册失败：{}", exc)
+        raise BusinessRuleError(str(exc)) from exc
+
+
+def issue_mcp_token(user_id: int, name: str | None) -> dict:
+    expires_at = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365)
+    token = generate_mcp_token(user_id, expires_at)
+    if not token:
+        raise ServiceOperationError("Failed to generate MCP token")
+    token_record = mcp_token_service.create_mcp_token(
+        user_id, token, beijing_now() + _dt.timedelta(days=365), name
+    )
+    return {"mcp_token": token, "token": token_record.to_dict(), "user_id": user_id}

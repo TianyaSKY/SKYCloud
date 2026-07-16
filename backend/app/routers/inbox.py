@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.dependencies import get_current_user
 from app.services import inbox_service
@@ -8,7 +8,9 @@ router = APIRouter(tags=["inbox"])
 
 @router.get("/inbox")
 def get_inbox(
-        current_user=Depends(get_current_user), page: int = 1, per_page: int = 20
+        current_user=Depends(get_current_user),
+        page: int = Query(default=1, ge=1),
+        per_page: int = Query(default=20, ge=1, le=100),
 ):
     result = inbox_service.get_user_inbox(current_user.id, page, per_page)
 

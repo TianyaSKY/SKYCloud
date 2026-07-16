@@ -1,4 +1,3 @@
-import os
 from typing import cast
 
 from fastapi import (
@@ -15,8 +14,9 @@ from fastapi import (
 from fastapi import UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.dependencies import ensure_owner_or_admin, get_current_user
-from app.schemas import (
+from app.dependencies import get_current_user
+from app.exceptions import DomainError
+from app.api.schemas.file import (
     BatchDeleteRequest,
     FilePreflightRequest,
     FileUpdateRequest,
@@ -24,30 +24,10 @@ from app.schemas import (
     MultipartInitRequest,
     RetryEmbeddingRequest,
 )
-from app.services import file_access_bloom
 from app.services import file_service
 from app.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
 
 router = APIRouter(tags=["file"])
-
-
-def _ensure_file_access(current_user, file_id: int):
-    if current_user.role != "admin":
-        if not file_access_bloom.maybe_user_can_access_file(current_user.id, file_id):
-            if file_access_bloom.maybe_file_exists(file_id):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
-                )
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="File not found"
-            )
-
-    file_obj = file_service.get_file(file_id)
-    if current_user.role != "admin" and file_obj.uploader_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
-        )
-    return file_obj
 
 
 @router.post("/files")
@@ -56,23 +36,15 @@ def create_file(
     file: UploadFile = FastAPIFile(...),
     parent_id: int | None = Form(default=None),
 ):
-    if not file.filename:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="No selected file"
-        )
-
     # 未指定 parent_id 时，默认上传到用户的根文件夹
-    if parent_id is None:
-        from app.services import folder_service
-        parent_id = folder_service.get_root_folder_id(current_user.id)
-
-    data = {"uploader_id": current_user.id, "parent_id": parent_id}
     try:
-        new_file = file_service.create_file(FastAPIUploadAdapter(file), data)
+        new_file = file_service.create_uploaded_file(
+            current_user.id, FastAPIUploadAdapter(file), parent_id
+        )
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
         )
-    except HTTPException:
+    except (HTTPException, DomainError):
         raise
     except Exception as exc:
         raise HTTPException(
@@ -86,26 +58,17 @@ def batch_upload_files(
     files: list[UploadFile] | None = FastAPIFile(default=None),
     parent_id: int | None = Form(default=None),
 ):
-    valid_files = [f for f in (files or []) if f and f.filename]
-    if not valid_files:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="No selected files"
-        )
-
     # 未指定 parent_id 时，默认上传到用户的根文件夹
-    if parent_id is None:
-        from app.services import folder_service
-        parent_id = folder_service.get_root_folder_id(current_user.id)
-
-    data = {"uploader_id": current_user.id, "parent_id": parent_id}
-    adapters = [FastAPIUploadAdapter(f) for f in valid_files]
+    adapters = [FastAPIUploadAdapter(file) for file in (files or []) if file]
     try:
-        new_files = file_service.batch_create_files(adapters, data)
+        new_files = file_service.create_uploaded_files(
+            current_user.id, adapters, parent_id
+        )
         return JSONResponse(
             status_code=status.HTTP_201_CREATED,
             content=[f.to_dict() for f in new_files],
         )
-    except HTTPException:
+    except (HTTPException, DomainError):
         raise
     except Exception as exc:
         raise HTTPException(
@@ -122,7 +85,7 @@ def preflight_file_upload(
         return file_service.preflight_file_upload(
             current_user.id, payload.model_dump(exclude_none=True)
         )
-    except HTTPException:
+    except (HTTPException, DomainError):
         raise
     except Exception as exc:
         raise HTTPException(
@@ -139,7 +102,7 @@ def init_multipart_upload(
         return file_service.init_multipart_upload(
             current_user.id, payload.model_dump(exclude_none=True)
         )
-    except HTTPException:
+    except (HTTPException, DomainError):
         raise
     except Exception as exc:
         raise HTTPException(
@@ -166,7 +129,7 @@ def upload_multipart_chunk(
             chunk_index,
             FastAPIUploadAdapter(chunk),
         )
-    except HTTPException:
+    except (HTTPException, DomainError):
         raise
     except Exception as exc:
         raise HTTPException(
@@ -186,7 +149,7 @@ def complete_multipart_upload(
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
         )
-    except HTTPException:
+    except (HTTPException, DomainError):
         raise
     except Exception as exc:
         raise HTTPException(
@@ -214,12 +177,12 @@ def abort_multipart_upload(
 @router.get("/files/list")
 def list_files(
     current_user=Depends(get_current_user),
-    parent_id: int | None = Query(default=None),
-    page: int = Query(default=1),
-    page_size: int = Query(default=10),
-    name: str | None = Query(default=None),
-    sort_by: str = Query(default="created_at"),
-    order: str = Query(default="desc"),
+    parent_id: int | None = Query(default=None, ge=1),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    name: str | None = Query(default=None, max_length=255),
+    sort_by: str = Query(default="created_at", min_length=1, max_length=50),
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
 ):
     return file_service.get_files_and_folders(
         current_user.id, parent_id, page, page_size, name, sort_by, order
@@ -229,10 +192,10 @@ def list_files(
 @router.get("/files/search")
 async def search_files(
     current_user=Depends(get_current_user),
-    q: str = Query(default=""),
-    page: int = Query(default=1),
-    page_size: int = Query(default=10),
-    type: str = Query(default="fuzzy"),
+    q: str = Query(default="", max_length=255),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    type: str = Query(default="fuzzy", pattern="^(fuzzy|semantic)$"),
 ):
     if not q:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
@@ -243,27 +206,22 @@ async def search_files(
 def update_file(
     id: int, payload: FileUpdateRequest, current_user=Depends(get_current_user)
 ):
-    _ensure_file_access(current_user, id)
+    file_service.get_authorized_file(current_user.id, current_user.role, id)
     file_obj = file_service.update_file(id, payload.model_dump(exclude_none=True))
     return file_obj.to_dict()
 
 
 @router.delete("/files/{id}")
 def delete_file(id: int, current_user=Depends(get_current_user)):
-    _ensure_file_access(current_user, id)
+    file_service.get_authorized_file(current_user.id, current_user.role, id)
     file_service.delete_file(id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/files/{id}/download")
 def download_file(id: int, current_user=Depends(get_current_user)):
-    file_obj = _ensure_file_access(current_user, id)
+    file_obj = file_service.get_downloadable_file(current_user.id, current_user.role, id)
     abs_path = file_obj.get_abs_path()
-
-    if not os.path.exists(abs_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="File not found on server"
-        )
 
     return FileResponse(
         abs_path,
@@ -280,8 +238,6 @@ async def upload_avatar(
     avatar_base64: str | None = Form(default=None),
     current_user=Depends(get_current_user),
 ):
-    ensure_owner_or_admin(current_user, id)
-
     adapter = None
     if avatar is not None:
         if not avatar.filename:
@@ -307,7 +263,9 @@ async def upload_avatar(
             )
         adapter = Base64UploadAdapter(avatar_text)
 
-    result = file_service.upload_avatar(adapter, id)
+    result = file_service.upload_avatar_for_user(
+        current_user.id, current_user.role, id, adapter
+    )
     if result.get("avatar_url") and "avatar" not in result:
         result["avatar"] = result["avatar_url"]
     return result
@@ -317,25 +275,8 @@ async def upload_avatar(
 def batch_delete_files(
     payload: BatchDeleteRequest, current_user=Depends(get_current_user)
 ):
-    for item in payload.items:
-        if not item.is_folder:
-            _ensure_file_access(current_user, item.id)
-            continue
-
-        from app.services import folder_service
-
-        folder = folder_service.get_folder(item.id)
-        if (
-            folder
-            and current_user.role != "admin"
-            and folder.user_id != current_user.id
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
-            )
-
     items = [item.model_dump() for item in payload.items]
-    file_service.batch_delete_items(items)
+    file_service.batch_delete_items(current_user.id, current_user.role, items)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -343,7 +284,9 @@ def batch_delete_files(
 def retry_embedding(
     payload: RetryEmbeddingRequest, current_user=Depends(get_current_user)
 ):
-    file_obj = _ensure_file_access(current_user, payload.file_id)
+    file_obj = file_service.get_authorized_file(
+        current_user.id, current_user.role, payload.file_id
+    )
     file_service.retry_embedding(cast(int, file_obj.id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -362,5 +305,5 @@ async def process_status(current_user=Depends(get_current_user)):
 # 注意：此路由必须放在所有 /files/* 具体路由之后，避免 {id} 匹配到 "list"、"search" 等路径
 @router.get("/files/{id}")
 def get_file(id: int, current_user=Depends(get_current_user)):
-    file_obj = _ensure_file_access(current_user, id)
+    file_obj = file_service.get_authorized_file(current_user.id, current_user.role, id)
     return file_obj.to_dict()
