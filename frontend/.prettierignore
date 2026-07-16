@@ -1,0 +1,9 @@
+dist
+dist-ssr
+node_modules
+coverage
+auto-imports.d.ts
+components.d.ts
+env.d.ts
+package-lock.json
+*.lock

@@ -211,10 +211,6 @@ import { Message, Modal } from '@arco-design/web-vue'
 import {
   IconBulb,
   IconCode,
-  IconCopy,
-  IconExclamationCircleFill,
-  IconInfoCircle,
-  IconLock,
   IconMindMapping,
   IconRobot,
   IconSafe,
@@ -225,6 +221,7 @@ import {
 } from '@arco-design/web-vue/es/icon'
 import MainLayout from '../components/MainLayout.vue'
 import { createMcpToken, listMcpTokens, revokeMcpToken } from '@/api/auth'
+import { useAuthStore } from '@/stores/auth'
 
 interface McpTokenRecord {
   id: number
@@ -242,15 +239,13 @@ const generating = ref(false)
 const loadingTokens = ref(false)
 const mcpTokens = ref<McpTokenRecord[]>([])
 
-const username = computed(() => {
-  const userStr = localStorage.getItem('user')
-  return JSON.parse(userStr || '{}').username || '未知'
-})
+const auth = useAuthStore()
+const username = computed(() => auth.user.username || '未知')
 
-// MCP endpoint - same host as current page, port 5001
+// MCP endpoint - 同源主机，协议跟随当前页面（避免 HTTPS 站点生成 http 链接触发混合内容拦截）
 const mcpEndpoint = computed(() => {
-  const host = window.location.hostname
-  return `http://${host}:5001/mcp`
+  const {hostname, protocol} = window.location
+  return `${protocol}//${hostname}:5001/mcp`
 })
 
 const selectedClient = ref('opencode')
@@ -287,7 +282,7 @@ const clientConfigs = computed(() => {
 })
 
 const activeClient = computed(() => {
-  return clientConfigs.value.find(c => c.key === selectedClient.value) || clientConfigs.value[0]
+  return clientConfigs.value.find(c => c.key === selectedClient.value) || clientConfigs.value[0]!
 })
 
 const tools = reactive([

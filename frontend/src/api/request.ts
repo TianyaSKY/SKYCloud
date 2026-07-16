@@ -1,37 +1,35 @@
 import axios from 'axios'
 import {Message} from '@arco-design/web-vue'
 import router from '../router'
+import {useAuthStore} from '../stores/auth'
 
 const service = axios.create({
     baseURL: '/api',
     timeout: 10000
 })
 
-// 请求拦截器
+// 请求拦截器：从 store 注入 Authorization
 service.interceptors.request.use(
     (config) => {
-        const token = localStorage.getItem('token')
-        if (token) {
-            config.headers.Authorization = `Bearer ${token}`
+        const auth = useAuthStore()
+        if (auth.token) {
+            config.headers.Authorization = `Bearer ${auth.token}`
         }
         return config
     },
-    (error) => {
-        return Promise.reject(error)
-    }
+    (error) => Promise.reject(error)
 )
 
-// 响应拦截器
+// 响应拦截器：统一映射业务异常为 Arco Message；401 时清登录态并跳登录
 service.interceptors.response.use(
-    (response) => {
-        return response.data
-    },
+    (response) => response.data,
     (error) => {
         const status = error.response?.status
         const data = error.response?.data
         const msg = data?.message || data?.detail || '网络错误'
 
         if (status === 401) {
+            const auth = useAuthStore()
             if (msg === 'Invalid username or password') {
                 Message.error({
                     content: '用户名或密码错误',
@@ -50,7 +48,7 @@ service.interceptors.response.use(
                     position: 'top',
                     closable: true
                 })
-                localStorage.removeItem('token')
+                auth.logout()
                 router.push('/')
             }
         } else {

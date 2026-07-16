@@ -95,6 +95,9 @@ import SideBar from './SideBar.vue'
 import FileHeader from './FileHeader.vue'
 import ChatWidget from './ChatWidget.vue'
 import {getUserInfo, updatePassword, uploadAvatar} from '@/api/user'
+import {useAuthStore} from '@/stores/auth'
+import {logger} from '@/utils/logger'
+import {passwordChangeSchema} from '@/schemas/user'
 
 defineProps<{
   activeMenu: string
@@ -102,10 +105,11 @@ defineProps<{
 }>()
 
 const router = useRouter()
+const auth = useAuthStore()
 const userInfo = ref({
-  id: null,
-  username: '',
-  avatar: ''
+  id: auth.user.id,
+  username: auth.user.username,
+  avatar: auth.user.avatar || ''
 })
 
 // 头像相关
@@ -122,35 +126,31 @@ const passwordForm = reactive({
 })
 
 const initUserInfo = async () => {
-  const userStr = localStorage.getItem('user')
-  if (userStr) {
-    try {
-      const user = JSON.parse(userStr)
+  const userId = auth.user.id
+  if (!userId) return
+  // 先用本地缓存的 username/avatar 占位，避免头像加载前空白
+  userInfo.value = {
+    id: userId,
+    username: auth.user.username || '',
+    avatar: auth.user.avatar || ''
+  }
+  try {
+    const res: any = await getUserInfo(userId)
+    const data = res.data || res
+    if (data && data.username) {
       userInfo.value = {
-        id: user.id,
-        username: user.username || '',
-        avatar: user.avatar || ''
+        id: data.id,
+        username: data.username,
+        avatar: data.avatar || ''
       }
-
-      if (user.id) {
-        try {
-          const res: any = await getUserInfo(user.id)
-          const data = res.data || res
-          if (data && data.username) {
-            userInfo.value = {
-              id: data.id,
-              username: data.username,
-              avatar: data.avatar || ''
-            }
-            localStorage.setItem('user', JSON.stringify(data))
-          }
-        } catch (apiError) {
-          console.error('Failed to fetch user info', apiError)
-        }
-      }
-    } catch (e) {
-      console.error('Failed to parse user info', e)
+      auth.setUser({
+        id: data.id,
+        username: data.username,
+        avatar: data.avatar || ''
+      })
     }
+  } catch (apiError) {
+    logger.error('获取用户信息失败', apiError)
   }
 }
 
@@ -189,10 +189,7 @@ const handleUploadAvatar = () => {
       }
 
       userInfo.value.avatar = newAvatarUrl
-
-      const user = JSON.parse(localStorage.getItem('user') || '{}')
-      user.avatar = newAvatarUrl
-      localStorage.setItem('user', JSON.stringify(user))
+      auth.setUser({avatar: newAvatarUrl})
 
       handleCancelAvatar()
     } catch (error) {
@@ -210,12 +207,14 @@ const handleCancelPassword = () => {
 
 const handleUpdatePassword = async () => {
   if (!userInfo.value.id) return
-  if (!passwordForm.oldPassword || !passwordForm.newPassword || !passwordForm.confirmPassword) {
-    Message.warning('请填写完整信息')
-    return
-  }
-  if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-    Message.warning('两次输入的新密码不一致')
+  // Zod 校验：旧密码非空、新密码长度 >=6、两次新密码一致
+  const result = passwordChangeSchema.safeParse({
+    oldPassword: passwordForm.oldPassword,
+    newPassword: passwordForm.newPassword,
+    confirmPassword: passwordForm.confirmPassword
+  })
+  if (!result.success) {
+    Message.warning(result.error.issues[0]?.message ?? '请填写完整信息')
     return
   }
 
@@ -258,8 +257,7 @@ const handleMenuClick = (key: string) => {
 }
 
 const handleLogout = () => {
-  localStorage.removeItem('token')
-  localStorage.removeItem('user')
+  auth.logout()
   router.push('/')
 }
 </script>

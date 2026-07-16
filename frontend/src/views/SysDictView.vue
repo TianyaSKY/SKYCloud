@@ -73,6 +73,8 @@ import {IconPlus, IconRefresh} from '@arco-design/web-vue/es/icon'
 import {Message} from '@arco-design/web-vue'
 import type {SysDict} from '@/api/sys_dict';
 import {createSysDict, deleteSysDict, getSysDicts, updateSysDict} from '@/api/sys_dict'
+import {sysDictSchema} from '@/schemas/sys_dict'
+import {logger} from '@/utils/logger'
 import MainLayout from '../components/MainLayout.vue'
 
 const dicts = ref<SysDict[]>([])
@@ -92,7 +94,7 @@ const fetchDicts = async () => {
     const res: any = await getSysDicts()
     dicts.value = res
   } catch (error) {
-    console.error(error)
+    logger.error('获取系统字典失败', error)
   } finally {
     loading.value = false
   }
@@ -118,13 +120,15 @@ const handleDelete = async (id: number) => {
     Message.success('删除成功')
     fetchDicts()
   } catch (error) {
-    console.error(error)
+    logger.error('删除系统字典失败', error)
   }
 }
 
 const handleOk = async () => {
-  if (!form.key || !form.value) {
-    Message.warning('请填写完整信息')
+  // Zod 校验：键值非空 + 长度限制
+  const result = sysDictSchema.safeParse(form)
+  if (!result.success) {
+    Message.warning(result.error.issues[0]?.message ?? '请填写完整信息')
     return
   }
   try {
@@ -138,7 +142,7 @@ const handleOk = async () => {
     visible.value = false
     fetchDicts()
   } catch (error) {
-    console.error(error)
+    logger.error('保存系统字典失败', error)
   }
 }
 

@@ -4,7 +4,8 @@
 
 <script lang="ts" setup>
 import {computed} from 'vue';
-import {marked} from 'marked';
+import {marked, type Tokens} from 'marked';
+import DOMPurify from 'dompurify';
 
 const props = defineProps<{
   content: string;
@@ -19,13 +20,15 @@ marked.setOptions({
 const renderer = new marked.Renderer();
 const originalImage = renderer.image.bind(renderer);
 
-renderer.image = (token: any) => {
+renderer.image = (token: Tokens.Image) => {
   if (token.href && token.href.includes('/api/file')) {
     // 兼容纠错：
     // 情况 1: AI 可能写成 /api/file/download/1 -> /api/files/1/download
     // 情况 2: AI 可能写成 /api/files/download/1 -> /api/files/1/download
     // 我们的后端路由是 /api/files/{id}/download
-    
+
+    // 安全说明：img 标签无法附加 Authorization header，仍需通过 query 传 token。
+    // TODO(安全)：后续应改为后端签发短时下载 URL，避免 JWT 落入日志/Referer。
     let normalizedHref = token.href;
     const downloadMatch = normalizedHref.match(/\/download\/(\d+)/);
     if (downloadMatch) {
@@ -51,7 +54,10 @@ const renderedHtml = computed(() => {
   // 过滤 AI 特殊标记
   const cleanContent = props.content.replace(/<\|begin_of_box\|>|<\|end_of_box\|>|<\|thought\|>|<\/thought>/g, '');
 
-  return marked.parse(cleanContent, {renderer});
+  const rawHtml = marked.parse(cleanContent, {renderer}) as string;
+  // 防御 XSS：marked 默认不过滤 HTML，AI 输出与用户上传 markdown 均经过此组件渲染，
+  // 必须用 DOMPurify 净化后再 v-html，阻断存储型/反射型 XSS。
+  return DOMPurify.sanitize(rawHtml, {ADD_ATTR: ['target']});
 });
 </script>
 

@@ -75,8 +75,10 @@
 </template>
 
 <script lang="ts" setup>
-import {computed, ref, watch} from 'vue'
+import {ref, watch} from 'vue'
+import {storeToRefs} from 'pinia'
 import {IconBarChart, IconCommand, IconDashboard, IconDesktop, IconEmail, IconFile, IconSettings, IconShareAlt, IconMenuFold, IconMenuUnfold} from '@arco-design/web-vue/es/icon'
+import {useAuthStore} from '@/stores/auth'
 
 defineProps<{
   activeMenu: string
@@ -84,16 +86,14 @@ defineProps<{
 
 const emit = defineEmits(['menu-click'])
 
+const auth = useAuthStore()
+// 响应式订阅 store，登录态/角色变化会自动刷新菜单
+const {isAdmin} = storeToRefs(auth)
+
 const collapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
 
 watch(collapsed, (newVal) => {
   localStorage.setItem('sidebar_collapsed', String(newVal))
-})
-
-const isAdmin = computed(() => {
-  const userStr = localStorage.getItem('user')
-  const role = JSON.parse(userStr || '{}').role
-  return role == "admin";
 })
 
 const handleMenuClick = (key: string) => {

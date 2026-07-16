@@ -241,6 +241,8 @@ import {
   type WorkspaceInfo,
   type McpSetupResult,
 } from '@/api/workspace'
+import {useAuthStore} from '@/stores/auth'
+import {createWorkspaceSchema} from '@/schemas/workspace'
 
 const workspaces = ref<WorkspaceInfo[]>([])
 const loading = ref(false)
@@ -279,13 +281,14 @@ const fetchWorkspaces = async () => {
 }
 
 const handleCreate = async () => {
-  if (!createForm.name.trim()) {
-    Message.warning('请输入工作区名称')
+  const result = createWorkspaceSchema.safeParse({ name: createForm.name })
+  if (!result.success) {
+    Message.warning(result.error.issues[0]?.message ?? '请输入工作区名称')
     return
   }
   createLoading.value = true
   try {
-    await apiCreate({ name: createForm.name.trim() })
+    await apiCreate({ name: result.data.name })
     Message.success('工作区创建成功')
     showCreateModal.value = false
     createForm.name = ''
@@ -355,15 +358,32 @@ const handleDelete = async (ws: WorkspaceInfo) => {
   }
 }
 
+const auth = useAuthStore()
+
+// 工作区直连地址 origin 白名单：仅允许与当前页面同主机（任意端口/协议），
+// 避免后端返回的 access_url 被劫持后跳转到任意外部站点
+const isAllowedWsOrigin = (url: string): boolean => {
+  try {
+    return new URL(url).hostname === window.location.hostname
+  } catch {
+    return false
+  }
+}
+
 const openWorkspace = (ws: WorkspaceInfo) => {
   if (ws.access_url) {
-    // Open in new tab — the direct access URL provides the best experience
-    // (full WebSocket support, no CSP issues, native opencode UI)
+    if (!isAllowedWsOrigin(ws.access_url)) {
+      Message.error('工作区地址不在允许范围内，已阻止打开')
+      return
+    }
+    // 在新标签页打开直连地址，获得完整 WebSocket 与原生 opencode UI 体验
     window.open(ws.access_url, `workspace-${ws.id}`)
   } else {
-    // Fallback: open via reverse proxy in a modal iframe
+    // 兜底：通过反向代理在模态 iframe 中打开
     activeWorkspace.value = ws
-    const token = localStorage.getItem('token') || ''
+    // 安全说明：iframe 无法附加 header，临时通过 query 传 token；
+    // 后端 workspace proxy 接受 ?token= 并会下发 cookie，后续请求改走 cookie 鉴权。
+    const token = auth.token || ''
     iframeSrc.value = `/api/workspace/${ws.id}/proxy/?token=${encodeURIComponent(token)}`
     iframeVisible.value = true
   }

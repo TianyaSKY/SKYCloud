@@ -57,6 +57,7 @@ declare module 'vue' {
     ATypographyParagraph: typeof import('@arco-design/web-vue')['TypographyParagraph']
     AUpload: typeof import('@arco-design/web-vue')['Upload']
     ChatWidget: typeof import('./src/components/ChatWidget.vue')['default']
+    ErrorBoundary: typeof import('./src/components/ErrorBoundary.vue')['default']
     FileDragOverlay: typeof import('./src/components/FileDragOverlay.vue')['default']
     FileHeader: typeof import('./src/components/FileHeader.vue')['default']
     FileModals: typeof import('./src/components/FileModals.vue')['default']

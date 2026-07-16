@@ -5,6 +5,7 @@ import {
     uploadFile,
     uploadMultipartChunk
 } from '../api/file'
+import type { FilePreflightResponse } from '../api/file'
 
 type ProgressCallback = (percent: number) => void
 
@@ -91,7 +92,7 @@ async function uploadSmallFile(
         parent_id: parentId ?? undefined,
         mime_type: file.type || undefined,
         content_hash: contentHash
-    })
+    }) as unknown as FilePreflightResponse
     if (preflight.instant_upload) {
         onProgress?.(100)
         return {instantUpload: true}

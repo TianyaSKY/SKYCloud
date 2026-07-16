@@ -1,0 +1,20 @@
+import {z} from 'zod'
+
+export const loginSchema = z.object({
+    username: z.string().min(1, '请输入用户名').max(64, '用户名过长'),
+    password: z.string().min(1, '请输入密码').max(128, '密码过长'),
+})
+
+export const registerSchema = z
+    .object({
+        username: z.string().min(1, '请输入用户名').max(64, '用户名过长'),
+        password: z.string().min(6, '密码至少 6 位').max(128, '密码过长'),
+        confirmPassword: z.string().min(1, '请再次输入密码'),
+    })
+    .refine((d) => d.password === d.confirmPassword, {
+        message: '两次输入的密码不一致',
+        path: ['confirmPassword'],
+    })
+
+export type LoginInput = z.infer<typeof loginSchema>
+export type RegisterInput = z.infer<typeof registerSchema>

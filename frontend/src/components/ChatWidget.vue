@@ -97,6 +97,8 @@ import {
   IconUser
 } from '@arco-design/web-vue/es/icon';
 import MarkdownRenderer from './MarkdownRenderer.vue';
+import {useAuthStore} from '@/stores/auth';
+import {logger} from '@/utils/logger';
 
 defineProps<{
   show: boolean
@@ -107,6 +109,9 @@ const inputValue = ref('');
 const loading = ref(false);
 const messages = ref<ChatMessage[]>([]);
 const messageContainer = ref<HTMLElement | null>(null);
+const auth = useAuthStore();
+// SSE 流的取消控制器：发起新请求或卸载组件时 abort，避免对已卸载组件写状态
+let abortController: AbortController | null = null;
 
 // 拖拽相关
 const position = ref({x: window.innerWidth - 86, y: window.innerHeight - 86});
@@ -207,23 +212,32 @@ const handleSend = async () => {
         .slice(0, -1)
         .map(m => ({role: m.role, content: m.content}));
 
-    const token = localStorage.getItem('token');
+    // 取消上一个未完成的流，避免并发写同一条 AI 消息
+    abortController?.abort();
+    abortController = new AbortController();
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': token ? `Bearer ${token}` : ''
+        'Authorization': auth.token ? `Bearer ${auth.token}` : ''
       },
       body: JSON.stringify({query, history}),
+      signal: abortController.signal,
     });
 
     if (!response.body) throw new Error('No response body');
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const updateAssistantMessage = (patch: Partial<ChatMessage>) => {
+    const message = messages.value[aiIndex];
+    if (message) {
+      messages.value[aiIndex] = {...message, ...patch};
+    }
+  };
 
-    messages.value[aiIndex] = {...messages.value[aiIndex], status: '', loading: false};
+    updateAssistantMessage({status: '', loading: false});
 
     while (true) {
       const {value, done} = await reader.read();
@@ -239,37 +253,41 @@ const handleSend = async () => {
           try {
             const data = JSON.parse(line.slice(6));
             if (data.type === 'token') {
-              messages.value[aiIndex] = {
-                ...messages.value[aiIndex],
-                content: messages.value[aiIndex].content + data.content,
+              const message = messages.value[aiIndex];
+              if (!message) continue;
+              updateAssistantMessage({
+                content: message.content + data.content,
                 status: '',
                 loading: false
-              };
+              });
               void scrollToBottom();
             } else if (data.type === 'keywords') {
-              messages.value[aiIndex] = {
-                ...messages.value[aiIndex],
-                keywords: cleanSpecialTokens(data.content)
-              };
+              updateAssistantMessage({keywords: cleanSpecialTokens(data.content)});
             } else if (data.type === 'status') {
-              messages.value[aiIndex] = {
-                ...messages.value[aiIndex],
-                status: data.content
-              };
+              updateAssistantMessage({status: data.content});
             }
           } catch (e) {
-            console.error('Error parsing SSE data', e);
+            logger.error('解析 SSE 数据失败', e);
           }
         }
       }
     }
   } catch (error) {
-    console.error('Chat error:', error);
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      // 用户卸载组件或发起新请求，静默退出，不更新 UI
+      return;
+    }
+    logger.error('聊天请求失败', error);
     Message.error('发送失败，请稍后重试');
-    messages.value[aiIndex] = {...messages.value[aiIndex], content: '抱歉，发生了错误。'};
+    if (messages.value[aiIndex]) {
+      messages.value[aiIndex] = {...messages.value[aiIndex], content: '抱歉，发生了错误。'};
+    }
   } finally {
     loading.value = false;
-    messages.value[aiIndex] = {...messages.value[aiIndex], status: '', loading: false};
+    if (messages.value[aiIndex]) {
+      messages.value[aiIndex] = {...messages.value[aiIndex], status: '', loading: false};
+    }
+    abortController = null;
   }
 };
 
@@ -283,6 +301,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  abortController?.abort();
   window.removeEventListener('resize', handleResize);
 });
 </script>

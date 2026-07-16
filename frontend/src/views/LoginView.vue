@@ -4,8 +4,11 @@ import {Message} from '@arco-design/web-vue'
 import {IconLock, IconUser} from '@arco-design/web-vue/es/icon'
 import {useRouter} from 'vue-router'
 import {login, register} from '@/api/auth'
+import {useAuthStore} from '@/stores/auth'
+import {loginSchema, registerSchema} from '@/schemas/auth'
 
 const router = useRouter()
+const auth = useAuthStore()
 const isLogin = ref(true)
 const loading = ref(false)
 
@@ -25,8 +28,15 @@ const switchMode = () => {
 const handleSubmit = async ({values, errors}: { values: any, errors: any }) => {
   if (errors) return
 
-  if (!isLogin.value && form.password !== form.confirmPassword) {
-    Message.error('两次输入的密码不一致')
+  // Zod 整体校验：登录只校验非空/长度；注册额外校验密码长度与二次一致
+  const schema = isLogin.value ? loginSchema : registerSchema
+  const result = schema.safeParse({
+    username: values.username,
+    password: values.password,
+    confirmPassword: values.confirmPassword
+  })
+  if (!result.success) {
+    Message.error(result.error.issues[0]?.message ?? '表单校验失败')
     return
   }
 
@@ -37,14 +47,11 @@ const handleSubmit = async ({values, errors}: { values: any, errors: any }) => {
         username: values.username,
         password: values.password
       })
-      localStorage.setItem('token', res.token)
-      // 根据后端返回的字段存储用户信息
-      const userInfo = {
+      auth.setAuth(res.token, {
         id: res.user_id,
         role: res.role,
-        username: values.username // 登录时输入的用户名先存起来
-      }
-      localStorage.setItem('user', JSON.stringify(userInfo))
+        username: values.username  // 登录时输入的用户名先存起来，后续 getUserInfo 会刷新
+      })
       Message.success('登录成功')
       await router.push('/home')
     } else {
