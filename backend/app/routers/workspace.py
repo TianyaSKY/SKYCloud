@@ -20,7 +20,7 @@ router = APIRouter(tags=["workspace"])
 
 
 # ---------------------------------------------------------------------------
-# CRUD endpoints
+# 工作区接口
 # ---------------------------------------------------------------------------
 
 
@@ -123,10 +123,10 @@ async def setup_mcp_connection(
 
 
 # ---------------------------------------------------------------------------
-# Reverse proxy helpers
+# 反向代理辅助函数
 # ---------------------------------------------------------------------------
 
-# Shared httpx client with longer timeout for AI responses
+# 复用 httpx 客户端，并为 AI 响应保留较长超时。
 _http_client: httpx.AsyncClient | None = None
 
 
@@ -153,25 +153,22 @@ async def _resolve_proxy_user(request: Request) -> User:
        subsequent resource loads inside the iframe)
     3. Authorization header (standard Bearer token)
     """
-    # 1. Query parameter
+    # 依次从查询参数、Cookie、标准鉴权依赖和请求头中提取凭据。
     effective_token = request.query_params.get("token")
 
-    # 2. Cookie fallback
     if not effective_token:
         effective_token = request.cookies.get(PROXY_COOKIE_NAME)
 
-    # 3. Use the standard get_current_user dependency logic
     if effective_token:
         from fastapi.security import HTTPAuthorizationCredentials
         creds = HTTPAuthorizationCredentials(scheme="bearer", credentials=effective_token)
         return await get_current_user(credentials=creds, token=None)
 
-    # 4. Try Authorization header
     return await get_current_user(credentials=None, token=None)
 
 
 # ---------------------------------------------------------------------------
-# Reverse proxy — HTTP
+# HTTP 反向代理
 # ---------------------------------------------------------------------------
 
 
@@ -201,7 +198,7 @@ async def _proxy_http_inner(
     path: str,
     request: Request,
 ):
-    # Authenticate via token/cookie/header
+    # 支持通过查询参数、Cookie 或请求头鉴权。
     try:
         current_user = await _resolve_proxy_user(request)
     except HTTPException:
@@ -216,18 +213,18 @@ async def _proxy_http_inner(
     container_url = workspace_service.get_container_url(ws)
     target_url = f"{container_url}/{path}"
 
-    # Forward query params but strip our auth token
+    # 转发查询参数时移除仅供代理鉴权使用的 Token。
     query_params = dict(request.query_params)
     query_params.pop("token", None)
     if query_params:
         qs = "&".join(f"{k}={v}" for k, v in query_params.items())
         target_url += f"?{qs}"
 
-    # Build clean headers for upstream — only forward essentials
+    # 仅向上游转发必要请求头。
     headers = {
         "host": container_url.split("//")[1],
     }
-    # Forward content-type for POST/PUT
+    # POST/PUT 请求需要保留 Content-Type。
     ct = request.headers.get("content-type")
     if ct:
         headers["content-type"] = ct
@@ -250,7 +247,7 @@ async def _proxy_http_inner(
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="工作区容器响应超时")
 
-    # Build response headers — skip hop-by-hop and restrictive security headers
+    # 过滤逐跳响应头和会阻断代理页面的安全响应头。
     resp_headers = {}
     skip = {
         "transfer-encoding", "connection", "content-encoding", "content-length",
@@ -310,7 +307,7 @@ async def _proxy_http_inner(
 
 
 # ---------------------------------------------------------------------------
-# Reverse proxy — WebSocket
+# WebSocket 反向代理
 # ---------------------------------------------------------------------------
 
 @router.websocket("/workspace/{workspace_id}/proxy/{path:path}")
@@ -324,7 +321,7 @@ async def proxy_websocket(
     Auth is validated via the JWT token query parameter or cookie since
     browsers cannot send custom headers on WebSocket upgrade requests.
     """
-    # Manual auth for WebSocket (can't use Depends)
+    # WebSocket 无法使用 Depends，需手动鉴权。
     token = websocket.query_params.get("token") or websocket.cookies.get(PROXY_COOKIE_NAME)
     if not token:
         await websocket.close(code=4001, reason="Missing token")
@@ -347,7 +344,7 @@ async def proxy_websocket(
     container_url = workspace_service.get_container_url(ws)
     container_ws_url = container_url.replace("http://", "ws://")
     target = f"{container_ws_url}/{path}"
-    # Strip auth token from forwarded query
+    # 不将鉴权 Token 转发给上游。
     query_params = dict(websocket.query_params)
     query_params.pop("token", None)
     if query_params:

@@ -11,7 +11,7 @@ const props = defineProps<{
   content: string;
 }>();
 
-// 配置 marked
+// 配置 Markdown 渲染器
 marked.setOptions({
   breaks: true,      // 支持回车换行
   gfm: true,         // 启用 GitHub Flavored Markdown
@@ -22,10 +22,7 @@ const originalImage = renderer.image.bind(renderer);
 
 renderer.image = (token: Tokens.Image) => {
   if (token.href && token.href.includes('/api/file')) {
-    // 兼容纠错：
-    // 情况 1: AI 可能写成 /api/file/download/1 -> /api/files/1/download
-    // 情况 2: AI 可能写成 /api/files/download/1 -> /api/files/1/download
-    // 我们的后端路由是 /api/files/{id}/download
+    // 兼容 AI 可能生成的两种历史下载路径，统一为后端实际路由。
 
     // 安全说明：img 标签无法附加 Authorization header，仍需通过 query 传 token。
     // TODO(安全)：后续应改为后端签发短时下载 URL，避免 JWT 落入日志/Referer。
@@ -35,7 +32,7 @@ renderer.image = (token: Tokens.Image) => {
       const fileId = downloadMatch[1];
       normalizedHref = `/api/files/${fileId}/download`;
     } else if (!normalizedHref.includes('/api/files/')) {
-       // 转换 /api/file/ 为 /api/files/
+       // 统一单数路径为复数路径。
        normalizedHref = normalizedHref.replace('/api/file/', '/api/files/');
     }
 
@@ -51,7 +48,7 @@ renderer.image = (token: Tokens.Image) => {
 const renderedHtml = computed(() => {
   if (!props.content) return '';
 
-  // 过滤 AI 特殊标记
+  // 过滤 AI 特殊标记。
   const cleanContent = props.content.replace(/<\|begin_of_box\|>|<\|end_of_box\|>|<\|thought\|>|<\/thought>/g, '');
 
   const rawHtml = marked.parse(cleanContent, {renderer}) as string;
@@ -68,7 +65,7 @@ const renderedHtml = computed(() => {
   word-break: break-word;
 }
 
-/* 基础 Markdown 样式 */
+/* Markdown 基础样式 */
 .markdown-body :deep(p) {
   margin: 0 0 8px 0;
 }
@@ -77,7 +74,7 @@ const renderedHtml = computed(() => {
   margin-bottom: 0;
 }
 
-/* 图片样式优化 */
+/* Markdown 图片样式 */
 .markdown-body :deep(img) {
   max-width: 100%;
   height: auto;

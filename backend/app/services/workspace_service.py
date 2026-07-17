@@ -16,16 +16,16 @@ from app.services.workspace_types import CreateWorkspaceCommand
 
 
 # ---------------------------------------------------------------------------
-# Configuration
+# 配置
 # ---------------------------------------------------------------------------
 
 OPENCODE_IMAGE = os.getenv("OPENCODE_IMAGE", "skycloud/opencode-workspace:latest")
 SKYCLOUD_DOCKER_NETWORK = os.getenv("SKYCLOUD_DOCKER_NETWORK", "skycloud_skycloud-network")
-# Resource limits
+# 资源限制
 WORKSPACE_MEM_LIMIT = os.getenv("WORKSPACE_MEM_LIMIT", "1g")
 WORKSPACE_CPU_QUOTA = int(os.getenv("WORKSPACE_CPU_QUOTA", "100000"))  # 1 core
 WORKSPACE_CPU_PERIOD = int(os.getenv("WORKSPACE_CPU_PERIOD", "100000"))
-# Max workspaces per user
+# 每位用户可创建的工作区上限
 MAX_WORKSPACES_PER_USER = int(os.getenv("MAX_WORKSPACES_PER_USER", "3"))
 
 
@@ -50,7 +50,7 @@ def list_workspaces(user_id: int) -> list[dict]:
         .order_by(Workspace.created_at.desc())
         .all()
     )
-    # Sync status from Docker for running containers
+    # 以 Docker 实际状态同步运行中容器的数据库状态。
     result = []
     for ws in rows:
         _sync_status(ws)
@@ -74,7 +74,7 @@ def get_workspace(workspace_id: int, user_id: int) -> Workspace | None:
 def create_workspace(command: CreateWorkspaceCommand) -> Workspace:
     """Create a new workspace: persist DB row, then spin up Docker container."""
     user_id = command.user_id
-    # Check limit
+    # 先校验工作区数量上限。
     count = (
         db.session.query(Workspace)
         .filter(Workspace.user_id == user_id)
@@ -180,11 +180,11 @@ def get_container_url(ws: Workspace) -> str:
     Outside Docker (local dev on Windows) we use localhost + mapped port
     because WSL2 container IPs are not routable from the Windows host.
     """
-    # Detect if we are inside a Docker container
+    # 判断当前服务是否运行在 Docker 容器中。
     in_docker = os.path.exists("/.dockerenv")
 
     if in_docker:
-        # Inside Docker network, containers communicate by name
+        # Docker 网络内的容器通过容器名互相访问。
         container_name = _container_name(ws)
         return f"http://{container_name}:3000"
 
@@ -201,7 +201,7 @@ def get_container_url(ws: Workspace) -> str:
     except Exception:
         pass
 
-    # Fallback: try container name anyway
+    # 无法获取端口映射时，回退到容器名地址。
     container_name = _container_name(ws)
     return f"http://{container_name}:3000"
 
@@ -229,7 +229,7 @@ def _get_access_url(ws: Workspace) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# 内部辅助函数
 # ---------------------------------------------------------------------------
 
 
@@ -242,7 +242,7 @@ def _start_container(ws: Workspace) -> "docker.models.containers.Container":
     client = _get_docker_client()
     name = _container_name(ws)
 
-    # Remove existing container with the same name (if any)
+    # 同名容器可能是残留实例，启动前先清理。
     try:
         old = client.containers.get(name)
         old.remove(force=True)
@@ -256,15 +256,15 @@ def _start_container(ws: Workspace) -> "docker.models.containers.Container":
         environment={
             "SKYCLOUD_WORKSPACE_ID": str(ws.id),
         },
-        # Resource limits
+        # 容器资源限制。
         mem_limit=WORKSPACE_MEM_LIMIT,
         cpu_quota=WORKSPACE_CPU_QUOTA,
         cpu_period=WORKSPACE_CPU_PERIOD,
         # Networking — join the SKYCloud network so the API container can reach it
         network=SKYCLOUD_DOCKER_NETWORK,
-        # Restart policy
+        # 容器重启策略。
         restart_policy={"Name": "unless-stopped"},
-        # Always map port so frontend can access directly via localhost
+        # 始终映射端口，供前端通过 localhost 直连。
         ports={"3000/tcp": None},  # None = Docker assigns a random host port
     )
 
@@ -298,7 +298,7 @@ def _sync_status(ws: Workspace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Restart
+# 重启工作区
 # ---------------------------------------------------------------------------
 
 
@@ -333,17 +333,15 @@ def restart_workspace(workspace_id: int, user_id: int) -> Workspace:
 
 
 # ---------------------------------------------------------------------------
-# Auto-connect MCP
+# 自动连接 MCP
 # ---------------------------------------------------------------------------
 
-# MCP server port visible from inside the workspace container.
-# In Docker, the MCP container name is skycloud-backend-mcp and it listens
-# on port 5001. The workspace container connects via host.docker.internal
-# which resolves to the Docker host — matching the port mapping in
-# docker-compose.yml.
+# 工作区容器内可访问的 MCP 服务端口。Docker 环境下，MCP 容器名为
+# skycloud-backend-mcp，监听 5001 端口；工作区容器通过
+# host.docker.internal 连接 Docker 主机，与 docker-compose.yml 的端口映射一致。
 _MCP_EXTERNAL_PORT = int(os.getenv("MCP_PORT", "5001"))
 
-# Config file path inside the opencode workspace container
+# OpenCode 工作区容器内的配置文件路径
 _OPENCODE_CONFIG_PATH = "/root/.config/opencode/opencode.json"
 
 
@@ -363,7 +361,7 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> dict:
     if ws.status != "running":
         raise ValueError("工作区必须处于运行状态才能配置 MCP 连接")
 
-    # 1) Generate a long-lived MCP token for this user
+    # 生成该用户的长期 MCP Token。
     from datetime import datetime, timezone
     token_expires_at_jwt = datetime.now(timezone.utc) + timedelta(days=365)
     db_expires_at = beijing_now() + timedelta(days=365)
@@ -372,14 +370,13 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> dict:
     if not mcp_token:
         raise ValueError("生成 MCP Token 失败")
 
-    # Persist to DB
+    # 持久化 Token 记录。
     token_record = mcp_token_service.create_mcp_token(
         user_id, mcp_token, db_expires_at, f"Workspace-{ws.name}-AutoMCP"
     )
 
-    # 2) Build opencode.json config
-    # Determine the MCP URL that the workspace container should use.
-    # Inside Docker, use the MCP container name directly on the Docker network.
+    # 构建 opencode.json，并确定工作区容器使用的 MCP 地址。
+    # Docker 网络内直接通过 MCP 容器名访问。
     in_docker = os.path.exists("/.dockerenv")
     if in_docker:
         mcp_url = f"http://skycloud-backend-mcp:{_MCP_EXTERNAL_PORT}/mcp"
@@ -403,26 +400,25 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> dict:
 
     config_json = json.dumps(opencode_config, indent=2, ensure_ascii=False)
 
-    # 3) Write config into the running container via docker exec
+    # 通过 docker exec 将配置写入运行中的容器。
     try:
         client = _get_docker_client()
         container = client.containers.get(ws.container_id)
 
-        # Ensure the config directory exists
+        # 确保配置目录存在。
         container.exec_run(
             cmd=["mkdir", "-p", "/root/.config/opencode"],
             user="root",
         )
 
-        # Write the config file — use sh -c with heredoc-style echo
-        # Escape single quotes in the JSON just in case
+        # 通过 sh -c 写入配置，并转义 JSON 中的单引号。
         escaped_json = config_json.replace("'", "'\\''")
         container.exec_run(
             cmd=["sh", "-c", f"echo '{escaped_json}' > {_OPENCODE_CONFIG_PATH}"],
             user="root",
         )
 
-        # Verify the file was written
+        # 验证配置文件是否成功写入。
         exit_code, output = container.exec_run(
             cmd=["cat", _OPENCODE_CONFIG_PATH],
             user="root",

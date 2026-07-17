@@ -112,12 +112,12 @@ const userInfo = ref({
   avatar: auth.user.avatar || ''
 })
 
-// 头像相关
+// 头像状态
 const showAvatarModal = ref(false)
 const imgSrc = ref('')
 const cropper = ref()
 
-// 密码相关
+// 修改密码状态
 const showPasswordModal = ref(false)
 const passwordForm = reactive({
   oldPassword: '',
@@ -180,8 +180,7 @@ const handleUploadAvatar = () => {
       const data = res.data || res
       Message.success('头像更新成功')
 
-      // 更新本地状态
-      // 强制添加时间戳以刷新图片缓存
+      // 追加时间戳以刷新图片缓存后，再更新本地状态。
       const url = data.avatar || data.url
       let newAvatarUrl = url
       if (url && typeof url === 'string' && !url.startsWith('data:')) {

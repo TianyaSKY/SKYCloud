@@ -248,24 +248,24 @@ const workspaces = ref<WorkspaceInfo[]>([])
 const loading = ref(false)
 const maxWorkspaces = 3
 
-// Create modal
+// 新建工作区弹窗状态
 const showCreateModal = ref(false)
 const createLoading = ref(false)
 const createForm = reactive({ name: '' })
 
-// Action loading state per workspace
+// 按工作区维护操作加载状态
 const actionLoading = ref<Record<number, string>>({})
 
-// iframe
+// 内嵌工作区状态
 const iframeVisible = ref(false)
 const activeWorkspace = ref<WorkspaceInfo | null>(null)
 const iframeSrc = ref('')
 
-// MCP result modal
+// MCP 配置结果弹窗状态
 const mcpResultVisible = ref(false)
 const mcpResult = ref<McpSetupResult | null>(null)
 
-// Auto-refresh timer
+// 自动刷新定时器
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 const fetchWorkspaces = async () => {
@@ -274,7 +274,7 @@ const fetchWorkspaces = async () => {
     const res: any = await apiList()
     workspaces.value = res.workspaces || []
   } catch {
-    // error handled by interceptor
+    // 请求拦截器已统一提示错误。
   } finally {
     loading.value = false
   }
@@ -294,7 +294,7 @@ const handleCreate = async () => {
     createForm.name = ''
     await fetchWorkspaces()
   } catch {
-    // handled
+    // 请求拦截器已统一提示错误。
   } finally {
     createLoading.value = false
   }
@@ -341,7 +341,7 @@ const handleSetupMcp = async (ws: WorkspaceInfo) => {
     mcpResultVisible.value = true
     Message.success('MCP 连接配置成功')
   } catch {
-    // handled by interceptor
+    // 请求拦截器已统一提示错误。
   } finally {
     delete actionLoading.value[ws.id]
   }
@@ -422,7 +422,7 @@ const formatTime = (iso: string | null) => {
 
 onMounted(() => {
   fetchWorkspaces()
-  // Auto-refresh every 15 seconds
+  // 每 15 秒刷新一次工作区状态。
   refreshTimer = setInterval(fetchWorkspaces, 15000)
 })
 
@@ -543,7 +543,7 @@ onUnmounted(() => {
   border-top: 1px solid var(--color-border-1);
 }
 
-/* iframe full-screen modal */
+/* 内嵌工作区全屏弹窗 */
 .workspace-modal :deep(.arco-modal-body) {
   padding: 0 !important;
   height: calc(100vh - 48px);
@@ -555,7 +555,7 @@ onUnmounted(() => {
   border: none;
 }
 
-/* MCP result modal */
+/* MCP 配置结果弹窗 */
 .mcp-result {
   text-align: center;
   padding: 8px 0;

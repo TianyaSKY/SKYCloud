@@ -215,7 +215,7 @@ import {
   type DailyStat,
 } from '@/api/token_usage'
 
-// ---- 累计统计 ----
+// 累计统计
 const stats = reactive<TokenStats>({
   user_id: 0,
   total_prompt_tokens: 0,
@@ -233,7 +233,7 @@ const fetchStats = async () => {
   }
 }
 
-// ---- 每日趋势 ----
+// 每日趋势
 const dailyDays = ref(30)
 const dailyStats = ref<DailyStat[]>([])
 const loadingDaily = ref(false)
@@ -261,7 +261,7 @@ const barHeight = (tokens: number) => {
   return Math.max(Math.round((tokens / max) * maxH), 2)
 }
 
-// ---- 使用明细 ----
+// 使用明细
 const logs = ref<TokenUsageLog[]>([])
 const loadingLogs = ref(false)
 const logFilter = reactive<{
@@ -331,7 +331,7 @@ const handleDateChange = (values: any) => {
   fetchLogs()
 }
 
-// ---- 工具函数 ----
+// 工具函数
 const formatNumber = (n: number) => {
   if (n == null) return '0'
   return n.toLocaleString()
@@ -403,7 +403,7 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
-/* ---- 统计卡片 ---- */
+/* 统计卡片 */
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -463,7 +463,7 @@ onMounted(() => {
   font-weight: 500;
 }
 
-/* ---- 每日趋势图 ---- */
+/* 每日趋势图 */
 .chart-card {
   background: var(--color-fill-1);
   border: 1px solid var(--color-border-1);
@@ -556,7 +556,7 @@ onMounted(() => {
   color: var(--color-text-4);
 }
 
-/* ---- 使用明细 ---- */
+/* 使用明细 */
 .logs-card {
   background: var(--color-fill-1);
   border: 1px solid var(--color-border-1);

@@ -113,7 +113,7 @@ const auth = useAuthStore();
 // SSE 流的取消控制器：发起新请求或卸载组件时 abort，避免对已卸载组件写状态
 let abortController: AbortController | null = null;
 
-// 拖拽相关
+// 拖拽状态
 const position = ref({x: window.innerWidth - 86, y: window.innerHeight - 86});
 const isDragging = ref(false);
 const dragOffset = ref({x: 0, y: 0});
@@ -127,7 +127,7 @@ interface ChatMessage {
   loading?: boolean;
 }
 
-// 过滤 AI 特殊标记的工具函数
+// 过滤 AI 特殊标记
 const cleanSpecialTokens = (text: string) => {
   if (!text) return '';
   return text.replace(/<\|begin_of_box\|>|<\|end_of_box\|>|<\|thought\|>|<\/thought>/g, '').trim();
@@ -310,7 +310,7 @@ onUnmounted(() => {
 .chat-widget {
   position: fixed;
   z-index: 1000;
-  /* 移除全局 user-select: none */
+  /* 允许组件内容被选择 */
 }
 
 .chat-trigger {
@@ -325,7 +325,7 @@ onUnmounted(() => {
   cursor: move;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   transition: transform 0.2s, box-shadow 0.2s;
-  /* 仅在悬浮球上禁止选择，防止拖拽时误选 */
+  /* 仅在悬浮球上禁止选择，避免拖拽时误选 */
   user-select: none;
 }
 
@@ -353,7 +353,7 @@ onUnmounted(() => {
   overflow: hidden;
   border: 1px solid var(--color-border);
   cursor: default;
-  /* 显式允许选择 */
+  /* 文本内容可选择 */
   user-select: text;
 }
 
@@ -364,7 +364,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  /* 头部通常不需要选择文字 */
+  /* 头部不需要选择文字 */
   user-select: none;
 }
 
