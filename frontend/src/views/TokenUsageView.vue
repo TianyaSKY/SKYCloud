@@ -223,7 +223,7 @@ import { maxDailyTokens, barHeight, actionColor } from '@/hooks/useUsageCharts'
 import { formatDate, formatNumber } from '@/utils/format'
 import { logger } from '@/utils/logger'
 
-// ---- 累计统计 ----
+// 累计统计
 const stats = reactive<TokenStats>({
   user_id: 0,
   total_prompt_tokens: 0,
@@ -245,7 +245,7 @@ const fetchStats = async () => {
   }
 }
 
-// ---- 每日趋势 ----
+// 每日趋势
 const dailyDays = ref(30)
 const dailyStats = ref<DailyStat[]>([])
 const loadingDaily = ref(false)
@@ -268,7 +268,7 @@ const dailyMax = computed(() =>
   maxDailyTokens(dailyStats.value.map(d => ({ tokens: d.total_tokens }))),
 )
 
-// ---- 使用明细 ----
+// 使用明细
 const logs = ref<TokenUsageLog[]>([])
 const loadingLogs = ref(false)
 const logFilter = reactive<{
@@ -383,7 +383,7 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
-/* ---- 统计卡片 ---- */
+/* 统计卡片 */
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -443,7 +443,7 @@ onMounted(() => {
   font-weight: 500;
 }
 
-/* ---- 每日趋势图 ---- */
+/* 每日趋势图 */
 .chart-card {
   background: var(--color-fill-1);
   border: 1px solid var(--color-border-1);
@@ -536,7 +536,7 @@ onMounted(() => {
   color: var(--color-text-4);
 }
 
-/* ---- 使用明细 ---- */
+/* 使用明细 */
 .logs-card {
   background: var(--color-fill-1);
   border: 1px solid var(--color-border-1);

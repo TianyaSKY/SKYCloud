@@ -23,10 +23,7 @@ const buildRenderer = () => {
 
   renderer.image = (token: Tokens.Image) => {
     if (token.href && token.href.includes('/api/file')) {
-      // 兼容纠错：
-      // 情况 1: AI 可能写成 /api/file/download/1 -> /api/files/1/download
-      // 情况 2: AI 可能写成 /api/files/download/1 -> /api/files/1/download
-      // 我们的后端路由是 /api/files/{id}/download
+      // 兼容 AI 可能生成的两种历史下载路径，统一为后端实际路由。
 
       // 安全说明：img 标签无法附加 Authorization header，仍需通过 query 传 token。
       // TODO(安全)：后续应改为后端签发短时下载 URL，避免 JWT 落入日志/Referer。
@@ -36,7 +33,7 @@ const buildRenderer = () => {
         const fileId = downloadMatch[1];
         normalizedHref = `/api/files/${fileId}/download`;
       } else if (!normalizedHref.includes('/api/files/')) {
-        // 转换 /api/file/ 为 /api/files/
+        // 统一单数路径为复数路径。
         normalizedHref = normalizedHref.replace('/api/file/', '/api/files/');
       }
 
@@ -55,7 +52,7 @@ const buildRenderer = () => {
 const renderedHtml = computed(() => {
   if (!props.content) return '';
 
-  // 过滤 AI 特殊标记
+  // 过滤 AI 特殊标记。
   const cleanContent = props.content.replace(/<\|begin_of_box\|>|<\|end_of_box\|>|<\|thought\|>|<\/thought>/g, '');
 
   let rawHtml: string;
