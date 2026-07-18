@@ -60,6 +60,34 @@ After startup, visit `http://localhost` (default port 80). The default administr
 
 > For non-demo environments, change the password immediately after the first login. If `SECRET_KEY` is not configured, an insecure default value is used. Always configure it in production.
 
+### Stopping services (including OpenCode workspaces)
+
+OpenCode workspaces are created dynamically with `docker run` by the backend and are **not** listed in `docker-compose.yml`. Running `docker compose down` alone will not stop them.
+
+Use the repo scripts to tear everything down together:
+
+```powershell
+# Windows PowerShell
+.\scripts\compose-down.ps1
+# Also remove compose volumes
+.\scripts\compose-down.ps1 -v
+```
+
+```bash
+# Linux / macOS / Git Bash
+chmod +x scripts/compose-down.sh   # first time only
+./scripts/compose-down.sh
+./scripts/compose-down.sh -v
+```
+
+One-off manual cleanup:
+
+```bash
+docker rm -f $(docker ps -aq --filter label=skycloud.component=workspace) 2>/dev/null
+docker rm -f $(docker ps -aq --filter name=skycloud-workspace-) 2>/dev/null
+docker compose down
+```
+
 ## RAG Retrieval Augmentation
 
 ![RAG Pipeline](images/rag_pipeline.png)

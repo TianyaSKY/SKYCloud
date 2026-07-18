@@ -60,6 +60,34 @@ docker-compose up -d --build
 
 > 非演示环境请首次登录后立即修改密码。`SECRET_KEY` 未设置时会使用不安全的默认值，生产环境务必配置。
 
+### 停止服务（含 OpenCode 工作区）
+
+OpenCode 工作区是后端动态 `docker run` 创建的，**不在** `docker-compose.yml` 中，单独执行 `docker compose down` 不会停掉它们。
+
+请使用仓库脚本一并清理：
+
+```powershell
+# Windows PowerShell
+.\scripts\compose-down.ps1
+# 如需同时删除数据卷
+.\scripts\compose-down.ps1 -v
+```
+
+```bash
+# Linux / macOS / Git Bash
+chmod +x scripts/compose-down.sh   # 仅首次
+./scripts/compose-down.sh
+./scripts/compose-down.sh -v
+```
+
+临时手动清理也可：
+
+```bash
+docker rm -f $(docker ps -aq --filter label=skycloud.component=workspace) 2>/dev/null
+docker rm -f $(docker ps -aq --filter name=skycloud-workspace-) 2>/dev/null
+docker compose down
+```
+
 ## RAG 检索增强
 
 ![RAG Pipeline](images/rag_pipeline.png)

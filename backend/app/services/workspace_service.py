@@ -256,6 +256,11 @@ def _start_container(ws: Workspace) -> "docker.models.containers.Container":
         environment={
             "SKYCLOUD_WORKSPACE_ID": str(ws.id),
         },
+        # 便于 compose down 脚本与运维筛选（不依赖容器名）
+        labels={
+            "skycloud.component": "workspace",
+            "skycloud.workspace.id": str(ws.id),
+        },
         # 容器资源限制。
         mem_limit=WORKSPACE_MEM_LIMIT,
         cpu_quota=WORKSPACE_CPU_QUOTA,
