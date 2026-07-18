@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query, Response, status
 
-from app.dependencies import get_current_user
+from app.api.dependencies import get_current_user
 from app.services import inbox_service
 
 router = APIRouter(tags=["inbox"])

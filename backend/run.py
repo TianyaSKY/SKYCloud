@@ -7,7 +7,7 @@ import os
 
 import uvicorn
 
-from app.factory import create_fastapi_app
+from app.api.factory import create_fastapi_app
 
 app = create_fastapi_app()
 

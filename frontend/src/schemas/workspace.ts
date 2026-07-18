@@ -23,14 +23,5 @@ export const workspaceListResponseSchema = z.object({
     code: z.literal(200),
 })
 
-export const mcpSetupResultSchema = z.object({
-    success: z.literal(true),
-    message: z.string(),
-    mcp_url: z.string().url(),
-    token_id: z.number().int().positive(),
-    config_path: z.string().min(1),
-})
-
 export type WorkspaceInfo = z.infer<typeof workspaceInfoSchema>
 export type WorkspaceListResult = z.infer<typeof workspaceListResponseSchema>
-export type McpSetupResult = z.infer<typeof mcpSetupResultSchema>

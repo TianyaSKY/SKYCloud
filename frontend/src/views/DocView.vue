@@ -169,14 +169,14 @@
             <div class="step-number">2</div>
             <div class="step-content">
               <h4>获取 MCP Token</h4>
-              <p>前往侧栏「MCP 服务」页面，点击生成按钮获取长效 Token。</p>
+              <p>点击右上角头像菜单中的「MCP Token」，可复制或刷新你的唯一长效 Token。注册/登录时会自动签发。</p>
             </div>
           </div>
           <div class="step-card">
             <div class="step-number">3</div>
             <div class="step-content">
-              <h4>配置 AI 客户端</h4>
-              <p>将 Token 和服务地址配置到 Claude Desktop 或 Cursor IDE 中即可使用。</p>
+              <h4>配置 AI 客户端或工作区</h4>
+              <p>将 Token 与服务地址配置到 Claude Desktop / Cursor 等客户端；工作区在启动时会自动注入 MCP，无需手动连接。</p>
             </div>
           </div>
         </div>

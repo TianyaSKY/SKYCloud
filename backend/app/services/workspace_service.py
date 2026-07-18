@@ -108,6 +108,8 @@ def create_workspace(command: CreateWorkspaceCommand) -> Workspace:
         ws.status = "error"
         ws.error_message = str(exc)[:500]
     db.session.commit()
+    if ws.status == "running":
+        _auto_setup_mcp_safe(ws.id, user_id)
     return ws
 
 
@@ -116,6 +118,8 @@ def start_workspace(workspace_id: int, user_id: int) -> Workspace:
     if not ws:
         raise ResourceNotFoundError("工作区不存在")
     if ws.status == "running":
+        # 已在运行也补一次 MCP 配置（幂等），确保 Token 刷新后可恢复
+        _auto_setup_mcp_safe(workspace_id, user_id)
         return ws
     try:
         client = _get_docker_client()
@@ -139,6 +143,8 @@ def start_workspace(workspace_id: int, user_id: int) -> Workspace:
         ws.status = "error"
         ws.error_message = str(exc)[:500]
     db.session.commit()
+    if ws.status == "running":
+        _auto_setup_mcp_safe(workspace_id, user_id)
     return ws
 
 
@@ -346,6 +352,8 @@ def restart_workspace(workspace_id: int, user_id: int) -> Workspace:
         ws.status = "error"
         ws.error_message = str(exc)[:500]
     db.session.commit()
+    if ws.status == "running":
+        _auto_setup_mcp_safe(workspace_id, user_id)
     return ws
 
 
@@ -364,45 +372,15 @@ _MCP_EXTERNAL_PORT = int(os.getenv("MCP_PORT", "5001"))
 _OPENCODE_CONFIG_PATH = "/root/.config/opencode/opencode.json"
 
 
-def setup_mcp_connection(workspace_id: int, user_id: int) -> McpConnectionResult:
-    """Generate an MCP token and write opencode.json into the container.
-
-    返回配置结果，HTTP 响应由 API 层负责序列化。
-    """
-    from app.services.auth_service import generate_mcp_token
-    from app.services import mcp_token_service
-    from app.datetime_utils import beijing_now
-    from datetime import timedelta
-
-    ws = get_workspace(workspace_id, user_id)
-    if not ws:
-        raise ResourceNotFoundError("工作区不存在")
-    if ws.status != "running":
-        raise BusinessRuleError("工作区必须处于运行状态才能配置 MCP 连接")
-
-    # 1) Generate a long-lived MCP token for this user
-    from datetime import datetime, timezone
-    token_expires_at_jwt = datetime.now(timezone.utc) + timedelta(days=365)
-    db_expires_at = beijing_now() + timedelta(days=365)
-
-    mcp_token = generate_mcp_token(user_id, token_expires_at_jwt)
-    if not mcp_token:
-        raise ServiceOperationError("生成 MCP Token 失败")
-
-    # Persist to DB
-    token_record = mcp_token_service.create_mcp_token(
-        user_id, mcp_token, db_expires_at, f"Workspace-{ws.name}-AutoMCP"
-    )
-
-    # 2) Build opencode.json config
-    # Determine the MCP URL that the workspace container should use.
-    # Inside Docker, use the MCP container name directly on the Docker network.
+def _mcp_url_for_container() -> str:
     in_docker = os.path.exists("/.dockerenv")
     if in_docker:
-        mcp_url = f"http://skycloud-backend-mcp:{_MCP_EXTERNAL_PORT}/mcp"
-    else:
-        mcp_url = f"http://host.docker.internal:{_MCP_EXTERNAL_PORT}/mcp"
+        return f"http://skycloud-backend-mcp:{_MCP_EXTERNAL_PORT}/mcp"
+    return f"http://host.docker.internal:{_MCP_EXTERNAL_PORT}/mcp"
 
+
+def _write_mcp_config_to_container(container, mcp_url: str, mcp_token: str) -> None:
+    """将用户唯一 MCP Token 写入工作区 opencode.json。"""
     opencode_config = {
         "$schema": "https://opencode.ai/config.json",
         "mcp": {
@@ -412,47 +390,56 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> McpConnectionResult
                 "enabled": True,
                 "oauth": False,
                 "headers": {
-                    "Authorization": f"Bearer {mcp_token}"
-                }
+                    "Authorization": f"Bearer {mcp_token}",
+                },
             }
-        }
+        },
     }
-
     config_json = json.dumps(opencode_config, indent=2, ensure_ascii=False)
 
-    # 3) Write config into the running container via docker exec
+    container.exec_run(
+        cmd=["mkdir", "-p", "/root/.config/opencode"],
+        user="root",
+    )
+    escaped_json = config_json.replace("'", "'\\''")
+    container.exec_run(
+        cmd=["sh", "-c", f"echo '{escaped_json}' > {_OPENCODE_CONFIG_PATH}"],
+        user="root",
+    )
+    exit_code, _output = container.exec_run(
+        cmd=["cat", _OPENCODE_CONFIG_PATH],
+        user="root",
+    )
+    if exit_code != 0:
+        raise RuntimeError("Failed to verify config file in container")
+
+
+def setup_mcp_connection(workspace_id: int, user_id: int) -> McpConnectionResult:
+    """使用用户唯一 MCP Token 写入工作区 opencode.json（不新建 Token）。"""
+    from app.services import mcp_token_service
+
+    ws = get_workspace(workspace_id, user_id)
+    if not ws:
+        raise ResourceNotFoundError("工作区不存在")
+    if ws.status != "running":
+        raise BusinessRuleError("工作区必须处于运行状态才能配置 MCP 连接")
+    if not ws.container_id:
+        raise BusinessRuleError("工作区容器不存在")
+
+    token_record, mcp_token = mcp_token_service.ensure_user_mcp_token(user_id)
+    mcp_url = _mcp_url_for_container()
+
     try:
         client = _get_docker_client()
         container = client.containers.get(ws.container_id)
-
-        # Ensure the config directory exists
-        container.exec_run(
-            cmd=["mkdir", "-p", "/root/.config/opencode"],
-            user="root",
-        )
-
-        # Write the config file — use sh -c with heredoc-style echo
-        # Escape single quotes in the JSON just in case
-        escaped_json = config_json.replace("'", "'\\''")
-        container.exec_run(
-            cmd=["sh", "-c", f"echo '{escaped_json}' > {_OPENCODE_CONFIG_PATH}"],
-            user="root",
-        )
-
-        # Verify the file was written
-        exit_code, output = container.exec_run(
-            cmd=["cat", _OPENCODE_CONFIG_PATH],
-            user="root",
-        )
-        if exit_code != 0:
-            raise RuntimeError("Failed to verify config file in container")
+        _write_mcp_config_to_container(container, mcp_url, mcp_token)
 
         logger.info(
-            "工作区 MCP 连接已配置：workspace_id={}, user_id={}",
+            "工作区 MCP 连接已配置：workspace_id={}, user_id={}, token_id={}",
             workspace_id,
             user_id,
+            token_record.id,
         )
-
         return McpConnectionResult(
             mcp_url=mcp_url,
             token_id=token_record.id,
@@ -463,3 +450,36 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> McpConnectionResult
     except DockerException as exc:
         logger.exception("配置工作区 MCP 连接失败：workspace_id={}", workspace_id)
         raise ServiceOperationError("配置 MCP 连接失败") from exc
+
+
+def _auto_setup_mcp_safe(workspace_id: int, user_id: int) -> None:
+    """工作区就绪后自动注入 MCP；失败只记日志，不阻断生命周期。"""
+    try:
+        setup_mcp_connection(workspace_id, user_id)
+    except Exception:
+        logger.exception(
+            "工作区自动配置 MCP 失败：workspace_id={}, user_id={}",
+            workspace_id,
+            user_id,
+        )
+
+
+def resync_mcp_for_user(user_id: int) -> int:
+    """将当前唯一 MCP Token 同步到用户所有运行中的工作区。返回成功数。"""
+    rows = (
+        db.session.query(Workspace)
+        .filter(Workspace.user_id == user_id, Workspace.status == "running")
+        .all()
+    )
+    ok = 0
+    for ws in rows:
+        try:
+            setup_mcp_connection(ws.id, user_id)
+            ok += 1
+        except Exception:
+            logger.exception(
+                "同步 MCP 到工作区失败：workspace_id={}, user_id={}",
+                ws.id,
+                user_id,
+            )
+    return ok

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from app.dependencies import get_current_user
+from app.api.dependencies import get_current_user
 from app.api.schemas.chat import ChatRequest
 from app.services.chat_service import generate_chat_events
 

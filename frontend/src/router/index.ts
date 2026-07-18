@@ -10,7 +10,6 @@ const MySharesView = () => import('../views/MySharesView.vue')
 const InboxView = () => import('../views/InboxView.vue')
 const SysDictView = () => import('../views/SysDictView.vue')
 const DocView = () => import('../views/DocView.vue')
-const McpView = () => import('../views/McpView.vue')
 const TokenUsageView = () => import('../views/TokenUsageView.vue')
 const AdminTokenUsageView = () => import('../views/AdminTokenUsageView.vue')
 const WorkspaceView = () => import('../views/WorkspaceView.vue')
@@ -45,12 +44,6 @@ const router = createRouter({
             path: '/docs',
             name: 'docs',
             component: DocView,
-            meta: {requiresAuth: true}
-        },
-        {
-            path: '/mcp',
-            name: 'mcp',
-            component: McpView,
             meta: {requiresAuth: true}
         },
         {

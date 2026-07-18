@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.requests import Request
 from starlette.responses import StreamingResponse, Response
 
-from app.dependencies import get_current_user
+from app.api.dependencies import get_current_user
 from app.api.schemas.workspace import WorkspaceCreateRequest
 from app.models.user import User
 from app.services import workspace_service
@@ -307,7 +307,7 @@ async def proxy_websocket(
         await websocket.close(code=4001, reason="Missing token")
         return
     try:
-        from app.dependencies import get_current_user as _get_user
+        from app.api.dependencies import get_current_user as _get_user
         from fastapi.security import HTTPAuthorizationCredentials
 
         creds = HTTPAuthorizationCredentials(scheme="bearer", credentials=token)

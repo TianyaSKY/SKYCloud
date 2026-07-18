@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import JSONResponse
 
-from app.dependencies import require_admin
+from app.api.dependencies import require_admin
 from app.api.schemas.sys_dict import SysDictPayload
 from app.services import sys_dict_service
 

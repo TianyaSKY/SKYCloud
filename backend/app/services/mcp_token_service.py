@@ -1,52 +1,107 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.datetime_utils import beijing_now
-from app.exceptions import ResourceNotFoundError
+from app.infra.datetime_utils import beijing_now
+from app.exceptions import ServiceOperationError
 from app.extensions import db
 from app.models.mcp_token import McpToken
 
 
-def create_mcp_token(
-    user_id: int, token: str, expires_at: datetime, name: str | None
-) -> McpToken:
-    token_record = McpToken(
+def _issue_jwt(user_id: int, expires_at: datetime) -> str:
+    from app.services.auth_service import generate_mcp_token
+
+    token = generate_mcp_token(user_id, expires_at)
+    if not token:
+        raise ServiceOperationError("Failed to generate MCP token")
+    return token
+
+
+def _revoke_all_active(user_id: int) -> None:
+    """撤销用户所有未撤销的 Token，保证「有且只有一个」。"""
+    now = beijing_now()
+    (
+        db.session.query(McpToken)
+        .filter(McpToken.user_id == user_id, McpToken.revoked_at.is_(None))
+        .update({McpToken.revoked_at: now}, synchronize_session=False)
+    )
+
+
+def _create_token_record(user_id: int, token: str, expires_at: datetime, name: str = "MCP Token") -> McpToken:
+    record = McpToken(
         user_id=user_id,
         name=(name or "MCP Token").strip() or "MCP Token",
         token_hash=McpToken.hash_token(token),
         token_preview=McpToken.preview_token(token),
+        token_value=token,
         expires_at=expires_at,
     )
-    db.session.add(token_record)
-    db.session.commit()
-    return token_record
+    db.session.add(record)
+    return record
 
 
-def list_mcp_tokens(user_id: int) -> list[dict[str, Any]]:
-    tokens = (
+def get_active_record(user_id: int) -> McpToken | None:
+    """返回用户当前有效的 MCP Token 记录（未撤销且未过期）。"""
+    now = beijing_now()
+    records = (
         db.session.query(McpToken)
-        .filter(McpToken.user_id == user_id)
+        .filter(
+            McpToken.user_id == user_id,
+            McpToken.revoked_at.is_(None),
+            McpToken.expires_at > now,
+        )
         .order_by(McpToken.created_at.desc())
         .all()
     )
-    return [token.to_dict() for token in tokens]
-
-
-def revoke_mcp_token(user_id: int, token_id: int) -> McpToken:
-    token = (
-        db.session.query(McpToken)
-        .filter(McpToken.id == token_id, McpToken.user_id == user_id)
-        .first()
-    )
-    if not token:
-        raise ResourceNotFoundError("MCP token not found")
-    if not token.revoked_at:
-        token.revoked_at = beijing_now()
+    if not records:
+        return None
+    # 历史多 Token：只保留最新一条，其余撤销
+    active = records[0]
+    if len(records) > 1:
+        for extra in records[1:]:
+            extra.revoked_at = now
         db.session.commit()
-    return token
+    return active
+
+
+def ensure_user_mcp_token(user_id: int) -> tuple[McpToken, str]:
+    """确保用户有且只有一个有效 MCP Token，返回 (record, raw_jwt)。
+
+    若已有有效记录且 token_value 可用则复用；否则签发新 Token。
+    """
+    active = get_active_record(user_id)
+    if active and active.token_value:
+        return active, active.token_value
+
+    # 无有效 Token，或历史数据缺少 token_value → 重新签发
+    return refresh_user_mcp_token(user_id)
+
+
+def refresh_user_mcp_token(user_id: int) -> tuple[McpToken, str]:
+    """撤销旧 Token 并签发唯一新 Token。"""
+    jwt_expires = datetime.now(timezone.utc) + timedelta(days=365)
+    db_expires = beijing_now() + timedelta(days=365)
+    token = _issue_jwt(user_id, jwt_expires)
+
+    _revoke_all_active(user_id)
+    record = _create_token_record(user_id, token, db_expires)
+    db.session.commit()
+    return record, token
+
+
+def get_user_mcp_token_payload(user_id: int) -> dict[str, Any]:
+    """供 API 返回：完整 Token + 元数据。"""
+    record, raw = ensure_user_mcp_token(user_id)
+    return {
+        "mcp_token": raw,
+        "token": record.to_dict(),
+        "user_id": user_id,
+        "expires_in_days": 365,
+        "usage": "Set as Authorization header: Bearer <mcp_token>",
+    }
 
 
 def get_active_mcp_token(token: str) -> McpToken | None:
+    """按完整 JWT 校验是否为有效 MCP Token（鉴权用）。"""
     token_record = (
         db.session.query(McpToken)
         .filter(McpToken.token_hash == McpToken.hash_token(token))
@@ -57,3 +112,20 @@ def get_active_mcp_token(token: str) -> McpToken | None:
     token_record.last_used_at = beijing_now()
     db.session.commit()
     return token_record
+
+
+# ---------------------------------------------------------------------------
+# 兼容旧调用（工作区 / 历史接口）
+# ---------------------------------------------------------------------------
+
+
+def create_mcp_token(
+    user_id: int, token: str, expires_at: datetime, name: str | None
+) -> McpToken:
+    """兼容旧签名：创建 Token 前先撤销用户其它有效 Token。"""
+    _revoke_all_active(user_id)
+    record = _create_token_record(
+        user_id, token, expires_at, name or "MCP Token"
+    )
+    db.session.commit()
+    return record

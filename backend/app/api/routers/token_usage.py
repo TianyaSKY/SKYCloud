@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 
-from app.dependencies import get_current_user, require_admin
+from app.api.dependencies import get_current_user, require_admin
 from app.services import token_usage_service
 from app.services import user_service
 

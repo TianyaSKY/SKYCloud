@@ -5,11 +5,10 @@ import uuid
 import jwt
 
 from app.extensions import SECRET_KEY, db
-from app.exceptions import AuthenticationError, BusinessRuleError, ServiceOperationError
+from app.exceptions import AuthenticationError, BusinessRuleError
 from app.models.user import User
 from app.services import mcp_token_service
 from app.services.user_service import create_user
-from app.datetime_utils import beijing_now
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +99,11 @@ def login(username: str, password: str) -> dict:
     token, role, user_id = authenticate_user(username, password)
     if not token:
         raise AuthenticationError("Invalid username or password")
+    # 登录时懒初始化唯一 MCP Token（不影响登录结果）
+    try:
+        mcp_token_service.ensure_user_mcp_token(user_id)
+    except Exception:
+        logger.exception("登录后初始化 MCP Token 失败：user_id={}", user_id)
     return {"token": token, "role": role, "user_id": user_id}
 
 
@@ -107,18 +111,43 @@ def register_user(username: str, password: str, avatar: str | None = None) -> Us
     if not username or not password:
         raise BusinessRuleError("Missing username or password")
     try:
-        return create_user({"username": username, "password": password, "avatar": avatar})
+        user = create_user({"username": username, "password": password, "avatar": avatar})
+        # 注册即自动配置唯一 MCP Token
+        try:
+            mcp_token_service.ensure_user_mcp_token(user.id)
+        except Exception:
+            logger.exception("注册后初始化 MCP Token 失败：user_id={}", user.id)
+        return user
     except Exception as exc:
         logger.exception("用户注册失败：{}", exc)
         raise BusinessRuleError(str(exc)) from exc
 
 
-def issue_mcp_token(user_id: int, name: str | None) -> dict:
-    expires_at = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365)
-    token = generate_mcp_token(user_id, expires_at)
-    if not token:
-        raise ServiceOperationError("Failed to generate MCP token")
-    token_record = mcp_token_service.create_mcp_token(
-        user_id, token, beijing_now() + _dt.timedelta(days=365), name
-    )
-    return {"mcp_token": token, "token": token_record.to_dict(), "user_id": user_id}
+def get_mcp_token(user_id: int) -> dict:
+    """获取用户唯一 MCP Token（不存在则自动签发）。"""
+    return mcp_token_service.get_user_mcp_token_payload(user_id)
+
+
+def refresh_mcp_token(user_id: int) -> dict:
+    """刷新用户唯一 MCP Token，并同步到所有运行中的工作区。"""
+    record, raw = mcp_token_service.refresh_user_mcp_token(user_id)
+    # 刷新后把新 Token 注入运行中的工作区，避免工作区仍用旧凭证
+    try:
+        from app.services import workspace_service
+
+        workspace_service.resync_mcp_for_user(user_id)
+    except Exception:
+        logger.exception("刷新 MCP Token 后同步工作区失败：user_id={}", user_id)
+    return {
+        "mcp_token": raw,
+        "token": record.to_dict(),
+        "user_id": user_id,
+        "expires_in_days": 365,
+        "usage": "Set as Authorization header: Bearer <mcp_token>",
+    }
+
+
+# 保留旧名兼容（内部若有引用）
+def issue_mcp_token(user_id: int, name: str | None = None) -> dict:
+    """兼容旧接口：等价于 refresh（保证有且只有一个）。"""
+    return refresh_mcp_token(user_id)

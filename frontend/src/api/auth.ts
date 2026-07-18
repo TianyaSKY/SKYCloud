@@ -13,29 +13,24 @@ export interface RegisterResult {
     message?: string
 }
 
-/** 后端契约：/auth/mcp-tokens 列表项；新建 token 的完整凭证仅在创建时返回 */
-export interface McpTokenRecord {
+/** 后端契约：/auth/mcp-token 元数据（不含完整凭证） */
+export interface McpTokenMeta {
     id: number
     name: string
     token_preview: string
     created_at: string | null
     expires_at: string | null
-    /** 状态标记由后端计算下发，缺失时视作未撤销/未过期 */
     is_revoked?: boolean
     is_expired?: boolean
 }
 
-/** 后端契约：/auth/mcp-token 创建结果，mcp_token 为完整凭证（仅此一次返回） */
-export interface McpTokenCreated {
+/** 后端契约：每用户唯一 MCP Token；mcp_token 为完整凭证，可随时复制 */
+export interface McpTokenResult {
     mcp_token: string
-    id?: number
-    name?: string
-    created_at?: string | null
-    expires_at?: string | null
-}
-
-export interface CreateMcpTokenParams {
-    name?: string
+    token: McpTokenMeta
+    user_id: number
+    expires_in_days?: number
+    usage?: string
 }
 
 export const login = (data: LoginInput) => {
@@ -48,14 +43,12 @@ export const register = (data: RegisterInput) => {
     return request.post<RegisterResult>('/auth/register', {username, password})
 }
 
-export const createMcpToken = (data: CreateMcpTokenParams) => {
-    return request.post<McpTokenCreated>('/auth/mcp-token', data)
+/** 获取当前用户唯一 MCP Token（不存在则后端自动签发） */
+export const getMcpToken = () => {
+    return request.get<McpTokenResult>('/auth/mcp-token')
 }
 
-export const listMcpTokens = () => {
-    return request.get<McpTokenRecord[]>('/auth/mcp-tokens')
-}
-
-export const revokeMcpToken = (id: number) => {
-    return request.delete<void>(`/auth/mcp-tokens/${id}`)
+/** 刷新唯一 MCP Token（旧 Token 立即失效，并同步运行中工作区） */
+export const refreshMcpToken = () => {
+    return request.post<McpTokenResult>('/auth/mcp-token/refresh')
 }

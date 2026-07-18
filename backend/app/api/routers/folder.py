@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import JSONResponse
 
-from app.dependencies import get_current_user
+from app.api.dependencies import get_current_user
 from app.api.schemas.folder import FolderCreateRequest, FolderUpdateRequest
 from app.services import folder_service
 

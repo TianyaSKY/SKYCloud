@@ -75,6 +75,29 @@ def _ensure_file_content_hash_column() -> None:
         logger.warning(f"Warning: Could not ensure files.content_hash column: {e}")
 
 
+def _ensure_mcp_token_value_column() -> None:
+    """Ensure mcp_tokens.token_value exists for single-token copy / workspace inject."""
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'mcp_tokens'
+                      AND column_name = 'token_value'
+                    """
+                )
+            ).scalar()
+            if not exists:
+                logger.info("Adding mcp_tokens.token_value column for MCP token reuse.")
+                conn.execute(text("ALTER TABLE mcp_tokens ADD COLUMN token_value TEXT"))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Warning: Could not ensure mcp_tokens.token_value column: {e}")
+
+
 def initialize_application():
     """初始化应用：创建数据库表、初始化数据等"""
     # 导入模型以注册到 Base.metadata
@@ -132,6 +155,7 @@ def initialize_application():
     # 自动创建所有表
     Base.metadata.create_all(bind=engine)
     _ensure_file_content_hash_column()
+    _ensure_mcp_token_value_column()
 
     # 确保向量索引与检索距离度量保持一致
     _ensure_file_vector_index()

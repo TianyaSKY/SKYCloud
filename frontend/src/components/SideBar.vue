@@ -46,12 +46,6 @@
         收件箱
       </a-menu-item>
 
-      <a-menu-item key="mcp">
-        <template #icon>
-          <icon-command/>
-        </template>
-        MCP 服务
-      </a-menu-item>
       <a-menu-item key="workspace">
         <template #icon>
           <icon-desktop/>
@@ -83,7 +77,7 @@
 <script lang="ts" setup>
 import {ref, watch} from 'vue'
 import {storeToRefs} from 'pinia'
-import {IconBarChart, IconCommand, IconDashboard, IconDesktop, IconEmail, IconFile, IconSettings, IconShareAlt, IconMenuFold, IconMenuUnfold} from '@arco-design/web-vue/es/icon'
+import {IconBarChart, IconDashboard, IconDesktop, IconEmail, IconFile, IconSettings, IconShareAlt, IconMenuFold, IconMenuUnfold} from '@arco-design/web-vue/es/icon'
 import {useAuthStore} from '@/stores/auth'
 
 defineProps<{

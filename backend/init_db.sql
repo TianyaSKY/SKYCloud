@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS organize_checkpoints
     updated_at       TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
 
--- 10. 创建 MCP Token 表
+-- 10. 创建 MCP Token 表（每用户有且仅有一条有效记录；token_value 供复制与工作区注入）
 CREATE TABLE IF NOT EXISTS mcp_tokens
 (
     id            SERIAL PRIMARY KEY,
@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS mcp_tokens
     name          VARCHAR(80)  NOT NULL DEFAULT 'MCP Token',
     token_hash    VARCHAR(64)  UNIQUE NOT NULL,
     token_preview VARCHAR(32)  NOT NULL,
+    token_value   TEXT,
     created_at    TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()),
     expires_at    TIMESTAMP    NOT NULL,
     last_used_at  TIMESTAMP,

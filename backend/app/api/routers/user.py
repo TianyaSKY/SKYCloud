@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import JSONResponse
 
-from app.dependencies import get_current_user
+from app.api.dependencies import get_current_user
 from app.api.schemas.user import UserCreateRequest, UserPasswordUpdateRequest, UserUpdateRequest
 from app.services import user_service
 

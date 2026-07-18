@@ -1,6 +1,6 @@
 """按领域组织的 API 请求模型。"""
 
-from app.api.schemas.auth import LoginRequest, McpTokenCreateRequest, RegisterRequest
+from app.api.schemas.auth import LoginRequest, RegisterRequest
 from app.api.schemas.chat import ChatRequest
 from app.api.schemas.file import (
     BatchDeleteItem,
@@ -24,7 +24,7 @@ from app.api.schemas.workspace import WorkspaceCreateRequest
 __all__ = [
     "BatchDeleteItem", "BatchDeleteRequest", "ChatRequest", "FilePreflightRequest",
     "FileUpdateRequest", "FolderCreateRequest", "FolderUpdateRequest", "LoginRequest",
-    "McpTokenCreateRequest", "MultipartCompleteRequest", "MultipartInitRequest",
+    "MultipartCompleteRequest", "MultipartInitRequest",
     "RegisterRequest", "RetryEmbeddingRequest", "ShareCreateRequest", "SysDictPayload",
     "UserCreateRequest", "UserPasswordUpdateRequest", "UserUpdateRequest",
     "WorkspaceCreateRequest",

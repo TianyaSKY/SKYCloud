@@ -14,7 +14,7 @@ from fastapi import (
 from fastapi import UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.dependencies import get_current_user
+from app.api.dependencies import get_current_user
 from app.exceptions import DomainError
 from app.api.schemas.file import (
     BatchDeleteRequest,
@@ -25,7 +25,7 @@ from app.api.schemas.file import (
     RetryEmbeddingRequest,
 )
 from app.services import file_service
-from app.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
+from app.infra.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
 
 router = APIRouter(tags=["file"])
 

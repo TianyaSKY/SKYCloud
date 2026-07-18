@@ -1,15 +1,13 @@
 import request from './request'
 import {
-    mcpSetupResultSchema,
     workspaceInfoSchema,
     workspaceListResponseSchema,
     type CreateWorkspaceInput,
-    type McpSetupResult,
     type WorkspaceInfo,
     type WorkspaceListResult,
 } from '../schemas/workspace'
 
-export type {McpSetupResult, WorkspaceInfo, WorkspaceListResult}
+export type {WorkspaceInfo, WorkspaceListResult}
 
 export const listWorkspaces = () => {
     return request.get<unknown>('/workspace').then(workspaceListResponseSchema.parse)
@@ -37,8 +35,4 @@ export const deleteWorkspace = (id: number) => {
 
 export const restartWorkspace = (id: number) => {
     return request.post<unknown>(`/workspace/${id}/restart`, null, {timeout: 30000}).then(workspaceInfoSchema.parse)
-}
-
-export const setupMcpConnection = (id: number) => {
-    return request.post<unknown>(`/workspace/${id}/setup-mcp`, null, {timeout: 30000}).then(mcpSetupResultSchema.parse)
 }

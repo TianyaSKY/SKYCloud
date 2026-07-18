@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.dependencies import get_current_user
+from app.api.dependencies import get_current_user
 from app.api.schemas.share import ShareCreateRequest
 from app.services import share_service
 

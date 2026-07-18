@@ -8,7 +8,3 @@ class LoginRequest(BaseModel):
 
 class RegisterRequest(LoginRequest):
     avatar: str | None = None
-
-
-class McpTokenCreateRequest(BaseModel):
-    name: str | None = Field(default="MCP Token", max_length=80)

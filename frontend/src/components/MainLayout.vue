@@ -10,6 +10,7 @@
             @logout="handleLogout"
             @click-avatar="showAvatarModal = true"
             @click-password="showPasswordModal = true"
+            @click-mcp-token="openMcpTokenModal"
             @go-docs="handleMenuClick('docs')"
         />
         <a-layout-content class="content">
@@ -20,6 +21,43 @@
 
     <!-- AI 聊天悬浮球，仅在“全部文件”页面显示 -->
     <ChatWidget :show="activeMenu === 'all'"/>
+
+    <!-- MCP Token：每用户唯一，可复制 / 刷新 -->
+    <a-modal
+        v-model:visible="showMcpTokenModal"
+        title="MCP Token"
+        :footer="false"
+        :width="560"
+        unmount-on-close
+    >
+      <a-spin :loading="mcpLoading" style="width: 100%;">
+        <p class="mcp-hint">
+          每个账号自动配置唯一 Token，用于 AI 客户端与工作区连接云盘。工作区启动时会自动注入，无需手动配置。
+        </p>
+        <div class="mcp-endpoint">
+          <span class="mcp-label">服务地址</span>
+          <code>{{ mcpEndpoint }}</code>
+        </div>
+        <div class="mcp-token-box">
+          <span class="mcp-label">Token</span>
+          <code class="mcp-token-value">{{ mcpToken || '加载中…' }}</code>
+        </div>
+        <div v-if="mcpExpiresAt" class="mcp-meta">
+          过期时间：{{ formatDate(mcpExpiresAt) }}
+        </div>
+        <div class="mcp-actions">
+          <a-button type="primary" :disabled="!mcpToken" @click="handleCopyMcpToken">
+            复制 Token
+          </a-button>
+          <a-button type="outline" status="warning" :loading="mcpRefreshing" @click="handleRefreshMcpToken">
+            刷新 Token
+          </a-button>
+        </div>
+        <a-alert type="warning" style="margin-top: 16px;">
+          刷新后旧 Token 立即失效；运行中的工作区会自动同步新 Token。请勿泄露给他人。
+        </a-alert>
+      </a-spin>
+    </a-modal>
 
     <!-- 头像上传裁切弹窗 -->
     <a-modal v-model:visible="showAvatarModal" title="修改头像" @cancel="handleCancelAvatar" @ok="handleUploadAvatar">
@@ -85,9 +123,9 @@
 </template>
 
 <script lang="ts" setup>
-import {onMounted, reactive, ref} from 'vue'
+import {computed, onMounted, reactive, ref} from 'vue'
 import {useRouter} from 'vue-router'
-import {Message} from '@arco-design/web-vue'
+import {Message, Modal} from '@arco-design/web-vue'
 import type {FileItem as ArcoFileItem} from '@arco-design/web-vue'
 import {IconPlus} from '@arco-design/web-vue/es/icon'
 import 'vue-cropper/dist/index.css'
@@ -96,9 +134,12 @@ import SideBar from './SideBar.vue'
 import FileHeader from './FileHeader.vue'
 import ChatWidget from './ChatWidget.vue'
 import {getUserInfo, updatePassword, uploadAvatar} from '@/api/user'
+import {getMcpToken, refreshMcpToken} from '@/api/auth'
 import {useAuthStore} from '@/stores/auth'
 import {logger} from '@/utils/logger'
 import {passwordChangeSchema} from '@/schemas/user'
+import {copyText} from '@/utils/clipboard'
+import {formatDate} from '@/utils/format'
 
 defineProps<{
   activeMenu: string
@@ -125,6 +166,63 @@ const passwordForm = reactive({
   newPassword: '',
   confirmPassword: ''
 })
+
+// MCP Token（每用户唯一）
+const showMcpTokenModal = ref(false)
+const mcpLoading = ref(false)
+const mcpRefreshing = ref(false)
+const mcpToken = ref('')
+const mcpExpiresAt = ref<string | null>(null)
+const mcpEndpoint = computed(() => {
+  const {hostname, protocol} = window.location
+  return `${protocol}//${hostname}:5001/mcp`
+})
+
+const openMcpTokenModal = async () => {
+  showMcpTokenModal.value = true
+  mcpLoading.value = true
+  try {
+    const res = await getMcpToken()
+    mcpToken.value = res.mcp_token
+    mcpExpiresAt.value = res.token?.expires_at ?? null
+  } catch (error) {
+    logger.warn('加载 MCP Token 失败', error)
+  } finally {
+    mcpLoading.value = false
+  }
+}
+
+const handleCopyMcpToken = async () => {
+  if (!mcpToken.value) return
+  const ok = await copyText(mcpToken.value)
+  if (ok) {
+    Message.success('Token 已复制到剪贴板')
+  } else {
+    Message.warning('复制失败，请手动复制')
+  }
+}
+
+const handleRefreshMcpToken = () => {
+  Modal.confirm({
+    title: '刷新 MCP Token',
+    content: '刷新后旧 Token 将立即失效，使用旧 Token 的外部客户端需重新配置。运行中的工作区会自动同步。',
+    okText: '刷新',
+    okButtonProps: {status: 'warning'},
+    onOk: async () => {
+      mcpRefreshing.value = true
+      try {
+        const res = await refreshMcpToken()
+        mcpToken.value = res.mcp_token
+        mcpExpiresAt.value = res.token?.expires_at ?? null
+        Message.success('MCP Token 已刷新')
+      } catch (error) {
+        logger.warn('刷新 MCP Token 失败', error)
+      } finally {
+        mcpRefreshing.value = false
+      }
+    }
+  })
+}
 
 const initUserInfo = async () => {
   const userId = auth.user.id
@@ -246,7 +344,6 @@ const MENU_ROUTE_MAP: Record<string, string> = {
   'share': '/shares',
   'inbox': '/inbox',
   'docs': '/docs',
-  'mcp': '/mcp',
   'workspace': '/workspace',
   'token-usage': '/token-usage',
   'admin-token-usage': '/admin/token-usage',
@@ -331,5 +428,49 @@ const handleLogout = () => {
 
 :deep(.circle-cropper .cropper-face) {
   border-radius: 50%;
+}
+
+.mcp-hint {
+  margin: 0 0 16px;
+  font-size: 14px;
+  color: var(--color-text-2);
+  line-height: 1.6;
+}
+
+.mcp-endpoint,
+.mcp-token-box {
+  margin-bottom: 12px;
+}
+
+.mcp-label {
+  display: block;
+  font-size: 13px;
+  color: var(--color-text-3);
+  margin-bottom: 6px;
+}
+
+.mcp-token-value {
+  display: block;
+  font-family: 'JetBrains Mono', Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
+  background: var(--color-fill-2);
+  padding: 10px 12px;
+  border-radius: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+  color: var(--color-text-1);
+}
+
+.mcp-meta {
+  font-size: 13px;
+  color: var(--color-text-3);
+  margin-bottom: 16px;
+}
+
+.mcp-actions {
+  display: flex;
+  gap: 12px;
 }
 </style>

@@ -61,6 +61,7 @@
           </div>
         </div>
         <template #content>
+          <a-doption @click="$emit('click-mcp-token')">MCP Token</a-doption>
           <a-doption @click="$emit('click-avatar')">修改头像</a-doption>
           <a-doption @click="$emit('click-password')">修改密码</a-doption>
           <a-doption @click="$emit('logout')">退出登录</a-doption>
@@ -111,6 +112,7 @@ const emit = defineEmits([
   'logout',
   'click-avatar',
   'click-password',
+  'click-mcp-token',
   'update:searchType',
   'update:isVectorSearch'
 ])
