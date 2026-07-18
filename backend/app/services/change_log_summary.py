@@ -13,12 +13,12 @@ def _event_value(event: dict[str, Any] | Any, key: str, default: Any = None) -> 
 
 
 def summarize_events(
-    events: list[dict[str, Any] | Any],
-    *,
-    total_count: int,
-    from_event_id: int,
-    to_event_id: int,
-    max_lines: int = DEFAULT_SUMMARY_EVENT_LINES,
+        events: list[dict[str, Any] | Any],
+        *,
+        total_count: int,
+        from_event_id: int,
+        to_event_id: int,
+        max_lines: int = DEFAULT_SUMMARY_EVENT_LINES,
 ) -> dict[str, Any]:
     """汇总动作分布与样例行；样例行数受 max_lines 限制，避免提示词过长。"""
     action_counter: Counter[str] = Counter()

@@ -3,14 +3,14 @@
 import uuid
 from typing import List
 
-from app.infra.cache import cacheable, evict_cache
 from app.exceptions import PermissionDeniedError, ResourceNotFoundError
 from app.extensions import db, redis_client
+from app.infra.cache import cacheable, evict_cache
+from app.infra.task_queue import publish_organize_task
 from app.models.file import File
 from app.models.folder import Folder
 from app.services import change_log_service
 from app.services.file_service import delete_file, _clear_search_cache
-from app.infra.task_queue import publish_organize_task
 
 ORGANIZE_TASK_LOCK_PREFIX = "organize:task:lock"
 ORGANIZE_TASK_LOCK_TTL_SECONDS = 6 * 60 * 60

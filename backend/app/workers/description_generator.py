@@ -151,7 +151,7 @@ def _generate_text_description(local_path: str, config: dict, user_id: int = 0) 
 
 
 def generate_file_description(
-    local_path: str, config: dict, chat_config: dict | None = None, user_id: int = 0
+        local_path: str, config: dict, chat_config: dict | None = None, user_id: int = 0
 ) -> str:
     """生成中文文件描述：文本走 Chat，其余走 VL。
 

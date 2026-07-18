@@ -21,8 +21,8 @@ from fastapi import HTTPException
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
-from app.infra.datetime_utils import beijing_now
 from app.extensions import db
+from app.infra.datetime_utils import beijing_now
 from app.services import file_service, folder_service, share_service
 from app.services.auth_service import decode_token
 
@@ -95,11 +95,13 @@ async def _run_sync(fn, *args, **kwargs):
 
     scoped_session 按线程绑定；若在事件循环线程 remove 会清错 session。
     """
+
     def _work():
         try:
             return fn(*args, **kwargs)
         finally:
             db.session.remove()
+
     return await asyncio.to_thread(_work)
 
 
@@ -146,12 +148,13 @@ async def get_current_user() -> str:
 
     return await asyncio.to_thread(_work)
 
+
 @mcp.tool()
 async def search_files(
-    query: str,
-    page: int = 1,
-    page_size: int = 10,
-    search_type: str = "fuzzy",
+        query: str,
+        page: int = 1,
+        page_size: int = 10,
+        search_type: str = "fuzzy",
 ) -> str:
     """搜索用户的文件。
 
@@ -174,12 +177,12 @@ async def search_files(
 
 @mcp.tool()
 async def list_files(
-    parent_id: int | None = None,
-    page: int = 1,
-    page_size: int = 20,
-    name: str | None = None,
-    sort_by: str = "created_at",
-    order: str = "desc",
+        parent_id: int | None = None,
+        page: int = 1,
+        page_size: int = 20,
+        name: str | None = None,
+        sort_by: str = "created_at",
+        order: str = "desc",
 ) -> str:
     """列出指定目录下的文件和文件夹。
 
@@ -234,8 +237,8 @@ async def get_file_info(file_id: int) -> str:
 
 @mcp.tool()
 async def create_folder(
-    name: str,
-    parent_id: int | None = None,
+        name: str,
+        parent_id: int | None = None,
 ) -> str:
     """创建一个新文件夹。
 
@@ -266,9 +269,9 @@ async def create_folder(
 
 @mcp.tool()
 async def move_file(
-    file_id: int,
-    new_name: str | None = None,
-    new_parent_id: int | None = None,
+        file_id: int,
+        new_name: str | None = None,
+        new_parent_id: int | None = None,
 ) -> str:
     """移动或重命名文件。至少提供 new_name 或 new_parent_id 之一。
 
@@ -380,8 +383,8 @@ def _is_text_file(mime_type: str | None, filename: str | None) -> bool:
 
 @mcp.tool()
 async def get_file_download_url(
-    file_id: int,
-    expires_hours: int = 24,
+        file_id: int,
+        expires_hours: int = 24,
 ) -> str:
     """生成文件的临时下载链接（通过分享链接实现，自带过期时间）。
 
@@ -430,8 +433,8 @@ async def get_file_download_url(
 
 @mcp.tool()
 async def read_file_content(
-    file_id: int,
-    encoding: str = "utf-8",
+        file_id: int,
+        encoding: str = "utf-8",
 ) -> str:
     """读取文本文件的内容并返回。仅支持文本类文件（txt, md, csv, json, 代码文件等）。
 
@@ -491,9 +494,9 @@ async def read_file_content(
 
 @mcp.tool()
 async def move_folder(
-    folder_id: int,
-    new_name: str | None = None,
-    new_parent_id: int | None = None,
+        folder_id: int,
+        new_name: str | None = None,
+        new_parent_id: int | None = None,
 ) -> str:
     """移动或重命名文件夹。至少提供 new_name 或 new_parent_id 之一。
 
@@ -586,10 +589,10 @@ async def get_storage_overview() -> str:
             status_counts = dict(status_rows)
 
             folder_count = (
-                db.session.query(func.count(Folder.id))
-                .filter(Folder.user_id == user_id)
-                .scalar()
-            ) or 0
+                               db.session.query(func.count(Folder.id))
+                               .filter(Folder.user_id == user_id)
+                               .scalar()
+                           ) or 0
 
             total_size = int(file_stats.total_size) if file_stats else 0
 
@@ -630,7 +633,7 @@ class BatchDeleteItem(BaseModel):
 
 @mcp.tool()
 async def batch_delete(
-    items: list[BatchDeleteItem],
+        items: list[BatchDeleteItem],
 ) -> str:
     """批量删除多个文件和/或文件夹。
 

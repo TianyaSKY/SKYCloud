@@ -134,7 +134,7 @@ def _parse_json_payload(raw_output: str) -> dict[str, Any] | None:
 
 
 def _normalize_dimensions(
-    dimensions: RewriteKeywordDimensions,
+        dimensions: RewriteKeywordDimensions,
 ) -> RewriteKeywordDimensions:
     normalized: dict[str, list[str]] = {}
     for key in DIMENSION_KEYS:
@@ -169,7 +169,7 @@ def _fallback_dimensions(question: str = "", raw_output: str = "") -> RewriteKey
 
 
 def parse_keyword_dimensions(
-    raw_output: str, question: str = ""
+        raw_output: str, question: str = ""
 ) -> RewriteKeywordDimensions:
     """尽力解析 LLM 输出；失败则回退到原问题词。"""
     payload = _parse_json_payload(raw_output)
@@ -183,7 +183,7 @@ def parse_keyword_dimensions(
 
 
 def coerce_keyword_dimensions(
-    raw_output: Any, question: str = ""
+        raw_output: Any, question: str = ""
 ) -> RewriteKeywordDimensions:
     """宽松入口：接受 model / dict / str，解析失败时兜底。"""
     if isinstance(raw_output, RewriteKeywordDimensions):
@@ -215,9 +215,9 @@ def require_keyword_dimensions(raw_output: Any) -> RewriteKeywordDimensions:
 
 
 def build_multi_queries(
-    question: str,
-    dimensions: RewriteKeywordDimensions,
-    max_queries: int = 6,
+        question: str,
+        dimensions: RewriteKeywordDimensions,
+        max_queries: int = 6,
 ) -> list[str]:
     """生成多样化检索查询（去重截断），提高召回覆盖。
 

@@ -1,8 +1,8 @@
 """系统字典 CRUD 与缓存；禁止通过字典表写入模型 API 配置（改走环境变量）。"""
 
-from app.infra.cache import cacheable, evict_cache
 from app.exceptions import BusinessRuleError, ResourceNotFoundError
 from app.extensions import db
+from app.infra.cache import cacheable, evict_cache
 from app.models.sys_dict import SysDict
 from app.services.model_config import is_model_config_sys_dict_key
 

@@ -3,8 +3,8 @@ from typing import cast
 
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
 
-from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
+from app.infra.datetime_utils import beijing_now, local_isoformat
 
 
 class SysDict(Base):

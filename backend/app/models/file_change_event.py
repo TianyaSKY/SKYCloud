@@ -1,10 +1,8 @@
-from datetime import datetime
-
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
-from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
+from app.infra.datetime_utils import beijing_now, local_isoformat
 
 
 class FileChangeEvent(Base):

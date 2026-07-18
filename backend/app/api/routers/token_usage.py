@@ -24,12 +24,12 @@ def user_token_stats(user_id: int, current_user=Depends(get_current_user)):
 
 @router.get("/token-usage/logs")
 def my_usage_logs(
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
-    action: str | None = Query(default=None),
-    start_date: str | None = Query(default=None),
-    end_date: str | None = Query(default=None),
-    current_user=Depends(get_current_user),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=20, ge=1, le=100),
+        action: str | None = Query(default=None),
+        start_date: str | None = Query(default=None),
+        end_date: str | None = Query(default=None),
+        current_user=Depends(get_current_user),
 ):
     """当前用户 Token 使用明细分页。"""
     return token_usage_service.get_usage_logs(
@@ -44,13 +44,13 @@ def my_usage_logs(
 
 @router.get("/token-usage/logs/{user_id}")
 def user_usage_logs(
-    user_id: int,
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
-    action: str | None = Query(default=None),
-    start_date: str | None = Query(default=None),
-    end_date: str | None = Query(default=None),
-    current_user=Depends(get_current_user),
+        user_id: int,
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=20, ge=1, le=100),
+        action: str | None = Query(default=None),
+        start_date: str | None = Query(default=None),
+        end_date: str | None = Query(default=None),
+        current_user=Depends(get_current_user),
 ):
     """指定用户明细；仅本人或管理员。"""
     user_service.ensure_user_access(current_user.id, current_user.role, user_id)
@@ -66,8 +66,8 @@ def user_usage_logs(
 
 @router.get("/token-usage/daily")
 def my_daily_stats(
-    days: int = Query(default=30, ge=1, le=365),
-    current_user=Depends(get_current_user),
+        days: int = Query(default=30, ge=1, le=365),
+        current_user=Depends(get_current_user),
 ):
     """当前用户最近 N 天每日统计。"""
     return token_usage_service.get_daily_stats(current_user.id, days)
@@ -75,9 +75,9 @@ def my_daily_stats(
 
 @router.get("/token-usage/daily/{user_id}")
 def user_daily_stats(
-    user_id: int,
-    days: int = Query(default=30, ge=1, le=365),
-    current_user=Depends(get_current_user),
+        user_id: int,
+        days: int = Query(default=30, ge=1, le=365),
+        current_user=Depends(get_current_user),
 ):
     """指定用户每日统计；仅本人或管理员。"""
     user_service.ensure_user_access(current_user.id, current_user.role, user_id)
@@ -97,13 +97,13 @@ def admin_all_users_stats(current_user=Depends(require_admin)):
 
 @router.get("/admin/token-usage/logs")
 def admin_all_logs(
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
-    action: str | None = Query(default=None),
-    user_id: int | None = Query(default=None),
-    start_date: str | None = Query(default=None),
-    end_date: str | None = Query(default=None),
-    current_user=Depends(require_admin),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=20, ge=1, le=100),
+        action: str | None = Query(default=None),
+        user_id: int | None = Query(default=None),
+        start_date: str | None = Query(default=None),
+        end_date: str | None = Query(default=None),
+        current_user=Depends(require_admin),
 ):
     """管理员：全站 Token 明细分页（可按用户/action 过滤）。"""
     return token_usage_service.get_all_users_usage_logs(
@@ -118,8 +118,8 @@ def admin_all_logs(
 
 @router.get("/admin/token-usage/daily")
 def admin_daily_stats(
-    days: int = Query(default=30, ge=1, le=365),
-    current_user=Depends(require_admin),
+        days: int = Query(default=30, ge=1, le=365),
+        current_user=Depends(require_admin),
 ):
     """管理员：全站合计最近 N 天每日统计。"""
     return token_usage_service.get_all_users_daily_stats(days)
@@ -127,8 +127,8 @@ def admin_daily_stats(
 
 @router.get("/admin/token-usage/daily/per-user")
 def admin_per_user_daily_stats(
-    days: int = Query(default=30, ge=1, le=365),
-    current_user=Depends(require_admin),
+        days: int = Query(default=30, ge=1, le=365),
+        current_user=Depends(require_admin),
 ):
     """管理员：按用户拆分的最近 N 天每日统计。"""
     return token_usage_service.get_per_user_daily_stats(days)

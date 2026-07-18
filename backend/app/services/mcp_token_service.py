@@ -3,9 +3,9 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.infra.datetime_utils import beijing_now
 from app.exceptions import ServiceOperationError
 from app.extensions import db
+from app.infra.datetime_utils import beijing_now
 from app.models.mcp_token import McpToken
 
 
@@ -122,7 +122,7 @@ def get_active_mcp_token(token: str) -> McpToken | None:
 
 
 def create_mcp_token(
-    user_id: int, token: str, expires_at: datetime, name: str | None
+        user_id: int, token: str, expires_at: datetime, name: str | None
 ) -> McpToken:
     """兼容旧签名：创建 Token 前先撤销用户其它有效 Token。"""
     _revoke_all_active(user_id)

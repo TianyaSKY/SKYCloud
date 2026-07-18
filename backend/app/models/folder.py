@@ -4,8 +4,8 @@ from typing import cast
 from sqlalchemy import Column, DateTime, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship, backref
 
-from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
+from app.infra.datetime_utils import beijing_now, local_isoformat
 
 
 class Folder(Base):

@@ -4,8 +4,8 @@
 """
 
 import asyncio
-import json
 import hashlib
+import json
 import logging
 import math
 import mimetypes
@@ -15,7 +15,9 @@ import shutil
 import uuid
 from typing import Any, cast
 
-from app.infra.cache import cacheable, evict_cache_pattern
+from sqlalchemy import func
+from werkzeug.utils import secure_filename
+
 from app.exceptions import (
     BusinessRuleError,
     ConflictError,
@@ -25,16 +27,14 @@ from app.exceptions import (
     ResourceNotFoundError,
     ServiceOperationError,
 )
-from sqlalchemy import func
-from werkzeug.utils import secure_filename
-
 from app.extensions import UPLOAD_FOLDER, db, redis_client
+from app.infra.cache import cacheable, evict_cache_pattern
+from app.infra.task_queue import publish_file_tasks
 from app.models.file import File
 from app.models.folder import Folder
 from app.services import change_log_service
 from app.services import file_access_bloom
 from app.services.model_config import get_embedding_model_config
-from app.infra.task_queue import publish_file_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,6 @@ CACHE_EXPIRATION = 3600
 SEARCH_CACHE_PREFIX = "search:fuzzy"
 
 COPY_BUFFER_SIZE = 1024 * 1024
-
 
 DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024
 MAX_CHUNK_SIZE = 64 * 1024 * 1024
@@ -118,17 +117,17 @@ def _get_reusable_source_file(content_hash: str, file_size: int) -> File | None:
 
 
 def _persist_file_record(
-    *,
-    name: str,
-    file_path: str,
-    file_size: int,
-    mime_type: str | None,
-    uploader_id: int | None,
-    parent_id: int | None,
-    content_hash: str | None,
-    status: str = "pending",
-    description: str | None = None,
-    vector_info: Any = None,
+        *,
+        name: str,
+        file_path: str,
+        file_size: int,
+        mime_type: str | None,
+        uploader_id: int | None,
+        parent_id: int | None,
+        content_hash: str | None,
+        status: str = "pending",
+        description: str | None = None,
+        vector_info: Any = None,
 ) -> File:
     new_file = File(
         name=name,
@@ -167,13 +166,13 @@ def _log_file_created(file_obj: File) -> None:
 
 
 def _clone_existing_file(
-    source_file: File,
-    *,
-    filename: str,
-    uploader_id: int,
-    parent_id: int | None,
-    mime_type: str | None,
-    content_hash: str,
+        source_file: File,
+        *,
+        filename: str,
+        uploader_id: int,
+        parent_id: int | None,
+        mime_type: str | None,
+        content_hash: str,
 ) -> File:
     """秒传：复用已有物理文件路径；仅 success 状态才继承 description/vector。"""
     resolved_mime = mime_type or cast(str | None, source_file.mime_type)
@@ -355,7 +354,7 @@ def create_uploaded_file(uploader_id: int, upload: Any, parent_id: int | None = 
 
 
 def batch_create_files(
-    file_objs: list[Any], data: dict[str, Any]
+        file_objs: list[Any], data: dict[str, Any]
 ) -> list[File]:
     upload_folder = UPLOAD_FOLDER
     os.makedirs(upload_folder, exist_ok=True)
@@ -419,7 +418,7 @@ def batch_create_files(
 
 
 def create_uploaded_files(
-    uploader_id: int, uploads: list[Any], parent_id: int | None = None
+        uploader_id: int, uploads: list[Any], parent_id: int | None = None
 ) -> list[File]:
     valid_uploads = [upload for upload in uploads if getattr(upload, "filename", None)]
     if not valid_uploads:
@@ -534,10 +533,10 @@ def get_multipart_upload_status(uploader_id: int, upload_id: str) -> dict[str, A
 
 
 def save_multipart_chunk(
-    uploader_id: int,
-    upload_id: str,
-    chunk_index: int,
-    chunk_obj: Any,
+        uploader_id: int,
+        upload_id: str,
+        chunk_index: int,
+        chunk_obj: Any,
 ) -> dict[str, Any]:
     safe_upload_id = _safe_upload_id(upload_id)
     meta = _load_multipart_meta(uploader_id, safe_upload_id)
@@ -702,13 +701,13 @@ def get_downloadable_file(user_id: int, role: str, file_id: int) -> File:
 
 
 def get_files_and_folders(
-    user_id: int,
-    parent_id: int | None,
-    page: int = 1,
-    page_size: int = 10,
-    name: str | None = None,
-    sort_by: str = "created_at",
-    order: str = "desc",
+        user_id: int,
+        parent_id: int | None,
+        page: int = 1,
+        page_size: int = 10,
+        name: str | None = None,
+        sort_by: str = "created_at",
+        order: str = "desc",
 ) -> dict[str, Any]:
     if page < 1:
         page = 1
@@ -848,11 +847,11 @@ def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
 
 
 async def search_files(
-    user_id: int,
-    query: str,
-    page: int = 1,
-    page_size: int = 10,
-    search_type: str = "fuzzy",
+        user_id: int,
+        query: str,
+        page: int = 1,
+        page_size: int = 10,
+        search_type: str = "fuzzy",
 ) -> dict[str, Any]:
     if not query:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
@@ -870,7 +869,7 @@ async def search_files(
 
 @cacheable(prefix=SEARCH_CACHE_PREFIX, expire=CACHE_EXPIRATION)
 def _search_files_fuzzy(
-    user_id: int, query: str, page: int, page_size: int
+        user_id: int, query: str, page: int, page_size: int
 ) -> dict[str, Any]:
     base_query = db.session.query(File).filter(
         File.uploader_id == user_id, File.name.ilike(f"%{_escape_like(query)}%", escape="\\")
@@ -888,7 +887,7 @@ def _search_files_fuzzy(
 
 
 def _search_files_vector(
-    user_id: int, query: str, page: int, page_size: int
+        user_id: int, query: str, page: int, page_size: int
 ) -> dict[str, Any]:
     try:
         emb_config = get_embedding_model_config()
@@ -977,7 +976,7 @@ def upload_avatar(img_file: Any, user_id: int) -> dict[str, Any]:
 
 
 def upload_avatar_for_user(
-    actor_id: int, actor_role: str, user_id: int, upload: Any
+        actor_id: int, actor_role: str, user_id: int, upload: Any
 ) -> dict[str, Any]:
     if actor_id != user_id and actor_role != "admin":
         raise PermissionDeniedError("Permission denied")

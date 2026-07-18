@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -140,10 +140,10 @@ class RabbitMQTaskConsumer:
     def _ensure_channel(self) -> BlockingChannel:
         """断线时自动重连。"""
         if (
-            self._connection is None
-            or self._channel is None
-            or self._connection.is_closed
-            or self._channel.is_closed
+                self._connection is None
+                or self._channel is None
+                or self._connection.is_closed
+                or self._channel.is_closed
         ):
             self.connect()
         if self._channel is None:

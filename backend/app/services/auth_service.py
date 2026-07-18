@@ -6,8 +6,8 @@ import uuid
 
 import jwt
 
-from app.extensions import SECRET_KEY, db
 from app.exceptions import AuthenticationError, BusinessRuleError
+from app.extensions import SECRET_KEY, db
 from app.models.user import User
 from app.services import mcp_token_service
 from app.services.user_service import create_user
@@ -31,7 +31,7 @@ def generate_token(user_id):
 
 
 def generate_mcp_token(
-    user_id: int, expires_at: _dt.datetime | None = None
+        user_id: int, expires_at: _dt.datetime | None = None
 ) -> str | None:
     """签发 MCP 专用长效 JWT（默认 365 天），带 jti 以便服务端撤销。
 
@@ -39,7 +39,7 @@ def generate_mcp_token(
     """
     try:
         expires_at = expires_at or (
-            _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365)
+                _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365)
         )
         payload = {
             "exp": expires_at,

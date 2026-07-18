@@ -20,7 +20,6 @@ from fastapi import UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.api.dependencies import get_current_user
-from app.exceptions import DomainError
 from app.api.schemas.file import (
     BatchDeleteRequest,
     FilePreflightRequest,
@@ -29,17 +28,18 @@ from app.api.schemas.file import (
     MultipartInitRequest,
     RetryEmbeddingRequest,
 )
-from app.services import file_service
+from app.exceptions import DomainError
 from app.infra.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
+from app.services import file_service
 
 router = APIRouter(tags=["file"])
 
 
 @router.post("/files")
 def create_file(
-    current_user=Depends(get_current_user),
-    file: UploadFile = FastAPIFile(...),
-    parent_id: int | None = Form(default=None),
+        current_user=Depends(get_current_user),
+        file: UploadFile = FastAPIFile(...),
+        parent_id: int | None = Form(default=None),
 ):
     """单文件上传；未指定 parent_id 时落到用户根目录。"""
     try:
@@ -59,9 +59,9 @@ def create_file(
 
 @router.post("/files/batch")
 def batch_upload_files(
-    current_user=Depends(get_current_user),
-    files: list[UploadFile] | None = FastAPIFile(default=None),
-    parent_id: int | None = Form(default=None),
+        current_user=Depends(get_current_user),
+        files: list[UploadFile] | None = FastAPIFile(default=None),
+        parent_id: int | None = Form(default=None),
 ):
     """批量上传；未指定 parent_id 时落到用户根目录。"""
     adapters = [FastAPIUploadAdapter(file) for file in (files or []) if file]
@@ -83,8 +83,8 @@ def batch_upload_files(
 
 @router.post("/files/preflight")
 def preflight_file_upload(
-    payload: FilePreflightRequest,
-    current_user=Depends(get_current_user),
+        payload: FilePreflightRequest,
+        current_user=Depends(get_current_user),
 ):
     """上传前校验（哈希秒传、配额等），避免无效分片开销。"""
     try:
@@ -101,8 +101,8 @@ def preflight_file_upload(
 
 @router.post("/files/multipart/init")
 def init_multipart_upload(
-    payload: MultipartInitRequest,
-    current_user=Depends(get_current_user),
+        payload: MultipartInitRequest,
+        current_user=Depends(get_current_user),
 ):
     """初始化分片上传会话。"""
     try:
@@ -119,10 +119,10 @@ def init_multipart_upload(
 
 @router.post("/files/multipart/chunk")
 def upload_multipart_chunk(
-    upload_id: str = Form(...),
-    chunk_index: int = Form(...),
-    chunk: UploadFile = FastAPIFile(...),
-    current_user=Depends(get_current_user),
+        upload_id: str = Form(...),
+        chunk_index: int = Form(...),
+        chunk: UploadFile = FastAPIFile(...),
+        current_user=Depends(get_current_user),
 ):
     """写入单个分片。"""
     if not chunk.filename:
@@ -147,8 +147,8 @@ def upload_multipart_chunk(
 
 @router.post("/files/multipart/complete")
 def complete_multipart_upload(
-    payload: MultipartCompleteRequest,
-    current_user=Depends(get_current_user),
+        payload: MultipartCompleteRequest,
+        current_user=Depends(get_current_user),
 ):
     """合并分片并落库，触发后续索引任务。"""
     try:
@@ -168,8 +168,8 @@ def complete_multipart_upload(
 
 @router.get("/files/multipart/{upload_id}")
 def get_multipart_upload_status(
-    upload_id: str,
-    current_user=Depends(get_current_user),
+        upload_id: str,
+        current_user=Depends(get_current_user),
 ):
     """查询分片上传进度（已收分片等）。"""
     return file_service.get_multipart_upload_status(current_user.id, upload_id)
@@ -177,8 +177,8 @@ def get_multipart_upload_status(
 
 @router.delete("/files/multipart/{upload_id}")
 def abort_multipart_upload(
-    upload_id: str,
-    current_user=Depends(get_current_user),
+        upload_id: str,
+        current_user=Depends(get_current_user),
 ):
     """中止并清理未完成的分片会话。"""
     file_service.abort_multipart_upload(current_user.id, upload_id)
@@ -187,13 +187,13 @@ def abort_multipart_upload(
 
 @router.get("/files/list")
 def list_files(
-    current_user=Depends(get_current_user),
-    parent_id: int | None = Query(default=None, ge=1),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=10, ge=1, le=100),
-    name: str | None = Query(default=None, max_length=255),
-    sort_by: str = Query(default="created_at", min_length=1, max_length=50),
-    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+        current_user=Depends(get_current_user),
+        parent_id: int | None = Query(default=None, ge=1),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=10, ge=1, le=100),
+        name: str | None = Query(default=None, max_length=255),
+        sort_by: str = Query(default="created_at", min_length=1, max_length=50),
+        order: str = Query(default="desc", pattern="^(asc|desc)$"),
 ):
     """目录浏览：文件与子文件夹分页列表。"""
     return file_service.get_files_and_folders(
@@ -203,11 +203,11 @@ def list_files(
 
 @router.get("/files/search")
 async def search_files(
-    current_user=Depends(get_current_user),
-    q: str = Query(default="", max_length=255),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=10, ge=1, le=100),
-    type: str = Query(default="fuzzy", pattern="^(fuzzy|semantic)$"),
+        current_user=Depends(get_current_user),
+        q: str = Query(default="", max_length=255),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=10, ge=1, le=100),
+        type: str = Query(default="fuzzy", pattern="^(fuzzy|semantic)$"),
 ):
     """文件名模糊或语义检索；空查询直接返回空页避免全表扫描。"""
     if not q:
@@ -217,7 +217,7 @@ async def search_files(
 
 @router.put("/files/{id}")
 def update_file(
-    id: int, payload: FileUpdateRequest, current_user=Depends(get_current_user)
+        id: int, payload: FileUpdateRequest, current_user=Depends(get_current_user)
 ):
     """重命名/移动文件等元数据更新。"""
     file_service.get_authorized_file(current_user.id, current_user.role, id)
@@ -248,11 +248,11 @@ def download_file(id: int, current_user=Depends(get_current_user)):
 
 @router.post("/files/upload/avatar/{id}")
 async def upload_avatar(
-    id: int,
-    request: Request,
-    avatar: UploadFile | None = FastAPIFile(default=None),
-    avatar_base64: str | None = Form(default=None),
-    current_user=Depends(get_current_user),
+        id: int,
+        request: Request,
+        avatar: UploadFile | None = FastAPIFile(default=None),
+        avatar_base64: str | None = Form(default=None),
+        current_user=Depends(get_current_user),
 ):
     """上传用户头像；兼容 multipart 文件、form base64 与 JSON body。"""
     adapter = None
@@ -265,7 +265,7 @@ async def upload_avatar(
     else:
         avatar_text = (avatar_base64 or "").strip()
         if not avatar_text and request.headers.get("content-type", "").startswith(
-            "application/json"
+                "application/json"
         ):
             try:
                 payload = await request.json()
@@ -291,7 +291,7 @@ async def upload_avatar(
 
 @router.post("/files/batch-delete")
 def batch_delete_files(
-    payload: BatchDeleteRequest, current_user=Depends(get_current_user)
+        payload: BatchDeleteRequest, current_user=Depends(get_current_user)
 ):
     """批量删除文件与/或文件夹。"""
     items = [item.model_dump() for item in payload.items]
@@ -301,7 +301,7 @@ def batch_delete_files(
 
 @router.post("/files/retry_embedding")
 def retry_embedding(
-    payload: RetryEmbeddingRequest, current_user=Depends(get_current_user)
+        payload: RetryEmbeddingRequest, current_user=Depends(get_current_user)
 ):
     """对单个失败文件重新入队索引。"""
     file_obj = file_service.get_authorized_file(

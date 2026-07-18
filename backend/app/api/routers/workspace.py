@@ -10,15 +10,15 @@ from dataclasses import asdict
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
+from loguru import logger
 from starlette.requests import Request
-from starlette.responses import StreamingResponse, Response
+from starlette.responses import Response
 
 from app.api.dependencies import get_current_user
 from app.api.schemas.workspace import WorkspaceCreateRequest
 from app.models.user import User
 from app.services import workspace_service
 from app.services.workspace_types import CreateWorkspaceCommand
-from loguru import logger
 
 router = APIRouter(tags=["workspace"])
 
@@ -30,8 +30,8 @@ router = APIRouter(tags=["workspace"])
 
 @router.post("/workspace")
 async def create_workspace(
-    payload: WorkspaceCreateRequest,
-    current_user: User = Depends(get_current_user),
+        payload: WorkspaceCreateRequest,
+        current_user: User = Depends(get_current_user),
 ):
     """创建工作区记录（不立即启动容器）。"""
     workspace = workspace_service.create_workspace(
@@ -52,8 +52,8 @@ async def list_workspaces(current_user: User = Depends(get_current_user)):
 
 @router.get("/workspace/{workspace_id}")
 async def get_workspace(
-    workspace_id: int,
-    current_user: User = Depends(get_current_user),
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
 ):
     """获取单个工作区；不存在时 404。"""
     ws = workspace_service.get_workspace(workspace_id, current_user.id)
@@ -65,8 +65,8 @@ async def get_workspace(
 
 @router.post("/workspace/{workspace_id}/start")
 async def start_workspace(
-    workspace_id: int,
-    current_user: User = Depends(get_current_user),
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
 ):
     """启动 OpenCode 容器。"""
     workspace = workspace_service.start_workspace(workspace_id, current_user.id)
@@ -75,8 +75,8 @@ async def start_workspace(
 
 @router.post("/workspace/{workspace_id}/stop")
 async def stop_workspace(
-    workspace_id: int,
-    current_user: User = Depends(get_current_user),
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
 ):
     """停止容器（保留工作区记录）。"""
     workspace = workspace_service.stop_workspace(workspace_id, current_user.id)
@@ -85,8 +85,8 @@ async def stop_workspace(
 
 @router.delete("/workspace/{workspace_id}")
 async def delete_workspace(
-    workspace_id: int,
-    current_user: User = Depends(get_current_user),
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
 ):
     """销毁容器并删除工作区记录。"""
     workspace_service.delete_workspace(workspace_id, current_user.id)
@@ -95,8 +95,8 @@ async def delete_workspace(
 
 @router.post("/workspace/{workspace_id}/restart")
 async def restart_workspace(
-    workspace_id: int,
-    current_user: User = Depends(get_current_user),
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
 ):
     """重启容器（配置变更后常用）。"""
     workspace = workspace_service.restart_workspace(workspace_id, current_user.id)
@@ -105,8 +105,8 @@ async def restart_workspace(
 
 @router.post("/workspace/{workspace_id}/setup-mcp")
 async def setup_mcp_connection(
-    workspace_id: int,
-    current_user: User = Depends(get_current_user),
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
 ):
     """向运行中工作区写入 MCP 连接配置（含当前用户 JWT）。"""
     result = workspace_service.setup_mcp_connection(workspace_id, current_user.id)
@@ -167,9 +167,9 @@ async def _resolve_proxy_user(request: Request) -> User:
     include_in_schema=False,
 )
 async def proxy_http(
-    workspace_id: int,
-    path: str,
-    request: Request,
+        workspace_id: int,
+        path: str,
+        request: Request,
 ):
     """将 HTTP 请求转发到 OpenCode 容器；外层统一记日志。"""
     import traceback
@@ -184,9 +184,9 @@ async def proxy_http(
 
 
 async def _proxy_http_inner(
-    workspace_id: int,
-    path: str,
-    request: Request,
+        workspace_id: int,
+        path: str,
+        request: Request,
 ):
     """代理实现：鉴权 → 校验 running → 转发 → 改写 HTML 资源路径 → 种鉴权 Cookie。"""
     try:
@@ -296,9 +296,9 @@ async def _proxy_http_inner(
 
 @router.websocket("/workspace/{workspace_id}/proxy/{path:path}")
 async def proxy_websocket(
-    websocket: WebSocket,
-    workspace_id: int,
-    path: str,
+        websocket: WebSocket,
+        workspace_id: int,
+        path: str,
 ):
     """双向 WebSocket 代理到 OpenCode 容器。
 
@@ -342,11 +342,11 @@ async def proxy_websocket(
     try:
         import websockets
         async with websockets.connect(
-            target,
-            additional_headers={"Authorization": auth_header},
-            ping_interval=20,
-            ping_timeout=20,
-            close_timeout=5,
+                target,
+                additional_headers={"Authorization": auth_header},
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=5,
         ) as upstream:
 
             async def client_to_upstream():

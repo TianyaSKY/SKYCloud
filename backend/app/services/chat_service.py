@@ -356,27 +356,27 @@ async def generate_chat_events(user_id, query: str, history: list):
 """)
 
     answer_chain = (
-        answer_prompt |
-        llm.with_config({"run_name": "final_answer_model", "tags": ["final_answer"]}) |
-        StrOutputParser()
+            answer_prompt |
+            llm.with_config({"run_name": "final_answer_model", "tags": ["final_answer"]}) |
+            StrOutputParser()
     ).with_config({"run_name": "final_answer_chain"})
 
     rag_chain = (
-        RunnableParallel({
-            "context": {
-                "rewrite_output": rewriter,
-                "original_vector": RunnableLambda(
-                    embed_original_question
-                ).with_config({"run_name": "embed_original"}),
+            RunnableParallel({
+                "context": {
+                               "rewrite_output": rewriter,
+                               "original_vector": RunnableLambda(
+                                   embed_original_question
+                               ).with_config({"run_name": "embed_original"}),
+                               "question": itemgetter("question"),
+                               "user_id": itemgetter("user_id"),
+                           } | RunnableLambda(retrieve_docs_with_rewrite).with_config(
+                    {"run_name": "custom_db_retriever"}
+                ) | format_docs,
                 "question": itemgetter("question"),
-                "user_id": itemgetter("user_id"),
-            } | RunnableLambda(retrieve_docs_with_rewrite).with_config(
-                {"run_name": "custom_db_retriever"}
-            ) | format_docs,
-            "question": itemgetter("question"),
-            "history": itemgetter("history")
-        })
-        | answer_chain
+                "history": itemgetter("history")
+            })
+            | answer_chain
     )
 
     # ---------------------------------------------------------------------------

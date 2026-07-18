@@ -14,36 +14,43 @@
 
 ---
 
-SKYCloud is an AI-enhanced cloud file management system that provides an all-in-one experience from file storage and intelligent retrieval to autonomous execution.
+SKYCloud is an AI-enhanced cloud file management system that provides an all-in-one experience from file storage and
+intelligent retrieval to autonomous execution.
 
 ## Highlights
 
-- **File management** - Uploads (chunked uploads / instant uploads), downloads, previews, batch operations, folder trees, and format conversion
-- **AI chat (RAG)** - Multi-dimensional keyword rewriting -> Multi-Query vector recall -> RRF fusion -> optional reranking -> SSE streaming output, with image references
-- **AI file organization** - LangGraph ReAct Agent automatic classification, incremental / full organization modes, and inbox notifications after organization
-- **All-in-one workspace** - Isolated Docker sandboxes + MCP protocol, allowing AI Agents to read/write cloud files, run code, and automate tasks in a Manus-style workflow
-- **MCP service** - 17 tools / 4 prompts / 2 resources, directly accessible from clients such as Claude Desktop and Cursor
+- **File management** - Uploads (chunked uploads / instant uploads), downloads, previews, batch operations, folder
+  trees, and format conversion
+- **AI chat (RAG)** - Multi-dimensional keyword rewriting -> Multi-Query vector recall -> RRF fusion -> optional
+  reranking -> SSE streaming output, with image references
+- **AI file organization** - LangGraph ReAct Agent automatic classification, incremental / full organization modes, and
+  inbox notifications after organization
+- **All-in-one workspace** - Isolated Docker sandboxes + MCP protocol, allowing AI Agents to read/write cloud files, run
+  code, and automate tasks in a Manus-style workflow
+- **MCP service** - 17 tools / 4 prompts / 2 resources, directly accessible from clients such as Claude Desktop and
+  Cursor
 - **Sharing & inbox** - Expiring share links and system notification delivery
 - **Token usage tracking** - Consumption statistics for chat / indexing / organization, including an admin summary view
-- **Performance optimizations** - Bloom Filter permission pre-checks, Redis caching, RabbitMQ async indexing, and parallel embedding
+- **Performance optimizations** - Bloom Filter permission pre-checks, Redis caching, RabbitMQ async indexing, and
+  parallel embedding
 
-| AI Assistant Chat | File Preview |
-| ----------------- | ------------ |
+| AI Assistant Chat                           | File Preview                             |
+|---------------------------------------------|------------------------------------------|
 | ![AI Assistant Chat](images/agent_chat.png) | ![File Preview](images/file_preview.png) |
 
 ## Architecture
 
 ![System Architecture](images/architecture.png)
 
-| Layer | Technology |
-| ----- | ---------- |
-| Backend | FastAPI · SQLAlchemy · Pydantic |
-| AI | LangChain · LangGraph · OpenAI API (compatible with SiliconFlow and others) |
-| Vector Database | PostgreSQL 15 + pgvector (1024 dimensions) |
-| Queue / Cache | RabbitMQ 3.13 · Redis 7 |
-| Frontend | Vue 3 · TypeScript · Vite · Arco Design |
-| MCP | FastMCP (Streamable HTTP) |
-| Deployment | Docker Compose |
+| Layer           | Technology                                                                  |
+|-----------------|-----------------------------------------------------------------------------|
+| Backend         | FastAPI · SQLAlchemy · Pydantic                                             |
+| AI              | LangChain · LangGraph · OpenAI API (compatible with SiliconFlow and others) |
+| Vector Database | PostgreSQL 15 + pgvector (1024 dimensions)                                  |
+| Queue / Cache   | RabbitMQ 3.13 · Redis 7                                                     |
+| Frontend        | Vue 3 · TypeScript · Vite · Arco Design                                     |
+| MCP             | FastMCP (Streamable HTTP)                                                   |
+| Deployment      | Docker Compose                                                              |
 
 ## Quick Start
 
@@ -58,11 +65,13 @@ docker-compose up -d --build
 
 After startup, visit `http://localhost` (default port 80). The default administrator account is `admin / admin123`.
 
-> For non-demo environments, change the password immediately after the first login. If `SECRET_KEY` is not configured, an insecure default value is used. Always configure it in production.
+> For non-demo environments, change the password immediately after the first login. If `SECRET_KEY` is not configured,
+> an insecure default value is used. Always configure it in production.
 
 ### Stopping services (including OpenCode workspaces)
 
-OpenCode workspaces are created dynamically with `docker run` by the backend and are **not** listed in `docker-compose.yml`. Running `docker compose down` alone will not stop them.
+OpenCode workspaces are created dynamically with `docker run` by the backend and are **not** listed in
+`docker-compose.yml`. Running `docker compose down` alone will not stop them.
 
 Use the repo scripts to tear everything down together:
 
@@ -94,22 +103,26 @@ docker compose down
 
 **Offline**: File upload -> RabbitMQ -> Worker generates descriptions + 1024-dimensional embeddings -> pgvector
 
-**Online**: 6-dimensional keyword rewriting -> multi-query generation -> parallel vector recall -> RRF fusion -> reranking -> SSE streaming output
+**Online**: 6-dimensional keyword rewriting -> multi-query generation -> parallel vector recall -> RRF fusion ->
+reranking -> SSE streaming output
 
 ## MCP Access
 
-The MCP Server runs in a standalone container on the default port **5001**. Each user is auto-provisioned with a **single** MCP token: open the avatar menu → **MCP Token** to copy or refresh. Workspaces inject this token automatically on create/start/restart — no manual "Connect MCP" step.
+The MCP Server runs in a standalone container on the default port **5001**. Each user is auto-provisioned with a *
+*single** MCP token: open the avatar menu → **MCP Token** to copy or refresh. Workspaces inject this token automatically
+on create/start/restart — no manual "Connect MCP" step.
 
-| Workspace / MCP | Token Usage |
-| --------------- | ----------- |
+| Workspace / MCP        | Token Usage                            |
+|------------------------|----------------------------------------|
 | ![MCP](images/mcp.png) | ![Token Usage](images/token-usage.png) |
 
 ## All-In-One Workspace
 
-Each workspace runs in an isolated Docker container. Through the MCP protocol, AI can autonomously execute tasks inside the sandbox and interact with the cloud drive.
+Each workspace runs in an isolated Docker container. Through the MCP protocol, AI can autonomously execute tasks inside
+the sandbox and interact with the cloud drive.
 
-| Share Management | Workspace |
-| ---------------- | --------- |
+| Share Management           | Workspace                          |
+|----------------------------|------------------------------------|
 | ![Share](images/share.png) | ![Workspace](images/workspace.png) |
 
 ## Local Development

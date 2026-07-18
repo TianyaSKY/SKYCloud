@@ -4,6 +4,15 @@
 增量事件过多或无 checkpoint 时回退全量扫描，避免 Agent 上下文爆炸。
 """
 
+import datetime
+import logging
+import time
+
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
+
+from app.services import change_log_service
+from app.services.model_config import get_chat_model_config
 from .organize_tools import (
     check_empty_folders_internal,
     check_mixed_folders_internal,
@@ -20,15 +29,6 @@ from .organize_tools import (
     move_folder,
     rename_folder,
 )
-from app.services.model_config import get_chat_model_config
-from app.services import change_log_service
-from langgraph.prebuilt import create_react_agent
-from langchain_openai import ChatOpenAI
-import datetime
-import logging
-import os
-import time
-
 
 logger = logging.getLogger(__name__)
 

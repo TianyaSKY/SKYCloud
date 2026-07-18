@@ -25,10 +25,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _build_cache_key(
-    prefix: str,
-    args: tuple,
-    kwargs: dict,
-    key: Optional[Callable] = None,
+        prefix: str,
+        args: tuple,
+        kwargs: dict,
+        key: Optional[Callable] = None,
 ) -> str:
     """拼 Redis 键：``prefix`` + 自定义 key 回调或全部位置参数。
 
@@ -51,10 +51,10 @@ def _build_cache_key(
 # ---------------------------------------------------------------------------
 
 def cacheable(
-    prefix: str,
-    expire: int = 3600,
-    cache_none: bool = False,
-    key: Optional[Callable] = None,
+        prefix: str,
+        expire: int = 3600,
+        cache_none: bool = False,
+        key: Optional[Callable] = None,
 ):
     """先查 Redis，未命中再执行函数并写入。
 
@@ -63,6 +63,7 @@ def cacheable(
     :param cache_none: False 时不缓存 None（对应 unless="#result == null"）
     :param key: 可选 ``(*args, **kwargs) -> Any`` 生成键后缀
     """
+
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
@@ -120,10 +121,10 @@ def cacheable(
 # ---------------------------------------------------------------------------
 
 def cache_evict(
-    prefix: str,
-    key: Optional[Callable] = None,
-    all_entries: bool = False,
-    before_invocation: bool = False,
+        prefix: str,
+        key: Optional[Callable] = None,
+        all_entries: bool = False,
+        before_invocation: bool = False,
 ):
     """在被装饰函数执行前/后清除缓存。
 
@@ -132,6 +133,7 @@ def cache_evict(
     :param all_entries: True 时按 ``prefix:*`` 批量删（Spring allEntries）
     :param before_invocation: True 时在函数执行前删除（Spring beforeInvocation）
     """
+
     def decorator(func: Callable) -> Callable:
         def _do_evict(args, kwargs):
             try:
@@ -171,12 +173,13 @@ def cache_evict(
 # ---------------------------------------------------------------------------
 
 def cache_put(
-    prefix: str,
-    expire: int = 3600,
-    cache_none: bool = False,
-    key: Optional[Callable] = None,
+        prefix: str,
+        expire: int = 3600,
+        cache_none: bool = False,
+        key: Optional[Callable] = None,
 ):
     """始终执行函数并用结果覆盖缓存（从不先读缓存）。"""
+
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):

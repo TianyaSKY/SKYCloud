@@ -4,8 +4,8 @@ import json
 import logging
 from typing import Any
 
-from app.infra.datetime_utils import beijing_now
 from app.extensions import db
+from app.infra.datetime_utils import beijing_now
 from app.models.file import File
 from app.models.file_change_event import FileChangeEvent
 from app.models.folder import Folder
@@ -36,9 +36,9 @@ def _build_folder_path(folder_id: int | None, folder_map: dict[int, Folder]) -> 
 
 
 def _resolve_changed_details(
-    user_id: int,
-    changed_file_ids: list[int],
-    changed_folder_ids: list[int],
+        user_id: int,
+        changed_file_ids: list[int],
+        changed_folder_ids: list[int],
 ) -> dict[str, Any]:
     """为增量摘要补充名称与完整路径，便于下游提示词消费。"""
     all_folders = db.session.query(Folder).filter_by(user_id=user_id).all()
@@ -89,35 +89,35 @@ def _to_payload_text(payload: dict[str, Any] | str | None) -> str | None:
 
 
 def log_event(
-    *,
-    user_id: int,
-    entity_type: str,
-    entity_id: int,
-    action: str,
-    old_parent_id: int | None = None,
-    new_parent_id: int | None = None,
-    old_name: str | None = None,
-    new_name: str | None = None,
-    payload: dict[str, Any] | str | None = None,
+        *,
+        user_id: int,
+        entity_type: str,
+        entity_id: int,
+        action: str,
+        old_parent_id: int | None = None,
+        new_parent_id: int | None = None,
+        old_name: str | None = None,
+        new_name: str | None = None,
+        payload: dict[str, Any] | str | None = None,
 ) -> bool:
     """单条变更事件的便捷封装；写库失败时返回 False 且不抛错。"""
     return (
-        log_events_batch(
-            user_id,
-            [
-                {
-                    "entity_type": entity_type,
-                    "entity_id": entity_id,
-                    "action": action,
-                    "old_parent_id": old_parent_id,
-                    "new_parent_id": new_parent_id,
-                    "old_name": old_name,
-                    "new_name": new_name,
-                    "payload": payload,
-                }
-            ],
-        )
-        > 0
+            log_events_batch(
+                user_id,
+                [
+                    {
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "action": action,
+                        "old_parent_id": old_parent_id,
+                        "new_parent_id": new_parent_id,
+                        "old_name": old_name,
+                        "new_name": new_name,
+                        "payload": payload,
+                    }
+                ],
+            )
+            > 0
     )
 
 
@@ -176,7 +176,7 @@ def get_checkpoint_event_id(user_id: int) -> int:
 
 
 def update_checkpoint(
-    user_id: int, event_id: int, *, mark_full_scan: bool = False
+        user_id: int, event_id: int, *, mark_full_scan: bool = False
 ) -> None:
     """推进整理检查点；last_event_id 只增不减，避免并发回退。"""
     target_event_id = max(0, int(event_id or 0))
@@ -202,7 +202,7 @@ def update_checkpoint(
 
 
 def load_incremental_context(
-    user_id: int, max_events: int = DEFAULT_MAX_INCREMENTAL_EVENTS
+        user_id: int, max_events: int = DEFAULT_MAX_INCREMENTAL_EVENTS
 ) -> dict[str, Any]:
     """加载自检查点以来的变更摘要；超限时 overflow=True，由调用方决定是否全量整理。"""
     max_events = max(1, int(max_events or DEFAULT_MAX_INCREMENTAL_EVENTS))

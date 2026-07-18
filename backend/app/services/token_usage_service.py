@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func, text
 
-from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.extensions import db, SessionLocal
+from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.models.token_usage_log import TokenUsageLog
 from app.models.user import User
 
@@ -14,14 +14,14 @@ logger = logging.getLogger(__name__)
 
 
 def record_usage(
-    user_id: int,
-    action: str,
-    model_name: str | None = None,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-    total_tokens: int = 0,
-    query_summary: str | None = None,
-    extra_info: str | None = None,
+        user_id: int,
+        action: str,
+        model_name: str | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        total_tokens: int = 0,
+        query_summary: str | None = None,
+        extra_info: str | None = None,
 ) -> None:
     """记录一次用量并累加用户统计。
 
@@ -87,12 +87,12 @@ def get_user_token_stats(user_id: int) -> dict:
 
 
 def get_usage_logs(
-    user_id: int,
-    page: int = 1,
-    page_size: int = 20,
-    action: str | None = None,
-    start_date: str | None = None,
-    end_date: str | None = None,
+        user_id: int,
+        page: int = 1,
+        page_size: int = 20,
+        action: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
 ) -> dict:
     """分页查询用户用量明细，可按 action / 日期过滤。"""
     query = db.session.query(TokenUsageLog).filter(
@@ -188,12 +188,12 @@ def get_all_users_token_stats() -> list[dict]:
 
 
 def get_all_users_usage_logs(
-    page: int = 1,
-    page_size: int = 20,
-    action: str | None = None,
-    user_id: int | None = None,
-    start_date: str | None = None,
-    end_date: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+        action: str | None = None,
+        user_id: int | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
 ) -> dict:
     """全站用量明细分页（admin），附带 username。"""
     query = (

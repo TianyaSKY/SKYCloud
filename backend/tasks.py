@@ -84,9 +84,9 @@ def process_indexing_task(file_ids: list[int], semaphore: threading.Semaphore) -
 
 
 def process_organize_task(
-    user_id: int,
-    lock_token: str,
-    semaphore: threading.Semaphore,
+        user_id: int,
+        lock_token: str,
+        semaphore: threading.Semaphore,
 ) -> None:
     """执行用户目录整理，并始终释放分布式锁。"""
     token = lock_token or f"legacy-{user_id}"
@@ -133,10 +133,10 @@ def _collect_file_ids(consumer: RabbitMQTaskConsumer, first_body: str) -> list[i
 
 
 def _submit_message(
-    message: QueueMessage,
-    consumer: RabbitMQTaskConsumer,
-    executor: ThreadPoolExecutor,
-    semaphore: threading.Semaphore,
+        message: QueueMessage,
+        consumer: RabbitMQTaskConsumer,
+        executor: ThreadPoolExecutor,
+        semaphore: threading.Semaphore,
 ) -> None:
     """按队列类型提交任务；成功后由任务线程释放 semaphore。"""
     if message.queue_name == FILE_PROCESS_QUEUE:
@@ -168,8 +168,8 @@ def run_worker(max_workers: int = MAX_WORKERS) -> None:
     consumer = RabbitMQTaskConsumer()
 
     with ThreadPoolExecutor(
-        max_workers=max_workers,
-        thread_name_prefix="skycloud-worker",
+            max_workers=max_workers,
+            thread_name_prefix="skycloud-worker",
     ) as executor:
         while True:
             # 槽位占满时阻塞，避免无限堆积 future
