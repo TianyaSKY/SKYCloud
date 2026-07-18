@@ -1,5 +1,6 @@
 import request from './request'
 
+/** 后端契约：当前用户 Token 累计统计 */
 export interface TokenStats {
     user_id: number
     total_prompt_tokens: number
@@ -8,6 +9,7 @@ export interface TokenStats {
     last_active_at: string | null
 }
 
+/** 后端契约：单条 Token 用量日志 */
 export interface TokenUsageLog {
     id: number
     user_id: number
@@ -21,6 +23,7 @@ export interface TokenUsageLog {
     created_at: string
 }
 
+/** 后端契约：用量日志分页 */
 export interface TokenUsageLogsResponse {
     total: number
     page: number
@@ -28,6 +31,7 @@ export interface TokenUsageLogsResponse {
     items: TokenUsageLog[]
 }
 
+/** 后端契约：按日聚合统计 */
 export interface DailyStat {
     date: string
     prompt_tokens: number
@@ -36,6 +40,7 @@ export interface DailyStat {
     request_count: number
 }
 
+/** 用量日志查询参数 */
 export interface UsageLogQueryParams {
     page?: number
     page_size?: number
@@ -56,8 +61,9 @@ export function getMyDailyStats(days = 30) {
     return request.get<DailyStat[]>('/token-usage/daily', {params: {days}})
 }
 
-// ===================== 管理员接口 =====================
+// —— 管理员接口（需 admin 角色）——
 
+/** 后端契约：管理员视角下各用户 Token 汇总 */
 export interface UserTokenStats {
     user_id: number
     username: string
@@ -70,10 +76,12 @@ export interface UserTokenStats {
     created_at: string | null
 }
 
+/** 后端契约：管理员用量日志（附带 username） */
 export interface AdminTokenUsageLog extends TokenUsageLog {
     username: string
 }
 
+/** 后端契约：管理员用量日志分页 */
 export interface AdminTokenUsageLogsResponse {
     total: number
     page: number
@@ -81,11 +89,13 @@ export interface AdminTokenUsageLogsResponse {
     items: AdminTokenUsageLog[]
 }
 
+/** 后端契约：按用户+日聚合 */
 export interface PerUserDailyStat extends DailyStat {
     user_id: number
     username: string
 }
 
+/** 管理员日志查询，可按 user_id 筛选 */
 export interface AdminUsageLogQueryParams extends UsageLogQueryParams {
     user_id?: number
 }

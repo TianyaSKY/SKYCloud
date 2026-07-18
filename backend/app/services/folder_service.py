@@ -1,3 +1,5 @@
+"""文件夹 CRUD、缓存失效，以及整理任务的 Redis 分布式锁与入队。"""
+
 import uuid
 from typing import List
 
@@ -24,7 +26,7 @@ def _organize_task_lock_key(user_id: int) -> str:
 
 
 def _invalidate_folder_caches(user_id: int) -> None:
-    """Invalidate all folder-related caches for a user."""
+    """目录树变更后失效相关缓存，避免列表读到旧结构。"""
     evict_cache(FOLDER_CACHE_PREFIX, user_id)
     evict_cache(ROOT_FOLDER_CACHE_PREFIX, user_id)
     evict_cache(ROOT_FILES_CACHE_PREFIX, user_id)
@@ -52,7 +54,6 @@ def create_folder(data):
                 new_name=new_folder.name,
             )
 
-        # Invalidate cache
         if new_folder.user_id:
             _invalidate_folder_caches(new_folder.user_id)
 
@@ -70,6 +71,7 @@ def get_folder(id):
 
 
 def get_authorized_folder(user_id: int, role: str, folder_id: int) -> Folder:
+    """非 admin 仅可访问自己的文件夹。"""
     folder = get_folder(folder_id)
     if role != "admin" and folder.user_id != user_id:
         raise PermissionDeniedError("Permission denied")
@@ -108,7 +110,6 @@ def update_folder(id, data):
                 new_name=folder.name,
             )
 
-        # Invalidate cache
         if folder.user_id:
             _invalidate_folder_caches(folder.user_id)
 
@@ -127,7 +128,7 @@ def delete_folder(id):
     deleted_events: list[dict] = []
 
     try:
-        # 递归删除子文件夹和文件
+        # 先递归收集子树删除事件，最后统一 commit / 写变更日志
         _delete_folder_recursive(folder, deleted_events)
         deleted_events.append(
             {
@@ -147,7 +148,6 @@ def delete_folder(id):
         if user_id and deleted_events:
             change_log_service.log_events_batch(user_id, deleted_events)
 
-        # Invalidate cache
         if user_id:
             _invalidate_folder_caches(user_id)
             _clear_search_cache(user_id)
@@ -173,7 +173,6 @@ def _delete_folder_recursive(folder, deleted_events: list[dict]):
         # 递归删除时不单独 commit，由最外层 delete_folder 统一 commit
         delete_file(file.id, commit=False, log_event=False)
 
-    # 递归删除子文件夹
     subfolders = db.session.query(Folder).filter_by(parent_id=folder.id).all()
     for subfolder in subfolders:
         _delete_folder_recursive(subfolder, deleted_events)
@@ -216,9 +215,10 @@ def get_folders(user_id) -> List[dict]:
 
 
 def _acquire_organize_task_lock_and_enqueue(user_id: int, lock_token: str) -> bool:
-    """
-    加锁并入队：仅当锁不存在时设置锁并发布 RabbitMQ 任务。
+    """加锁并入队：仅当锁不存在时设置并发布 RabbitMQ 任务。
+
     锁值格式: "<token>:<state>"，state 为 queued/running。
+    入队失败则释放锁，避免永久占锁。
     """
     lock_key = _organize_task_lock_key(user_id)
     acquired = redis_client.set(
@@ -239,9 +239,7 @@ def _acquire_organize_task_lock_and_enqueue(user_id: int, lock_token: str) -> bo
 
 
 def mark_organize_task_running(user_id: int, lock_token: str) -> None:
-    """
-    仅当当前锁 token 匹配时，将状态改为 running 并续期。
-    """
+    """仅当当前锁 token 匹配时，将状态改为 running 并续期。"""
     script = """
     local current = redis.call('GET', KEYS[1])
     if not current then
@@ -263,9 +261,7 @@ def mark_organize_task_running(user_id: int, lock_token: str) -> None:
 
 
 def release_organize_task_lock(user_id: int, lock_token: str) -> None:
-    """
-    仅释放属于当前 token 的锁，避免误删新任务锁。
-    """
+    """仅释放属于当前 token 的锁，避免误删新任务锁。"""
     script = """
     local current = redis.call('GET', KEYS[1])
     if not current then
@@ -280,6 +276,6 @@ def release_organize_task_lock(user_id: int, lock_token: str) -> None:
 
 
 def organize_files(user_id: int) -> bool:
-    """入队整理任务；若已有同用户任务在排队/执行，则返回 False。"""
+    """入队整理任务；同用户已有任务在排队/执行时返回 False。"""
     lock_token = str(uuid.uuid4())
     return _acquire_organize_task_lock_and_enqueue(user_id, lock_token)

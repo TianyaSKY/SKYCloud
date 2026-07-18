@@ -8,20 +8,22 @@ from app.extensions import Base
 
 
 class FileChangeEvent(Base):
+    """文件/目录变更事件日志：供整理任务增量扫描与审计。"""
+
     __tablename__ = "file_change_events"
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     entity_type = Column(String(20), nullable=False)  # file / folder
     entity_id = Column(Integer, nullable=False)
-    action = Column(String(32), nullable=False)  # create / move / rename / delete / update_meta
+    # create / move / rename / delete / update_meta
+    action = Column(String(32), nullable=False)
     old_parent_id = Column(Integer, nullable=True)
     new_parent_id = Column(Integer, nullable=True)
     old_name = Column(String(255), nullable=True)
     new_name = Column(String(255), nullable=True)
-    payload = Column(Text, nullable=True)
+    payload = Column(Text, nullable=True)  # 可选扩展 JSON/文本
     created_at = Column(DateTime, default=beijing_now, nullable=False, index=True)
-
 
     user = relationship("User", backref="file_change_events")
 

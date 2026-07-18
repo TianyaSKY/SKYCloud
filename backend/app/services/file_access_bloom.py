@@ -1,3 +1,8 @@
+"""基于 Redis 的文件访问 Bloom 过滤器：在查库前快速否定无权/不存在请求。
+
+假阳性安全（可能误判为存在，再走 DB）；构建时用分布式锁 + 临时 key rename 保证原子切换。
+"""
+
 import hashlib
 import logging
 import os
@@ -55,6 +60,7 @@ def _iter_file_ids(user_id: int | None) -> Iterable[int]:
 
 
 def _build_filter(user_id: int | None) -> bool:
+    """重建指定 scope 的 Bloom；抢不到锁则返回 False，由调用方降级为「可能存在」。"""
     scope = _scope_name(user_id)
     token = uuid.uuid4().hex
     lock_key = _lock_key(user_id)
@@ -85,6 +91,7 @@ def _build_filter(user_id: int | None) -> bool:
         )
         pipe.execute()
 
+        # 先写临时 key 再 rename，避免重建过程中读到半成品
         pipe = redis_client.pipeline()
         pipe.delete(_bits_key(user_id), _meta_key(user_id))
         pipe.rename(temp_bits_key, _bits_key(user_id))
@@ -114,6 +121,7 @@ def _ensure_filter_ready(user_id: int | None) -> bool:
 
 
 def _maybe_contains(user_id: int | None, file_id: int) -> bool:
+    # 过滤器不可用时返回 True，走完整 DB 鉴权，避免误拒
     if not _ensure_filter_ready(user_id):
         return True
 
@@ -137,6 +145,7 @@ def _maybe_contains(user_id: int | None, file_id: int) -> bool:
 
 
 def add_file(file_id: int, user_id: int | None) -> None:
+    """增量写入；同时更新用户 scope 与全局 scope（若 user_id 非空）。"""
     scopes = [None]
     if user_id is not None:
         scopes.append(user_id)
@@ -166,8 +175,10 @@ def add_file(file_id: int, user_id: int | None) -> None:
 
 
 def maybe_user_can_access_file(user_id: int, file_id: int) -> bool:
+    """快速判断用户是否「可能」拥有该文件；False 可安全拒绝。"""
     return _maybe_contains(user_id, file_id)
 
 
 def maybe_file_exists(file_id: int) -> bool:
+    """快速判断文件是否「可能」存在；False 可安全当 404。"""
     return _maybe_contains(None, file_id)

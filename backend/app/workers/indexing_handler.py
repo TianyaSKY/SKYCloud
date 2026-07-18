@@ -1,10 +1,7 @@
-"""
-文件索引处理器
+"""文件索引 Worker：描述生成 + embedding 写库，供语义检索使用。
 
-处理文件的 AI 索引任务：
-1. 使用 VL 模型生成文件描述
-2. 将描述转换为向量嵌入
-3. 存储到数据库供语义搜索使用
+由 RabbitMQ 消费者调用；失败标记 status=fail 并写收件箱通知。
+单文件与批量路径共享失败收尾逻辑，避免连接池上的半事务。
 """
 
 import datetime
@@ -24,19 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def handle_file_indexing(file_id: int) -> None:
-    """
-    处理单个文件的索引任务。
-
-    流程：
-    1. 获取文件记录，更新状态为 processing
-    2. 调用 VL 模型生成文件描述
-    3. 调用 Embedding 模型生成向量
-    4. 更新数据库，标记为 success
-    5. 失败时发送通知给用户
-
-    Args:
-        file_id: 待处理的文件 ID
-    """
+    """索引单个文件：processing → 描述 → 向量 → success；异常则 fail + 通知。"""
     try:
         file: File = file_service.get_file(file_id)
         if not file:
@@ -45,30 +30,26 @@ def handle_file_indexing(file_id: int) -> None:
 
         logger.info(f"Starting to index file: {file.name} (ID: {file_id})")
 
-        # 更新状态为处理中
         file.status = "processing"
         db.session.commit()
 
-        # 获取模型配置
         vl_config = get_vl_model_config()
         chat_config = get_chat_model_config()
         emb_config = get_embedding_model_config()
 
-        # 使用 get_abs_path 获取完整路径
         abs_path = file.get_abs_path()
 
-        # 生成描述（纯文本文件使用 chat 模型，其他使用 VL 模型）
+        # 文本走 Chat，其它走 VL
         description = generate_file_description(
             abs_path, vl_config, chat_config, user_id=file.uploader_id or 0)
         file.description = description
         db.session.commit()
 
-        # 生成向量嵌入（文件名 + 描述 拼接，使文件名也参与语义检索）
+        # 文件名拼进 embedding 文本，使纯文件名查询也能命中
         embedding_text = f"文件名: {file.name}\n{description}"
         file.vector_info = file_service.embedding_desc(
             embedding_text, emb_config, user_id=file.uploader_id or 0)
 
-        # 更新状态为成功
         file.status = "success"
         db.session.commit()
         logger.info(f"Finished indexing file ID: {file_id} successfully.")
@@ -82,7 +63,6 @@ def handle_file_indexing(file_id: int) -> None:
             file.status = "fail"
             db.session.commit()
 
-            # 发送信息给用户
             inbox_service.create_inbox_message(
                 {
                     "type": "system",
@@ -99,7 +79,7 @@ def handle_file_indexing(file_id: int) -> None:
 
 
 def _mark_file_failed(file_id: int, error: Exception) -> None:
-    """将文件标记为处理失败并发送通知"""
+    """批量路径专用：回滚后标 fail 并通知，内层异常不再上抛。"""
     try:
         db.session.rollback()
         file = db.session.get(File, file_id)
@@ -126,18 +106,7 @@ def _mark_file_failed(file_id: int, error: Exception) -> None:
 
 
 def handle_batch_indexing(file_ids: list[int]) -> None:
-    """
-    批量处理文件索引：VL 描述各自生成，Embedding 统一批量调用。
-
-    流程：
-    1. 逐个文件调用 VL 模型生成描述
-    2. 收集所有成功生成描述的文件
-    3. 一次性调用 batch_embedding_desc 批量生成向量
-    4. 逐个写回数据库，更新状态
-
-    Args:
-        file_ids: 待处理的文件 ID 列表
-    """
+    """批量索引：描述仍逐文件（VL 难批），embedding 一次 batch 调用降延迟。"""
     if not file_ids:
         return
 
@@ -145,7 +114,7 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
     chat_config = get_chat_model_config()
     emb_config = get_embedding_model_config()
 
-    # Phase 1: 逐个生成描述
+    # 阶段 1：逐个生成描述（VL 难批量）
     described_files: list[tuple[File, str]] = []
     for file_id in file_ids:
         try:
@@ -178,16 +147,16 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
         logger.info("[Batch] No files with descriptions to embed.")
         return
 
-    # Phase 2: 批量 embedding
+    # 阶段 2：批量 embedding，降低往返次数
     texts = [f"文件名: {f.name}\n{desc}" for f, desc in described_files]
     logger.info(f"[Batch] Sending {len(texts)} texts for batch embedding...")
 
-    # 批量 embedding 的 user_id 取第一个文件的 uploader_id
+    # Token 记账挂到批次首文件上传者
     batch_user_id = described_files[0][0].uploader_id or 0 if described_files else 0
     vectors = file_service.batch_embedding_desc(texts, emb_config, user_id=batch_user_id)
     logger.info(f"[Batch] Received {len(vectors)} embedding vectors.")
 
-    # Phase 3: 写回数据库
+    # 阶段 3：逐文件写回向量与状态
     for (file, _), vector in zip(described_files, vectors):
         try:
             file.vector_info = vector
@@ -201,5 +170,5 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
             _mark_file_failed(file.id, e)
 
 
-# 为了向后兼容，保留旧函数名的别名
+# 兼容旧 import 名
 handle_file_process = handle_file_indexing

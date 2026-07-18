@@ -9,12 +9,10 @@ from app.extensions import Base
 
 
 class McpToken(Base):
-    """每用户有且仅有一条有效 MCP Token（revoked_at IS NULL）。
+    """MCP 长效 Token 表：每用户至多一条有效记录（revoked_at IS NULL）。
 
-    token_value 保存完整 JWT，供：
-    - 前端随时复制
-    - 工作区自动注入 opencode MCP 配置
-    token_hash 仍用于鉴权查找。
+    token_value 保存完整 JWT，供前端复制与工作区注入 opencode MCP 配置；
+    token_hash 用于鉴权查找。
     """
 
     __tablename__ = "mcp_tokens"

@@ -9,6 +9,8 @@ from app.extensions import Base
 
 
 class Share(Base):
+    """文件外链分享表：token 访问链接，可选过期时间。"""
+
     __tablename__ = "shares"
 
     id = Column(Integer, primary_key=True)
@@ -18,9 +20,7 @@ class Share(Base):
     file_id = Column(Integer, ForeignKey("files.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=beijing_now)
-    expires_at = Column(DateTime, nullable=True)  # 可选：过期时间
-
-
+    expires_at = Column(DateTime, nullable=True)  # 为空表示不过期
 
     file = relationship("File", back_populates="shares")
     user = relationship("User")

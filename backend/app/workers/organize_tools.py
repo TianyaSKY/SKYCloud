@@ -1,3 +1,9 @@
+"""整理 Agent 工具集：供 ReAct 调用的目录读写操作。
+
+边界：工具内直接操作 DB/Redis，不做 LLM 决策；每个变更工具必须带 user_id 做归属校验。
+会话使用独立 session 并在 finally 关闭，避免与 Agent 多步并发串 session。
+"""
+
 import logging
 
 from langchain.tools import tool
@@ -11,16 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 def get_session():
-    """Create a new independent session for tool execution"""
+    """工具执行用独立 session，避免与请求线程共享 scoped_session。"""
     return db.session()
 
 
 def clear_user_cache(user_id):
-    """Clear user related caches"""
+    """目录变更后清文件夹缓存与搜索缓存；SCAN 代替 KEYS 避免阻塞 Redis。"""
     try:
-        # Clear folder cache
         redis_client.delete(f"user:folders:{user_id}")
-        # Clear search cache — use SCAN instead of KEYS to avoid blocking Redis
         cursor = 0
         pattern = f"search:*:{user_id}:*"
         while True:
@@ -34,19 +38,18 @@ def clear_user_cache(user_id):
 
 
 def _check_mixed_folders(session, user_id: int) -> tuple[bool, list[dict]]:
-    """
-    内部检查逻辑：查找既包含文件又包含子文件夹的文件夹。
-    返回 (is_clean, mixed_folders_list)。
+    """查找「文件+子文件夹共存」的目录（违反单一内容原则）。
+
+    返回 (is_clean, mixed_folders_list)；用聚合计数消除 N+1。
     """
     mixed_folders: list[dict] = []
 
-    # 检查根目录 (parent_id 为 None)
+    # 根目录 parent_id 为 None，需单独判断
     has_root_subfolders = session.query(Folder).filter_by(user_id=user_id, parent_id=None).count() > 0
     has_root_files = session.query(File).filter_by(uploader_id=user_id, parent_id=None).count() > 0
     if has_root_subfolders and has_root_files:
         mixed_folders.append({"id": 0, "name": "根目录"})
 
-    # 用聚合查询一次性获取所有文件夹的 子文件夹数量 和 文件数量，消除 N+1
     subfolder_counts = dict(
         session.query(Folder.parent_id, func.count(Folder.id))
         .filter(Folder.parent_id.isnot(None))
@@ -71,11 +74,7 @@ def _check_mixed_folders(session, user_id: int) -> tuple[bool, list[dict]]:
 
 
 def _check_empty_folders(session, user_id: int) -> tuple[bool, list[dict]]:
-    """
-    内部检查逻辑：查找空文件夹。
-    返回 (is_clean, empty_folders_list)。
-    """
-    # 用聚合查询一次性获取所有文件夹的 子文件夹数量 和 文件数量，消除 N+1
+    """查找空文件夹；聚合计数消除 N+1。"""
     subfolder_counts = dict(
         session.query(Folder.parent_id, func.count(Folder.id))
         .filter(Folder.parent_id.isnot(None))
@@ -101,10 +100,7 @@ def _check_empty_folders(session, user_id: int) -> tuple[bool, list[dict]]:
 
 
 def check_mixed_folders_internal(user_id: int) -> tuple[bool, str]:
-    """
-    检查是否存在违反单一内容原则的文件夹。
-    返回 (is_clean: bool, message: str)。
-    """
+    """校验单一内容原则；返回 (是否干净, 可读消息)。"""
     session = get_session()
     try:
         is_clean, mixed_folders = _check_mixed_folders(session, user_id)
@@ -119,10 +115,7 @@ def check_mixed_folders_internal(user_id: int) -> tuple[bool, str]:
 
 
 def check_empty_folders_internal(user_id: int) -> tuple[bool, str]:
-    """
-    检查是否存在空文件夹。
-    返回 (is_clean: bool, message: str)。
-    """
+    """校验是否仍有空文件夹。"""
     session = get_session()
     try:
         is_clean, empty_folders = _check_empty_folders(session, user_id)
@@ -138,9 +131,7 @@ def check_empty_folders_internal(user_id: int) -> tuple[bool, str]:
 
 @tool
 def get_all_files(user_id: int) -> str:
-    """
-    获取指定用户的所有文件列表。
-    """
+    """列出指定用户全部文件（ID/名称/父目录），供分类决策。"""
     session = get_session()
     try:
         files = session.query(File).filter_by(uploader_id=user_id).all()
@@ -159,9 +150,7 @@ def get_all_files(user_id: int) -> str:
 
 @tool
 def get_folder_tree(user_id: int) -> str:
-    """
-    获取指定用户的文件夹树结构。
-    """
+    """列出指定用户全部文件夹（扁平：ID/名称/父 ID）。"""
     session = get_session()
     try:
         folders = session.query(Folder).filter_by(user_id=user_id).all()
@@ -177,9 +166,7 @@ def get_folder_tree(user_id: int) -> str:
 
 @tool
 def create_folder(name: str, parent_id: int, user_id: int) -> str:
-    """
-    创建新文件夹。
-    """
+    """在指定父目录下创建文件夹；同名已存在则返回已有 ID。"""
     session = get_session()
     try:
         pid = parent_id if parent_id and parent_id != 0 else None
@@ -208,9 +195,7 @@ def create_folder(name: str, parent_id: int, user_id: int) -> str:
 
 @tool
 def rename_folder(folder_id: int, new_name: str, user_id: int) -> str:
-    """
-    重命名文件夹。必须指定 user_id 确认权限。
-    """
+    """重命名文件夹；须校验归属，且同级不重名。"""
     session = get_session()
     try:
         folder = session.get(Folder, folder_id)
@@ -242,9 +227,7 @@ def rename_folder(folder_id: int, new_name: str, user_id: int) -> str:
 
 @tool
 def move_file(file_id: int, target_folder_id: int, user_id: int) -> str:
-    """
-    将文件移动到目标文件夹。必须指定 user_id 确认权限。
-    """
+    """移动文件到目标文件夹；校验文件与目标归属。"""
     session = get_session()
     try:
         file = session.get(File, file_id)
@@ -276,9 +259,7 @@ def move_file(file_id: int, target_folder_id: int, user_id: int) -> str:
 
 @tool
 def get_file_information(file_id: int) -> str:
-    """
-    获取文件的详细信息。
-    """
+    """读取文件元数据与截断描述，供内容不明确时分类。"""
     session = get_session()
     try:
         file = session.get(File, file_id)
@@ -306,9 +287,7 @@ def get_file_information(file_id: int) -> str:
 
 @tool
 def delete_folder(folder_id: int, user_id: int) -> str:
-    """
-    删除文件夹。注意：只能删除空文件夹。必须指定 user_id 确认权限。
-    """
+    """仅允许删除空文件夹；非空返回失败原因。"""
     session = get_session()
     try:
         folder = session.get(Folder, folder_id)
@@ -339,9 +318,7 @@ def delete_folder(folder_id: int, user_id: int) -> str:
 
 @tool
 def merge_folders(source_folder_id: int, target_folder_id: int, user_id: int) -> str:
-    """
-    将源文件夹的所有内容移动到目标文件夹，并删除源文件夹。必须指定 user_id 确认权限。
-    """
+    """将源目录内容并入目标后删除源；禁止合并到自身子树，重名子目录递归合并。"""
     session = get_session()
     try:
         source = session.get(Folder, source_folder_id)
@@ -364,12 +341,10 @@ def merge_folders(source_folder_id: int, target_folder_id: int, user_id: int) ->
                 return "无法合并：目标文件夹是源文件夹的子文件夹"
             current = session.get(Folder, current.parent_id)
 
-        # 移动文件到目标文件夹
         files = session.query(File).filter_by(parent_id=source.id).all()
         for f in files:
             f.parent_id = target.id
 
-        # 移动子文件夹到目标，处理重名情况
         existing_subfolder_names = {
             sf.name
             for sf in session.query(Folder).filter_by(parent_id=target.id).all()
@@ -379,12 +354,11 @@ def merge_folders(source_folder_id: int, target_folder_id: int, user_id: int) ->
             if sub.id == target.id:
                 continue
 
-            # 如果目标下已存在同名文件夹，递归合并
+            # 目标下同名则递归合并，避免重名冲突
             duplicate = session.query(Folder).filter_by(
                 parent_id=target.id, name=sub.name
             ).first()
             if duplicate and duplicate.id != sub.id:
-                # 把 sub 的内容递归移到 duplicate 下
                 _merge_folder_contents(session, sub, duplicate)
                 session.delete(sub)
             else:
@@ -403,12 +377,10 @@ def merge_folders(source_folder_id: int, target_folder_id: int, user_id: int) ->
 
 
 def _merge_folder_contents(session, source: Folder, target: Folder):
-    """递归将 source 的内容合并到 target 中，处理重名子文件夹。"""
-    # 移动文件
+    """递归把 source 内容并入 target（内部辅助，处理重名子目录）。"""
     for f in session.query(File).filter_by(parent_id=source.id).all():
         f.parent_id = target.id
 
-    # 移动/合并子文件夹
     for sub in session.query(Folder).filter_by(parent_id=source.id).all():
         if sub.id == target.id:
             continue
@@ -424,9 +396,7 @@ def _merge_folder_contents(session, source: Folder, target: Folder):
 
 @tool
 def find_duplicate_folders(user_id: int) -> str:
-    """
-    查找具有相同名称和相同父文件夹的重复文件夹。
-    """
+    """查找同父目录下同名文件夹，便于后续 merge。"""
     session = get_session()
     try:
         folders = session.query(Folder).filter_by(user_id=user_id).all()
@@ -455,9 +425,7 @@ def find_duplicate_folders(user_id: int) -> str:
 
 @tool
 def move_folder(folder_id: int, target_folder_id: int, user_id: int) -> str:
-    """
-    将文件夹移动到目标文件夹中（作为子文件夹）。必须指定 user_id 确认权限。
-    """
+    """移动文件夹到目标下；禁止移入自身子树，0/None 表示根。"""
     session = get_session()
     try:
         folder = session.get(Folder, folder_id)
@@ -505,17 +473,13 @@ def move_folder(folder_id: int, target_folder_id: int, user_id: int) -> str:
 
 @tool
 def find_mixed_content_folders(user_id: int) -> str:
-    """
-    查找既包含文件又包含子文件夹的文件夹。
-    """
+    """Agent 工具封装：返回违反单一内容原则的目录说明。"""
     _, message = check_mixed_folders_internal(user_id)
     return message
 
 
 @tool
 def find_empty_folders(user_id: int) -> str:
-    """
-    查找所有空文件夹。
-    """
+    """Agent 工具封装：返回空文件夹列表说明。"""
     _, message = check_empty_folders_internal(user_id)
     return message

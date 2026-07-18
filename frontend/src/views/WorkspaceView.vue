@@ -207,20 +207,20 @@ const workspaces = ref<WorkspaceInfo[]>([])
 const loading = ref(false)
 const maxWorkspaces = 3
 
-// Create modal
+// 创建工作区弹窗
 const showCreateModal = ref(false)
 const createLoading = ref(false)
 const createForm = reactive({ name: '' })
 
-// Action loading state per workspace
+// 按工作区 ID 记录进行中的操作类型，用于按钮 loading 互斥
 const actionLoading = ref<Record<number, string>>({})
 
-// iframe
+// 反向代理兜底时的全屏 iframe 预览
 const iframeVisible = ref(false)
 const activeWorkspace = ref<WorkspaceInfo | null>(null)
 const iframeSrc = ref('')
 
-// Auto-refresh timer
+// 列表轮询定时器（仅页面可见时运行，见 visibilitychange）
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 const fetchWorkspaces = async () => {
@@ -497,7 +497,7 @@ onUnmounted(() => {
   border-top: 1px solid var(--color-border-1);
 }
 
-/* iframe full-screen modal */
+/* 工作区 iframe 全屏弹窗：去掉 body 内边距，占满视口 */
 .workspace-modal :deep(.arco-modal-body) {
   padding: 0 !important;
   height: calc(100vh - 48px);

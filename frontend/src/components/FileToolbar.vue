@@ -109,7 +109,7 @@ const onFilesSelected = (event: Event) => {
   display: none;
 }
 
-/* 优化按钮组样式，使其更紧凑 */
+/* 按钮组轻微阴影，与周围工具栏层次区分 */
 :deep(.arco-btn-group) {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
 }

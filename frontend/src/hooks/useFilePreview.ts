@@ -4,6 +4,7 @@ import type {FileItem} from '../api/file'
 import {readBlobAsText, safeRevokeObjectURL} from '../utils/blob'
 import {logger} from '../utils/logger'
 
+/** 文件预览：按扩展名分流；切换/关闭时释放 Object URL 防泄漏 */
 export function useFilePreview() {
     const previewVisible = ref(false)
     const previewTitle = ref('')

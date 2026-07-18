@@ -1,3 +1,9 @@
+"""AI 目录整理 Worker：ReAct Agent 驱动的增量/全量整理。
+
+只做编排与校验收尾；具体改目录调用 organize_tools，变更日志与 checkpoint 在 change_log_service。
+增量事件过多或无 checkpoint 时回退全量扫描，避免 Agent 上下文爆炸。
+"""
+
 from .organize_tools import (
     check_empty_folders_internal,
     check_mixed_folders_internal,
@@ -32,12 +38,13 @@ RECURSION_LIMIT = 40
 
 
 def get_llm_config():
-    """从环境变量获取 LLM 配置。"""
+    """读取 Chat 模型配置三元组 (api, key, model)。"""
     config = get_chat_model_config()
     return config["api"], config["key"], config["model"]
 
 
 def _build_full_prompt(user_id: int) -> str:
+    """全量整理系统提示（英文指令供 LLM；user_id 必须写入约束）。"""
     return f"""
 You are an intelligent file organization assistant. Your goal is to keep the user's file system well-organized.
 
@@ -76,6 +83,7 @@ General Constraints:
 
 
 def _format_files_detail(files_detail: list[dict]) -> str:
+    """增量提示中的变更文件列表文本。"""
     if not files_detail:
         return "  (none)"
     lines = []
@@ -86,6 +94,7 @@ def _format_files_detail(files_detail: list[dict]) -> str:
 
 
 def _format_folders_detail(folders_detail: list[dict]) -> str:
+    """增量提示中的变更文件夹列表文本。"""
     if not folders_detail:
         return "  (none)"
     lines = []
@@ -96,6 +105,7 @@ def _format_folders_detail(folders_detail: list[dict]) -> str:
 
 
 def _build_incremental_prompt(user_id: int, context: dict) -> str:
+    """增量整理提示：仅聚焦变更项，禁止全库扫描（防 Token 浪费）。"""
     summary_text = context.get("summary_text") or "No summary."
     checkpoint_event_id = context.get("checkpoint_event_id", 0)
     target_event_id = context.get("target_event_id", 0)
@@ -139,10 +149,7 @@ Event range: ({checkpoint_event_id}, {target_event_id}]
 
 
 def organize_files(user_id: int):
-    """
-    使用 ReAct 代理进行文件整理。
-    优先增量整理：仅处理上次 checkpoint 之后的变化；变化过多时回退到全量整理。
-    """
+    """ReAct 整理主流程：增量优先，溢出/无 checkpoint 则全量；校验通过才推进 checkpoint。"""
     url, key, model = get_llm_config()
     llm = ChatOpenAI(
         api_key=key,
@@ -196,7 +203,7 @@ def organize_files(user_id: int):
             results.append("未检测到上次整理后的文件变更，已跳过本次整理。")
             return total_usage, "\n\t".join(results)
 
-        # 新功能上线前已有文件但尚无 checkpoint/事件日志时，首次仍执行一次全量整理
+        # 无 checkpoint 时先做一次全量，建立基线
         results.append("未检测到增量事件且无历史 checkpoint，执行首次全量整理。")
         checkpoint_target_event_id = int(
             incremental_context.get("target_event_id") or 0)
@@ -223,7 +230,7 @@ def organize_files(user_id: int):
         current_messages = [("user", prompt)]
     validation_passed = False
 
-    # 收集完整对话历史，用于重试时保持上下文
+    # 校验失败重试时复用完整对话，避免 Agent 遗忘已做操作
     all_messages = list(current_messages)
 
     for attempt in range(MAX_VALIDATION_RETRIES):
@@ -264,7 +271,7 @@ def organize_files(user_id: int):
             else:
                 raise
 
-        # 使用结构化返回值进行校验
+        # 结构化校验：单一内容原则 + 无空文件夹
         is_mixed_clean, mixed_info = check_mixed_folders_internal(user_id)
         is_empty_clean, empty_info = check_empty_folders_internal(user_id)
 
@@ -281,7 +288,6 @@ def organize_files(user_id: int):
 
         results.append(f"校验失败，继续处理...{error_details}")
 
-        # 保留完整对话历史，追加修复指令
         fix_message = (
             "user",
             "Organization is not yet complete. Please resolve the following issues:\n"
@@ -303,7 +309,7 @@ def organize_files(user_id: int):
 
 
 def handle_organize_process(user_id: int):
-    """整理流程入口：处理计时、Token 使用和用户通知。"""
+    """整理入口：计时、记 Token、无论成败都写收件箱（锁释放在 tasks 层）。"""
     time_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     timestamp_start = time.time()
     try:
@@ -319,7 +325,6 @@ def handle_organize_process(user_id: int):
             f"{results}"
         )
 
-        # 记录 organize 的 token 用量
         if token_usage.get("total_tokens", 0) > 0:
             try:
                 from app.services.llm_client import record_llm_usage

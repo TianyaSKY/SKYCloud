@@ -1,3 +1,5 @@
+"""Token 用量路由：个人明细与管理员全站统计。业务在 token_usage_service。"""
+
 from fastapi import APIRouter, Depends, Query
 
 from app.api.dependencies import get_current_user, require_admin
@@ -9,13 +11,13 @@ router = APIRouter(tags=["token_usage"])
 
 @router.get("/token-usage/stats")
 def my_token_stats(current_user=Depends(get_current_user)):
-    """获取当前用户的累计 token 使用统计"""
+    """当前用户累计 Token 使用统计。"""
     return token_usage_service.get_user_token_stats(current_user.id)
 
 
 @router.get("/token-usage/stats/{user_id}")
 def user_token_stats(user_id: int, current_user=Depends(get_current_user)):
-    """获取指定用户的累计 token 使用统计（仅本人或管理员）"""
+    """指定用户累计统计；仅本人或管理员。"""
     user_service.ensure_user_access(current_user.id, current_user.role, user_id)
     return token_usage_service.get_user_token_stats(user_id)
 
@@ -29,7 +31,7 @@ def my_usage_logs(
     end_date: str | None = Query(default=None),
     current_user=Depends(get_current_user),
 ):
-    """获取当前用户的 token 使用明细（分页）"""
+    """当前用户 Token 使用明细分页。"""
     return token_usage_service.get_usage_logs(
         user_id=current_user.id,
         page=page,
@@ -50,7 +52,7 @@ def user_usage_logs(
     end_date: str | None = Query(default=None),
     current_user=Depends(get_current_user),
 ):
-    """获取指定用户的 token 使用明细（仅本人或管理员）"""
+    """指定用户明细；仅本人或管理员。"""
     user_service.ensure_user_access(current_user.id, current_user.role, user_id)
     return token_usage_service.get_usage_logs(
         user_id=user_id,
@@ -67,7 +69,7 @@ def my_daily_stats(
     days: int = Query(default=30, ge=1, le=365),
     current_user=Depends(get_current_user),
 ):
-    """获取当前用户最近 N 天的每日统计"""
+    """当前用户最近 N 天每日统计。"""
     return token_usage_service.get_daily_stats(current_user.id, days)
 
 
@@ -77,17 +79,19 @@ def user_daily_stats(
     days: int = Query(default=30, ge=1, le=365),
     current_user=Depends(get_current_user),
 ):
-    """获取指定用户最近 N 天的每日统计（仅本人或管理员）"""
+    """指定用户每日统计；仅本人或管理员。"""
     user_service.ensure_user_access(current_user.id, current_user.role, user_id)
     return token_usage_service.get_daily_stats(user_id, days)
 
 
-# ===================== 管理员接口 =====================
+# ---------------------------------------------------------------------------
+# 管理员接口（全站视角）
+# ---------------------------------------------------------------------------
 
 
 @router.get("/admin/token-usage/users")
 def admin_all_users_stats(current_user=Depends(require_admin)):
-    """管理员：获取所有用户的累计 token 使用统计"""
+    """管理员：各用户累计 Token 统计。"""
     return token_usage_service.get_all_users_token_stats()
 
 
@@ -101,7 +105,7 @@ def admin_all_logs(
     end_date: str | None = Query(default=None),
     current_user=Depends(require_admin),
 ):
-    """管理员：分页查询所有用户的 token 使用明细"""
+    """管理员：全站 Token 明细分页（可按用户/action 过滤）。"""
     return token_usage_service.get_all_users_usage_logs(
         page=page,
         page_size=page_size,
@@ -117,7 +121,7 @@ def admin_daily_stats(
     days: int = Query(default=30, ge=1, le=365),
     current_user=Depends(require_admin),
 ):
-    """管理员：获取所有用户合计最近 N 天的每日统计"""
+    """管理员：全站合计最近 N 天每日统计。"""
     return token_usage_service.get_all_users_daily_stats(days)
 
 
@@ -126,5 +130,5 @@ def admin_per_user_daily_stats(
     days: int = Query(default=30, ge=1, le=365),
     current_user=Depends(require_admin),
 ):
-    """管理员：获取每个用户最近 N 天的每日统计"""
+    """管理员：按用户拆分的最近 N 天每日统计。"""
     return token_usage_service.get_per_user_daily_stats(days)

@@ -1,3 +1,5 @@
+"""认证与会话：JWT 签发/解析、登录注册，以及 MCP Token 与登录生命周期联动。"""
+
 import datetime as _dt
 import logging
 import uuid
@@ -14,11 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def generate_token(user_id):
-    """
-    生成 JWT Token
-    :param user_id: 用户 ID
-    :return: token 字符串
-    """
+    """签发短期会话 JWT（1 天），供 Web 登录使用。"""
     try:
         payload = {
             "exp": _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=1),
@@ -35,12 +33,9 @@ def generate_token(user_id):
 def generate_mcp_token(
     user_id: int, expires_at: _dt.datetime | None = None
 ) -> str | None:
-    """
-    生成 MCP 专用长效 JWT Token（365 天有效期）。
-    用于 MCP 客户端（Claude Desktop、Cursor 等）的长期配置。
+    """签发 MCP 专用长效 JWT（默认 365 天），带 jti 以便服务端撤销。
 
-    :param user_id: 用户 ID
-    :return: token 字符串
+    供 Claude Desktop、Cursor 等 MCP 客户端长期配置，与会话 Token 分离。
     """
     try:
         expires_at = expires_at or (
@@ -60,10 +55,9 @@ def generate_mcp_token(
 
 
 def decode_token(token):
-    """
-    解析 JWT Token
-    :param token: token 字符串
-    :return: 用户 ID 或 错误信息
+    """解析 JWT；MCP 类型额外查库校验是否已撤销或过期。
+
+    成功返回 sub（用户 ID 字符串），失败返回可展示的错误文案。
     """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
@@ -80,12 +74,7 @@ def decode_token(token):
 
 
 def authenticate_user(username, password):
-    """
-    验证用户登录
-    :param username: 用户名
-    :param password: 密码
-    :return: token,role 或 None,role
-    """
+    """校验用户名密码；成功返回 (token, role, user_id)，失败返回 (None, "common", None)。"""
     user = db.session.query(User).filter_by(username=username).first()
     if user and user.check_password(password):
         return generate_token(user.id), user.role, user.id
@@ -93,7 +82,7 @@ def authenticate_user(username, password):
 
 
 def login(username: str, password: str) -> dict:
-    """验证凭据并生成登录响应所需数据。"""
+    """验证凭据并组装登录响应；登录成功后懒初始化唯一 MCP Token（失败不影响登录）。"""
     if not username or not password:
         raise BusinessRuleError("Missing username or password")
     token, role, user_id = authenticate_user(username, password)
@@ -108,6 +97,7 @@ def login(username: str, password: str) -> dict:
 
 
 def register_user(username: str, password: str, avatar: str | None = None) -> User:
+    """注册用户；成功后自动配置唯一 MCP Token（初始化失败不阻断注册）。"""
     if not username or not password:
         raise BusinessRuleError("Missing username or password")
     try:

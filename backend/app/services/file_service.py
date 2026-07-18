@@ -1,3 +1,8 @@
+"""文件上传/下载/搜索/embedding 及分片上传会话管理。
+
+含秒传（content_hash 复用）、Bloom 预鉴权、物理文件引用计数删除等边界。
+"""
+
 import asyncio
 import json
 import hashlib
@@ -75,7 +80,7 @@ def _resolve_mime_type(path: str, provided: str | None = None) -> str | None:
 
 
 def _escape_like(value: str) -> str:
-    """Escape special characters for SQL LIKE/ILIKE patterns."""
+    """转义 LIKE/ILIKE 通配符，防止用户输入被当作模式。"""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
@@ -170,6 +175,7 @@ def _clone_existing_file(
     mime_type: str | None,
     content_hash: str,
 ) -> File:
+    """秒传：复用已有物理文件路径；仅 success 状态才继承 description/vector。"""
     resolved_mime = mime_type or cast(str | None, source_file.mime_type)
     source_status = cast(str | None, source_file.status)
     status = source_status or "pending"
@@ -205,6 +211,7 @@ def _clone_existing_file(
 
 
 def preflight_file_upload(uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
+    """上传预检：hash 命中则直接克隆记录，跳过分片传输。"""
     filename = (data.get("filename") or "").strip()
     if not filename:
         raise BusinessRuleError("filename is required")
@@ -337,7 +344,7 @@ def create_file(file_obj: Any, data: dict[str, Any]) -> File:
 
 
 def create_uploaded_file(uploader_id: int, upload: Any, parent_id: int | None = None) -> File:
-    """处理单文件上传的归属、默认目录和文件名业务规则。"""
+    """单文件上传：默认挂到用户根目录，并校验文件名非空。"""
     if not getattr(upload, "filename", None):
         raise BusinessRuleError("No selected file")
     if parent_id is None:
@@ -676,7 +683,7 @@ def get_file(id: int) -> File:
 
 
 def get_authorized_file(user_id: int, role: str, file_id: int) -> File:
-    """在业务层验证文件存在性与归属关系。"""
+    """Bloom 预过滤后查库鉴权；区分 403/404，避免泄露他人文件存在性。"""
     if role != "admin" and not file_access_bloom.maybe_user_can_access_file(user_id, file_id):
         if file_access_bloom.maybe_file_exists(file_id):
             raise PermissionDeniedError("Permission denied")
@@ -799,6 +806,10 @@ def update_file(id: int, data: dict[str, Any]) -> File:
 
 
 def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
+    """删除文件记录；物理文件仅在无其它记录引用同一 path 时才删盘。
+
+    commit/log_event=False 供递归批量删除时由外层统一提交。
+    """
     file_obj = db.session.get(File, id)
     if not file_obj:
         raise ResourceNotFoundError("File not found")
@@ -810,6 +821,7 @@ def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
     abs_path = file_obj.get_abs_path()
     if os.path.exists(abs_path):
         try:
+            # 秒传共享同一 file_path，有引用则不能删物理文件
             remaining_ref = db.session.query(File).filter(
                 File.file_path == file_obj.file_path, File.id != file_obj.id
             ).first()
@@ -987,7 +999,7 @@ def batch_delete_items(user_id: int, role: str, items: list[dict[str, Any]]) -> 
 
 
 def embedding_desc(desc: str, config: dict[str, str], user_id: int = 0) -> list[float]:
-    """生成单条文本的 embedding 向量（通过统一 LLM 接口）"""
+    """单条文本 embedding；失败返回空列表，避免索引任务硬失败。"""
     try:
         from app.services.llm_client import embed_texts
         vectors = embed_texts(
@@ -1003,7 +1015,7 @@ def embedding_desc(desc: str, config: dict[str, str], user_id: int = 0) -> list[
 
 
 def batch_embedding_desc(texts: list[str], config: dict[str, str], user_id: int = 0) -> list[list[float]]:
-    """批量生成 embedding 向量（通过统一 LLM 接口）"""
+    """批量 embedding；失败时按输入长度返回空向量占位，保持对齐。"""
     if not texts:
         return []
     try:
@@ -1059,7 +1071,7 @@ def get_all_files(user_id: int) -> list[File]:
 
 
 async def process_status(user_id: int) -> dict[str, int]:
-    """使用 SQL GROUP BY 聚合统计文件状态，避免全量加载 ORM 对象。"""
+    """按状态聚合统计；用 GROUP BY 避免把用户全部文件载入内存。"""
     rows = (
         db.session.query(File.status, func.count(File.id))
         .filter(File.uploader_id == user_id)
@@ -1075,7 +1087,7 @@ async def process_status(user_id: int) -> dict[str, int]:
 
 
 def cleanup_expired_uploads(max_age_hours: int = 24) -> int:
-    """清理过期的分片上传临时文件"""
+    """清理超时未完成的分片上传临时目录，回收磁盘。"""
     import time
 
     if not os.path.exists(MULTIPART_ROOT):
@@ -1086,20 +1098,17 @@ def cleanup_expired_uploads(max_age_hours: int = 24) -> int:
     expiration = max_age_hours * 3600
 
     try:
-        # 遍历用户目录
         for uploader_id_str in os.listdir(MULTIPART_ROOT):
             user_dir = os.path.join(MULTIPART_ROOT, uploader_id_str)
             if not os.path.isdir(user_dir):
                 continue
 
-            # 遍历上传任务目录
             for upload_id in os.listdir(user_dir):
                 upload_dir = os.path.join(user_dir, upload_id)
                 if not os.path.isdir(upload_dir):
                     continue
 
                 try:
-                    # 检查最后修改时间
                     mtime = os.path.getmtime(upload_dir)
                     if now - mtime > expiration:
                         logger.info(f"Cleaning up expired upload: {upload_dir}")
@@ -1108,7 +1117,6 @@ def cleanup_expired_uploads(max_age_hours: int = 24) -> int:
                 except OSError as e:
                     logger.warning(f"Error accessing/deleting {upload_dir}: {e}")
 
-            # 如果用户目录为空，也可以清理掉（可选）
             try:
                 if not os.listdir(user_dir):
                     os.rmdir(user_dir)

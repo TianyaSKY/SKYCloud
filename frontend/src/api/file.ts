@@ -14,6 +14,7 @@ export interface FileItem {
     parent_id?: number | null
 }
 
+/** 列表查询参数；parent_id 为空表示根目录 */
 export interface ListFilesParams {
     parent_id?: number | null
     page?: number
@@ -23,6 +24,7 @@ export interface ListFilesParams {
     order?: 'asc' | 'desc'
 }
 
+/** 搜索参数；type 为 fuzzy 模糊或 vector 语义 */
 export interface SearchFilesParams {
     q: string
     page?: number
@@ -30,6 +32,7 @@ export interface SearchFilesParams {
     type?: 'fuzzy' | 'vector'
 }
 
+/** 分片上传初始化请求；content_hash 用于秒传判定 */
 export interface MultipartInitRequest {
     filename: string
     total_size: number
@@ -40,6 +43,7 @@ export interface MultipartInitRequest {
     upload_id?: string
 }
 
+/** 分片上传初始化响应；instant_upload=true 时已秒传完成，无需再传分片 */
 export interface MultipartInitResponse {
     upload_id: string | null
     chunk_size: number

@@ -1,15 +1,11 @@
 /**
- * Blob 与 Object URL 相关工具：合并 useFilePreview 中共三处重复的 readAsText 逻辑，
- * 并提供安全的 revokeObjectURL 包装。
+ * Blob 与 Object URL 工具：统一文本读取，并提供安全的 revokeObjectURL 包装。
  */
 import {logger} from './logger'
 
 /**
- * 以文本方式读取 Blob 内容，返回 Promise。
- *
- * 相对原 useFilePreview 中三处重复的内联 FileReader 写法：
- *  - 补齐 `onerror` 分支，读取失败时 reject（原实现仅设 onload，错误被静默吞掉）；
- *  - 通过 encoding 可选参数显式指定编码（缺省交由浏览器自动判定，与原 readAsText(blob) 一致）。
+ * 以文本方式读取 Blob；补齐 onerror/onabort，失败时 reject 而非静默吞掉。
+ * encoding 可选，缺省由浏览器自动判定。
  */
 export function readBlobAsText(blob: Blob, encoding?: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
@@ -35,10 +31,7 @@ export function readBlobAsText(blob: Blob, encoding?: string): Promise<string> {
 }
 
 /**
- * 释放 Object URL，无效入参与异常均安全吞掉（仅记 warn 日志，不抛出）。
- *
- * 用于替换 useFilePreview 等处 `window.URL.revokeObjectURL(url)` 调用，
- * 避免 url 为空或已释放时抛出污染上层逻辑。
+ * 安全释放 Object URL：空值与异常仅记 warn，不抛出，避免污染上层逻辑。
  */
 export function safeRevokeObjectURL(url: string | null | undefined): void {
     if (!url) return

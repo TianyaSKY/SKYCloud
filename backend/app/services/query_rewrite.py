@@ -1,3 +1,5 @@
+"""检索关键词改写：解析 LLM 多维度输出，生成多样化向量检索查询。"""
+
 import json
 import re
 from typing import Any
@@ -13,6 +15,7 @@ DIMENSION_KEYS = (
     "synonym_terms",
 )
 
+# 中英别名映射，兼容 LLM 输出键名不稳定
 KEY_ALIASES: dict[str, str] = {
     "topic_terms": "topic_terms",
     "topics": "topic_terms",
@@ -101,6 +104,7 @@ def _normalize_terms(value: Any) -> list[str]:
 
 
 def _extract_json_text(raw_output: str) -> str:
+    """从 LLM 原始输出中抠出 JSON 对象（支持 markdown fence）。"""
     text = (raw_output or "").strip()
     if not text:
         return ""
@@ -154,6 +158,7 @@ def validate_keyword_dimensions(payload: dict[str, Any]) -> RewriteKeywordDimens
 
 
 def _fallback_dimensions(question: str = "", raw_output: str = "") -> RewriteKeywordDimensions:
+    # 解析失败时至少用原问题兜底，避免检索链路中断
     fallback_terms: list[str] = []
     if question.strip():
         fallback_terms = [question.strip()]
@@ -166,6 +171,7 @@ def _fallback_dimensions(question: str = "", raw_output: str = "") -> RewriteKey
 def parse_keyword_dimensions(
     raw_output: str, question: str = ""
 ) -> RewriteKeywordDimensions:
+    """尽力解析 LLM 输出；失败则回退到原问题词。"""
     payload = _parse_json_payload(raw_output)
     if not payload:
         return _fallback_dimensions(question, raw_output)
@@ -179,6 +185,7 @@ def parse_keyword_dimensions(
 def coerce_keyword_dimensions(
     raw_output: Any, question: str = ""
 ) -> RewriteKeywordDimensions:
+    """宽松入口：接受 model / dict / str，解析失败时兜底。"""
     if isinstance(raw_output, RewriteKeywordDimensions):
         return _normalize_dimensions(raw_output)
 
@@ -195,6 +202,7 @@ def coerce_keyword_dimensions(
 
 
 def require_keyword_dimensions(raw_output: Any) -> RewriteKeywordDimensions:
+    """严格入口：结构化输出链路用，类型不对直接抛错。"""
     if isinstance(raw_output, RewriteKeywordDimensions):
         return _normalize_dimensions(raw_output)
 
@@ -211,13 +219,9 @@ def build_multi_queries(
     dimensions: RewriteKeywordDimensions,
     max_queries: int = 6,
 ) -> list[str]:
-    """生成多样化的检索查询。
+    """生成多样化检索查询（去重截断），提高召回覆盖。
 
-    策略:
-      1. 原始问题
-      2. 全维度合并查询
-      3. 高价值维度组合（主题+实体、主题+时间）
-      4. 问题+同义扩展
+    策略: 原问题 → 全维度合并 → 高价值维度组合 → 问题+同义扩展。
     """
     if max_queries <= 0:
         return []
@@ -237,13 +241,9 @@ def build_multi_queries(
 
     normalized_question = question.strip()
 
-    # 1. 原始问题
     _add(normalized_question)
-
-    # 2. 全维度合并查询
     _add(build_retrieval_query(normalized_question, dimensions))
 
-    # 3. 高价值维度组合
     topic = " ".join(_dedupe_terms(list(dimensions.topic_terms)))
     entity = " ".join(_dedupe_terms(list(dimensions.entity_terms)))
     time_t = " ".join(_dedupe_terms(list(dimensions.time_terms)))
@@ -258,7 +258,7 @@ def build_multi_queries(
     if entity and time_t:
         _add(f"{entity} {time_t}")
 
-    # 4. 问题 + 同义扩展词（跨语言召回）
+    # 同义扩展用于跨语言召回
     synonym = " ".join(_dedupe_terms(list(dimensions.synonym_terms)))
     if normalized_question and synonym:
         _add(f"{normalized_question} {synonym}")
@@ -267,6 +267,7 @@ def build_multi_queries(
 
 
 def build_retrieval_query(question: str, dimensions: RewriteKeywordDimensions) -> str:
+    """合并问题与各维度词，作为 rerank / 单路检索的主查询。"""
     terms: list[str] = []
     if question.strip():
         terms.append(question.strip())
@@ -279,6 +280,7 @@ def build_retrieval_query(question: str, dimensions: RewriteKeywordDimensions) -
 
 
 def format_keyword_dimensions(dimensions: RewriteKeywordDimensions) -> str:
+    """格式化为 SSE 前端展示文案。"""
     chunks: list[str] = []
     for key in DIMENSION_KEYS:
         terms = getattr(dimensions, key)

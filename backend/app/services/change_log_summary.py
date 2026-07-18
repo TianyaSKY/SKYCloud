@@ -1,3 +1,5 @@
+"""将变更事件压缩为整理任务可用的摘要文本与受影响实体 ID 集合。"""
+
 from collections import Counter
 from typing import Any
 
@@ -18,6 +20,7 @@ def summarize_events(
     to_event_id: int,
     max_lines: int = DEFAULT_SUMMARY_EVENT_LINES,
 ) -> dict[str, Any]:
+    """汇总动作分布与样例行；样例行数受 max_lines 限制，避免提示词过长。"""
     action_counter: Counter[str] = Counter()
     changed_file_ids: set[int] = set()
     changed_folder_ids: set[int] = set()

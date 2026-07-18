@@ -1,3 +1,5 @@
+"""文件/文件夹变更事件流水与整理检查点：为增量整理提供上下文。"""
+
 import json
 import logging
 from typing import Any
@@ -16,7 +18,7 @@ DEFAULT_MAX_INCREMENTAL_EVENTS = 200
 
 
 def _build_folder_path(folder_id: int | None, folder_map: dict[int, Folder]) -> str:
-    """根据 folder_map 构建完整路径，如 '根目录/学习资料/数学'。"""
+    """由 parent 链拼完整路径；带环检测，避免脏数据死循环。"""
     if folder_id is None or folder_id == 0:
         return "根目录"
     parts: list[str] = []
@@ -38,12 +40,10 @@ def _resolve_changed_details(
     changed_file_ids: list[int],
     changed_folder_ids: list[int],
 ) -> dict[str, Any]:
-    """查询变化文件/文件夹的详细信息，包括名称和完整路径。"""
-    # 查询所有文件夹用于构建路径
+    """为增量摘要补充名称与完整路径，便于下游提示词消费。"""
     all_folders = db.session.query(Folder).filter_by(user_id=user_id).all()
     folder_map: dict[int, Folder] = {f.id: f for f in all_folders}
 
-    # 变化文件详情
     changed_files_detail: list[dict[str, Any]] = []
     if changed_file_ids:
         files = db.session.query(File).filter(
@@ -58,7 +58,6 @@ def _resolve_changed_details(
                 "path": _build_folder_path(f.parent_id, folder_map),
             })
 
-    # 变化文件夹详情
     changed_folders_detail: list[dict[str, Any]] = []
     if changed_folder_ids:
         for fid in changed_folder_ids:
@@ -101,6 +100,7 @@ def log_event(
     new_name: str | None = None,
     payload: dict[str, Any] | str | None = None,
 ) -> bool:
+    """单条变更事件的便捷封装；写库失败时返回 False 且不抛错。"""
     return (
         log_events_batch(
             user_id,
@@ -122,6 +122,7 @@ def log_event(
 
 
 def log_events_batch(user_id: int, events: list[dict[str, Any]]) -> int:
+    """批量写入变更事件；失败 rollback 并返回 0，避免打断主业务事务。"""
     if not events:
         return 0
 
@@ -177,6 +178,7 @@ def get_checkpoint_event_id(user_id: int) -> int:
 def update_checkpoint(
     user_id: int, event_id: int, *, mark_full_scan: bool = False
 ) -> None:
+    """推进整理检查点；last_event_id 只增不减，避免并发回退。"""
     target_event_id = max(0, int(event_id or 0))
     checkpoint = db.session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
     if checkpoint is None:
@@ -202,6 +204,7 @@ def update_checkpoint(
 def load_incremental_context(
     user_id: int, max_events: int = DEFAULT_MAX_INCREMENTAL_EVENTS
 ) -> dict[str, Any]:
+    """加载自检查点以来的变更摘要；超限时 overflow=True，由调用方决定是否全量整理。"""
     max_events = max(1, int(max_events or DEFAULT_MAX_INCREMENTAL_EVENTS))
 
     checkpoint = db.session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()

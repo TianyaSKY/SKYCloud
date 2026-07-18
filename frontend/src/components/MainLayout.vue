@@ -154,12 +154,10 @@ const userInfo = ref({
   avatar: auth.user.avatar || ''
 })
 
-// 头像状态
 const showAvatarModal = ref(false)
 const imgSrc = ref('')
 const cropper = ref()
 
-// 修改密码状态
 const showPasswordModal = ref(false)
 const passwordForm = reactive({
   oldPassword: '',
@@ -167,7 +165,7 @@ const passwordForm = reactive({
   confirmPassword: ''
 })
 
-// MCP Token（每用户唯一）
+// MCP Token 每用户唯一，刷新会使旧凭证立即失效
 const showMcpTokenModal = ref(false)
 const mcpLoading = ref(false)
 const mcpRefreshing = ref(false)

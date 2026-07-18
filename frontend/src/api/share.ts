@@ -1,10 +1,12 @@
 import request from './request'
 
+/** 后端契约：创建分享请求体；expires_at 省略表示永久有效 */
 export interface CreateShareParams {
     file_id: number
     expires_at?: string
 }
 
+/** 后端契约：分享记录；token 用于公开下载链接，file_name 仅列表侧可能填充 */
 export interface ShareInfo {
     id: number
     token: string

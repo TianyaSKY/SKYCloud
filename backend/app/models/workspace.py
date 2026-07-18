@@ -1,4 +1,4 @@
-"""Workspace model — tracks opencode container instances per user."""
+"""工作区模型：每用户绑定的 opencode 容器实例。"""
 
 from sqlalchemy import Column, Integer, String, DateTime, Enum, Text
 
@@ -7,21 +7,23 @@ from app.extensions import Base
 
 
 class Workspace(Base):
+    """opencode 工作区表：记录 Docker 容器生命周期与鉴权密码。"""
+
     __tablename__ = "workspaces"
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, nullable=False, index=True)
     name = Column(String(120), nullable=False)
-    # Docker container ID (64-char hex), set after `docker run`
+    # Docker container ID（64 位 hex），docker run 成功后写入
     container_id = Column(String(64), default=None)
-    # Random password used for opencode Basic Auth
+    # opencode Basic Auth 随机密码
     container_password = Column(String(64), nullable=False)
-    # Status: creating | running | stopped | error
+    # creating | running | stopped | error
     status = Column(
         Enum("creating", "running", "stopped", "error", name="workspace_status"),
         default="creating",
     )
-    # Human-readable error message when status == "error"
+    # status == error 时的可读错误信息
     error_message = Column(Text, default=None)
     created_at = Column(DateTime, default=beijing_now)
     updated_at = Column(DateTime, default=beijing_now, onupdate=beijing_now)

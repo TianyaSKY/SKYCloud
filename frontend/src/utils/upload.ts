@@ -13,9 +13,12 @@ interface UploadResult {
     instantUpload: boolean
 }
 
+/** 超过此大小走分片上传，避免单请求超时与内存压力 */
 const LARGE_FILE_THRESHOLD = 20 * 1024 * 1024
+/** 客户端默认分片大小；服务端 init 返回的 chunk_size 优先 */
 const CLIENT_DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024
 const CHUNK_UPLOAD_RETRIES = 3
+/** 分片串行上传，避免多连接抢占带宽导致整体更慢 */
 const CHUNK_UPLOAD_CONCURRENCY = 1
 const RETRY_BASE_DELAY_MS = 500
 
@@ -40,9 +43,8 @@ function sleep(ms: number) {
 }
 
 async function calculateFileHash(file: File): Promise<string> {
-    // TODO: 当前 file.arrayBuffer() 会将整个文件一次性读入内存，大文件可能造成内存峰值甚至 OOM。
-    //       后续可改造为基于 ReadableStream 的流式 SHA-256 分块哈希（逐块 digest 续算），
-    //       本次保持算法不变以避免引入风险。
+    // TODO(性能)：file.arrayBuffer() 整文件入内存，大文件可能 OOM；
+    // 后续可改为 ReadableStream 流式 SHA-256 分块哈希，本次保持算法不变。
     const buffer = await file.arrayBuffer()
     const digest = await crypto.subtle.digest('SHA-256', buffer)
     return Array.from(new Uint8Array(digest))

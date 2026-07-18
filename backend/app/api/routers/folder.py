@@ -1,3 +1,5 @@
+"""文件夹路由：CRUD 与一键整理入队。业务在 folder_service。"""
+
 from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import JSONResponse
 
@@ -10,6 +12,7 @@ router = APIRouter(tags=["folder"])
 
 @router.post("/folder")
 def create_folder(payload: FolderCreateRequest, current_user=Depends(get_current_user)):
+    """在指定父目录下创建文件夹（归属当前用户）。"""
     data = payload.model_dump()
     data["user_id"] = current_user.id
     folder = folder_service.create_folder(data)
@@ -20,6 +23,7 @@ def create_folder(payload: FolderCreateRequest, current_user=Depends(get_current
 def update_folder(
         id: int, payload: FolderUpdateRequest, current_user=Depends(get_current_user)
 ):
+    """重命名或移动文件夹；先校验归属/管理员权限。"""
     folder_service.get_authorized_folder(current_user.id, current_user.role, id)
     folder = folder_service.update_folder(id, payload.model_dump(exclude_none=True))
     return folder.to_dict()
@@ -27,6 +31,7 @@ def update_folder(
 
 @router.delete("/folder/{id}")
 def delete_folder(id: int, current_user=Depends(get_current_user)):
+    """删除文件夹（含级联策略由 service 决定）。"""
     folder_service.get_authorized_folder(current_user.id, current_user.role, id)
     folder_service.delete_folder(id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -34,6 +39,7 @@ def delete_folder(id: int, current_user=Depends(get_current_user)):
 
 @router.get("/folder/root_id")
 def get_root_folder_id(current_user=Depends(get_current_user)):
+    """返回当前用户根文件夹 ID，供前端作为默认 parent。"""
     return {
         "root_folder_id": folder_service.get_root_folder_id(current_user.id),
         "code": 200,
@@ -42,12 +48,14 @@ def get_root_folder_id(current_user=Depends(get_current_user)):
 
 @router.get("/folder/{id}")
 def get_folder(id: int, current_user=Depends(get_current_user)):
+    """获取单个文件夹详情（含权限校验）。"""
     folder = folder_service.get_authorized_folder(current_user.id, current_user.role, id)
     return folder.to_dict()
 
 
 @router.get("/folder/all")
 def get_folders(current_user=Depends(get_current_user)):
+    """列出当前用户全部文件夹（扁平结构，供树构建）。"""
     folders = folder_service.get_folders(current_user.id)
     return {
         "folders": folders,
@@ -57,6 +65,7 @@ def get_folders(current_user=Depends(get_current_user)):
 
 @router.post("/folder/organize")
 def organize_user_files(current_user=Depends(get_current_user)):
+    """触发 AI 自动整理；已有任务在跑时拒绝重复入队。"""
     queued = folder_service.organize_files(current_user.id)
     message = (
         "已开始整理文件，请留意收件箱里的通知，整理完成后会通知您"

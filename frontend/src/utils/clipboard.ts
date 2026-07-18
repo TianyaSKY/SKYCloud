@@ -1,16 +1,11 @@
 /**
- * 剪贴板复制工具：优先现代 Clipboard API，失败回退到 execCommand 临时 textarea 方案。
- *
- * 抽自 McpView 中 handleCopyToken / handleCopy 的复制逻辑——原实现直接调用
- * `navigator.clipboard.writeText`，未做可用性判断与异常兜底，在非 HTTPS / 旧环境下会静默失败。
+ * 剪贴板复制工具：优先 Clipboard API，失败回退 execCommand。
+ * 兼容非 HTTPS / 旧环境，避免静默失败。
  */
 import {logger} from './logger'
 
 /**
- * 将文本写入剪贴板，返回是否成功。
- *
- * 优先 `navigator.clipboard.writeText`；不可用或抛错时回退到创建临时 textarea +
- * `document.execCommand('copy')`。全程 try/catch，绝不向外抛异常。
+ * 将文本写入剪贴板，返回是否成功；全程 try/catch，不向外抛异常。
  */
 export async function copyText(text: string): Promise<boolean> {
     try {

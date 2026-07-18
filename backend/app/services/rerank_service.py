@@ -1,3 +1,5 @@
+"""文档重排序：调用外部 Rerank API；未配置或失败时回退向量排序结果。"""
+
 import logging
 from typing import Any
 
@@ -8,12 +10,12 @@ from app.services.model_config import get_rerank_model_config, get_rerank_top_k
 
 logger = logging.getLogger(__name__)
 
-# 模块级复用的 HTTP 客户端，避免每次 rerank 都建立新连接
+# 模块级复用 HTTP 客户端，避免每次 rerank 都建新连接
 _rerank_client: httpx.AsyncClient | None = None
 
 
 def _get_rerank_client() -> httpx.AsyncClient:
-    """获取或创建复用的 rerank HTTP 客户端。"""
+    """获取或创建复用的 async HTTP 客户端。"""
     global _rerank_client
     if _rerank_client is None or _rerank_client.is_closed:
         _rerank_client = httpx.AsyncClient(
@@ -24,6 +26,7 @@ def _get_rerank_client() -> httpx.AsyncClient:
 
 
 def _get_index(item: dict[str, Any]) -> int | None:
+    # 兼容不同厂商的字段名
     for key in ("index", "document_index", "doc_index"):
         value = item.get(key)
         if isinstance(value, int):
@@ -47,6 +50,7 @@ def _get_score(item: dict[str, Any], default: float) -> float:
 
 
 def _extract_ranked_indices(payload: dict[str, Any]) -> list[int]:
+    """从异构 Rerank 响应中提取去重后的文档下标序列。"""
     raw_results = payload.get("results")
     if not isinstance(raw_results, list):
         raw_results = payload.get("data")
@@ -75,6 +79,7 @@ def _extract_ranked_indices(payload: dict[str, Any]) -> list[int]:
 
 
 async def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
+    """按相关性重排；配置不全或调用失败时返回原 docs，保证检索链路可用。"""
     if len(docs) <= 1:
         return docs
 
@@ -123,4 +128,3 @@ async def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
     except Exception as e:
         logger.warning(f"Rerank failed, fallback to vector rank: {e}")
         return docs
-

@@ -97,7 +97,6 @@ import { useFileBrowser } from "../hooks/useFileBrowser";
 import { useUploadManager } from "../hooks/useUploadManager";
 import type { FileItem } from "../api/file";
 
-// 文件浏览相关
 const {
   loading,
   fileList,
@@ -120,14 +119,11 @@ const {
   saveSearchType,
 } = useFileBrowser();
 
-// 统一上传管理
 const { startUpload, cancelAll } = useUploadManager(currentParentId, fetchFiles);
 
-// 拖拽上传相关
 const { isDragging, handleDragEnter, handleDragLeave, handleDrop } =
   useFileDrag(currentParentId, startUpload);
 
-// 预览相关
 const {
   previewVisible,
   previewTitle,
@@ -138,7 +134,6 @@ const {
   handlePreviewClose,
 } = useFilePreview();
 
-// 文件操作相关
 const {
   folderForm,
   showCreateFolder,

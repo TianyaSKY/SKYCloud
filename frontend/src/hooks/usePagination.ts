@@ -1,15 +1,8 @@
 /**
- * 通用分页 composable：封装 Arco `a-table` 所需的分页 reactive 对象与翻页回调，
- * 替换 useFileBrowser / TokenUsageView / AdminTokenUsageView 中重复的翻页样板。
+ * 通用分页 composable：封装 Arco `a-table` 所需的分页 reactive 对象与翻页回调。
  *
- * 绑定方式（Wave 2 直接使用）：
- *   <a-table :pagination="pagination" @page-change="handlePageChange" @page-size-change="handlePageSizeChange" />
- *
- * 裁决说明：任务给出的接口草案里 PaginationState 字段为 `Ref<number>`，但 Arco `a-table`
- * 的 `pagination` 属性按现有用法需要的是 reactive 对象的「普通字段」（current/pageSize/total
- * 均为 number，参见 useFileBrowser.pagination 与 logsPagination）。为满足「Wave 2 直接绑定
- * `:pagination="pagination"`」，这里采用 reactive 构造、字段为普通 number，PaginationState
- * 接口相应声明为普通字段（非 Ref），与现有 Arco 用法严格一致。
+ * 字段用普通 number（非 Ref），以便直接绑定 `:pagination="pagination"`；
+ * 筛选条件变更后应调用 reset() 回到第 1 页，避免 total 变化后仍停留在空页。
  */
 import {reactive} from 'vue'
 import {logger} from '@/utils/logger'
@@ -24,24 +17,20 @@ export interface PaginationState {
 }
 
 export interface UsePaginationOptions {
-    // 初始每页条数，默认 10（与 useFileBrowser 一致；logs 场景可传 15）。
+    /** 初始每页条数；默认 10，日志列表等可传 15 */
     defaultPageSize?: number
-    // 可选每页条数下拉，默认 [10, 20, 50, 100]（logs 场景可传 [15, 30, 50]）。
+    /** 每页条数选项；默认 [10, 20, 50, 100] */
     pageSizeOptions?: number[]
-    // 页码或每页条数变化时的回调（由调用方触发数据刷新）。
+    /** 页码或每页条数变化时由调用方拉取数据 */
     onChange: (page: number, pageSize: number) => void | Promise<void>
 }
 
 export interface UsePaginationReturn {
-    // 直接绑定到 a-table 的 :pagination。
     pagination: PaginationState
-    // 绑定到 a-table 的 @page-change。
     handlePageChange: (page: number) => void
-    // 绑定到 a-table 的 @page-size-change。
     handlePageSizeChange: (size: number) => void
-    // 回到首页（保留 total 与 pageSize），对应现有 handleFilterChange「筛选条件变更后回到第 1 页」语义。
+    /** 回到第 1 页（保留 total 与 pageSize），用于筛选条件变更后 */
     reset: () => void
-    // 设置总条数。
     setTotal: (n: number) => void
 }
 

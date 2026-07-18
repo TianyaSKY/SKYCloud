@@ -1,4 +1,7 @@
-"""Workspace router — CRUD + reverse proxy (HTTP & WebSocket) for opencode containers."""
+"""工作区路由：OpenCode 容器 CRUD 与 HTTP/WebSocket 反向代理。
+
+生命周期与 Docker 操作在 workspace_service；本层只做鉴权、代理改写与错误映射。
+"""
 
 import asyncio
 import base64
@@ -21,7 +24,7 @@ router = APIRouter(tags=["workspace"])
 
 
 # ---------------------------------------------------------------------------
-# 工作区接口
+# 工作区 CRUD
 # ---------------------------------------------------------------------------
 
 
@@ -30,6 +33,7 @@ async def create_workspace(
     payload: WorkspaceCreateRequest,
     current_user: User = Depends(get_current_user),
 ):
+    """创建工作区记录（不立即启动容器）。"""
     workspace = workspace_service.create_workspace(
         CreateWorkspaceCommand(user_id=current_user.id, name=payload.name)
     )
@@ -41,6 +45,7 @@ async def create_workspace(
 
 @router.get("/workspace")
 async def list_workspaces(current_user: User = Depends(get_current_user)):
+    """列出当前用户的工作区摘要。"""
     workspaces = workspace_service.list_workspaces(current_user.id)
     return {"workspaces": [asdict(workspace) for workspace in workspaces], "code": 200}
 
@@ -50,6 +55,7 @@ async def get_workspace(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
 ):
+    """获取单个工作区；不存在时 404。"""
     ws = workspace_service.get_workspace(workspace_id, current_user.id)
     if not ws:
         from app.exceptions import ResourceNotFoundError
@@ -62,6 +68,7 @@ async def start_workspace(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
 ):
+    """启动 OpenCode 容器。"""
     workspace = workspace_service.start_workspace(workspace_id, current_user.id)
     return asdict(workspace_service.to_summary(workspace))
 
@@ -71,6 +78,7 @@ async def stop_workspace(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
 ):
+    """停止容器（保留工作区记录）。"""
     workspace = workspace_service.stop_workspace(workspace_id, current_user.id)
     return asdict(workspace_service.to_summary(workspace))
 
@@ -80,6 +88,7 @@ async def delete_workspace(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
 ):
+    """销毁容器并删除工作区记录。"""
     workspace_service.delete_workspace(workspace_id, current_user.id)
     return JSONResponse(status_code=200, content={"message": "已删除", "code": 200})
 
@@ -89,6 +98,7 @@ async def restart_workspace(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
 ):
+    """重启容器（配置变更后常用）。"""
     workspace = workspace_service.restart_workspace(workspace_id, current_user.id)
     return asdict(workspace_service.to_summary(workspace))
 
@@ -98,19 +108,21 @@ async def setup_mcp_connection(
     workspace_id: int,
     current_user: User = Depends(get_current_user),
 ):
+    """向运行中工作区写入 MCP 连接配置（含当前用户 JWT）。"""
     result = workspace_service.setup_mcp_connection(workspace_id, current_user.id)
     return {"success": True, "message": "MCP 连接配置成功", **asdict(result)}
 
 
 # ---------------------------------------------------------------------------
-# 反向代理辅助函数
+# 反向代理辅助
 # ---------------------------------------------------------------------------
 
-# 复用 httpx 客户端，并为 AI 响应保留较长超时。
+# 复用 AsyncClient；超时放宽以兼容 AI 长响应
 _http_client: httpx.AsyncClient | None = None
 
 
 def _get_http_client() -> httpx.AsyncClient:
+    """懒创建全局 httpx 客户端（连接超时 10s，总超时 120s）。"""
     global _http_client
     if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
@@ -118,6 +130,7 @@ def _get_http_client() -> httpx.AsyncClient:
 
 
 def _make_auth_header(password: str) -> str:
+    """构造容器侧 Basic Auth（用户名固定 opencode）。"""
     return "Basic " + base64.b64encode(f"opencode:{password}".encode()).decode()
 
 
@@ -125,15 +138,11 @@ PROXY_COOKIE_NAME = "skycloud_ws_token"
 
 
 async def _resolve_proxy_user(request: Request) -> User:
-    """Resolve the current user for proxy requests.
+    """解析代理请求用户。
 
-    Priority:
-    1. ?token= query parameter (used by iframe initial load)
-    2. skycloud_ws_token cookie (set after first successful auth, used by
-       subsequent resource loads inside the iframe)
-    3. Authorization header (standard Bearer token)
+    优先级：query ``token``（iframe 首屏）→ Cookie（后续子资源）→ Authorization Bearer。
+    浏览器 iframe 无法为每个静态资源带自定义头，故需 Cookie 回落。
     """
-    # 依次从查询参数、Cookie、标准鉴权依赖和请求头中提取凭据。
     effective_token = request.query_params.get("token")
 
     if not effective_token:
@@ -162,6 +171,7 @@ async def proxy_http(
     path: str,
     request: Request,
 ):
+    """将 HTTP 请求转发到 OpenCode 容器；外层统一记日志。"""
     import traceback
     try:
         return await _proxy_http_inner(workspace_id, path, request)
@@ -178,7 +188,7 @@ async def _proxy_http_inner(
     path: str,
     request: Request,
 ):
-    # 支持通过查询参数、Cookie 或请求头鉴权。
+    """代理实现：鉴权 → 校验 running → 转发 → 改写 HTML 资源路径 → 种鉴权 Cookie。"""
     try:
         current_user = await _resolve_proxy_user(request)
     except HTTPException:
@@ -193,18 +203,17 @@ async def _proxy_http_inner(
     container_url = workspace_service.get_container_url(ws)
     target_url = f"{container_url}/{path}"
 
-    # 转发查询参数时移除仅供代理鉴权使用的 Token。
+    # 鉴权 token 仅供代理层，不得转发给容器
     query_params = dict(request.query_params)
     query_params.pop("token", None)
     if query_params:
         qs = "&".join(f"{k}={v}" for k, v in query_params.items())
         target_url += f"?{qs}"
 
-    # 仅向上游转发必要请求头。
+    # 只转发业务必需头，避免 Host/Cookie 污染上游
     headers = {
         "host": container_url.split("//")[1],
     }
-    # POST/PUT 请求需要保留 Content-Type。
     ct = request.headers.get("content-type")
     if ct:
         headers["content-type"] = ct
@@ -227,15 +236,12 @@ async def _proxy_http_inner(
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="工作区容器响应超时")
 
-    # 过滤逐跳响应头和会阻断代理页面的安全响应头。
+    # 剥离逐跳头；去掉 CSP/XFO，否则 'self' 指向容器源，iframe 内脚本与嵌套会失败
     resp_headers = {}
     skip = {
         "transfer-encoding", "connection", "content-encoding", "content-length",
-        # Remove upstream CSP — it uses 'self' which refers to the container
-        # origin, not the SKYCloud origin, breaking inline scripts and resource
-        # loading through the proxy
         "content-security-policy",
-        "x-frame-options",  # Allow embedding in our iframe
+        "x-frame-options",
     }
     for k, v in resp.headers.items():
         if k.lower() not in skip:
@@ -245,18 +251,16 @@ async def _proxy_http_inner(
     content_type = resp.headers.get("content-type", "")
     proxy_base = f"/api/workspace/{workspace_id}/proxy"
 
-    # Rewrite HTML to prefix absolute resource paths with the proxy path
+    # HTML 内绝对路径需改写到代理前缀，否则浏览器会打到 SKYCloud 根路径
     if "text/html" in content_type:
         html = content.decode("utf-8", errors="replace")
-        # Rewrite absolute paths in src/href attributes to go through proxy
         import re
-        # Match src="/ or href="/ but NOT src="//" (protocol-relative URLs)
+        # 匹配 src="/ 或 href="/，排除协议相对 //
         html = re.sub(
             r'((?:src|href|action)\s*=\s*["\'])(/(?!/))([^"\']*)',
             rf'\1{proxy_base}/\3',
             html,
         )
-        # Also rewrite manifest and other JSON-like references
         html = re.sub(
             r'(content\s*=\s*["\'])(/(?!/))([^"\']*)',
             rf'\1{proxy_base}/\3',
@@ -271,7 +275,7 @@ async def _proxy_http_inner(
         media_type=resp.headers.get("content-type"),
     )
 
-    # Set auth cookie on root path so all iframe sub-requests are authenticated
+    # 首屏带 token 时写入 Cookie，供 iframe 内后续无头请求复用
     jwt_token = request.query_params.get("token") or request.cookies.get(PROXY_COOKIE_NAME)
     if jwt_token:
         response.set_cookie(
@@ -280,7 +284,7 @@ async def _proxy_http_inner(
             path="/",
             httponly=True,
             samesite="lax",
-            max_age=86400,  # 24 hours
+            max_age=86400,  # 24 小时
         )
 
     return response
@@ -296,12 +300,12 @@ async def proxy_websocket(
     workspace_id: int,
     path: str,
 ):
-    """Bi-directional WebSocket proxy to the opencode container.
+    """双向 WebSocket 代理到 OpenCode 容器。
 
-    Auth is validated via the JWT token query parameter or cookie since
-    browsers cannot send custom headers on WebSocket upgrade requests.
+    浏览器升级请求无法带自定义头，故仅用 query/Cookie 中的 JWT 鉴权；
+    上游 Basic Auth 使用容器密码，且不转发客户端 token。
     """
-    # WebSocket 无法使用 Depends，需手动鉴权。
+    # WebSocket 路由无法使用 Depends，须手动鉴权
     token = websocket.query_params.get("token") or websocket.cookies.get(PROXY_COOKIE_NAME)
     if not token:
         await websocket.close(code=4001, reason="Missing token")
@@ -324,7 +328,7 @@ async def proxy_websocket(
     container_url = workspace_service.get_container_url(ws)
     container_ws_url = container_url.replace("http://", "ws://")
     target = f"{container_ws_url}/{path}"
-    # 不将鉴权 Token 转发给上游。
+    # 鉴权 token 仅供代理层
     query_params = dict(websocket.query_params)
     query_params.pop("token", None)
     if query_params:

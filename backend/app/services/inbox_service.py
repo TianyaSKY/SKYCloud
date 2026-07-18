@@ -1,3 +1,5 @@
+"""站内信：创建、分页列表、已读与软删除。"""
+
 from app.exceptions import ResourceNotFoundError
 from app.extensions import db
 from app.models.inbox import Inbox
@@ -16,7 +18,7 @@ def create_inbox_message(data):
 
 
 def get_user_inbox(user_id, page=1, per_page=20):
-    """获取用户收件箱消息，手动分页"""
+    """按用户分页拉取未删除消息；返回结构兼容 Flask-SQLAlchemy Pagination。"""
     base_query = db.session.query(Inbox).filter_by(user_id=user_id, is_deleted=False).order_by(
         Inbox.created_at.desc()
     )
@@ -25,7 +27,7 @@ def get_user_inbox(user_id, page=1, per_page=20):
     offset = (page - 1) * per_page
     items = base_query.offset(offset).limit(per_page).all()
 
-    # 返回类似 Flask-SQLAlchemy Pagination 的结构
+    # 兼容下游对 Pagination 字段的依赖（items/total/page/pages）
     return {
         "items": items,
         "total": total,

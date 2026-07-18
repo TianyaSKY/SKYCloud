@@ -8,16 +8,18 @@ from app.extensions import Base
 
 
 class User(Base):
+    """用户账户表：登录身份、角色与 Token 用量累计。"""
+
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True)
     username = Column(String(80), unique=True, nullable=False)
     password_hash = Column(String(1024), nullable=False)
     role = Column(Enum("admin", "common", name="user_roles"), default="common")
-    avatar = Column(String(255), default=None)  # 头像 URL，默认为空
+    avatar = Column(String(255), default=None)  # 头像 URL，可为空
     created_at = Column(DateTime, default=beijing_now)
 
-    # ---- Token 使用量累计统计 ----
+    # ---- Token 用量累计（由 LLM 调用明细汇总写入）----
     total_prompt_tokens = Column(BigInteger, default=0)
     total_completion_tokens = Column(BigInteger, default=0)
     total_tokens = Column(BigInteger, default=0)

@@ -218,7 +218,7 @@ const mcpTools = [
   padding: 0 8px 60px;
 }
 
-/* Hero */
+/* 顶部介绍区 */
 .docs-hero {
   text-align: center;
   padding: 48px 0 40px;
@@ -264,7 +264,7 @@ const mcpTools = [
 .badge-orange { background: #fff3e8; color: #ff7d00; }
 .badge-cyan { background: #e8fffb; color: #0fc6c2; }
 
-/* Sections */
+/* 内容区块通用样式 */
 .docs-section {
   margin-bottom: 48px;
 }
@@ -279,7 +279,7 @@ const mcpTools = [
   display: inline-block;
 }
 
-/* Feature Grid */
+/* 功能卡片网格 */
 .feature-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -317,7 +317,7 @@ const mcpTools = [
   line-height: 1.6;
 }
 
-/* Architecture */
+/* 架构分层示意 */
 .arch-container {
   display: flex;
   flex-direction: column;
@@ -389,7 +389,7 @@ const mcpTools = [
   margin: 2px 0 2px 88px;
 }
 
-/* MCP Intro */
+/* MCP 能力介绍区 */
 .mcp-intro {
   background: linear-gradient(135deg, #f0f9ff 0%, #f0fff4 100%);
   border: 1px solid var(--color-border-1);
@@ -425,7 +425,7 @@ const mcpTools = [
   color: var(--color-text-3);
 }
 
-/* Steps */
+/* 接入步骤 */
 .steps-container {
   display: flex;
   gap: 20px;

@@ -52,7 +52,7 @@ const buildRenderer = () => {
 const renderedHtml = computed(() => {
   if (!props.content) return '';
 
-  // 过滤 AI 特殊标记。
+  // 剥离模型思考/框选控制标记，避免原样进入 HTML
   const cleanContent = props.content.replace(/<\|begin_of_box\|>|<\|end_of_box\|>|<\|thought\|>|<\/thought>/g, '');
 
   let rawHtml: string;
@@ -82,7 +82,6 @@ const renderedHtml = computed(() => {
   word-break: break-word;
 }
 
-/* 基础 Markdown 样式 */
 .markdown-body :deep(p) {
   margin: 0 0 8px 0;
 }
@@ -91,7 +90,7 @@ const renderedHtml = computed(() => {
   margin-bottom: 0;
 }
 
-/* 图片样式优化 */
+/* 防止宽图撑破消息气泡 */
 .markdown-body :deep(img) {
   max-width: 100%;
   height: auto;

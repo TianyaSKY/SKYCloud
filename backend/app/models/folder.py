@@ -9,6 +9,8 @@ from app.extensions import Base
 
 
 class Folder(Base):
+    """目录树节点表：支持父子递归；删除时级联子目录与下属文件记录。"""
+
     __tablename__ = "folder"
     id = Column(Integer, primary_key=True)
     name = Column(String(128), nullable=False)
@@ -16,17 +18,14 @@ class Folder(Base):
     parent_id = Column(Integer, ForeignKey("folder.id"))
     created_at = Column(DateTime, default=beijing_now)
 
-
-
-    # 递归建立子文件夹关系，并设置级联删除
+    # 递归子目录，并级联删除
     sub_folder = relationship(
         "Folder",
         backref=backref("parent", remote_side=[id]),
         cascade="all, delete-orphan",
     )
 
-    # 级联删除：当文件夹被删除时，自动删除其下的文件
-    # 注意：这里只处理数据库层面的级联删除，物理文件的删除仍需在 service 层处理
+    # DB 级联删除下属文件元数据；物理文件清理仍在 service 层
     files = relationship("File", backref="folder", cascade="all, delete-orphan")
 
     def to_dict(self):

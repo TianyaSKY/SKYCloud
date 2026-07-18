@@ -1,3 +1,5 @@
+"""工作区相关请求体。"""
+
 from pydantic import BaseModel, ConfigDict, Field
 
 

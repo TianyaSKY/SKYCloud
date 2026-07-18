@@ -1,4 +1,5 @@
-"""Token 使用量记录与查询服务"""
+"""Token 用量记录与查询：明细落库，并原子累加 users 表统计。"""
+
 import logging
 from datetime import datetime, timedelta
 
@@ -22,9 +23,9 @@ def record_usage(
     query_summary: str | None = None,
     extra_info: str | None = None,
 ) -> None:
-    """记录一次 token 使用，并同步更新 users 表的累计统计。
+    """记录一次用量并累加用户统计。
 
-    使用独立 session 以避免干扰调用方事务。
+    使用独立 session，避免干扰调用方事务；失败只打日志。
     """
     if total_tokens == 0:
         total_tokens = prompt_tokens + completion_tokens
@@ -43,7 +44,7 @@ def record_usage(
         )
         session.add(log)
 
-        # 原子更新 users 表累计统计
+        # 原子累加，避免并发读改写丢失
         session.execute(
             text(
                 """
@@ -72,7 +73,7 @@ def record_usage(
 
 
 def get_user_token_stats(user_id: int) -> dict:
-    """获取用户的累计 token 使用统计"""
+    """用户累计 token 统计（读 users 表冗余字段）。"""
     user = db.session.get(User, user_id)
     if not user:
         return {}
@@ -93,7 +94,7 @@ def get_usage_logs(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> dict:
-    """分页查询用户的 token 使用明细"""
+    """分页查询用户用量明细，可按 action / 日期过滤。"""
     query = db.session.query(TokenUsageLog).filter(
         TokenUsageLog.user_id == user_id
     )
@@ -132,7 +133,7 @@ def get_usage_logs(
 
 
 def get_daily_stats(user_id: int, days: int = 30) -> list[dict]:
-    """获取用户最近 N 天的每日 token 使用统计"""
+    """用户最近 N 天每日聚合统计。"""
     since = beijing_now() - timedelta(days=days)
     rows = (
         db.session.query(
@@ -162,11 +163,13 @@ def get_daily_stats(user_id: int, days: int = 30) -> list[dict]:
     ]
 
 
-# ===================== 管理员接口 =====================
+# ---------------------------------------------------------------------------
+# 管理员接口
+# ---------------------------------------------------------------------------
 
 
 def get_all_users_token_stats() -> list[dict]:
-    """获取所有用户的累计 token 使用统计（管理员用）"""
+    """全站用户累计 token 排行（admin）。"""
     users = db.session.query(User).order_by(User.total_tokens.desc()).all()
     return [
         {
@@ -192,7 +195,7 @@ def get_all_users_usage_logs(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> dict:
-    """分页查询所有用户的 token 使用明细（管理员用）"""
+    """全站用量明细分页（admin），附带 username。"""
     query = (
         db.session.query(TokenUsageLog, User.username)
         .outerjoin(User, TokenUsageLog.user_id == User.id)
@@ -241,7 +244,7 @@ def get_all_users_usage_logs(
 
 
 def get_all_users_daily_stats(days: int = 30) -> list[dict]:
-    """获取所有用户合计最近 N 天的每日 token 使用统计（管理员用）"""
+    """全站合计最近 N 天每日统计（admin）。"""
     since = beijing_now() - timedelta(days=days)
     rows = (
         db.session.query(
@@ -269,7 +272,7 @@ def get_all_users_daily_stats(days: int = 30) -> list[dict]:
 
 
 def get_per_user_daily_stats(days: int = 30) -> list[dict]:
-    """获取每个用户最近 N 天的每日 token 使用统计（管理员用）"""
+    """按用户拆分的最近 N 天每日统计（admin）。"""
     since = beijing_now() - timedelta(days=days)
     rows = (
         db.session.query(

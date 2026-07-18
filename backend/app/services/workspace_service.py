@@ -1,4 +1,4 @@
-"""Workspace service — Docker container lifecycle management for opencode."""
+"""OpenCode 工作区：Docker 容器生命周期与 MCP 自动注入。"""
 
 import json
 import os
@@ -17,21 +17,21 @@ from app.services.workspace_types import CreateWorkspaceCommand, McpConnectionRe
 
 
 # ---------------------------------------------------------------------------
-# Configuration
+# 配置
 # ---------------------------------------------------------------------------
 
 OPENCODE_IMAGE = os.getenv("OPENCODE_IMAGE", "skycloud/opencode-workspace:latest")
 SKYCLOUD_DOCKER_NETWORK = os.getenv("SKYCLOUD_DOCKER_NETWORK", "skycloud_skycloud-network")
-# Resource limits
+# 资源限额
 WORKSPACE_MEM_LIMIT = os.getenv("WORKSPACE_MEM_LIMIT", "1g")
-WORKSPACE_CPU_QUOTA = int(os.getenv("WORKSPACE_CPU_QUOTA", "100000"))  # 1 core
+WORKSPACE_CPU_QUOTA = int(os.getenv("WORKSPACE_CPU_QUOTA", "100000"))  # 1 核
 WORKSPACE_CPU_PERIOD = int(os.getenv("WORKSPACE_CPU_PERIOD", "100000"))
-# Max workspaces per user
+# 每用户工作区上限
 MAX_WORKSPACES_PER_USER = int(os.getenv("MAX_WORKSPACES_PER_USER", "3"))
 
 
 def _get_docker_client() -> docker.DockerClient:
-    """Create a Docker client. Supports both Unix socket and TCP."""
+    """创建 Docker 客户端；支持 Unix socket 与 DOCKER_HOST TCP。"""
     docker_host = os.getenv("DOCKER_HOST")
     if docker_host:
         return docker.DockerClient(base_url=docker_host)
@@ -44,14 +44,13 @@ def _get_docker_client() -> docker.DockerClient:
 
 
 def list_workspaces(user_id: int) -> list[WorkspaceSummary]:
-    """Return all workspaces belonging to *user_id*."""
+    """列出用户工作区，并尽力与 Docker 实际状态对齐。"""
     rows = (
         db.session.query(Workspace)
         .filter(Workspace.user_id == user_id)
         .order_by(Workspace.created_at.desc())
         .all()
     )
-    # Sync status from Docker for running containers
     result = []
     for ws in rows:
         _sync_status(ws)
@@ -71,14 +70,13 @@ def get_workspace(workspace_id: int, user_id: int) -> Workspace | None:
 
 
 def to_summary(ws: Workspace) -> WorkspaceSummary:
-    """将 ORM 实体转换为明确的 API 输出类型。"""
+    """ORM → API 输出类型，避免直接暴露实体。"""
     return _to_summary(ws)
 
 
 def create_workspace(command: CreateWorkspaceCommand) -> Workspace:
-    """Create a new workspace: persist DB row, then spin up Docker container."""
+    """落库后启动容器；失败标记 error，运行成功则注入 MCP。"""
     user_id = command.user_id
-    # Check limit
     count = (
         db.session.query(Workspace)
         .filter(Workspace.user_id == user_id)
@@ -118,7 +116,7 @@ def start_workspace(workspace_id: int, user_id: int) -> Workspace:
     if not ws:
         raise ResourceNotFoundError("工作区不存在")
     if ws.status == "running":
-        # 已在运行也补一次 MCP 配置（幂等），确保 Token 刷新后可恢复
+        # 已在运行也补一次 MCP（幂等），Token 刷新后可恢复
         _auto_setup_mcp_safe(workspace_id, user_id)
         return ws
     try:
@@ -128,7 +126,7 @@ def start_workspace(workspace_id: int, user_id: int) -> Workspace:
         ws.status = "running"
         ws.error_message = None
     except ContainerNotFound:
-        # Container was removed — recreate
+        # 容器已被删：按当前配置重建
         try:
             container = _start_container(ws)
             ws.container_id = container.id
@@ -173,7 +171,6 @@ def delete_workspace(workspace_id: int, user_id: int) -> None:
     ws = get_workspace(workspace_id, user_id)
     if not ws:
         raise ResourceNotFoundError("工作区不存在")
-    # Remove container
     try:
         client = _get_docker_client()
         container = client.containers.get(ws.container_id)
@@ -187,21 +184,18 @@ def delete_workspace(workspace_id: int, user_id: int) -> None:
 
 
 def get_container_url(ws: Workspace) -> str:
-    """Return the internal URL for the opencode container.
+    """容器内可达的 OpenCode URL。
 
-    Inside Docker network we use the container name as hostname.
-    Outside Docker (local dev on Windows) we use localhost + mapped port
-    because WSL2 container IPs are not routable from the Windows host.
+    Docker 网络内用容器名；Windows 本机开发用 localhost 映射端口
+    （WSL2 容器 IP 从 Windows 主机不可达）。
     """
-    # Detect if we are inside a Docker container
     in_docker = os.path.exists("/.dockerenv")
 
     if in_docker:
-        # Inside Docker network, containers communicate by name
         container_name = _container_name(ws)
         return f"http://{container_name}:3000"
 
-    # Local dev — use the mapped port on localhost
+    # 本机开发：读 Docker 端口映射
     try:
         client = _get_docker_client()
         container = client.containers.get(ws.container_id)
@@ -214,17 +208,13 @@ def get_container_url(ws: Workspace) -> str:
     except DockerException as exc:
         logger.warning("读取工作区端口映射失败：workspace_id={} reason={}", ws.id, exc)
 
-    # Fallback: try container name anyway
+    # 回退：仍尝试容器名（可能仅在 Docker 网络内有效）
     container_name = _container_name(ws)
     return f"http://{container_name}:3000"
 
 
 def _get_access_url(ws: Workspace) -> str | None:
-    """Return the browser-accessible URL for the opencode container.
-
-    This reads the Docker port mapping to return http://localhost:{host_port}/
-    which the frontend can use directly in an iframe.
-    """
+    """浏览器可直接打开的 URL（iframe）；依赖主机端口映射。"""
     if not ws.container_id:
         return None
     try:
@@ -242,7 +232,7 @@ def _get_access_url(ws: Workspace) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# 内部辅助
 # ---------------------------------------------------------------------------
 
 
@@ -259,11 +249,10 @@ def _to_summary(ws: Workspace) -> WorkspaceSummary:
 
 
 def _start_container(ws: Workspace) -> "docker.models.containers.Container":
-    """docker run the opencode image for this workspace."""
+    """启动 OpenCode 镜像；同名旧容器先强制清理。"""
     client = _get_docker_client()
     name = _container_name(ws)
 
-    # Remove existing container with the same name (if any)
     try:
         old = client.containers.get(name)
         old.remove(force=True)
@@ -277,16 +266,14 @@ def _start_container(ws: Workspace) -> "docker.models.containers.Container":
         environment={
             "SKYCLOUD_WORKSPACE_ID": str(ws.id),
         },
-        # Resource limits
         mem_limit=WORKSPACE_MEM_LIMIT,
         cpu_quota=WORKSPACE_CPU_QUOTA,
         cpu_period=WORKSPACE_CPU_PERIOD,
-        # Networking — join the SKYCloud network so the API container can reach it
+        # 加入 SKYCloud 网络，便于 API 容器访问工作区
         network=SKYCLOUD_DOCKER_NETWORK,
-        # Restart policy
         restart_policy={"Name": "unless-stopped"},
-        # Always map port so frontend can access directly via localhost
-        ports={"3000/tcp": None},  # None = Docker assigns a random host port
+        # 始终映射端口，前端可经 localhost 直连
+        ports={"3000/tcp": None},  # None = Docker 随机分配主机端口
     )
 
     container = client.containers.run(**run_kwargs)
@@ -295,7 +282,7 @@ def _start_container(ws: Workspace) -> "docker.models.containers.Container":
 
 
 def _sync_status(ws: Workspace) -> None:
-    """Best-effort sync of DB status with actual Docker container state."""
+    """尽力把 DB status 与 Docker 实际状态对齐；失败仅记日志。"""
     if not ws.container_id:
         return
     try:
@@ -319,12 +306,12 @@ def _sync_status(ws: Workspace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Restart
+# 重启
 # ---------------------------------------------------------------------------
 
 
 def restart_workspace(workspace_id: int, user_id: int) -> Workspace:
-    """Restart a workspace container (docker restart)."""
+    """docker restart；容器不存在则重建并补 MCP。"""
     ws = get_workspace(workspace_id, user_id)
     if not ws:
         raise ResourceNotFoundError("工作区不存在")
@@ -337,7 +324,6 @@ def restart_workspace(workspace_id: int, user_id: int) -> Workspace:
         ws.status = "running"
         ws.error_message = None
     except ContainerNotFound:
-        # Container was removed — recreate
         try:
             container = _start_container(ws)
             ws.container_id = container.id
@@ -358,17 +344,15 @@ def restart_workspace(workspace_id: int, user_id: int) -> Workspace:
 
 
 # ---------------------------------------------------------------------------
-# Auto-connect MCP
+# 自动连接 MCP
 # ---------------------------------------------------------------------------
 
-# MCP server port visible from inside the workspace container.
-# In Docker, the MCP container name is skycloud-backend-mcp and it listens
-# on port 5001. The workspace container connects via host.docker.internal
-# which resolves to the Docker host — matching the port mapping in
-# docker-compose.yml.
+# 工作区容器内可见的 MCP 端口。
+# Docker 内 MCP 服务名为 skycloud-backend-mcp:5001；
+# 非 compose 网络时经 host.docker.internal 访问主机映射（见 docker-compose.yml）。
 _MCP_EXTERNAL_PORT = int(os.getenv("MCP_PORT", "5001"))
 
-# Config file path inside the opencode workspace container
+# OpenCode 配置文件路径（容器内）
 _OPENCODE_CONFIG_PATH = "/root/.config/opencode/opencode.json"
 
 
@@ -415,7 +399,7 @@ def _write_mcp_config_to_container(container, mcp_url: str, mcp_token: str) -> N
 
 
 def setup_mcp_connection(workspace_id: int, user_id: int) -> McpConnectionResult:
-    """使用用户唯一 MCP Token 写入工作区 opencode.json（不新建 Token）。"""
+    """用用户唯一 MCP Token 写入 opencode.json（不新建 Token）。"""
     from app.services import mcp_token_service
 
     ws = get_workspace(workspace_id, user_id)
@@ -465,7 +449,7 @@ def _auto_setup_mcp_safe(workspace_id: int, user_id: int) -> None:
 
 
 def resync_mcp_for_user(user_id: int) -> int:
-    """将当前唯一 MCP Token 同步到用户所有运行中的工作区。返回成功数。"""
+    """将当前唯一 MCP Token 同步到用户所有运行中工作区；返回成功数。"""
     rows = (
         db.session.query(Workspace)
         .filter(Workspace.user_id == user_id, Workspace.status == "running")

@@ -1,5 +1,6 @@
 import request from './request'
 
+/** 后端契约：站内信单条消息 */
 export interface Message {
     id: number
     title: string
@@ -8,6 +9,7 @@ export interface Message {
     created_at: string
 }
 
+/** 后端契约：/inbox 分页列表 */
 export interface InboxResponse {
     items: Message[]
     total: number

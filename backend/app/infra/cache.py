@@ -1,32 +1,12 @@
-"""
-Spring-style Redis cache decorators for FastAPI service layer.
+"""Spring 风格 Redis 缓存装饰器，供 service 层复用。
 
-Provides three decorators mirroring Spring Boot's caching annotations:
+三种装饰器对应 Spring Boot 注解语义：
 
-    @cacheable  — Read cache first; on miss, execute function and store result.
-                  Equivalent to Spring's @Cacheable.
+    @cacheable  — 先读缓存；未命中则执行函数并写入（Spring @Cacheable）
+    @cache_evict — 执行函数后清除匹配键（Spring @CacheEvict）
+    @cache_put  — 始终执行函数并回写缓存（Spring @CachePut）
 
-    @cache_evict — Execute function, then clear matching cache entries.
-                   Equivalent to Spring's @CacheEvict.
-
-    @cache_put  — Always execute function, then update cache with result.
-                  Equivalent to Spring's @CachePut.
-
-Usage example:
-
-    from app.infra.cache import cacheable, cache_evict, evict_cache
-
-    @cacheable(prefix="user:profile", expire=3600)
-    def get_user_dict(user_id: int) -> dict | None:
-        user = db.session.get(User, user_id)
-        return user.to_dict() if user else None   # None won't be cached
-
-    @cache_evict(prefix="user:profile", key=lambda id, data: id)
-    def update_user(id, data):
-        ...
-
-    # Manual eviction is also supported:
-    evict_cache("user:profile", user_id)
+读/写失败只记日志，不阻断业务；None 默认不缓存，避免穿透。
 """
 
 import asyncio
@@ -50,18 +30,10 @@ def _build_cache_key(
     kwargs: dict,
     key: Optional[Callable] = None,
 ) -> str:
-    """
-    Build a Redis cache key.
+    """拼 Redis 键：``prefix`` + 自定义 key 回调或全部位置参数。
 
-    If *key* is provided, it is called with the same positional/keyword
-    arguments as the decorated function and must return a value whose
-    ``str()`` representation is used as the key suffix.
-
-    Otherwise all positional args are joined with ``:``.
-
-    Examples (prefix="user:profile"):
+    示例（prefix="user:profile"）：
         get_user(2)            → "user:profile:2"
-        get_user(2, active=1)  → "user:profile:2:active=1"
         key=lambda id, **_: id → "user:profile:2"
     """
     if key is not None:
@@ -75,7 +47,7 @@ def _build_cache_key(
 
 
 # ---------------------------------------------------------------------------
-# @cacheable — Spring @Cacheable
+# @cacheable — 读穿缓存
 # ---------------------------------------------------------------------------
 
 def cacheable(
@@ -84,18 +56,12 @@ def cacheable(
     cache_none: bool = False,
     key: Optional[Callable] = None,
 ):
-    """
-    Read from Redis cache first; on cache miss execute the function and
-    store the result.
+    """先查 Redis，未命中再执行函数并写入。
 
-    Args:
-        prefix:     Cache key prefix (equivalent to Spring's ``cacheNames``).
-        expire:     TTL in seconds (default 3600).
-        cache_none: If False (default), ``None`` results are **not** cached,
-                    equivalent to Spring's ``unless = "#result == null"``.
-        key:        Optional callable ``(*args, **kwargs) -> Any`` that
-                    produces the cache-key suffix from function arguments.
-                    When omitted, all positional args are used.
+    :param prefix: 键前缀（对应 Spring cacheNames）
+    :param expire: TTL 秒，默认 3600
+    :param cache_none: False 时不缓存 None（对应 unless="#result == null"）
+    :param key: 可选 ``(*args, **kwargs) -> Any`` 生成键后缀
     """
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
@@ -143,14 +109,14 @@ def cacheable(
             return result
 
         chosen = async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
-        chosen.cache_prefix = prefix          # expose for introspection
+        chosen.cache_prefix = prefix  # 供外部内省前缀
         return chosen
 
     return decorator
 
 
 # ---------------------------------------------------------------------------
-# @cache_evict — Spring @CacheEvict
+# @cache_evict — 写后失效
 # ---------------------------------------------------------------------------
 
 def cache_evict(
@@ -159,16 +125,12 @@ def cache_evict(
     all_entries: bool = False,
     before_invocation: bool = False,
 ):
-    """
-    Clear cache entries when the decorated function is executed.
+    """在被装饰函数执行前/后清除缓存。
 
-    Args:
-        prefix:            Cache key prefix.
-        key:               Callable to derive the specific key to evict.
-        all_entries:       If True, evict **all** keys matching ``prefix:*``
-                           (equivalent to Spring's ``allEntries = true``).
-        before_invocation: If True, evict **before** the function runs
-                           (equivalent to Spring's ``beforeInvocation``).
+    :param prefix: 键前缀
+    :param key: 推导待删单键的回调
+    :param all_entries: True 时按 ``prefix:*`` 批量删（Spring allEntries）
+    :param before_invocation: True 时在函数执行前删除（Spring beforeInvocation）
     """
     def decorator(func: Callable) -> Callable:
         def _do_evict(args, kwargs):
@@ -205,7 +167,7 @@ def cache_evict(
 
 
 # ---------------------------------------------------------------------------
-# @cache_put — Spring @CachePut
+# @cache_put — 强制回写
 # ---------------------------------------------------------------------------
 
 def cache_put(
@@ -214,18 +176,7 @@ def cache_put(
     cache_none: bool = False,
     key: Optional[Callable] = None,
 ):
-    """
-    Always execute the function and update the cache with the result.
-
-    Unlike ``@cacheable``, this **never reads** from cache — it always
-    invokes the underlying function and then writes the result back.
-
-    Args:
-        prefix:     Cache key prefix.
-        expire:     TTL in seconds.
-        cache_none: Whether to cache ``None`` results.
-        key:        Optional callable for custom cache-key generation.
-    """
+    """始终执行函数并用结果覆盖缓存（从不先读缓存）。"""
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
@@ -245,6 +196,7 @@ def cache_put(
 
 
 def _put_result(prefix, args, kwargs, key, result, expire, cache_none):
+    """写入单条缓存；None 且 cache_none=False 时跳过。"""
     if result is None and not cache_none:
         return
     cache_key = _build_cache_key(prefix, args, kwargs, key)
@@ -258,18 +210,11 @@ def _put_result(prefix, args, kwargs, key, result, expire, cache_none):
 
 
 # ---------------------------------------------------------------------------
-# 手动清除缓存
+# 手动清除
 # ---------------------------------------------------------------------------
 
 def evict_cache(prefix: str, *key_parts: Any) -> None:
-    """
-    Manually evict a single cache entry.
-
-    Usage::
-
-        evict_cache("user:profile", user_id)
-        # deletes key "user:profile:123"
-    """
+    """手动删除单键：``evict_cache("user:profile", user_id)``。"""
     cache_key = (
         f"{prefix}:{':'.join(str(p) for p in key_parts)}"
         if key_parts else prefix
@@ -281,7 +226,7 @@ def evict_cache(prefix: str, *key_parts: Any) -> None:
 
 
 def _evict_pattern(prefix: str) -> int:
-    """Delete all keys matching ``prefix:*``."""
+    """删除 ``prefix:*`` 下全部键，返回删除数量。"""
     try:
         pattern = f"{prefix}:*"
         keys = list(redis_client.scan_iter(match=pattern))
@@ -294,9 +239,5 @@ def _evict_pattern(prefix: str) -> int:
 
 
 def evict_cache_pattern(prefix: str) -> int:
-    """
-    Manually evict all cache entries matching ``prefix:*``.
-
-    Returns the number of keys deleted.
-    """
+    """手动按前缀批量失效，返回删除键数。"""
     return _evict_pattern(prefix)

@@ -1,3 +1,5 @@
+"""用户 MCP Token 生命周期：保证「有且只有一个」有效 Token，并支持鉴权校验与旧接口兼容。"""
+
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -40,7 +42,7 @@ def _create_token_record(user_id: int, token: str, expires_at: datetime, name: s
 
 
 def get_active_record(user_id: int) -> McpToken | None:
-    """返回用户当前有效的 MCP Token 记录（未撤销且未过期）。"""
+    """返回用户当前有效的 MCP Token（未撤销且未过期）；历史多条时只保留最新。"""
     now = beijing_now()
     records = (
         db.session.query(McpToken)
@@ -89,7 +91,7 @@ def refresh_user_mcp_token(user_id: int) -> tuple[McpToken, str]:
 
 
 def get_user_mcp_token_payload(user_id: int) -> dict[str, Any]:
-    """供 API 返回：完整 Token + 元数据。"""
+    """组装 API 响应：完整 Token + 元数据。"""
     record, raw = ensure_user_mcp_token(user_id)
     return {
         "mcp_token": raw,
@@ -101,7 +103,7 @@ def get_user_mcp_token_payload(user_id: int) -> dict[str, Any]:
 
 
 def get_active_mcp_token(token: str) -> McpToken | None:
-    """按完整 JWT 校验是否为有效 MCP Token（鉴权用）。"""
+    """按完整 JWT 校验是否为有效 MCP Token（鉴权用）；命中则更新 last_used_at。"""
     token_record = (
         db.session.query(McpToken)
         .filter(McpToken.token_hash == McpToken.hash_token(token))

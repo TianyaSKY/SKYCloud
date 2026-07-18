@@ -18,7 +18,7 @@ import type { FileItem } from "../api/file";
 import { createShare } from "../api/share";
 import { logger } from "../utils/logger";
 
-/** 移动目标文件夹树节点 */
+/** 移动目标文件夹树节点；children 恒为数组（叶子为空） */
 interface FolderTreeNode {
   id: number;
   name: string;
@@ -50,7 +50,7 @@ export function useFileOperations(
   const shareUrl = ref("");
   const shareForm = reactive({ expires_at: "" });
 
-  /** 批量上传文件 —— 委托给统一的上传管理器 */
+  /** 委托统一上传管理器，保证进度通知与取消语义一致 */
   const handleBatchUpload = (files: File[]) => startUpload(files);
 
   const handleCreateFolder = async () => {
@@ -104,7 +104,7 @@ export function useFileOperations(
   };
 
   const handleDownload = (record: FileItem) => {
-    // 使用直接 URL 跳转触发浏览器原生下载，避免大文件 Blob 占用内存
+    // 原生 <a> 下载避免大文件 Blob 占内存；无法附 Authorization，暂经 query 传 token
     const token = localStorage.getItem("token");
     const url = `/api/files/${record.id}/download${token ? `?token=${encodeURIComponent(token)}` : ""}`;
     const link = document.createElement("a");

@@ -8,16 +8,16 @@ from app.extensions import Base
 
 
 class SysDict(Base):
+    """系统字典/配置键值表：运行时开关与可配置项。"""
+
     __tablename__ = "sys_dict"
 
     id = Column(Integer, primary_key=True)
     key = Column(String(100), unique=True, nullable=False)
     value = Column(String(255), nullable=False)
-    des = Column(String(2048))
+    des = Column(String(2048))  # 配置说明
     enable = Column(Boolean, default=True)
     created_at = Column(DateTime, default=beijing_now)
-
-
 
     def to_dict(self):
         return {

@@ -7,7 +7,8 @@ from app.extensions import Base
 
 
 class TokenUsageLog(Base):
-    """记录每次 LLM 调用的 token 使用明细"""
+    """LLM 调用 Token 明细表：按场景审计用量，并汇总至用户累计字段。"""
+
     __tablename__ = "token_usage_logs"
 
     id = Column(Integer, primary_key=True)

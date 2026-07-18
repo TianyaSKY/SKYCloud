@@ -1,3 +1,5 @@
+"""应用包初始化：启动时建表、轻量 schema 对齐与向量索引校验。"""
+
 import logging
 import os
 import time
@@ -12,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_file_vector_index() -> None:
-    """Ensure the file vector index uses cosine distance consistently."""
+    """保证 files 向量索引统一为余弦距离算子（vector_cosine_ops）。"""
     expected_sql = "CREATE INDEX file_vector_idx ON files USING hnsw (vector_info vector_cosine_ops)"
     try:
         with engine.connect() as conn:
@@ -44,7 +46,7 @@ def _ensure_file_vector_index() -> None:
 
 
 def _ensure_file_content_hash_column() -> None:
-    """Ensure the files table has the content_hash column for instant uploads."""
+    """保证 files 表存在 content_hash 列（秒传去重）及配套索引。"""
     try:
         with engine.connect() as conn:
             exists = conn.execute(
@@ -76,7 +78,7 @@ def _ensure_file_content_hash_column() -> None:
 
 
 def _ensure_mcp_token_value_column() -> None:
-    """Ensure mcp_tokens.token_value exists for single-token copy / workspace inject."""
+    """保证 mcp_tokens.token_value 存在，便于前端复制与工作区注入。"""
     try:
         with engine.connect() as conn:
             exists = conn.execute(
@@ -99,7 +101,7 @@ def _ensure_mcp_token_value_column() -> None:
 
 
 def initialize_application():
-    """初始化应用：创建数据库表、初始化数据等"""
+    """初始化应用：建上传目录、连通数据库、建表并对齐必要列/索引。"""
     # 导入模型以注册到 Base.metadata
     from app.models import (
         User,
@@ -123,11 +125,10 @@ def initialize_application():
         except Exception as e:
             logger.error(f"Failed to create upload directory {UPLOAD_FOLDER}: {e}")
 
-    # 数据库连接重试逻辑
+    # 数据库连接重试
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # 尝试连接数据库
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             logger.info("Database connection successful.")
@@ -144,7 +145,7 @@ def initialize_application():
                 )
                 raise e
 
-    # 尝试创建 vector 扩展（如果尚未存在）
+    # 尝试创建 pgvector 扩展（若不存在）
     try:
         with engine.connect() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -152,11 +153,10 @@ def initialize_application():
     except Exception as e:
         logger.warning(f"Warning: Could not create vector extension: {e}")
 
-    # 自动创建所有表
+    # 自动创建所有表，并做轻量 schema 对齐
     Base.metadata.create_all(bind=engine)
     _ensure_file_content_hash_column()
     _ensure_mcp_token_value_column()
 
-    # 确保向量索引与检索距离度量保持一致
+    # 向量索引与检索距离度量保持一致
     _ensure_file_vector_index()
-

@@ -1,3 +1,5 @@
+"""云盘 RAG 对话：多查询向量召回、RRF 融合、Rerank，经 SSE 流式输出回答。"""
+
 import asyncio
 import json
 import logging
@@ -75,7 +77,7 @@ def _vector_search_docs(
         embeddings: "OpenAIEmbeddings",
         limit: int,
 ) -> list[Document]:
-    """单条查询的完整向量检索（embedding + DB），保留向后兼容。"""
+    """单条查询的完整向量检索（embedding + DB）；保留向后兼容。"""
     query_vector = embeddings.embed_query(query_text)[:1024]
     return _db_search_by_vector(query_vector, query_text, user_id, limit)
 
@@ -86,7 +88,7 @@ def _db_search_by_vector(
         user_id: int,
         limit: int,
 ) -> list[Document]:
-    """使用预计算的向量进行数据库搜索。使用独立 session 确保线程安全。"""
+    """用预计算向量查库；独立 session 保证线程池并发安全。"""
     sql = text("""
                SELECT id, name, description, mime_type, (vector_info <=> :vector) AS distance
                 FROM files
@@ -126,6 +128,7 @@ def _fuse_docs_with_rrf(
         rrf_k: int,
         top_k: int,
 ) -> list[Document]:
+    """RRF 融合多路召回；同分时按向量 distance 打破平局。"""
     if not result_sets:
         return []
 
@@ -153,7 +156,7 @@ def _fuse_docs_with_rrf(
 
 
 async def custom_db_retriever(query_text: str, user_id: int):
-    """单查询向量检索，保留兼容。"""
+    """单查询向量检索 + rerank；保留兼容旧调用。"""
     embeddings = get_embeddings_model()
     docs = _vector_search_docs(
         query_text, user_id, embeddings, RAG_VECTOR_FETCH_K)
@@ -168,6 +171,10 @@ async def multi_query_db_retriever(
         dimensions: RewriteKeywordDimensions,
         original_vector: list[float] | None = None,
 ):
+    """多查询并行召回 → RRF → Rerank。
+
+    original_vector 可与关键词改写并行预计算，避免重复 embed 原问题。
+    """
     import time
     t0 = time.perf_counter()
 
@@ -182,8 +189,10 @@ async def multi_query_db_retriever(
     embeddings = get_embeddings_model()
     loop = asyncio.get_running_loop()
 
-    # ---- 阶段 1: embedding ----
-    # 如果已预计算原始问题向量，只需 embed 额外查询
+    # ---------------------------------------------------------------------------
+    # 阶段 1: embedding
+    # ---------------------------------------------------------------------------
+    # 若已预计算原问题向量，只 embed 额外查询
     t1 = time.perf_counter()
     if original_vector and queries:
         additional_queries = queries[1:]  # queries[0] 始终是原始问题
@@ -206,7 +215,9 @@ async def multi_query_db_retriever(
         t2 = time.perf_counter()
         logger.info(f"[计时] 批量 embedding {len(queries)} 条: {t2 - t1:.2f}s")
 
-    # ---- 阶段 2: 并行数据库向量检索 ----
+    # ---------------------------------------------------------------------------
+    # 阶段 2: 并行数据库向量检索
+    # ---------------------------------------------------------------------------
     async def _search_one(q_text: str, vec: list[float]) -> list[Document]:
         return await loop.run_in_executor(
             None, _db_search_by_vector, vec, q_text, user_id, RAG_VECTOR_FETCH_K
@@ -225,11 +236,15 @@ async def multi_query_db_retriever(
     t3 = time.perf_counter()
     logger.info(f"[计时] DB 向量检索 {len(queries)} 条 (并行): {t3 - t2:.2f}s")
 
-    # ---- 阶段 3: RRF 融合 ----
+    # ---------------------------------------------------------------------------
+    # 阶段 3: RRF 融合
+    # ---------------------------------------------------------------------------
     fused_docs = _fuse_docs_with_rrf(
         result_sets, rrf_k=RAG_RRF_K, top_k=RAG_FUSION_TOP_K)
 
-    # ---- 阶段 4: Rerank ----
+    # ---------------------------------------------------------------------------
+    # 阶段 4: Rerank
+    # ---------------------------------------------------------------------------
     retrieval_query = build_retrieval_query(question, dimensions)
     reranked_docs = await rerank_documents(retrieval_query, fused_docs)
     t4 = time.perf_counter()
@@ -247,7 +262,7 @@ def format_docs(docs):
     for doc in docs:
         m = doc.metadata
         info = f"[文件: {m['name']} (ID: {m['id']})]\n{doc.page_content}"
-        # 如果是图片，提示 AI 可以使用特定语法引用
+        # 图片需提示模型用固定 Markdown 路径引用，前端才能渲染
         if m.get('mime_type', '').startswith('image/'):
             info += f"\n(这是一张图片，你可以使用 Markdown 语法展示它: ![图片名](/api/files/{m['id']}/download))"
         formatted.append(info)
@@ -261,7 +276,7 @@ def format_history(history):
 
 
 async def embed_original_question(payload: dict) -> list[float]:
-    """预计算原始问题的 embedding，与关键词改写并行执行。"""
+    """预计算原问题 embedding，与关键词改写并行以缩短首 token 延迟。"""
     question = str(payload.get("question", "") or "").strip()
     if not question:
         return []
@@ -284,18 +299,18 @@ async def retrieve_docs_with_rewrite(payload: dict):
 
 
 async def generate_chat_events(user_id, query: str, history: list):
-    """异步生成器，用于 SSE 流式输出"""
+    """SSE 异步生成器：关键词 → 检索状态 → 回答 token，并统一记 token 用量。"""
     from app.services.llm_client import record_llm_usage, TrackingOpenAIEmbeddings
 
     llm = get_chat_model()
     formatted_history = format_history(history)
 
-    # 设置 embedding 模型的用户 ID，用于 token 追踪
+    # embedding 侧设置 user_id，便于 token 追踪归属
     emb_model = get_embeddings_model()
     if isinstance(emb_model, TrackingOpenAIEmbeddings):
         emb_model.set_tracking_user(user_id)
 
-    # 关键词重写链：多维度提取，统一输出 JSON，便于下游检索拼接
+    # 关键词重写：多维度 JSON，便于下游拼接多路查询
     rewrite_prompt = ChatPromptTemplate.from_template("""
 请从用户问题中提取检索关键词。
 输出要求：
@@ -319,7 +334,6 @@ async def generate_chat_events(user_id, query: str, history: list):
     rewriter = (rewrite_prompt | rewrite_llm).with_config(
         {"run_name": "keyword_gen"})
 
-    # 最终回答的提示词模板：使用中文提示词
     answer_prompt = ChatPromptTemplate.from_template("""
 你是一个云盘助手。请根据以下参考信息回答用户问题。
 
@@ -341,7 +355,6 @@ async def generate_chat_events(user_id, query: str, history: list):
 {question}
 """)
 
-    # 最终回答链
     answer_chain = (
         answer_prompt |
         llm.with_config({"run_name": "final_answer_model", "tags": ["final_answer"]}) |
@@ -366,7 +379,9 @@ async def generate_chat_events(user_id, query: str, history: list):
         | answer_chain
     )
 
-    # ---- Token 用量追踪 ----
+    # ---------------------------------------------------------------------------
+    # Token 用量追踪
+    # ---------------------------------------------------------------------------
     usage_accumulator: dict[str, int] = {
         "prompt_tokens": 0,
         "completion_tokens": 0,
@@ -381,24 +396,23 @@ async def generate_chat_events(user_id, query: str, history: list):
         ):
             kind = event["event"]
 
-            # 处理关键词生成（仅在链结束时发送完整关键词）
+            # 仅在关键词链结束时推送完整关键词，避免中间态闪烁
             if kind == "on_chain_end" and event["name"] == "keyword_gen":
                 rewrite_output = event["data"].get("output")
                 dimensions = require_keyword_dimensions(rewrite_output)
                 keywords = format_keyword_dimensions(dimensions)
                 yield f"data: {json.dumps({'type': 'keywords', 'content': keywords})}\n\n"
 
-            # 处理最终回答的流：通过 run_name 'final_answer_model' 确保不包含关键词生成的 token
+            # 只转发 final_answer_model 的流，排除关键词生成阶段的 token
             elif kind == "on_chat_model_stream" and event["name"] == "final_answer_model":
                 content = event["data"]["chunk"].content
                 if content:
                     yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
 
-            # 处理状态
             elif kind == "on_retriever_start" or (kind == "on_chain_start" and event["name"] == "custom_db_retriever"):
                 yield f"data: {json.dumps({'type': 'status', 'content': '正在检索相关文件...'})}\n\n"
 
-            # 捕获 LLM 的 token 使用信息（每个 on_chat_model_end 事件都包含 usage_metadata）
+            # 各 chat model 结束事件均可能带 usage_metadata，累加后统一落库
             elif kind == "on_chat_model_end":
                 output = event.get("data", {}).get("output")
                 if output and hasattr(output, "usage_metadata") and output.usage_metadata:
@@ -406,7 +420,6 @@ async def generate_chat_events(user_id, query: str, history: list):
                     usage_accumulator["prompt_tokens"] += um.get("input_tokens", 0)
                     usage_accumulator["completion_tokens"] += um.get("output_tokens", 0)
                     usage_accumulator["total_tokens"] += um.get("total_tokens", 0)
-                # 记录模型名
                 if not model_name_seen:
                     run_meta = event.get("metadata", {}) or {}
                     model_name_seen = run_meta.get("ls_model_name")
@@ -415,7 +428,7 @@ async def generate_chat_events(user_id, query: str, history: list):
         logger.error(f"Chat error: {e}", exc_info=True)
         yield f"data: {json.dumps({'type': 'status', 'content': f'出错了: {str(e)}'})}\n\n"
     finally:
-        # 无论成功或异常，都通过统一接口记录本次 token 消耗
+        # 成功或异常都记用量，避免漏计费
         record_llm_usage(
             user_id=user_id,
             action="chat",

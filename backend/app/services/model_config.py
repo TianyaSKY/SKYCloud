@@ -1,3 +1,5 @@
+"""从环境变量读取 Chat / Embedding / VL / Rerank 模型配置；禁止经 sys_dict 落库。"""
+
 import os
 from typing import Final
 
@@ -27,10 +29,12 @@ DEFAULT_RERANK_TOP_K: Final[int] = 8
 
 
 def is_model_config_sys_dict_key(key: str | None) -> bool:
+    """识别是否为禁止写入 sys_dict 的模型配置键。"""
     return (key or "").strip().lower() in MODEL_CONFIG_SYS_DICT_KEYS
 
 
 def _read_env(*keys: str, default: str = "") -> str:
+    # 支持大小写/旧名多键回退，兼容历史部署
     for key in keys:
         value = os.getenv(key)
         if value is not None and value.strip() != "":

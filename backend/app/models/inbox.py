@@ -8,6 +8,8 @@ from app.extensions import Base
 
 
 class Inbox(Base):
+    """站内信/通知表：系统消息与用户可读状态（支持软删除）。"""
+
     __tablename__ = "inbox"
 
     id = Column(Integer, primary_key=True)
@@ -15,13 +17,10 @@ class Inbox(Base):
     title = Column(String(255), nullable=True)
     content = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False)
-    type = Column(String(50), default="system")  # e.g., 'system', 'notification'
+    type = Column(String(50), default="system")  # 如 system、notification
     created_at = Column(DateTime, default=beijing_now)
-    is_deleted = Column(Boolean, default=False)  # 是否删除占位
+    is_deleted = Column(Boolean, default=False)  # 软删除标记
 
-
-
-    # 关联用户
     user = relationship("User", backref=backref("inbox_messages", lazy="dynamic"))
 
     def to_dict(self):

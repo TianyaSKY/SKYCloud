@@ -1,12 +1,7 @@
-"""
-文件描述生成模块
+"""文件描述生成（Worker 适配）：多模态 VL / Chat 产出中文描述供 embedding。
 
-使用多模态模型（VL）为文件生成智能描述：
-- 支持文档、图片、视频等多种格式
-- 将文件转换为图片后调用 VL 模型分析
-- 生成结构化的英文描述用于后续向量化
-
-所有 LLM 调用统一通过 llm_client.chat_completion() 发起。
+业务边界：只负责「文件 → 描述文本」；索引落库与向量写入在 indexing_handler。
+LLM 调用统一走 llm_client.chat_completion，便于记 Token。
 """
 
 import base64
@@ -24,11 +19,10 @@ from .format_converter import (
     extract_video_frames,
 )
 
-# 配置日志
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# 支持的文本扩展名
+# 走纯文本 Chat 路径的扩展名（比 VL 更便宜）
 TEXT_EXTENSIONS = {
     ".md",
     ".cpp",
@@ -51,7 +45,7 @@ TEXT_EXTENSIONS = {
     ".bat",
 }
 
-# 支持的文件格式分类
+# 走 VL 视觉路径的格式分类
 DOCUMENT_EXTENSIONS = {".docx", ".doc",
                        ".xlsx", ".xls", ".pptx", ".ppt", ".pdf"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv"}
@@ -60,9 +54,7 @@ AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg"}
 
 
 def image_to_base64(image_path: str) -> str:
-    """
-    将图片文件转换为 Base64 Data URI 字符串。
-    """
+    """图片文件 → Base64 Data URI，供 VL image_url 字段。"""
     mime_type, _ = mimetypes.guess_type(image_path)
     if not mime_type:
         mime_type = "image/jpeg"
@@ -74,9 +66,7 @@ def image_to_base64(image_path: str) -> str:
 
 
 def _get_visual_urls(local_path: str) -> list:
-    """
-    将不同类型的文件转换为可供多模态模型识别的图片 Base64 Data URI 列表。
-    """
+    """按类型转成 VL 可读的图片 Data URI 列表；音频直接拒绝。"""
     path = Path(local_path)
     ext = path.suffix.lower()
     image_uris = []
@@ -107,10 +97,9 @@ def _get_visual_urls(local_path: str) -> list:
                     if uri:
                         image_uris.append(uri)
             elif ext in IMAGE_EXTENSIONS:
-                # 文件直接转 Base64
                 image_uris.append(image_to_base64(local_path))
             elif ext in TEXT_EXTENSIONS:
-                return []  # 无需处理
+                return []  # 文本路径不需要视觉帧
             else:
                 raise ValueError(f"Unsupported file type: {ext}")
         except Exception as e:
@@ -122,24 +111,14 @@ def _get_visual_urls(local_path: str) -> list:
 
 
 def _generate_text_description(local_path: str, config: dict, user_id: int = 0) -> str:
-    """
-    使用对话模型为纯文本文件生成描述（比 VL 模型更快更便宜）。
-
-    Args:
-        local_path: 文件本地路径
-        config: Chat 模型配置，包含 api、key、model
-        user_id: 文件上传者 ID
-
-    Returns:
-        str: 生成的中文描述文本
-    """
+    """纯文本文件用 Chat 模型生成描述（比 VL 更快更省 Token）。"""
     from app.services.llm_client import chat_completion
 
     text_content = _extract_text_content(local_path)
     if not text_content.strip():
         return "空文件"
 
-    # 截断过长的文本，避免超出模型上下文
+    # 截断避免撑爆上下文
     max_chars = 8000
     if len(text_content) > max_chars:
         text_content = text_content[:max_chars] + "\n...(内容已截断)"
@@ -174,33 +153,22 @@ def _generate_text_description(local_path: str, config: dict, user_id: int = 0) 
 def generate_file_description(
     local_path: str, config: dict, chat_config: dict | None = None, user_id: int = 0
 ) -> str:
-    """
-    生成文件描述。纯文本文件使用对话模型，其他文件使用 VL 多模态模型。
+    """生成中文文件描述：文本走 Chat，其余走 VL。
 
-    所有 LLM 调用通过 llm_client.chat_completion() 统一发起。
-
-    Args:
-        local_path: 文件本地路径
-        config: VL 模型配置，包含 api、key、model
-        chat_config: Chat 模型配置（可选），纯文本文件使用
-        user_id: 文件上传者 ID
-
-    Returns:
-        str: 生成的中文描述文本
+    :param local_path: 本地绝对路径
+    :param config: VL 模型配置（api/key/model）
+    :param chat_config: 可选 Chat 配置；缺省回退到 config
+    :param user_id: 用于 Token 记账
     """
     from app.services.llm_client import chat_completion
 
     path = Path(local_path)
     ext = path.suffix.lower()
 
-    # 纯文本文件：使用对话模型（更快更便宜）
     if ext in TEXT_EXTENSIONS:
         text_config = chat_config or config
         return _generate_text_description(local_path, text_config, user_id=user_id)
 
-    # 非文本文件：使用 VL 多模态模型
-
-    # 获取图片的 Base64 Data URI 列表
     visual_contents = _get_visual_urls(local_path)
     if not visual_contents:
         logger.info(f"No visual content for {local_path}")
@@ -216,9 +184,10 @@ def generate_file_description(
     content: list[dict] = [{"type": "text", "text": prompt}]
     for uri in visual_contents:
         content.append({"type": "image_url", "image_url": {"url": uri}})
+    # 附带可抽取文本，补 VL 对表格/代码的盲区
     content.append(
         {"type": "text", "text": _extract_text_content(local_path)}
-    )  # 加入文本信息
+    )
 
     try:
         response = chat_completion(
@@ -238,15 +207,12 @@ def generate_file_description(
 
 
 def _extract_text_content(local_path: str) -> str:
-    """
-    解析文件内容为文本：支持文档、代码、视频元数据。
-    """
+    """尽量抽取可索引文本：视频元数据 / docx / 纯文本代码。"""
     path = Path(local_path)
     if not path.exists():
         return ""
     ext = path.suffix.lower()
 
-    # 1. 处理视频元数据
     if ext in VIDEO_EXTENSIONS:
         try:
             cap = cv2.VideoCapture(local_path)
@@ -262,7 +228,6 @@ def _extract_text_content(local_path: str) -> str:
         except:
             return f"Video File: {path.name}"
 
-    # 2. 处理 Word 文档
     if ext == ".docx":
         try:
             doc = Document(local_path)
@@ -277,7 +242,6 @@ def _extract_text_content(local_path: str) -> str:
         except:
             return ""
 
-    # 3. 处理文本/代码文件
     if ext in TEXT_EXTENSIONS or not ext:
         try:
             return path.read_text(encoding="utf-8", errors="ignore")
@@ -287,6 +251,6 @@ def _extract_text_content(local_path: str) -> str:
     return ""
 
 
-# 为了向后兼容，保留旧函数名的别名
+# 兼容旧 import 名
 desc_file = generate_file_description
 format_data = _extract_text_content

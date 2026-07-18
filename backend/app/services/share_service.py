@@ -1,3 +1,5 @@
+"""文件分享：创建/取消分享链接，按 token 解析可下载文件（含过期校验）。"""
+
 import os
 from datetime import datetime
 
@@ -9,12 +11,11 @@ from app.models.share import Share
 
 
 def create_share_link(user_id, file_id, expires_at=None):
-    # 检查文件是否存在且属于该用户（或管理员逻辑，此处简化）
+    # 当前简化：仅校验文件存在，未强制归属（调用方应先做权限）
     file = db.session.get(File, file_id)
     if not file:
         raise ValueError("File not found")
 
-    # 创建分享记录
     share = Share(
         user_id=user_id,
         file_id=file_id,
@@ -26,11 +27,11 @@ def create_share_link(user_id, file_id, expires_at=None):
 
 
 def get_share_by_token(token):
+    """按 token 取分享；过期视为无效返回 None。"""
     share = db.session.query(Share).filter_by(token=token).first()
     if not share:
         return None
 
-    # 检查是否过期
     expires_at = to_beijing_naive(share.expires_at)
     if expires_at and expires_at < beijing_now():
         return None
@@ -39,17 +40,13 @@ def get_share_by_token(token):
 
 
 def get_my_shares(user_id):
-    """
-    获取用户的所有分享记录
-    """
+    """用户分享列表，按创建时间倒序。"""
     shares = db.session.query(Share).filter_by(user_id=user_id).order_by(Share.created_at.desc()).all()
     return [share.to_dict() for share in shares]
 
 
 def cancel_share(share_id, user_id):
-    """
-    取消分享
-    """
+    """仅允许取消本人分享；不存在则返回 False。"""
     share = db.session.query(Share).filter_by(id=share_id, user_id=user_id).first()
     if share:
         db.session.delete(share)
@@ -59,6 +56,7 @@ def cancel_share(share_id, user_id):
 
 
 def create_share(user_id: int, file_id: int, expires_at_raw: str | None) -> Share:
+    """解析 ISO 过期时间后创建分享；ValueError 转为业务异常。"""
     expires_at = None
     if expires_at_raw:
         try:
@@ -77,6 +75,7 @@ def cancel_share_for_user(share_id: int, user_id: int) -> None:
 
 
 def resolve_shared_file(token: str) -> File:
+    """公开下载入口：校验链接有效且磁盘文件仍存在。"""
     share = get_share_by_token(token)
     if not share:
         raise ResourceNotFoundError("Link invalid or expired")

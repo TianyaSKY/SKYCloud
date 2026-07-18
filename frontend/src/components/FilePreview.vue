@@ -169,7 +169,7 @@ const handleClose = () => {
   white-space: nowrap;
 }
 
-/* 代码预览样式 */
+/* 代码预览深色容器 */
 .code-preview-container {
   width: 100%;
   background: #1e1e1e;

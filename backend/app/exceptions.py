@@ -1,3 +1,8 @@
+"""领域异常与 FastAPI 全局异常处理器注册。
+
+服务层抛出 DomainError 子类；API 层统一映射为 JSON HTTP 响应。
+"""
+
 from typing import Any
 
 from fastapi import FastAPI, HTTPException as FastAPIHTTPException, Request
@@ -13,26 +18,38 @@ class DomainError(Exception):
 
 
 class ResourceNotFoundError(DomainError):
+    """资源不存在。"""
+
     status_code = 404
 
 
 class BusinessRuleError(DomainError):
+    """违反业务规则（参数合法但操作不允许）。"""
+
     status_code = 400
 
 
 class PermissionDeniedError(DomainError):
+    """无权限访问该资源。"""
+
     status_code = 403
 
 
 class PayloadTooLargeError(DomainError):
+    """请求体或上传体积超限。"""
+
     status_code = 413
 
 
 class ConflictError(DomainError):
+    """资源冲突（如重名、状态互斥）。"""
+
     status_code = 409
 
 
 class AuthenticationError(DomainError):
+    """未认证或凭证无效。"""
+
     status_code = 401
 
 
@@ -55,6 +72,7 @@ def _to_json_safe(value: Any) -> Any:
 
 
 def _compact_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """压缩 Pydantic 校验错误，剔除不可 JSON 序列化字段。"""
     compact: list[dict[str, Any]] = []
     for err in errors:
         item = {
@@ -70,6 +88,8 @@ def _compact_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def register_exception_handlers(app: FastAPI) -> None:
+    """注册领域异常、HTTP 异常、校验失败与未捕获异常的统一响应。"""
+
     @app.exception_handler(DomainError)
     async def handle_domain_error(_: Request, exc: DomainError):
         return JSONResponse(
@@ -92,8 +112,6 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=422,
             content={"message": msg, "detail": msg, "errors": compact_errors},
         )
-
-
 
     @app.exception_handler(Exception)
     async def handle_unexpected_exception(_: Request, exc: Exception):

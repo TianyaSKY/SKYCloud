@@ -1,10 +1,12 @@
+"""工作区服务层 DTO：与 HTTP schema / ORM 解耦。"""
+
 from dataclasses import dataclass
 from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
 class CreateWorkspaceCommand:
-    """创建工作区所需的业务参数，不依赖 HTTP 请求模型。"""
+    """创建工作区所需业务参数，不依赖 HTTP 请求模型。"""
 
     user_id: int
     name: str
@@ -12,7 +14,7 @@ class CreateWorkspaceCommand:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceSummary:
-    """供 API 层返回的工作区视图，不暴露 ORM 实体。"""
+    """API 层返回的工作区视图，不暴露 ORM 实体。"""
 
     id: int
     user_id: int

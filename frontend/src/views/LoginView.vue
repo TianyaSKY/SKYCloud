@@ -157,12 +157,13 @@ const handleSubmit = async ({values, errors}: LoginFormSubmitPayload) => {
   align-items: center;
   justify-content: flex-start;
   padding: 60px 60px 60px 120px;
-  background: transparent; /* 移除背景 */
+  background: transparent;
 }
 
 .brand-content {
   color: white;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2); /* 增加文字阴影提高可读性 */
+  /* 浅色背景图上提高品牌文案对比度 */
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 .brand-title {
@@ -192,8 +193,9 @@ const handleSubmit = async ({values, errors}: LoginFormSubmitPayload) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.6); /* 半透明白色 */
-  backdrop-filter: blur(5px); /* 模糊核心 */
+  /* 毛玻璃面板：半透明 + 模糊，露出底层背景图 */
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(5px);
   -webkit-backdrop-filter: blur(20px);
   border-left: 1px solid rgba(255, 255, 255, 0.2);
   box-shadow: -10px 0 30px rgba(0, 0, 0, 0.1);
@@ -202,7 +204,7 @@ const handleSubmit = async ({values, errors}: LoginFormSubmitPayload) => {
 .login-card {
   width: 360px;
   padding: 40px;
-  background: transparent; /* 确保卡片背景透明 */
+  background: transparent;
 }
 
 .login-header {

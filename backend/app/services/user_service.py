@@ -1,3 +1,5 @@
+"""用户资料 CRUD、缓存，以及改密/访问权限校验。"""
+
 from app.infra.cache import cacheable, evict_cache
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
 from app.extensions import db
@@ -17,14 +19,14 @@ def create_user(data):
 
     db.session.add(new_user)
     db.session.commit()
-    # 同时也需要给新用户创建一个根目录
+    # 新用户必须有根目录，后续文件/文件夹均挂在其下
     folder_service.create_folder({"user_id": new_user.id, "name": "/"})
     return new_user
 
 
 @cacheable(prefix=USER_CACHE_PREFIX, expire=USER_CACHE_EXPIRE)
 def _get_user_data(id: int) -> dict | None:
-    """缓存层：返回 dict 或 None（None 不会被缓存）"""
+    """缓存友好：返回 dict；None 表示不存在（不会被缓存）。"""
     user = db.session.get(User, id)
     return user.to_dict() if user else None
 
@@ -61,7 +63,7 @@ def delete_user(id):
 
 
 def change_password(actor_id: int, actor_role: str, user_id: int, old_password: str, new_password: str) -> None:
-    """验证操作者权限和旧密码后更新目标用户密码。"""
+    """本人或 admin 可改密；非 admin 必须校验旧密码。"""
     if actor_id != user_id and actor_role != "admin":
         raise PermissionDeniedError("Permission denied")
     user = db.session.get(User, user_id)
@@ -73,5 +75,6 @@ def change_password(actor_id: int, actor_role: str, user_id: int, old_password: 
 
 
 def ensure_user_access(actor_id: int, actor_role: str, user_id: int) -> None:
+    """仅允许操作本人资料，或 admin 代操作。"""
     if actor_id != user_id and actor_role != "admin":
         raise PermissionDeniedError("Permission denied")

@@ -1,10 +1,6 @@
-"""
-文件格式转换模块
+"""格式转换工具：Office→PDF、PDF→图、视频抽帧，供描述生成链路使用。
 
-提供将各种文件格式转换为可处理格式的功能：
-- Office 文档 → PDF
-- PDF → 图片
-- 视频 → 关键帧图片
+仅做本地转换，不访问 LLM / DB；LibreOffice 路径可通过 LIBREOFFICE_PATH 覆盖。
 """
 
 import locale
@@ -19,15 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 def get_libreoffice_command():
-    """
-    尝试获取 LibreOffice 的可执行文件路径
-    """
-    # 检查环境变量
+    """解析 soffice 可执行路径：环境变量 → Windows 常见安装位 → PATH 中的 soffice。"""
     env_path = os.environ.get("LIBREOFFICE_PATH")
     if env_path and os.path.exists(env_path):
         return env_path
 
-    # Windows 常见路径自动检测
     if os.name == "nt":
         possible_paths = [
             r"C:\Program Files\LibreOffice\program\soffice.exe",
@@ -37,21 +29,17 @@ def get_libreoffice_command():
             if os.path.exists(path):
                 return path
 
-    # 默认回退到命令名
     return "soffice"
 
 
 def convert_office_to_pdf(input_path, output_dir):
-    """
-    使用 LibreOffice 将 Office 文档转换为 PDF
-    """
+    """用 LibreOffice headless 转 PDF；独立 UserInstallation 避免并发锁 profile。"""
     soffice_cmd = get_libreoffice_command()
     logger.info(f"Converting office document to PDF: {input_path}")
 
     user_profile_path = os.path.join(output_dir, "libreoffice_user_profile")
     user_profile_url = f"file:///{user_profile_path.replace(os.sep, '/')}"
 
-    # soffice --headless --convert-to pdf <file> --outdir <dir>
     cmd = [
         soffice_cmd,
         f"-env:UserInstallation={user_profile_url}",
@@ -81,15 +69,12 @@ def convert_office_to_pdf(input_path, output_dir):
         logger.error(f"LibreOffice conversion failed: {error_msg}")
         raise e
 
-    # 推断生成的 PDF 文件名
     base_name = os.path.splitext(os.path.basename(input_path))[0]
     return os.path.join(output_dir, base_name + ".pdf")
 
 
 def convert_pdf_to_images(pdf_path, output_dir, max_pages=5):
-    """
-    使用 PyMuPDF 将 PDF 转换为图片列表
-    """
+    """PDF 前 max_pages 页渲成 JPEG；2x zoom 兼顾清晰度与体积。"""
     image_paths = []
     try:
         doc = fitz.open(pdf_path)
@@ -110,9 +95,7 @@ def convert_pdf_to_images(pdf_path, output_dir, max_pages=5):
 
 
 def extract_video_frames(video_path, output_dir, frame_count=5):
-    """
-    从视频中等间隔提取关键帧
-    """
+    """等间隔抽取 frame_count 帧，覆盖片头到片尾。"""
     image_paths = []
     try:
         cap = cv2.VideoCapture(video_path)

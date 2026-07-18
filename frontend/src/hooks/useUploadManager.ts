@@ -3,33 +3,30 @@ import { uploadFileOptimized } from '../utils/upload'
 import type { Ref } from 'vue'
 import { logger } from '../utils/logger'
 
-/** 并发上传数 */
+/** 批量上传并发上限，避免同时打满带宽与浏览器连接数 */
 const UPLOAD_CONCURRENCY = 3
 
 /**
- * 统一的文件上传管理器。
- * 处理单文件 / 多文件上传，并提供一致的通知反馈。
+ * 统一的文件上传管理器：单文件实时进度 / 多文件聚合通知 + 并发队列。
  *
- * 卸载取消说明：组件卸载时调用 cancelAll() 可阻止批量队列继续派发新任务；
- * 进行中的单个 HTTP 请求无法中断（uploadFileOptimized 的导出签名未暴露 signal，
- * 保持签名不变以避免破坏调用方），但队列剩余文件不再上传，已开始的请求会自然完成。
+ * 卸载时调用 cancelAll() 可阻止队列继续派发；进行中的 HTTP 请求无法中断
+ *（uploadFileOptimized 未暴露 signal，保持签名以免破坏调用方），已发起的请求会自然完成。
  */
 export function useUploadManager(
   currentParentId: Ref<number | null>,
   fetchFiles: () => Promise<void>,
 ) {
-  /** 取消标志：cancelAll 置位后，批量队列停止派发新任务 */
+  /** cancelAll 置位后批量队列停止派发新任务 */
   let cancelled = false
 
-  /** 取消上传：阻止队列派发新任务，已发起的请求不中断 */
+  /** 阻止队列派发新任务；已发起的请求不中断 */
   const cancelAll = () => {
     cancelled = true
   }
 
   /**
    * 上传一组文件（≥1 个）。
-   * - 单文件：显示独立的实时进度通知
-   * - 多文件：显示聚合计数通知 + 并发队列
+   * 单文件：独立实时进度通知；多文件：聚合计数 + 并发队列。
    */
   const startUpload = async (files: File[]) => {
     if (!files || files.length === 0) return
@@ -41,8 +38,6 @@ export function useUploadManager(
       await uploadBatch(files)
     }
   }
-
-  // ─── 单文件上传 ──────────────────────────────────────────
 
   const uploadSingle = async (file: File) => {
     if (cancelled) return
@@ -93,8 +88,6 @@ export function useUploadManager(
     }
   }
 
-  // ─── 多文件批量上传 ──────────────────────────────────────
-
   const uploadBatch = async (files: File[]) => {
     const batchId = `batch-upload-${Date.now()}`
     const total = files.length
@@ -118,7 +111,7 @@ export function useUploadManager(
     updateNotification()
     await new Promise((resolve) => setTimeout(resolve, 0))
 
-    // 并发队列
+    // 固定并发 worker 抢占式消费队列
     let cursor = 0
     const worker = async () => {
       while (true) {
@@ -141,7 +134,7 @@ export function useUploadManager(
         }
         updateNotification()
 
-        // 让出主线程，避免 UI 卡顿
+        // 让出主线程，避免连续上传时 UI 卡顿
         await new Promise((resolve) => setTimeout(resolve, 0))
       }
     }
@@ -152,7 +145,6 @@ export function useUploadManager(
     )
     await Promise.all(workers)
 
-    // 结果通知
     if (failed === 0) {
       Notification.success({
         id: batchId,

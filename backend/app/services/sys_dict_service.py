@@ -1,3 +1,5 @@
+"""系统字典 CRUD 与缓存；禁止通过字典表写入模型 API 配置（改走环境变量）。"""
+
 from app.infra.cache import cacheable, evict_cache
 from app.exceptions import BusinessRuleError, ResourceNotFoundError
 from app.extensions import db
@@ -60,6 +62,7 @@ def delete_sys_dict(id):
 
 @cacheable(prefix=SYS_DICT_CACHE_PREFIX, expire=SYS_DICT_CACHE_EXPIRE)
 def _get_sys_dict_all_cached() -> list[dict]:
+    # 过滤模型配置键，避免历史脏数据经缓存暴露
     sys_dicts = db.session.query(SysDict).all()
     return [
         sys_dict.to_dict()
@@ -83,7 +86,7 @@ async def get_sys_dict_by_key(key):
 
 
 def get_sys_dict_by_key_sync(key):
-    """Synchronous lookup for consumer/thread contexts."""
+    """同步查询（consumer / 线程上下文不可用 async 时使用）。"""
     if is_model_config_sys_dict_key(key):
         return None
     return (

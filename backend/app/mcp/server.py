@@ -1,17 +1,12 @@
-"""
-SKYCloud MCP Server
-将云盘核心能力（文件搜索、文件夹浏览、文件管理、文件下载/读取）通过 MCP 协议对外暴露。
+"""MCP 协议适配层：将云盘能力暴露为 tools / resources / prompts。
 
-独立容器运行，复用 app.services 层，通过 JWT Token 认证用户身份。
+职责边界：只做协议适配与鉴权注入，业务逻辑在 app.services。
+独立容器运行；JWT 经 ASGI 中间件写入 ContextVar，工具侧无需手传 user_id。
 
-设计要点：
-1. JWT 认证 — 通过 ASGI 中间件从 HTTP Authorization 头校验 token，
-   自动将 user_id 注入 ContextVar，
-   工具层通过 _get_authenticated_user_id() 获取，不再需要手动传 user_id。
-2. 同步阻塞保护 — 所有同步 DB service 调用均通过 _run_sync() 卸载到线程池，
-   避免阻塞事件循环，并保证 scoped_session 在执行线程上清理。
-3. 异常处理 — 统一捕获 service 层抛出的 HTTPException，转为结构化 JSON 错误。
-4. MCP Prompts — 实用 Prompt 模板，帮助 LLM 客户端更好地利用工具。
+约束：
+1. 同步 DB 调用须经 _run_sync / to_thread，并在同一线程 remove scoped_session
+2. service 的 HTTPException 转为结构化 JSON 错误，避免 MCP 客户端拿到裸栈
+3. 工具参数与名称保持稳定，供 Claude Desktop / Cursor / OpenCode 长期配置
 """
 
 import asyncio
@@ -34,7 +29,7 @@ from app.services.auth_service import decode_token
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# ContextVar: 每个请求的认证 user_id 通过此变量传递
+# 请求级认证上下文
 # ---------------------------------------------------------------------------
 _current_user_id: ContextVar[int | None] = ContextVar("_current_user_id", default=None)
 
@@ -43,11 +38,9 @@ _current_user_id: ContextVar[int | None] = ContextVar("_current_user_id", defaul
 # ASGI 认证中间件
 # ---------------------------------------------------------------------------
 class JWTAuthMiddleware:
-    """
-    ASGI 中间件，从 HTTP Authorization 头提取 Bearer token，
-    调用 decode_token() 校验后将 user_id 注入 ContextVar。
+    """从 Authorization Bearer 解析 JWT，将 user_id 注入 ContextVar。
 
-    对非 MCP 路径（如 /health）以及 MCP 初始化握手请求不拦截。
+    无效/缺失 token 时 user_id 为 None，由工具入口统一拒绝，避免在握手阶段硬拦。
     """
 
     def __init__(self, app):
@@ -57,7 +50,6 @@ class JWTAuthMiddleware:
         if scope["type"] not in ("http", "websocket"):
             return await self.app(scope, receive, send)
 
-        # 从 ASGI scope 获取 headers
         headers = dict(scope.get("headers", []))
         auth_value = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
 
@@ -67,11 +59,10 @@ class JWTAuthMiddleware:
             token = auth_value.split(" ", 1)[1].strip()
             if token:
                 result = decode_token(token)
-                # decode_token 成功时返回 user_id（str），失败时返回错误信息字符串
+                # decode_token 成功返回数字字符串 user_id，失败返回错误文案
                 if result and str(result).isdigit():
                     user_id = int(result)
 
-        # 将 user_id 注入 ContextVar
         token_ctx = _current_user_id.set(user_id)
         try:
             await self.app(scope, receive, send)
@@ -80,16 +71,16 @@ class JWTAuthMiddleware:
 
 
 def get_mcp_app(mcp_instance: FastMCP):
-    """获取带有 JWT 认证中间件的 ASGI 应用。"""
+    """包装 streamable HTTP ASGI 应用，挂上 JWT 中间件。"""
     raw_app = mcp_instance.streamable_http_app()
     return JWTAuthMiddleware(raw_app)
 
 
 # ---------------------------------------------------------------------------
-# Helper: 获取当前请求的认证 user_id
+# 工具辅助
 # ---------------------------------------------------------------------------
 def _get_authenticated_user_id() -> int:
-    """从 ContextVar 中获取已认证的 user_id，未认证则抛出异常。"""
+    """读取当前请求 user_id；未认证则抛 PermissionError。"""
     user_id = _current_user_id.get()
     if user_id is None:
         raise PermissionError(
@@ -99,15 +90,10 @@ def _get_authenticated_user_id() -> int:
     return user_id
 
 
-# ---------------------------------------------------------------------------
-# Helper: 在线程池中执行同步函数，确保 scoped_session 在正确的线程上清理
-# ---------------------------------------------------------------------------
 async def _run_sync(fn, *args, **kwargs):
-    """在线程池中执行同步函数。
+    """在线程池执行同步函数，并在同一线程 remove scoped_session。
 
-    scoped_session 按线程 ID 管理 session，因此 db.session.remove() 必须
-    在执行 DB 操作的同一线程上调用。本辅助函数将 fn 及 session 清理
-    一起放入 to_thread，保证线程安全。
+    scoped_session 按线程绑定；若在事件循环线程 remove 会清错 session。
     """
     def _work():
         try:
@@ -118,12 +104,12 @@ async def _run_sync(fn, *args, **kwargs):
 
 
 def _error_json(msg: str) -> str:
-    """返回统一格式的 JSON 错误字符串。"""
+    """MCP 工具统一错误载荷。"""
     return json.dumps({"error": msg}, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
-# 创建 FastMCP 实例
+# FastMCP 实例
 # ---------------------------------------------------------------------------
 mcp = FastMCP(
     "SKYCloud",
@@ -153,8 +139,7 @@ async def get_current_user() -> str:
             if not user:
                 return _error_json("User not found")
             info = user.to_dict()
-            # 移除敏感字段
-            info.pop("password_hash", None)
+            info.pop("password_hash", None)  # 绝不经 MCP 回传哈希
             return json.dumps(info, ensure_ascii=False, default=str)
         finally:
             db.session.remove()
@@ -180,7 +165,7 @@ async def search_files(
               如果需要按文件内容查找，请使用 vector 模式。
     """
     user_id = _get_authenticated_user_id()
-    # search_files 是 async 函数，内部已通过 to_thread 卸载同步 DB 操作
+    # service 内部已 to_thread，此处勿再包一层以免嵌套线程
     result = await file_service.search_files(
         user_id, query, page, page_size, search_type
     )
@@ -211,8 +196,7 @@ async def list_files(
     def _work():
         try:
             resolved_parent_id = parent_id
-            # 未指定 parent_id 时，自动解析为用户根文件夹的 ID，
-            # 这样返回的是根目录下的内容而非根文件夹本身
+            # None 表示「用户根目录内容」，需解析真实 root id，避免列出伪根自身
             if resolved_parent_id is None:
                 resolved_parent_id = folder_service.get_root_folder_id(user_id)
             return file_service.get_files_and_folders(
@@ -263,8 +247,7 @@ async def create_folder(
 
     def _work():
         try:
-            # 未指定 parent_id 时，自动解析为用户根文件夹的 ID，
-            # 与 list_files 行为一致，避免创建出 parent_id=None 的伪根目录
+            # 与 list_files 一致：避免 parent_id=None 造出第二套「伪根」
             resolved_parent_id = parent_id
             if resolved_parent_id is None:
                 resolved_parent_id = folder_service.get_root_folder_id(user_id)
@@ -350,7 +333,7 @@ async def delete_file(file_id: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 文本类 MIME 前缀白名单，用于 read_file_content 判断是否可读
+# 文本可读性判定（read_file_content）
 # ---------------------------------------------------------------------------
 _TEXT_MIME_PREFIXES: tuple[str, ...] = (
     "text/",
@@ -367,7 +350,7 @@ _TEXT_MIME_EXACT: set[str] = {
     "application/x-python",
     "application/xhtml+xml",
 }
-# 按扩展名的兜底：某些系统 mime_type 可能为 application/octet-stream
+# mime 常被标成 octet-stream，扩展名作兜底
 _TEXT_EXTENSIONS: set[str] = {
     ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".jsonl",
     ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
@@ -377,11 +360,11 @@ _TEXT_EXTENSIONS: set[str] = {
     ".log", ".env", ".gitignore", ".dockerfile",
 }
 
-_MAX_READ_BYTES = 512 * 1024  # 最大读取 512KB，避免超大文件撑爆上下文
+_MAX_READ_BYTES = 512 * 1024  # 限制上下文体积，超大文件截断
 
 
 def _is_text_file(mime_type: str | None, filename: str | None) -> bool:
-    """判断文件是否为可直接读取的文本文件。"""
+    """MIME 或扩展名命中文本白名单则可直接读内容。"""
     if mime_type:
         mt = mime_type.lower()
         if any(mt.startswith(p) for p in _TEXT_MIME_PREFIXES):
@@ -416,14 +399,13 @@ async def get_file_download_url(
             if file_obj.uploader_id != user_id:
                 return _error_json("Permission denied")
 
-            # 限制最大过期时间为 7 天
+            # 最长 7 天，防止永久分享链接被 MCP 客户端无意创建
             hours = max(1, min(expires_hours, 168))
             expires_at = beijing_now() + timedelta(hours=hours)
 
             share = share_service.create_share_link(user_id, file_id, expires_at)
             share_dict = share.to_dict()
 
-            # 构建下载 URL：使用环境变量或默认值
             base_url = os.getenv("SKYCLOUD_BASE_URL", "http://localhost:5000")
             download_url = f"{base_url}/api/share/{share_dict['token']}"
 
@@ -468,7 +450,6 @@ async def read_file_content(
             if file_obj.uploader_id != user_id:
                 return _error_json("Permission denied")
 
-            # 判断是否为文本文件
             if not _is_text_file(file_obj.mime_type, file_obj.name):
                 return json.dumps(
                     {
@@ -588,7 +569,6 @@ async def get_storage_overview() -> str:
             from app.models.file import File
             from app.models.folder import Folder
 
-            # 文件统计
             file_stats = (
                 db.session.query(
                     func.count(File.id).label("total_files"),
@@ -597,7 +577,6 @@ async def get_storage_overview() -> str:
                 .filter(File.uploader_id == user_id)
                 .first()
             )
-            # 按状态统计
             status_rows = (
                 db.session.query(File.status, func.count(File.id))
                 .filter(File.uploader_id == user_id)
@@ -606,7 +585,6 @@ async def get_storage_overview() -> str:
             )
             status_counts = dict(status_rows)
 
-            # 文件夹数量
             folder_count = (
                 db.session.query(func.count(Folder.id))
                 .filter(Folder.user_id == user_id)
@@ -615,7 +593,6 @@ async def get_storage_overview() -> str:
 
             total_size = int(file_stats.total_size) if file_stats else 0
 
-            # 人类可读的大小
             def _human_size(size_bytes: int) -> str:
                 for unit in ("B", "KB", "MB", "GB", "TB"):
                     if abs(size_bytes) < 1024:
@@ -720,7 +697,6 @@ async def get_folder_tree(max_depth: int = 3) -> str:
                 .all()
             )
 
-            # 构建 parent_id -> children 映射
             children_map: dict[int | None, list] = {}
             for f in all_folders:
                 pid = f.parent_id
@@ -766,7 +742,7 @@ async def get_upload_url(parent_id: int | None = None) -> str:
 
     def _work():
         try:
-            # 构建 API URL（工作区容器通过 Docker 网络访问 API）
+            # Docker 内用服务名；宿主机开发走 host.docker.internal 或环境变量
             in_docker = os.path.exists("/.dockerenv")
             if in_docker:
                 api_base = "http://skycloud-backend-api:5000"
@@ -774,8 +750,6 @@ async def get_upload_url(parent_id: int | None = None) -> str:
                 api_base = os.getenv("SKYCLOUD_BASE_URL", "http://host.docker.internal:5000")
             upload_url = f"{api_base}/api/files"
 
-            # 复用当前请求的 MCP token（已在 opencode.json 中配置）
-            # 生成示例 curl 命令
             parent_flag = ""
             if parent_id is not None:
                 parent_flag = f' -F "parent_id={parent_id}"'
@@ -809,7 +783,7 @@ async def get_upload_url(parent_id: int | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Resources
+# Resources（只读资源 URI）
 # ---------------------------------------------------------------------------
 
 @mcp.resource("skycloud://folders")
@@ -840,7 +814,7 @@ async def get_user_file(file_id: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Prompts
+# Prompts（引导客户端如何组合工具）
 # ---------------------------------------------------------------------------
 
 @mcp.prompt()

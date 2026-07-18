@@ -11,32 +11,30 @@ from app.extensions import Base, UPLOAD_FOLDER
 
 
 class File(Base):
+    """用户文件元数据表：存储路径、AI 描述/向量及索引状态。"""
+
     __tablename__ = "files"
 
     id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False)
-    file_path = Column(String(512), nullable=False)  # 现在只保存文件名
-    file_size = Column(BigInteger)  # 使用 BigInteger 存储字节数，方便计算容量
-    mime_type = Column(String(255))  # 如 'image/jpeg', 'application/pdf'
-    content_hash = Column(String(64))  # 文件内容 SHA-256，用于秒传去重
+    file_path = Column(String(512), nullable=False)  # 仅存文件名；绝对路径见 get_abs_path
+    file_size = Column(BigInteger)  # 字节数，用于容量统计
+    mime_type = Column(String(255))  # 如 image/jpeg、application/pdf
+    content_hash = Column(String(64))  # 内容 SHA-256，秒传去重
 
-    # AI 相关字段
-    # pending, processing, success, fail
+    # ---- AI 索引相关 ----
+    # pending / processing / success / fail
     status = Column(String(20), default="pending")
-    vector_info = Column(Vector(1024))
-    description = Column(String(4096))  # 对于文件的描述
+    vector_info = Column(Vector(1024))  # 语义检索向量（余弦距离索引）
+    description = Column(String(4096))  # AI 生成的文件描述
 
     uploader_id = Column(Integer, ForeignKey("users.id"))
     parent_id = Column(Integer, ForeignKey("folder.id"), nullable=True)
     created_at = Column(DateTime, default=beijing_now)
 
-    # 关系映射
     uploader = relationship("User", backref="files")
-
-    # 级联删除：当文件被删除时，自动删除关联的分享记录
+    # 文件删除时级联清理分享记录
     shares = relationship("Share", back_populates="file", cascade="all, delete-orphan")
-
-
 
     __table_args__ = (
         Index(
@@ -50,7 +48,7 @@ class File(Base):
     )
 
     def get_abs_path(self):
-        """获取文件的绝对路径"""
+        """拼接上传根目录，得到磁盘绝对路径。"""
         return os.path.join(UPLOAD_FOLDER, cast(str, self.file_path))
 
     def to_dict(self):
