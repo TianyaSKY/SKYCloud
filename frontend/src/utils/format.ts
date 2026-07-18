@@ -18,9 +18,6 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
     hour12: false,
 })
 
-// formatToParts 解析后需要拾取的字段键。
-const DATE_PART_KEYS = ['year', 'month', 'day', 'hour', 'minute'] as const
-
 /**
  * 将任意常见日期入参统一格式化为 `YYYY-MM-DD HH:mm`（到分钟）。
  *

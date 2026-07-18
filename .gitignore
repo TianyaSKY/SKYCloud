@@ -7,3 +7,4 @@ nul
 AGENTS.md
 .gitignore
 .agents
+.worktrees/
