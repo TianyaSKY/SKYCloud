@@ -4,7 +4,7 @@
       <template #extra>
         <a-button @click="fetchShares">
           <template #icon>
-            <icon-refresh/>
+            <icon-refresh />
           </template>
           刷新
         </a-button>
@@ -14,7 +14,7 @@
           <a-table-column data-index="file_name" title="文件名">
             <template #cell="{ record }">
               <a-space>
-                <icon-file :style="{ color: '#165dff', fontSize: '18px' }"/>
+                <icon-file :style="{ color: '#165dff', fontSize: '18px' }" />
                 <span>{{ record.file_name || '未知文件' }}</span>
               </a-space>
             </template>
@@ -39,9 +39,7 @@
           <a-table-column title="操作">
             <template #cell="{ record }">
               <a-popconfirm content="确定取消分享吗？" @ok="handleCancelShare(record)">
-                <a-button size="small" status="danger" type="text">
-                  取消分享
-                </a-button>
+                <a-button size="small" status="danger" type="text"> 取消分享 </a-button>
               </a-popconfirm>
             </template>
           </a-table-column>
@@ -52,13 +50,13 @@
 </template>
 
 <script lang="ts" setup>
-import {onMounted, ref} from 'vue'
-import {Message} from '@arco-design/web-vue'
-import {IconFile, IconRefresh} from '@arco-design/web-vue/es/icon'
+import { onMounted, ref } from 'vue'
+import { Message } from '@arco-design/web-vue'
+import { IconFile, IconRefresh } from '@arco-design/web-vue/es/icon'
 import MainLayout from '../components/MainLayout.vue'
-import {cancelShare, getMyShares, type ShareInfo} from '../api/share'
-import {formatDate} from '@/utils/format'
-import {logger} from '@/utils/logger'
+import { cancelShare, getMyShares, type ShareInfo } from '../api/share'
+import { formatDate } from '@/utils/format'
+import { logger } from '@/utils/logger'
 
 const loading = ref(false)
 const shareList = ref<ShareInfo[]>([])
@@ -68,7 +66,7 @@ const fetchShares = async () => {
   try {
     shareList.value = await getMyShares()
   } catch (error) {
-    logger.warn('获取我的分享列表失败', {error})
+    logger.warn('获取我的分享列表失败', { error })
   } finally {
     loading.value = false
   }
@@ -80,7 +78,7 @@ const handleCancelShare = async (record: ShareInfo) => {
     Message.success('已取消分享')
     await fetchShares()
   } catch (error) {
-    logger.warn('取消分享失败', {id: record.id, error})
+    logger.warn('取消分享失败', { id: record.id, error })
   }
 }
 

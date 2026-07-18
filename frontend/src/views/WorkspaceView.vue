@@ -25,7 +25,7 @@
       </div>
 
       <div v-else-if="workspaces.length === 0" class="workspace-empty">
-        <icon-desktop style="font-size: 48px; color: var(--color-text-4);" />
+        <icon-desktop style="font-size: 48px; color: var(--color-text-4)" />
         <p>还没有工作区</p>
         <p class="sub-text">创建一个工作区，开始使用 AI 编程助手</p>
         <a-button type="primary" @click="showCreateModal = true">
@@ -69,12 +69,7 @@
           </div>
 
           <div class="workspace-card__actions">
-            <a-button
-              v-if="ws.status === 'running'"
-              type="primary"
-              size="small"
-              @click="openWorkspace(ws)"
-            >
+            <a-button v-if="ws.status === 'running'" type="primary" size="small" @click="openWorkspace(ws)">
               <template #icon><icon-launch /></template>
               打开
             </a-button>
@@ -110,17 +105,8 @@
               <template #icon><icon-sync /></template>
               重启
             </a-button>
-            <a-popconfirm
-              content="确定删除该工作区？容器和数据将被永久删除。"
-              @ok="handleDelete(ws)"
-              type="warning"
-            >
-              <a-button
-                type="outline"
-                status="danger"
-                size="small"
-                :loading="actionLoading[ws.id] === 'delete'"
-              >
+            <a-popconfirm content="确定删除该工作区？容器和数据将被永久删除。" @ok="handleDelete(ws)" type="warning">
+              <a-button type="outline" status="danger" size="small" :loading="actionLoading[ws.id] === 'delete'">
                 <template #icon><icon-delete /></template>
                 删除
               </a-button>
@@ -158,12 +144,7 @@
       >
         <a-form :model="createForm" layout="vertical">
           <a-form-item label="工作区名称" field="name">
-            <a-input
-              v-model="createForm.name"
-              placeholder="例如：我的项目"
-              :max-length="120"
-              allow-clear
-            />
+            <a-input v-model="createForm.name" placeholder="例如：我的项目" :max-length="120" allow-clear />
           </a-form-item>
         </a-form>
       </a-modal>
@@ -198,10 +179,10 @@ import {
   restartWorkspace as apiRestart,
   type WorkspaceInfo,
 } from '@/api/workspace'
-import {useAuthStore} from '@/stores/auth'
-import {createWorkspaceSchema} from '@/schemas/workspace'
-import {formatDate} from '@/utils/format'
-import {logger} from '@/utils/logger'
+import { useAuthStore } from '@/stores/auth'
+import { createWorkspaceSchema } from '@/schemas/workspace'
+import { formatDate } from '@/utils/format'
+import { logger } from '@/utils/logger'
 
 const workspaces = ref<WorkspaceInfo[]>([])
 const loading = ref(false)
@@ -343,21 +324,31 @@ const openWorkspace = (ws: WorkspaceInfo) => {
 
 const statusColor = (s: string) => {
   switch (s) {
-    case 'running': return 'green'
-    case 'stopped': return 'gray'
-    case 'creating': return 'blue'
-    case 'error': return 'red'
-    default: return 'gray'
+    case 'running':
+      return 'green'
+    case 'stopped':
+      return 'gray'
+    case 'creating':
+      return 'blue'
+    case 'error':
+      return 'red'
+    default:
+      return 'gray'
   }
 }
 
 const statusLabel = (s: string) => {
   switch (s) {
-    case 'running': return '运行中'
-    case 'stopped': return '已停止'
-    case 'creating': return '创建中'
-    case 'error': return '异常'
-    default: return s
+    case 'running':
+      return '运行中'
+    case 'stopped':
+      return '已停止'
+    case 'creating':
+      return '创建中'
+    case 'error':
+      return '异常'
+    default:
+      return s
   }
 }
 
@@ -433,7 +424,9 @@ onUnmounted(() => {
   border-radius: 8px;
   padding: 20px;
   background: var(--color-bg-2);
-  transition: box-shadow 0.2s, border-color 0.2s;
+  transition:
+    box-shadow 0.2s,
+    border-color 0.2s;
 }
 
 .workspace-card:hover {

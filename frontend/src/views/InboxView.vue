@@ -4,19 +4,17 @@
       <div class="action-bar">
         <a-button type="text" @click="handleMarkAllRead">
           <template #icon>
-            <icon-check/>
+            <icon-check />
           </template>
           全部已读
         </a-button>
       </div>
       <a-list :bordered="false" :loading="loading">
         <template #empty>
-          <a-empty description="暂无消息"/>
+          <a-empty description="暂无消息" />
         </template>
         <a-list-item v-for="item in messages" :key="item.id" class="message-item">
-          <a-list-item-meta
-              :title="item.title"
-          >
+          <a-list-item-meta :title="item.title">
             <template #description>
               <div>
                 {{ item.content ? (item.content.length > 50 ? item.content.slice(0, 50) + '...' : item.content) : '' }}
@@ -24,13 +22,9 @@
               </div>
             </template>
             <template #avatar>
-              <a-badge
-                  :count="!item.is_read ? 1 : 0"
-                  :dot="!item.is_read"
-                  :show-zero="false"
-              >
+              <a-badge :count="!item.is_read ? 1 : 0" :dot="!item.is_read" :show-zero="false">
                 <a-avatar :style="{ backgroundColor: item.is_read ? '#f2f3f5' : '#e8f3ff' }">
-                  <icon-notification :style="{ color: item.is_read ? '#86909c' : '#165dff' }"/>
+                  <icon-notification :style="{ color: item.is_read ? '#86909c' : '#165dff' }" />
                 </a-avatar>
               </a-badge>
             </template>
@@ -41,20 +35,18 @@
               标记已读
             </a-button>
             <a-popconfirm content="确定删除这条消息吗？" @ok="handleDelete(item.id)">
-              <a-button size="small" status="danger" type="text">
-                删除
-              </a-button>
+              <a-button size="small" status="danger" type="text"> 删除 </a-button>
             </a-popconfirm>
           </template>
         </a-list-item>
       </a-list>
       <div v-if="total > 0" class="pagination-container">
         <a-pagination
-            :current="currentPage"
-            :page-size="pageSize"
-            :total="total"
-            show-total
-            @change="handlePageChange"
+          :current="currentPage"
+          :page-size="pageSize"
+          :total="total"
+          show-total
+          @change="handlePageChange"
         />
       </div>
     </div>
@@ -66,15 +58,14 @@
 </template>
 
 <script lang="ts" setup>
-import {onMounted, ref} from 'vue'
+import { onMounted, ref } from 'vue'
 
-import {Message} from '@arco-design/web-vue'
-import {IconCheck, IconNotification} from '@arco-design/web-vue/es/icon'
+import { Message } from '@arco-design/web-vue'
+import { IconCheck, IconNotification } from '@arco-design/web-vue/es/icon'
 import MainLayout from '../components/MainLayout.vue'
-import {deleteMessage, getInboxMessages, markAllAsRead, markAsRead, type Message as InboxMessage} from '../api/inbox'
-import {formatDate} from '@/utils/format'
-import {logger} from '@/utils/logger'
-
+import { deleteMessage, getInboxMessages, markAllAsRead, markAsRead, type Message as InboxMessage } from '../api/inbox'
+import { formatDate } from '@/utils/format'
+import { logger } from '@/utils/logger'
 
 const loading = ref(false)
 const messages = ref<InboxMessage[]>([])
@@ -100,7 +91,7 @@ const fetchMessages = async () => {
     messages.value = res.items
     total.value = res.total
   } catch (error) {
-    logger.warn('获取收件箱消息失败', {page: currentPage.value, pageSize: pageSize.value, error})
+    logger.warn('获取收件箱消息失败', { page: currentPage.value, pageSize: pageSize.value, error })
   } finally {
     loading.value = false
   }
@@ -111,7 +102,7 @@ const handleMarkRead = async (id: number) => {
     await markAsRead(id)
     await fetchMessages()
   } catch (error) {
-    logger.warn('标记消息已读失败', {id, error})
+    logger.warn('标记消息已读失败', { id, error })
   }
 }
 
@@ -121,7 +112,7 @@ const handleMarkAllRead = async () => {
     Message.success('已全部标记为已读')
     await fetchMessages()
   } catch (error) {
-    logger.warn('全部标记已读失败', {error})
+    logger.warn('全部标记已读失败', { error })
   }
 }
 
@@ -131,7 +122,7 @@ const handleDelete = async (id: number) => {
     Message.success('消息已删除')
     await fetchMessages()
   } catch (error) {
-    logger.warn('删除消息失败', {id, error})
+    logger.warn('删除消息失败', { id, error })
   }
 }
 

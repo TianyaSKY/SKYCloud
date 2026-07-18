@@ -1,17 +1,17 @@
 <template>
   <div class="main-container">
     <a-layout class="layout-demo">
-      <SideBar :active-menu="activeMenu" @menu-click="handleMenuClick"/>
+      <SideBar :active-menu="activeMenu" @menu-click="handleMenuClick" />
       <a-layout>
         <FileHeader
-            :title="title"
-            :user-info="userInfo"
-            v-bind="$attrs"
-            @logout="handleLogout"
-            @click-avatar="showAvatarModal = true"
-            @click-password="showPasswordModal = true"
-            @click-mcp-token="openMcpTokenModal"
-            @go-docs="handleMenuClick('docs')"
+          :title="title"
+          :user-info="userInfo"
+          v-bind="$attrs"
+          @logout="handleLogout"
+          @click-avatar="showAvatarModal = true"
+          @click-password="showPasswordModal = true"
+          @click-mcp-token="openMcpTokenModal"
+          @go-docs="handleMenuClick('docs')"
         />
         <a-layout-content class="content">
           <slot></slot>
@@ -20,17 +20,11 @@
     </a-layout>
 
     <!-- AI 聊天悬浮球，仅在“全部文件”页面显示 -->
-    <ChatWidget :show="activeMenu === 'all'"/>
+    <ChatWidget :show="activeMenu === 'all'" />
 
     <!-- MCP Token：每用户唯一，可复制 / 刷新 -->
-    <a-modal
-        v-model:visible="showMcpTokenModal"
-        title="MCP Token"
-        :footer="false"
-        :width="560"
-        unmount-on-close
-    >
-      <a-spin :loading="mcpLoading" style="width: 100%;">
+    <a-modal v-model:visible="showMcpTokenModal" title="MCP Token" :footer="false" :width="560" unmount-on-close>
+      <a-spin :loading="mcpLoading" style="width: 100%">
         <p class="mcp-hint">
           每个账号自动配置唯一 Token，用于 AI 客户端与工作区连接云盘。工作区启动时会自动注入，无需手动配置。
         </p>
@@ -42,18 +36,14 @@
           <span class="mcp-label">Token</span>
           <code class="mcp-token-value">{{ mcpToken || '加载中…' }}</code>
         </div>
-        <div v-if="mcpExpiresAt" class="mcp-meta">
-          过期时间：{{ formatDate(mcpExpiresAt) }}
-        </div>
+        <div v-if="mcpExpiresAt" class="mcp-meta">过期时间：{{ formatDate(mcpExpiresAt) }}</div>
         <div class="mcp-actions">
-          <a-button type="primary" :disabled="!mcpToken" @click="handleCopyMcpToken">
-            复制 Token
-          </a-button>
+          <a-button type="primary" :disabled="!mcpToken" @click="handleCopyMcpToken"> 复制 Token </a-button>
           <a-button type="outline" status="warning" :loading="mcpRefreshing" @click="handleRefreshMcpToken">
             刷新 Token
           </a-button>
         </div>
-        <a-alert type="warning" style="margin-top: 16px;">
+        <a-alert type="warning" style="margin-top: 16px">
           刷新后旧 Token 立即失效；运行中的工作区会自动同步新 Token。请勿泄露给他人。
         </a-alert>
       </a-spin>
@@ -63,14 +53,10 @@
     <a-modal v-model:visible="showAvatarModal" title="修改头像" @cancel="handleCancelAvatar" @ok="handleUploadAvatar">
       <div class="avatar-upload-container">
         <div v-if="!imgSrc" class="upload-trigger">
-          <a-upload
-              :auto-upload="false"
-              :show-file-list="false"
-              @change="onFileChange"
-          >
+          <a-upload :auto-upload="false" :show-file-list="false" @change="onFileChange">
             <template #upload-button>
               <div class="upload-box">
-                <icon-plus/>
+                <icon-plus />
                 <div>选择图片</div>
               </div>
             </template>
@@ -78,24 +64,24 @@
         </div>
         <div v-else class="cropper-wrapper">
           <vue-cropper
-              ref="cropper"
-              :autoCrop="true"
-              :autoCropHeight="200"
-              :autoCropWidth="200"
-              :canMove="true"
-              :canMoveBox="true"
-              :centerBox="true"
-              :fixed="true"
-              :fixedBox="false"
-              :fixedNumber="[1, 1]"
-              :full="true"
-              :img="imgSrc"
-              :info="false"
-              :infoTrue="true"
-              :original="false"
-              :outputSize="1"
-              class="circle-cropper"
-              outputType="png"
+            ref="cropper"
+            :autoCrop="true"
+            :autoCropHeight="200"
+            :autoCropWidth="200"
+            :canMove="true"
+            :canMoveBox="true"
+            :centerBox="true"
+            :fixed="true"
+            :fixedBox="false"
+            :fixedNumber="[1, 1]"
+            :full="true"
+            :img="imgSrc"
+            :info="false"
+            :infoTrue="true"
+            :original="false"
+            :outputSize="1"
+            class="circle-cropper"
+            outputType="png"
           ></vue-cropper>
           <div class="cropper-ops">
             <a-button size="mini" @click="imgSrc = ''">重新选择</a-button>
@@ -105,17 +91,21 @@
     </a-modal>
 
     <!-- 修改密码弹窗 -->
-    <a-modal v-model:visible="showPasswordModal" title="修改密码" @cancel="handleCancelPassword"
-             @ok="handleUpdatePassword">
+    <a-modal
+      v-model:visible="showPasswordModal"
+      title="修改密码"
+      @cancel="handleCancelPassword"
+      @ok="handleUpdatePassword"
+    >
       <a-form :model="passwordForm" layout="vertical">
         <a-form-item field="oldPassword" label="旧密码" required>
-          <a-input-password v-model="passwordForm.oldPassword" placeholder="请输入旧密码"/>
+          <a-input-password v-model="passwordForm.oldPassword" placeholder="请输入旧密码" />
         </a-form-item>
         <a-form-item field="newPassword" label="新密码" required>
-          <a-input-password v-model="passwordForm.newPassword" placeholder="请输入新密码"/>
+          <a-input-password v-model="passwordForm.newPassword" placeholder="请输入新密码" />
         </a-form-item>
         <a-form-item field="confirmPassword" label="确认新密码" required>
-          <a-input-password v-model="passwordForm.confirmPassword" placeholder="请再次输入新密码"/>
+          <a-input-password v-model="passwordForm.confirmPassword" placeholder="请再次输入新密码" />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -123,23 +113,23 @@
 </template>
 
 <script lang="ts" setup>
-import {computed, onMounted, reactive, ref} from 'vue'
-import {useRouter} from 'vue-router'
-import {Message, Modal} from '@arco-design/web-vue'
-import type {FileItem as ArcoFileItem} from '@arco-design/web-vue'
-import {IconPlus} from '@arco-design/web-vue/es/icon'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { Message, Modal } from '@arco-design/web-vue'
+import type { FileItem as ArcoFileItem } from '@arco-design/web-vue'
+import { IconPlus } from '@arco-design/web-vue/es/icon'
 import 'vue-cropper/dist/index.css'
-import {VueCropper} from "vue-cropper";
+import { VueCropper } from 'vue-cropper'
 import SideBar from './SideBar.vue'
 import FileHeader from './FileHeader.vue'
 import ChatWidget from './ChatWidget.vue'
-import {getUserInfo, updatePassword, uploadAvatar} from '@/api/user'
-import {getMcpToken, refreshMcpToken} from '@/api/auth'
-import {useAuthStore} from '@/stores/auth'
-import {logger} from '@/utils/logger'
-import {passwordChangeSchema} from '@/schemas/user'
-import {copyText} from '@/utils/clipboard'
-import {formatDate} from '@/utils/format'
+import { getUserInfo, updatePassword, uploadAvatar } from '@/api/user'
+import { getMcpToken, refreshMcpToken } from '@/api/auth'
+import { useAuthStore } from '@/stores/auth'
+import { logger } from '@/utils/logger'
+import { passwordChangeSchema } from '@/schemas/user'
+import { copyText } from '@/utils/clipboard'
+import { formatDate } from '@/utils/format'
 
 defineProps<{
   activeMenu: string
@@ -151,7 +141,7 @@ const auth = useAuthStore()
 const userInfo = ref({
   id: auth.user.id,
   username: auth.user.username,
-  avatar: auth.user.avatar || ''
+  avatar: auth.user.avatar || '',
 })
 
 const showAvatarModal = ref(false)
@@ -162,7 +152,7 @@ const showPasswordModal = ref(false)
 const passwordForm = reactive({
   oldPassword: '',
   newPassword: '',
-  confirmPassword: ''
+  confirmPassword: '',
 })
 
 // MCP Token 每用户唯一，刷新会使旧凭证立即失效
@@ -172,7 +162,7 @@ const mcpRefreshing = ref(false)
 const mcpToken = ref('')
 const mcpExpiresAt = ref<string | null>(null)
 const mcpEndpoint = computed(() => {
-  const {hostname, protocol} = window.location
+  const { hostname, protocol } = window.location
   return `${protocol}//${hostname}:5001/mcp`
 })
 
@@ -205,7 +195,7 @@ const handleRefreshMcpToken = () => {
     title: '刷新 MCP Token',
     content: '刷新后旧 Token 将立即失效，使用旧 Token 的外部客户端需重新配置。运行中的工作区会自动同步。',
     okText: '刷新',
-    okButtonProps: {status: 'warning'},
+    okButtonProps: { status: 'warning' },
     onOk: async () => {
       mcpRefreshing.value = true
       try {
@@ -218,7 +208,7 @@ const handleRefreshMcpToken = () => {
       } finally {
         mcpRefreshing.value = false
       }
-    }
+    },
   })
 }
 
@@ -229,7 +219,7 @@ const initUserInfo = async () => {
   userInfo.value = {
     id: userId,
     username: auth.user.username || '',
-    avatar: auth.user.avatar || ''
+    avatar: auth.user.avatar || '',
   }
   try {
     // 新 API：getUserInfo 已解包为 UserProfile，无需再读 res.data
@@ -238,12 +228,12 @@ const initUserInfo = async () => {
       userInfo.value = {
         id: data.id,
         username: data.username,
-        avatar: data.avatar || ''
+        avatar: data.avatar || '',
       }
       auth.setUser({
         id: data.id,
         username: data.username,
-        avatar: data.avatar || ''
+        avatar: data.avatar || '',
       })
     }
   } catch (apiError) {
@@ -287,7 +277,7 @@ const handleUploadAvatar = () => {
       }
 
       userInfo.value.avatar = newAvatarUrl || ''
-      auth.setUser({avatar: newAvatarUrl || ''})
+      auth.setUser({ avatar: newAvatarUrl || '' })
 
       handleCancelAvatar()
     } catch (error) {
@@ -310,7 +300,7 @@ const handleUpdatePassword = async () => {
   const result = passwordChangeSchema.safeParse({
     oldPassword: passwordForm.oldPassword,
     newPassword: passwordForm.newPassword,
-    confirmPassword: passwordForm.confirmPassword
+    confirmPassword: passwordForm.confirmPassword,
   })
   if (!result.success) {
     Message.warning(result.error.issues[0]?.message ?? '请填写完整信息')
@@ -322,7 +312,7 @@ const handleUpdatePassword = async () => {
     await updatePassword(userInfo.value.id, {
       oldPassword: passwordForm.oldPassword,
       newPassword: passwordForm.newPassword,
-      confirmPassword: passwordForm.confirmPassword
+      confirmPassword: passwordForm.confirmPassword,
     })
     Message.success('密码修改成功，请重新登录')
     handleLogout()
@@ -338,14 +328,14 @@ onMounted(() => {
 
 // 侧栏菜单 key 与路由的映射表，替代冗长的 if/else-if 链
 const MENU_ROUTE_MAP: Record<string, string> = {
-  'all': '/home',
-  'share': '/shares',
-  'inbox': '/inbox',
-  'docs': '/docs',
-  'workspace': '/workspace',
+  all: '/home',
+  share: '/shares',
+  inbox: '/inbox',
+  docs: '/docs',
+  workspace: '/workspace',
   'token-usage': '/token-usage',
   'admin-token-usage': '/admin/token-usage',
-  'sys-dicts': '/sys_dicts'
+  'sys-dicts': '/sys_dicts',
 }
 
 const handleMenuClick = (key: string) => {

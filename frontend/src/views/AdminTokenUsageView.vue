@@ -1,11 +1,10 @@
 <template>
   <MainLayout active-menu="admin-token-usage" title="全局用量统计">
     <div class="usage-container">
-
       <!-- 用户用量排行 -->
       <div class="usage-section">
         <div class="section-header">
-          <icon-user-group class="section-icon" style="color: #165dff;" />
+          <icon-user-group class="section-icon" style="color: #165dff" />
           <div>
             <h2 class="section-title">用户用量排行</h2>
             <p class="section-desc">所有用户的 Token 消耗排行总览</p>
@@ -19,116 +18,122 @@
         </div>
 
         <template v-if="!usersError">
-        <!-- 全局汇总卡片 -->
-        <div class="stats-grid">
-          <div class="stat-card stat-total">
-            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #165dff 0%, #306fff 100%);">
-              <icon-thunderbolt style="color: #fff;" />
+          <!-- 全局汇总卡片 -->
+          <div class="stats-grid">
+            <div class="stat-card stat-total">
+              <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #165dff 0%, #306fff 100%)">
+                <icon-thunderbolt style="color: #fff" />
+              </div>
+              <div class="stat-body">
+                <span class="stat-label">全局总 Token</span>
+                <span class="stat-value">{{ formatNumber(globalStats.totalTokens, 0) }}</span>
+              </div>
             </div>
-            <div class="stat-body">
-              <span class="stat-label">全局总 Token</span>
-              <span class="stat-value">{{ formatNumber(globalStats.totalTokens, 0) }}</span>
+            <div class="stat-card">
+              <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #00b42a 0%, #23c343 100%)">
+                <icon-upload style="color: #fff" />
+              </div>
+              <div class="stat-body">
+                <span class="stat-label">全局输入 Token</span>
+                <span class="stat-value">{{ formatNumber(globalStats.promptTokens, 0) }}</span>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #ff7d00 0%, #ff9a2e 100%)">
+                <icon-download style="color: #fff" />
+              </div>
+              <div class="stat-body">
+                <span class="stat-label">全局输出 Token</span>
+                <span class="stat-value">{{ formatNumber(globalStats.completionTokens, 0) }}</span>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #722ed1 0%, #8e51da 100%)">
+                <icon-user-group style="color: #fff" />
+              </div>
+              <div class="stat-body">
+                <span class="stat-label">用户数</span>
+                <span class="stat-value">{{ usersStats.length }}</span>
+              </div>
             </div>
           </div>
-          <div class="stat-card">
-            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #00b42a 0%, #23c343 100%);">
-              <icon-upload style="color: #fff;" />
-            </div>
-            <div class="stat-body">
-              <span class="stat-label">全局输入 Token</span>
-              <span class="stat-value">{{ formatNumber(globalStats.promptTokens, 0) }}</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #ff7d00 0%, #ff9a2e 100%);">
-              <icon-download style="color: #fff;" />
-            </div>
-            <div class="stat-body">
-              <span class="stat-label">全局输出 Token</span>
-              <span class="stat-value">{{ formatNumber(globalStats.completionTokens, 0) }}</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #722ed1 0%, #8e51da 100%);">
-              <icon-user-group style="color: #fff;" />
-            </div>
-            <div class="stat-body">
-              <span class="stat-label">用户数</span>
-              <span class="stat-value">{{ usersStats.length }}</span>
-            </div>
-          </div>
-        </div>
 
-        <!-- 用户表格 -->
-        <div class="users-table-card">
-          <a-table
-            :data="usersStats"
-            :loading="loadingUsers"
-            :pagination="false"
-            row-key="user_id"
-            :scroll="{ y: 320 }"
-          >
-            <template #columns>
-              <a-table-column title="排名" :width="60">
-                <template #cell="{ rowIndex }">
-                  <span :class="['rank-badge', rowIndex < 3 ? `rank-${rowIndex + 1}` : '']">
-                    {{ rowIndex + 1 }}
-                  </span>
-                </template>
-              </a-table-column>
-              <a-table-column title="用户" :width="160">
-                <template #cell="{ record }">
-                  <div class="user-cell">
-                    <a-avatar :size="28" :style="{ backgroundColor: avatarColor(record.username) }">
-                      {{ record.username?.charAt(0)?.toUpperCase() }}
-                    </a-avatar>
-                    <div class="user-info">
-                      <span class="user-name">{{ record.username }}</span>
-                      <a-tag v-if="record.role === 'admin'" color="arcoblue" size="small">管理员</a-tag>
-                    </div>
-                  </div>
-                </template>
-              </a-table-column>
-              <a-table-column title="总 Token" :width="130" :sortable="{ sortDirections: ['descend', 'ascend'] }">
-                <template #cell="{ record }">
-                  <span class="token-num token-num-total">{{ formatNumber(record.total_tokens, 0) }}</span>
-                </template>
-              </a-table-column>
-              <a-table-column title="输入 Token" :width="120">
-                <template #cell="{ record }">
-                  <span class="token-num">{{ formatNumber(record.total_prompt_tokens, 0) }}</span>
-                </template>
-              </a-table-column>
-              <a-table-column title="输出 Token" :width="120">
-                <template #cell="{ record }">
-                  <span class="token-num">{{ formatNumber(record.total_completion_tokens, 0) }}</span>
-                </template>
-              </a-table-column>
-              <a-table-column title="占比" :width="150">
-                <template #cell="{ record }">
-                  <div class="progress-cell">
-                    <a-progress
-                      :percent="globalStats.totalTokens ? record.total_tokens / globalStats.totalTokens : 0"
-                      :show-text="false"
-                      size="small"
-                      :color="avatarColor(record.username)"
-                    />
-                    <span class="progress-text">
-                      {{ globalStats.totalTokens ? ((record.total_tokens / globalStats.totalTokens) * 100).toFixed(1) : '0.0' }}%
+          <!-- 用户表格 -->
+          <div class="users-table-card">
+            <a-table
+              :data="usersStats"
+              :loading="loadingUsers"
+              :pagination="false"
+              row-key="user_id"
+              :scroll="{ y: 320 }"
+            >
+              <template #columns>
+                <a-table-column title="排名" :width="60">
+                  <template #cell="{ rowIndex }">
+                    <span :class="['rank-badge', rowIndex < 3 ? `rank-${rowIndex + 1}` : '']">
+                      {{ rowIndex + 1 }}
                     </span>
-                  </div>
-                </template>
-              </a-table-column>
-              <a-table-column title="最后活跃" :width="170">
-                <template #cell="{ record }">
-                  <span class="date-text">{{ record.last_active_at ? formatDate(record.last_active_at) : '暂无' }}</span>
-                </template>
-              </a-table-column>
-            </template>
-          </a-table>
-        </div>
+                  </template>
+                </a-table-column>
+                <a-table-column title="用户" :width="160">
+                  <template #cell="{ record }">
+                    <div class="user-cell">
+                      <a-avatar :size="28" :style="{ backgroundColor: avatarColor(record.username) }">
+                        {{ record.username?.charAt(0)?.toUpperCase() }}
+                      </a-avatar>
+                      <div class="user-info">
+                        <span class="user-name">{{ record.username }}</span>
+                        <a-tag v-if="record.role === 'admin'" color="arcoblue" size="small">管理员</a-tag>
+                      </div>
+                    </div>
+                  </template>
+                </a-table-column>
+                <a-table-column title="总 Token" :width="130" :sortable="{ sortDirections: ['descend', 'ascend'] }">
+                  <template #cell="{ record }">
+                    <span class="token-num token-num-total">{{ formatNumber(record.total_tokens, 0) }}</span>
+                  </template>
+                </a-table-column>
+                <a-table-column title="输入 Token" :width="120">
+                  <template #cell="{ record }">
+                    <span class="token-num">{{ formatNumber(record.total_prompt_tokens, 0) }}</span>
+                  </template>
+                </a-table-column>
+                <a-table-column title="输出 Token" :width="120">
+                  <template #cell="{ record }">
+                    <span class="token-num">{{ formatNumber(record.total_completion_tokens, 0) }}</span>
+                  </template>
+                </a-table-column>
+                <a-table-column title="占比" :width="150">
+                  <template #cell="{ record }">
+                    <div class="progress-cell">
+                      <a-progress
+                        :percent="globalStats.totalTokens ? record.total_tokens / globalStats.totalTokens : 0"
+                        :show-text="false"
+                        size="small"
+                        :color="avatarColor(record.username)"
+                      />
+                      <span class="progress-text">
+                        {{
+                          globalStats.totalTokens
+                            ? ((record.total_tokens / globalStats.totalTokens) * 100).toFixed(1)
+                            : '0.0'
+                        }}%
+                      </span>
+                    </div>
+                  </template>
+                </a-table-column>
+                <a-table-column title="最后活跃" :width="170">
+                  <template #cell="{ record }">
+                    <span class="date-text">{{
+                      record.last_active_at ? formatDate(record.last_active_at) : '暂无'
+                    }}</span>
+                  </template>
+                </a-table-column>
+              </template>
+            </a-table>
+          </div>
         </template>
-        <a-empty v-else description="用户统计加载失败" style="padding: 32px 0;">
+        <a-empty v-else description="用户统计加载失败" style="padding: 32px 0">
           <a-button size="small" @click="fetchUsersStats">点此重试</a-button>
         </a-empty>
       </div>
@@ -136,7 +141,7 @@
       <!-- 全局每日趋势 -->
       <div class="usage-section">
         <div class="section-header">
-          <icon-arrow-rise class="section-icon" style="color: #00b42a;" />
+          <icon-arrow-rise class="section-icon" style="color: #00b42a" />
           <div>
             <h2 class="section-title">全局每日趋势</h2>
             <p class="section-desc">所有用户合计最近 {{ dailyDays }} 天的 Token 消耗趋势</p>
@@ -151,15 +156,13 @@
         </div>
 
         <div class="chart-card">
-          <a-spin :loading="loadingDaily" style="width: 100%;">
+          <a-spin :loading="loadingDaily" style="width: 100%">
             <div v-if="dailyStats.length > 0" class="chart-area">
               <div class="bar-chart">
-                <div
-                  v-for="day in dailyStats"
-                  :key="day.date"
-                  class="bar-item"
-                >
-                  <a-tooltip :content="`${day.date}\n总 Token: ${formatNumber(day.total_tokens, 0)}\n请求次数: ${day.request_count}`">
+                <div v-for="day in dailyStats" :key="day.date" class="bar-item">
+                  <a-tooltip
+                    :content="`${day.date}\n总 Token: ${formatNumber(day.total_tokens, 0)}\n请求次数: ${day.request_count}`"
+                  >
                     <div class="bar-wrapper">
                       <div
                         class="bar-fill bar-prompt"
@@ -175,12 +178,12 @@
                 </div>
               </div>
               <div class="chart-legend">
-                <span class="legend-item"><span class="legend-dot" style="background:#165dff;"></span>输入 Token</span>
-                <span class="legend-item"><span class="legend-dot" style="background:#ff7d00;"></span>输出 Token</span>
+                <span class="legend-item"><span class="legend-dot" style="background: #165dff"></span>输入 Token</span>
+                <span class="legend-item"><span class="legend-dot" style="background: #ff7d00"></span>输出 Token</span>
               </div>
             </div>
             <div v-else class="chart-empty">
-              <icon-empty style="font-size: 48px; color: var(--color-text-4);" />
+              <icon-empty style="font-size: 48px; color: var(--color-text-4)" />
               <p>暂无数据</p>
             </div>
           </a-spin>
@@ -190,7 +193,7 @@
       <!-- 全局使用明细 -->
       <div class="usage-section">
         <div class="section-header">
-          <icon-list class="section-icon" style="color: #ff7d00;" />
+          <icon-list class="section-icon" style="color: #ff7d00" />
           <div>
             <h2 class="section-title">全局使用明细</h2>
             <p class="section-desc">所有用户的每次 AI 调用的 Token 消耗记录</p>
@@ -210,7 +213,7 @@
               v-model="logFilter.user_id"
               placeholder="全部用户"
               allow-clear
-              style="width: 160px;"
+              style="width: 160px"
               @change="handleFilterChange"
             >
               <a-option v-for="u in usersStats" :key="u.user_id" :value="u.user_id">
@@ -221,7 +224,7 @@
               v-model="logFilter.action"
               placeholder="全部类型"
               allow-clear
-              style="width: 140px;"
+              style="width: 140px"
               @change="handleFilterChange"
             >
               <a-option value="chat">chat</a-option>
@@ -230,10 +233,7 @@
               <a-option value="embedding">embedding</a-option>
               <a-option value="organize">organize</a-option>
             </a-select>
-            <a-range-picker
-              style="width: 260px;"
-              @change="handleDateChange"
-            />
+            <a-range-picker style="width: 260px" @change="handleDateChange" />
           </div>
 
           <a-table
@@ -288,7 +288,6 @@
           </a-table>
         </div>
       </div>
-
     </div>
   </MainLayout>
 </template>
@@ -370,9 +369,7 @@ const fetchDailyStats = async () => {
 }
 
 // 缓存每日 Token 最大值，避免 barHeight 在每行重复计算导致 O(n²)
-const dailyMax = computed(() =>
-  maxDailyTokens(dailyStats.value.map(d => ({ tokens: d.total_tokens }))),
-)
+const dailyMax = computed(() => maxDailyTokens(dailyStats.value.map((d) => ({ tokens: d.total_tokens }))))
 
 const logs = ref<AdminTokenUsageLog[]>([])
 const loadingLogs = ref(false)
@@ -442,9 +439,16 @@ const handleDateChange = (values: string[] | undefined) => {
 }
 
 const AVATAR_COLORS = [
-  '#165dff', '#00b42a', '#ff7d00', '#722ed1',
-  '#f53f3f', '#0fc6c2', '#eb2f96', '#3491fa',
-  '#faad14', '#7b61ff',
+  '#165dff',
+  '#00b42a',
+  '#ff7d00',
+  '#722ed1',
+  '#f53f3f',
+  '#0fc6c2',
+  '#eb2f96',
+  '#3491fa',
+  '#faad14',
+  '#7b61ff',
 ]
 
 const avatarColor = (name: string) => {
@@ -521,7 +525,9 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 16px;
-  transition: transform 0.15s, box-shadow 0.15s;
+  transition:
+    transform 0.15s,
+    box-shadow 0.15s;
 }
 
 .stat-card:hover {

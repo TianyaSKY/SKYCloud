@@ -9,13 +9,7 @@
           </template>
           上传
         </a-button>
-        <input
-          ref="fileInputRef"
-          type="file"
-          multiple
-          class="hidden-file-input"
-          @change="onFilesSelected"
-        />
+        <input ref="fileInputRef" type="file" multiple class="hidden-file-input" @change="onFilesSelected" />
         <a-button type="primary" @click="$emit('create-folder')">
           <template #icon>
             <icon-folder-add />
@@ -60,42 +54,35 @@
 </template>
 
 <script lang="ts" setup>
-import { ref } from "vue";
-import {
-  IconBulb,
-  IconFolderAdd,
-  IconMore,
-  IconRefresh,
-  IconTool,
-  IconUpload,
-} from "@arco-design/web-vue/es/icon";
+import { ref } from 'vue'
+import { IconBulb, IconFolderAdd, IconMore, IconRefresh, IconTool, IconUpload } from '@arco-design/web-vue/es/icon'
 
 const props = defineProps<{
-  handleBatchUpload: (files: File[]) => void;
-}>();
+  handleBatchUpload: (files: File[]) => void
+}>()
 
-defineEmits(["create-folder", "organize", "refresh", "rebuild-indexes"]);
+defineEmits(['create-folder', 'organize', 'refresh', 'rebuild-indexes'])
 
-const fileInputRef = ref<HTMLInputElement | null>(null);
+const fileInputRef = ref<HTMLInputElement | null>(null)
 
 const triggerUpload = () => {
-  fileInputRef.value?.click();
-};
+  fileInputRef.value?.click()
+}
 
 const onFilesSelected = (event: Event) => {
-  const input = event.target as HTMLInputElement;
-  const files = input.files;
-  if (!files || files.length === 0) return;
+  const input = event.target as HTMLInputElement
+  const files = input.files
+  if (!files || files.length === 0) return
 
   // 先清空 input，避免选择同一文件时不触发 change
-  const fileArray = Array.from(files);
-  input.value = "";
+  const fileArray = Array.from(files)
+  input.value = ''
 
   // 用 requestAnimationFrame 延迟处理，让文件对话框先关闭、浏览器先渲染
   requestAnimationFrame(() => {
-    props.handleBatchUpload(fileArray);
-  });
-};
+    props.handleBatchUpload(fileArray)
+  })
+}
 </script>
 
 <style scoped>

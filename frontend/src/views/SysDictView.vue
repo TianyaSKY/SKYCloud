@@ -5,13 +5,13 @@
         <a-space>
           <a-button @click="fetchDicts">
             <template #icon>
-              <icon-refresh/>
+              <icon-refresh />
             </template>
             刷新
           </a-button>
           <a-button type="primary" @click="handleAdd">
             <template #icon>
-              <icon-plus/>
+              <icon-plus />
             </template>
             新增配置
           </a-button>
@@ -23,12 +23,12 @@
           <a-table-column data-index="key" title="配置键">
             <template #cell="{ record }">
               <a-tooltip v-if="record.des" :content="record.des">
-                <span style="cursor: help; border-bottom: 1px dashed var(--color-text-3);">{{ record.key }}</span>
+                <span style="cursor: help; border-bottom: 1px dashed var(--color-text-3)">{{ record.key }}</span>
               </a-tooltip>
               <span v-else>{{ record.key }}</span>
             </template>
           </a-table-column>
-          <a-table-column data-index="value" title="配置值"/>
+          <a-table-column data-index="value" title="配置值" />
           <a-table-column title="状态">
             <template #cell="{ record }">
               <a-tag :color="record.enable ? 'green' : 'red'">
@@ -48,19 +48,25 @@
       </a-table>
     </a-card>
 
-    <a-modal v-model:visible="visible" :title="form.id ? '编辑配置' : '新增配置'" :confirm-loading="submitting" @cancel="handleCancel" @ok="handleOk">
+    <a-modal
+      v-model:visible="visible"
+      :title="form.id ? '编辑配置' : '新增配置'"
+      :confirm-loading="submitting"
+      @cancel="handleCancel"
+      @ok="handleOk"
+    >
       <a-form :model="form">
-        <a-form-item :rules="[{required:true,message:'请输入配置键'}]" field="key" label="配置键">
-          <a-input v-model="form.key" placeholder="例如: site_name"/>
+        <a-form-item :rules="[{ required: true, message: '请输入配置键' }]" field="key" label="配置键">
+          <a-input v-model="form.key" placeholder="例如: site_name" />
         </a-form-item>
-        <a-form-item :rules="[{required:true,message:'请输入配置值'}]" field="value" label="配置值">
-          <a-input v-model="form.value"/>
+        <a-form-item :rules="[{ required: true, message: '请输入配置值' }]" field="value" label="配置值">
+          <a-input v-model="form.value" />
         </a-form-item>
         <a-form-item field="des" label="描述">
-          <a-textarea v-model="form.des" placeholder="请输入配置描述"/>
+          <a-textarea v-model="form.des" placeholder="请输入配置描述" />
         </a-form-item>
         <a-form-item field="enable" label="状态">
-          <a-switch v-model="form.enable"/>
+          <a-switch v-model="form.enable" />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -68,13 +74,13 @@
 </template>
 
 <script lang="ts" setup>
-import {onMounted, reactive, ref} from 'vue'
-import {IconPlus, IconRefresh} from '@arco-design/web-vue/es/icon'
-import {Message} from '@arco-design/web-vue'
-import type {SysDict} from '@/api/sys_dict';
-import {createSysDict, deleteSysDict, getSysDicts, updateSysDict} from '@/api/sys_dict'
-import {sysDictSchema} from '@/schemas/sys_dict'
-import {logger} from '@/utils/logger'
+import { onMounted, reactive, ref } from 'vue'
+import { IconPlus, IconRefresh } from '@arco-design/web-vue/es/icon'
+import { Message } from '@arco-design/web-vue'
+import type { SysDict } from '@/api/sys_dict'
+import { createSysDict, deleteSysDict, getSysDicts, updateSysDict } from '@/api/sys_dict'
+import { sysDictSchema } from '@/schemas/sys_dict'
+import { logger } from '@/utils/logger'
 import MainLayout from '../components/MainLayout.vue'
 
 const dicts = ref<SysDict[]>([])
@@ -86,7 +92,7 @@ const form = reactive<SysDict>({
   key: '',
   value: '',
   des: '',
-  enable: true
+  enable: true,
 })
 
 const fetchDicts = async () => {

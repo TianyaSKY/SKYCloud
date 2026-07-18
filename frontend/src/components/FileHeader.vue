@@ -3,20 +3,29 @@
     <div class="header-left">
       <a-breadcrumb v-if="showBreadcrumbs" class="custom-breadcrumb">
         <a-breadcrumb-item
-            :class="['breadcrumb-item', { 'breadcrumb-link': breadcrumbs.length > 0, 'breadcrumb-current': breadcrumbs.length === 0 }]"
-            @click="breadcrumbs.length > 0 && $emit('go-root')"
+          :class="[
+            'breadcrumb-item',
+            { 'breadcrumb-link': breadcrumbs.length > 0, 'breadcrumb-current': breadcrumbs.length === 0 },
+          ]"
+          @click="breadcrumbs.length > 0 && $emit('go-root')"
         >
           <icon-home class="breadcrumb-icon" />
           <span>全部文件</span>
         </a-breadcrumb-item>
         <a-breadcrumb-item
-            v-for="(item, index) in breadcrumbs"
-            :key="item.id"
-            :class="['breadcrumb-item', { 'breadcrumb-link': index !== breadcrumbs.length - 1, 'breadcrumb-current': index === breadcrumbs.length - 1 }]"
-            @click="index !== breadcrumbs.length - 1 && $emit('go-breadcrumb', index)"
+          v-for="(item, index) in breadcrumbs"
+          :key="item.id"
+          :class="[
+            'breadcrumb-item',
+            {
+              'breadcrumb-link': index !== breadcrumbs.length - 1,
+              'breadcrumb-current': index === breadcrumbs.length - 1,
+            },
+          ]"
+          @click="index !== breadcrumbs.length - 1 && $emit('go-breadcrumb', index)"
         >
           <icon-folder class="breadcrumb-icon" v-if="index !== breadcrumbs.length - 1" />
-          <icon-folder class="breadcrumb-icon" v-else style="color: rgb(var(--primary-6));" />
+          <icon-folder class="breadcrumb-icon" v-else style="color: rgb(var(--primary-6))" />
           <span>{{ item.name }}</span>
         </a-breadcrumb-item>
       </a-breadcrumb>
@@ -26,23 +35,27 @@
       <a-space v-if="showSearch">
         <div class="search-switch-wrapper">
           <span :class="{ active: searchType === 'fuzzy' }" @click="handleToggleSearchType('fuzzy')">模糊搜索</span>
-          <a-switch :model-value="isVectorSearch" size="small" @change="handleSearchTypeChange"/>
+          <a-switch :model-value="isVectorSearch" size="small" @change="handleSearchTypeChange" />
           <span :class="{ active: searchType === 'vector' }" @click="handleToggleSearchType('vector')">智能搜索</span>
         </div>
         <a-input-search
-            :model-value="searchKey"
-            :style="{ width: '280px' }"
-            allow-clear
-            placeholder="搜索文件"
-            search-button
-            @clear="$emit('search-clear')"
-            @search="$emit('search')"
-            @update:model-value="$emit('update:searchKey', $event)"
-            @press-enter="$emit('search')"
+          :model-value="searchKey"
+          :style="{ width: '280px' }"
+          allow-clear
+          placeholder="搜索文件"
+          search-button
+          @clear="$emit('search-clear')"
+          @search="$emit('search')"
+          @update:model-value="$emit('update:searchKey', $event)"
+          @press-enter="$emit('search')"
         />
       </a-space>
 
-      <a-button type="text" @click="$emit('go-docs')" style="color: var(--color-text-2); display: flex; align-items: center; gap: 4px;">
+      <a-button
+        type="text"
+        @click="$emit('go-docs')"
+        style="color: var(--color-text-2); display: flex; align-items: center; gap: 4px"
+      >
         <template #icon><icon-book /></template>
         项目文档
       </a-button>
@@ -51,13 +64,13 @@
         <div class="user-info">
           <span class="username">{{ userInfo.username || '未登录' }}</span>
           <div
-              :style="{
-                backgroundColor: userInfo.avatar ? 'transparent' : '#165dff',
-                backgroundImage: userInfo.avatar ? `url(${userInfo.avatar})` : 'none'
-              }"
-              class="custom-avatar"
+            :style="{
+              backgroundColor: userInfo.avatar ? 'transparent' : '#165dff',
+              backgroundImage: userInfo.avatar ? `url(${userInfo.avatar})` : 'none',
+            }"
+            class="custom-avatar"
           >
-            <icon-user v-if="!userInfo.avatar" style="font-size: 18px; color: #fff;"/>
+            <icon-user v-if="!userInfo.avatar" style="font-size: 18px; color: #fff" />
           </div>
         </div>
         <template #content>
@@ -72,7 +85,7 @@
 </template>
 
 <script lang="ts" setup>
-import {IconUser, IconBook, IconHome, IconFolder} from '@arco-design/web-vue/es/icon'
+import { IconUser, IconBook, IconHome, IconFolder } from '@arco-design/web-vue/es/icon'
 
 interface UserInfo {
   id: number | null
@@ -83,24 +96,27 @@ interface UserInfo {
 // 注：searchType / isVectorSearch 默认值对齐 useFileBrowser 的初始值（'vector' / true），
 // 避免 HomeView 首屏渲染时父级状态尚未回灌导致 FileHeader 短暂显示「模糊搜索」高亮，
 // 与实际请求走 vector 检索不一致的视觉错位。
-withDefaults(defineProps<{
-  breadcrumbs?: { id: number; name: string }[]
-  searchKey?: string
-  searchType?: 'fuzzy' | 'vector'
-  isVectorSearch?: boolean
-  userInfo: UserInfo
-  showSearch?: boolean
-  showBreadcrumbs?: boolean
-  title?: string
-}>(), {
-  breadcrumbs: () => [],
-  searchKey: '',
-  searchType: 'vector',
-  isVectorSearch: true,
-  showSearch: false,
-  showBreadcrumbs: false,
-  title: ''
-})
+withDefaults(
+  defineProps<{
+    breadcrumbs?: { id: number; name: string }[]
+    searchKey?: string
+    searchType?: 'fuzzy' | 'vector'
+    isVectorSearch?: boolean
+    userInfo: UserInfo
+    showSearch?: boolean
+    showBreadcrumbs?: boolean
+    title?: string
+  }>(),
+  {
+    breadcrumbs: () => [],
+    searchKey: '',
+    searchType: 'vector',
+    isVectorSearch: true,
+    showSearch: false,
+    showBreadcrumbs: false,
+    title: '',
+  },
+)
 
 const emit = defineEmits([
   'go-root',
@@ -114,7 +130,7 @@ const emit = defineEmits([
   'click-password',
   'click-mcp-token',
   'update:searchType',
-  'update:isVectorSearch'
+  'update:isVectorSearch',
 ])
 
 const handleSearchTypeChange = (val: boolean | string | number) => {

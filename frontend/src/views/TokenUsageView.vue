@@ -1,11 +1,10 @@
 <template>
   <MainLayout active-menu="token-usage" title="用量统计">
     <div class="usage-container">
-
       <!-- 累计统计卡片 -->
       <div class="usage-section">
         <div class="section-header">
-          <icon-bar-chart class="section-icon" style="color: #165dff;" />
+          <icon-bar-chart class="section-icon" style="color: #165dff" />
           <div>
             <h2 class="section-title">累计用量</h2>
             <p class="section-desc">账号自创建以来的 Token 消耗总览</p>
@@ -14,8 +13,8 @@
 
         <div v-if="!statsError" class="stats-grid">
           <div class="stat-card stat-total">
-            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #165dff 0%, #306fff 100%);">
-              <icon-thunderbolt style="color: #fff;" />
+            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #165dff 0%, #306fff 100%)">
+              <icon-thunderbolt style="color: #fff" />
             </div>
             <div class="stat-body">
               <span class="stat-label">总 Token</span>
@@ -23,8 +22,8 @@
             </div>
           </div>
           <div class="stat-card">
-            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #00b42a 0%, #23c343 100%);">
-              <icon-upload style="color: #fff;" />
+            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #00b42a 0%, #23c343 100%)">
+              <icon-upload style="color: #fff" />
             </div>
             <div class="stat-body">
               <span class="stat-label">输入 Token</span>
@@ -32,8 +31,8 @@
             </div>
           </div>
           <div class="stat-card">
-            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #ff7d00 0%, #ff9a2e 100%);">
-              <icon-download style="color: #fff;" />
+            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #ff7d00 0%, #ff9a2e 100%)">
+              <icon-download style="color: #fff" />
             </div>
             <div class="stat-body">
               <span class="stat-label">输出 Token</span>
@@ -41,16 +40,18 @@
             </div>
           </div>
           <div class="stat-card">
-            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #722ed1 0%, #8e51da 100%);">
-              <icon-clock-circle style="color: #fff;" />
+            <div class="stat-icon-wrapper" style="background: linear-gradient(135deg, #722ed1 0%, #8e51da 100%)">
+              <icon-clock-circle style="color: #fff" />
             </div>
             <div class="stat-body">
               <span class="stat-label">最后活跃</span>
-              <span class="stat-value stat-value-sm">{{ stats.last_active_at ? formatDate(stats.last_active_at) : '暂无' }}</span>
+              <span class="stat-value stat-value-sm">{{
+                stats.last_active_at ? formatDate(stats.last_active_at) : '暂无'
+              }}</span>
             </div>
           </div>
         </div>
-        <a-empty v-else description="统计加载失败" style="padding: 32px 0;">
+        <a-empty v-else description="统计加载失败" style="padding: 32px 0">
           <a-button size="small" @click="fetchStats">点此重试</a-button>
         </a-empty>
       </div>
@@ -58,7 +59,7 @@
       <!-- 每日趋势 -->
       <div class="usage-section">
         <div class="section-header">
-          <icon-arrow-rise class="section-icon" style="color: #00b42a;" />
+          <icon-arrow-rise class="section-icon" style="color: #00b42a" />
           <div>
             <h2 class="section-title">每日趋势</h2>
             <p class="section-desc">最近 {{ dailyDays }} 天的 Token 消耗趋势</p>
@@ -73,16 +74,14 @@
         </div>
 
         <div class="chart-card">
-          <a-spin :loading="loadingDaily" style="width: 100%;">
+          <a-spin :loading="loadingDaily" style="width: 100%">
             <div v-if="dailyStats.length > 0" class="chart-area">
               <!-- 简易柱状图 -->
               <div class="bar-chart">
-                <div
-                  v-for="day in dailyStats"
-                  :key="day.date"
-                  class="bar-item"
-                >
-                  <a-tooltip :content="`${day.date}\n总 Token: ${formatNumber(day.total_tokens, 0)}\n请求次数: ${day.request_count}`">
+                <div v-for="day in dailyStats" :key="day.date" class="bar-item">
+                  <a-tooltip
+                    :content="`${day.date}\n总 Token: ${formatNumber(day.total_tokens, 0)}\n请求次数: ${day.request_count}`"
+                  >
                     <div class="bar-wrapper">
                       <div
                         class="bar-fill bar-prompt"
@@ -98,12 +97,12 @@
                 </div>
               </div>
               <div class="chart-legend">
-                <span class="legend-item"><span class="legend-dot" style="background:#165dff;"></span>输入 Token</span>
-                <span class="legend-item"><span class="legend-dot" style="background:#ff7d00;"></span>输出 Token</span>
+                <span class="legend-item"><span class="legend-dot" style="background: #165dff"></span>输入 Token</span>
+                <span class="legend-item"><span class="legend-dot" style="background: #ff7d00"></span>输出 Token</span>
               </div>
             </div>
             <div v-else class="chart-empty">
-              <icon-empty style="font-size: 48px; color: var(--color-text-4);" />
+              <icon-empty style="font-size: 48px; color: var(--color-text-4)" />
               <p>暂无数据</p>
             </div>
           </a-spin>
@@ -113,7 +112,7 @@
       <!-- 使用明细 -->
       <div class="usage-section">
         <div class="section-header">
-          <icon-list class="section-icon" style="color: #ff7d00;" />
+          <icon-list class="section-icon" style="color: #ff7d00" />
           <div>
             <h2 class="section-title">使用明细</h2>
             <p class="section-desc">每次 AI 调用的 Token 消耗记录</p>
@@ -133,7 +132,7 @@
               v-model="logFilter.action"
               placeholder="全部类型"
               allow-clear
-              style="width: 140px;"
+              style="width: 140px"
               @change="handleFilterChange"
             >
               <a-option value="chat">chat</a-option>
@@ -142,10 +141,7 @@
               <a-option value="embedding">embedding</a-option>
               <a-option value="organize">organize</a-option>
             </a-select>
-            <a-range-picker
-              style="width: 260px;"
-              @change="handleDateChange"
-            />
+            <a-range-picker style="width: 260px" @change="handleDateChange" />
           </div>
 
           <a-table
@@ -190,7 +186,6 @@
           </a-table>
         </div>
       </div>
-
     </div>
   </MainLayout>
 </template>
@@ -262,9 +257,7 @@ const fetchDailyStats = async () => {
 }
 
 // 缓存每日 Token 最大值，避免 barHeight 在每行重复计算导致 O(n²)
-const dailyMax = computed(() =>
-  maxDailyTokens(dailyStats.value.map(d => ({ tokens: d.total_tokens }))),
-)
+const dailyMax = computed(() => maxDailyTokens(dailyStats.value.map((d) => ({ tokens: d.total_tokens }))))
 
 const logs = ref<TokenUsageLog[]>([])
 const loadingLogs = ref(false)
@@ -395,7 +388,9 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 16px;
-  transition: transform 0.15s, box-shadow 0.15s;
+  transition:
+    transform 0.15s,
+    box-shadow 0.15s;
 }
 
 .stat-card:hover {

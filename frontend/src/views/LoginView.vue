@@ -1,12 +1,12 @@
 <script lang="ts" setup>
-import {reactive, ref} from 'vue'
-import {Message} from '@arco-design/web-vue'
-import {IconLock, IconUser} from '@arco-design/web-vue/es/icon'
-import {useRouter} from 'vue-router'
-import {login, register} from '@/api/auth'
-import {useAuthStore} from '@/stores/auth'
-import {loginSchema, registerSchema} from '@/schemas/auth'
-import {logger} from '@/utils/logger'
+import { reactive, ref } from 'vue'
+import { Message } from '@arco-design/web-vue'
+import { IconLock, IconUser } from '@arco-design/web-vue/es/icon'
+import { useRouter } from 'vue-router'
+import { login, register } from '@/api/auth'
+import { useAuthStore } from '@/stores/auth'
+import { loginSchema, registerSchema } from '@/schemas/auth'
+import { logger } from '@/utils/logger'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -16,7 +16,7 @@ const loading = ref(false)
 const form = reactive({
   username: '',
   password: '',
-  confirmPassword: ''
+  confirmPassword: '',
 })
 
 const switchMode = () => {
@@ -31,7 +31,7 @@ interface LoginFormSubmitPayload {
   errors: unknown
 }
 
-const handleSubmit = async ({values, errors}: LoginFormSubmitPayload) => {
+const handleSubmit = async ({ values, errors }: LoginFormSubmitPayload) => {
   // 防回车/连点二次提交：loading 期间直接忽略，避免重复登录或并发注册
   if (loading.value) return
   if (errors) return
@@ -41,7 +41,7 @@ const handleSubmit = async ({values, errors}: LoginFormSubmitPayload) => {
   const result = schema.safeParse({
     username: values.username,
     password: values.password,
-    confirmPassword: values.confirmPassword
+    confirmPassword: values.confirmPassword,
   })
   if (!result.success) {
     Message.error(result.error.issues[0]?.message ?? '表单校验失败')
@@ -53,12 +53,12 @@ const handleSubmit = async ({values, errors}: LoginFormSubmitPayload) => {
     if (isLogin.value) {
       const res = await login({
         username: values.username,
-        password: values.password
+        password: values.password,
       })
       auth.setAuth(res.token, {
         id: res.user_id,
         role: res.role,
-        username: values.username  // 登录时输入的用户名先存起来，后续 getUserInfo 会刷新
+        username: values.username, // 登录时输入的用户名先存起来，后续 getUserInfo 会刷新
       })
       Message.success('登录成功')
       await router.push('/home')
@@ -67,7 +67,7 @@ const handleSubmit = async ({values, errors}: LoginFormSubmitPayload) => {
       await register({
         username: values.username,
         password: values.password,
-        confirmPassword: values.confirmPassword
+        confirmPassword: values.confirmPassword,
       })
       Message.success('注册成功，请登录')
       isLogin.value = true
@@ -102,7 +102,7 @@ const handleSubmit = async ({values, errors}: LoginFormSubmitPayload) => {
           <a-form-item :rules="[{ required: true, message: '请输入用户名' }]" field="username" label="用户名">
             <a-input v-model="form.username" placeholder="请输入用户名" size="large">
               <template #prefix>
-                <icon-user/>
+                <icon-user />
               </template>
             </a-input>
           </a-form-item>
@@ -110,16 +110,20 @@ const handleSubmit = async ({values, errors}: LoginFormSubmitPayload) => {
           <a-form-item :rules="[{ required: true, message: '请输入密码' }]" field="password" label="密码">
             <a-input-password v-model="form.password" placeholder="请输入密码" size="large">
               <template #prefix>
-                <icon-lock/>
+                <icon-lock />
               </template>
             </a-input-password>
           </a-form-item>
 
-          <a-form-item v-if="!isLogin" :rules="[{ required: true, message: '请再次输入密码' }]" field="confirmPassword"
-                       label="确认密码">
+          <a-form-item
+            v-if="!isLogin"
+            :rules="[{ required: true, message: '请再次输入密码' }]"
+            field="confirmPassword"
+            label="确认密码"
+          >
             <a-input-password v-model="form.confirmPassword" placeholder="请再次输入密码" size="large">
               <template #prefix>
-                <icon-lock/>
+                <icon-lock />
               </template>
             </a-input-password>
           </a-form-item>

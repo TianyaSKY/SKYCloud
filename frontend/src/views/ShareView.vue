@@ -2,14 +2,14 @@
   <div class="share-container">
     <div class="share-card">
       <div class="icon-wrapper">
-        <icon-file :style="{ fontSize: '64px', color: '#165dff' }"/>
+        <icon-file :style="{ fontSize: '64px', color: '#165dff' }" />
       </div>
       <h2 class="file-name">文件分享</h2>
       <p class="share-tip">您正在访问一个公开分享的文件</p>
       <div class="actions">
         <a-button :loading="loading" size="large" type="primary" @click="handleDownload">
           <template #icon>
-            <icon-download/>
+            <icon-download />
           </template>
           立即下载
         </a-button>
@@ -19,13 +19,13 @@
 </template>
 
 <script lang="ts" setup>
-import {ref} from 'vue'
-import {useRoute} from 'vue-router'
-import {Message} from '@arco-design/web-vue'
-import {IconDownload, IconFile} from '@arco-design/web-vue/es/icon'
+import { ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { Message } from '@arco-design/web-vue'
+import { IconDownload, IconFile } from '@arco-design/web-vue/es/icon'
 import axios from 'axios'
-import {logger} from '@/utils/logger'
-import {safeRevokeObjectURL} from '@/utils/blob'
+import { logger } from '@/utils/logger'
+import { safeRevokeObjectURL } from '@/utils/blob'
 
 const route = useRoute()
 const loading = ref(false)

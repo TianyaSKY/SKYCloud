@@ -12,10 +12,7 @@ const UPLOAD_CONCURRENCY = 3
  * 卸载时调用 cancelAll() 可阻止队列继续派发；进行中的 HTTP 请求无法中断
  *（uploadFileOptimized 未暴露 signal，保持签名以免破坏调用方），已发起的请求会自然完成。
  */
-export function useUploadManager(
-  currentParentId: Ref<number | null>,
-  fetchFiles: () => Promise<void>,
-) {
+export function useUploadManager(currentParentId: Ref<number | null>, fetchFiles: () => Promise<void>) {
   /** cancelAll 置位后批量队列停止派发新任务 */
   let cancelled = false
 
@@ -52,19 +49,15 @@ export function useUploadManager(
     })
 
     try {
-      const result = await uploadFileOptimized(
-        file,
-        currentParentId.value,
-        (percent) => {
-          Notification.info({
-            id: nid,
-            title: '上传中',
-            content: `正在上传 ${file.name}: ${Math.round(percent)}%`,
-            duration: 0,
-            closable: false,
-          })
-        },
-      )
+      const result = await uploadFileOptimized(file, currentParentId.value, (percent) => {
+        Notification.info({
+          id: nid,
+          title: '上传中',
+          content: `正在上传 ${file.name}: ${Math.round(percent)}%`,
+          duration: 0,
+          closable: false,
+        })
+      })
 
       Notification.success({
         id: nid,
@@ -139,10 +132,7 @@ export function useUploadManager(
       }
     }
 
-    const workers = Array.from(
-      { length: Math.min(UPLOAD_CONCURRENCY, files.length) },
-      () => worker(),
-    )
+    const workers = Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, () => worker())
     await Promise.all(workers)
 
     if (failed === 0) {

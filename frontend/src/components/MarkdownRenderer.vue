@@ -3,14 +3,14 @@
 </template>
 
 <script lang="ts" setup>
-import {computed} from 'vue';
-import {marked, type Tokens} from 'marked';
-import DOMPurify from 'dompurify';
-import {logger} from '@/utils/logger';
+import { computed } from 'vue'
+import { marked, type Tokens } from 'marked'
+import DOMPurify from 'dompurify'
+import { logger } from '@/utils/logger'
 
 const props = defineProps<{
-  content: string;
-}>();
+  content: string
+}>()
 
 /**
  * 为每次渲染单独构造 marked renderer，避免模块级单例 renderer.image 被多实例共享
@@ -18,8 +18,8 @@ const props = defineProps<{
  * 返回的 renderer 仅覆盖 image，其它渲染保持 marked 默认行为。
  */
 const buildRenderer = () => {
-  const renderer = new marked.Renderer();
-  const originalImage = renderer.image.bind(renderer);
+  const renderer = new marked.Renderer()
+  const originalImage = renderer.image.bind(renderer)
 
   renderer.image = (token: Tokens.Image) => {
     if (token.href && token.href.includes('/api/file')) {
@@ -27,35 +27,35 @@ const buildRenderer = () => {
 
       // 安全说明：img 标签无法附加 Authorization header，仍需通过 query 传 token。
       // TODO(安全)：后续应改为后端签发短时下载 URL，避免 JWT 落入日志/Referer。
-      let normalizedHref = token.href;
-      const downloadMatch = normalizedHref.match(/\/download\/(\d+)/);
+      let normalizedHref = token.href
+      const downloadMatch = normalizedHref.match(/\/download\/(\d+)/)
       if (downloadMatch) {
-        const fileId = downloadMatch[1];
-        normalizedHref = `/api/files/${fileId}/download`;
+        const fileId = downloadMatch[1]
+        normalizedHref = `/api/files/${fileId}/download`
       } else if (!normalizedHref.includes('/api/files/')) {
         // 统一单数路径为复数路径。
-        normalizedHref = normalizedHref.replace('/api/file/', '/api/files/');
+        normalizedHref = normalizedHref.replace('/api/file/', '/api/files/')
       }
 
-      const authToken = localStorage.getItem('token');
+      const authToken = localStorage.getItem('token')
       if (authToken) {
-        normalizedHref = `${normalizedHref}${normalizedHref.includes('?') ? '&' : '?'}token=${authToken}`;
+        normalizedHref = `${normalizedHref}${normalizedHref.includes('?') ? '&' : '?'}token=${authToken}`
       }
-      token.href = normalizedHref;
+      token.href = normalizedHref
     }
-    return originalImage(token);
-  };
+    return originalImage(token)
+  }
 
-  return renderer;
-};
+  return renderer
+}
 
 const renderedHtml = computed(() => {
-  if (!props.content) return '';
+  if (!props.content) return ''
 
   // 剥离模型思考/框选控制标记，避免原样进入 HTML
-  const cleanContent = props.content.replace(/<\|begin_of_box\|>|<\|end_of_box\|>|<\|thought\|>|<\/thought>/g, '');
+  const cleanContent = props.content.replace(/<\|begin_of_box\|>|<\|end_of_box\|>|<\|thought\|>|<\/thought>/g, '')
 
-  let rawHtml: string;
+  let rawHtml: string
   try {
     // 每次渲染构建独立 renderer，并通过 options 传入 breaks/gfm（与原模块级 setOptions 等价），
     // 避免模块顶层副作用影响其他实例。
@@ -63,16 +63,16 @@ const renderedHtml = computed(() => {
       breaks: true,
       gfm: true,
       renderer: buildRenderer(),
-    }) as string;
+    }) as string
   } catch (err) {
     // 畸形 markdown 不应冒泡到 ErrorBoundary 整页替换；回退为原始文本（已过特殊标记过滤）。
-    logger.warn('markdown 解析失败，回退为原始文本', err);
-    return DOMPurify.sanitize(cleanContent, {ADD_ATTR: ['target']});
+    logger.warn('markdown 解析失败，回退为原始文本', err)
+    return DOMPurify.sanitize(cleanContent, { ADD_ATTR: ['target'] })
   }
   // 防御 XSS：marked 默认不过滤 HTML，AI 输出与用户上传 markdown 均经过此组件渲染，
   // 必须用 DOMPurify 净化后再 v-html，阻断存储型/反射型 XSS。
-  return DOMPurify.sanitize(rawHtml, {ADD_ATTR: ['target']});
-});
+  return DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target'] })
+})
 </script>
 
 <style scoped>
@@ -125,7 +125,8 @@ const renderedHtml = computed(() => {
   display: block;
 }
 
-.markdown-body :deep(ul), .markdown-body :deep(ol) {
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
   padding-left: 20px;
   margin: 8px 0;
 }
@@ -152,7 +153,8 @@ const renderedHtml = computed(() => {
   margin: 8px 0;
 }
 
-.markdown-body :deep(th), .markdown-body :deep(td) {
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
   border: 1px solid var(--color-border);
   padding: 6px 12px;
 }

@@ -4,7 +4,7 @@
       <!-- Hero Section -->
       <div class="docs-hero">
         <div class="hero-icon">
-          <icon-cloud style="font-size: 52px; color: rgb(var(--primary-6));" />
+          <icon-cloud style="font-size: 52px; color: rgb(var(--primary-6))" />
         </div>
         <h1 class="hero-title">SKYCloud</h1>
         <p class="hero-subtitle">AI 驱动的云文件管理平台</p>
@@ -23,37 +23,40 @@
         <h2 class="section-title">核心功能</h2>
         <div class="feature-grid">
           <div class="feature-card">
-            <div class="feature-icon"><icon-code style="font-size: 28px; color: #165dff;" /></div>
+            <div class="feature-icon"><icon-code style="font-size: 28px; color: #165dff" /></div>
             <h3>Manus 智能工作区</h3>
-            <p>媲美 Manus 的全能 AI 执行环境。一键召唤云端独立沙箱，让 AI 代理不仅能与你对话，更能直接操作云盘、编写代码、执行复杂任务流。</p>
+            <p>
+              媲美 Manus 的全能 AI 执行环境。一键召唤云端独立沙箱，让 AI
+              代理不仅能与你对话，更能直接操作云盘、编写代码、执行复杂任务流。
+            </p>
           </div>
           <div class="feature-card">
-            <div class="feature-icon"><icon-command style="font-size: 28px; color: #0fc6c2;" /></div>
+            <div class="feature-icon"><icon-command style="font-size: 28px; color: #0fc6c2" /></div>
             <h3>MCP 协议</h3>
             <p>支持 Model Context Protocol，让 Claude Desktop、Cursor 等 AI 客户端直接操作你的云盘文件。</p>
           </div>
           <div class="feature-card">
-            <div class="feature-icon"><icon-apps style="font-size: 28px; color: #ff7d00;" /></div>
+            <div class="feature-icon"><icon-apps style="font-size: 28px; color: #ff7d00" /></div>
             <h3>智能整理</h3>
             <p>基于 LangGraph 的 AI Agent 自动分析文件内容，智能归类整理到合适的文件夹结构中。</p>
           </div>
           <div class="feature-card">
-            <div class="feature-icon"><icon-robot style="font-size: 28px; color: #722ed1;" /></div>
+            <div class="feature-icon"><icon-robot style="font-size: 28px; color: #722ed1" /></div>
             <h3>AI 智能问答</h3>
             <p>基于 RAG 技术的智能问答系统，自动理解文件内容并生成向量索引，支持多查询融合检索和 Rerank 重排序。</p>
           </div>
           <div class="feature-card">
-            <div class="feature-icon"><icon-folder style="font-size: 28px; color: #165dff;" /></div>
+            <div class="feature-icon"><icon-folder style="font-size: 28px; color: #165dff" /></div>
             <h3>文件管理与现代化 UI</h3>
             <p>支持拖拽与分片上传。具备精致的面包屑导航、悬浮操作按钮与折叠菜单，提供极简清爽的云盘体验。</p>
           </div>
           <div class="feature-card">
-            <div class="feature-icon"><icon-link style="font-size: 28px; color: #00b42a;" /></div>
+            <div class="feature-icon"><icon-link style="font-size: 28px; color: #00b42a" /></div>
             <h3>文件分享</h3>
             <p>一键生成分享链接，支持设置过期时间。收件箱功能让文件协作更便捷。</p>
           </div>
           <div class="feature-card">
-            <div class="feature-icon"><icon-storage style="font-size: 28px; color: #f53f3f;" /></div>
+            <div class="feature-icon"><icon-storage style="font-size: 28px; color: #f53f3f" /></div>
             <h3>容器化部署</h3>
             <p>Docker Compose 一键部署全套服务（API、Worker、MCP、前端、数据库、缓存），开箱即用。</p>
           </div>
@@ -68,7 +71,9 @@
             <div class="arch-label">客户端</div>
             <div class="arch-items">
               <a href="https://vuejs.org/" target="_blank" class="arch-item arch-frontend">Vue 3 前端</a>
-              <a href="https://modelcontextprotocol.io/" target="_blank" class="arch-item arch-mcp-client">MCP 客户端</a>
+              <a href="https://modelcontextprotocol.io/" target="_blank" class="arch-item arch-mcp-client"
+                >MCP 客户端</a
+              >
             </div>
           </div>
           <div class="arch-arrow">
@@ -77,10 +82,14 @@
           <div class="arch-layer">
             <div class="arch-label">服务层</div>
             <div class="arch-items">
-              <a href="/api/docs" target="_blank" class="arch-item arch-api">REST API<br/><small>:5000</small></a>
-              <a href="https://modelcontextprotocol.io/" target="_blank" class="arch-item arch-mcp-srv">MCP Server<br/><small>:5001</small></a>
-              <a href="#" class="arch-item arch-worker">Worker<br/><small>异步任务</small></a>
-              <router-link to="/workspace" class="arch-item arch-workspace">Workspace<br/><small>云端容器</small></router-link>
+              <a href="/api/docs" target="_blank" class="arch-item arch-api">REST API<br /><small>:5000</small></a>
+              <a href="https://modelcontextprotocol.io/" target="_blank" class="arch-item arch-mcp-srv"
+                >MCP Server<br /><small>:5001</small></a
+              >
+              <a href="#" class="arch-item arch-worker">Worker<br /><small>异步任务</small></a>
+              <router-link to="/workspace" class="arch-item arch-workspace"
+                >Workspace<br /><small>云端容器</small></router-link
+              >
             </div>
           </div>
           <div class="arch-arrow">
@@ -89,7 +98,9 @@
           <div class="arch-layer">
             <div class="arch-label">基础设施</div>
             <div class="arch-items">
-              <a href="https://github.com/pgvector/pgvector" target="_blank" class="arch-item arch-db">PostgreSQL + pgvector</a>
+              <a href="https://github.com/pgvector/pgvector" target="_blank" class="arch-item arch-db"
+                >PostgreSQL + pgvector</a
+              >
               <a href="https://redis.io/" target="_blank" class="arch-item arch-redis">Redis</a>
               <a href="https://python.langchain.com/" target="_blank" class="arch-item arch-llm">LLM / Embedding</a>
             </div>
@@ -103,8 +114,8 @@
         <div class="mcp-intro">
           <div class="mcp-intro-text">
             <p>
-              <strong>MCP (Model Context Protocol)</strong> 是由 Anthropic 推出的开放标准协议，
-              定义了 AI 应用与外部数据源、工具之间的标准化通信方式。
+              <strong>MCP (Model Context Protocol)</strong> 是由 Anthropic 推出的开放标准协议， 定义了 AI
+              应用与外部数据源、工具之间的标准化通信方式。
             </p>
             <p>
               SKYCloud 通过实现 MCP Server，让支持该协议的 AI 客户端（如 Claude Desktop、Cursor IDE、Cline 等）
@@ -112,19 +123,19 @@
             </p>
             <div class="mcp-benefit-list">
               <div class="mcp-benefit">
-                <icon-check-circle-fill style="color: #00b42a; font-size: 16px; flex-shrink: 0;" />
+                <icon-check-circle-fill style="color: #00b42a; font-size: 16px; flex-shrink: 0" />
                 <span>AI 助手可以直接搜索和浏览你的云盘文件</span>
               </div>
               <div class="mcp-benefit">
-                <icon-check-circle-fill style="color: #00b42a; font-size: 16px; flex-shrink: 0;" />
+                <icon-check-circle-fill style="color: #00b42a; font-size: 16px; flex-shrink: 0" />
                 <span>通过自然语言指令管理文件和文件夹</span>
               </div>
               <div class="mcp-benefit">
-                <icon-check-circle-fill style="color: #00b42a; font-size: 16px; flex-shrink: 0;" />
+                <icon-check-circle-fill style="color: #00b42a; font-size: 16px; flex-shrink: 0" />
                 <span>标准化协议，支持多种 AI 客户端</span>
               </div>
               <div class="mcp-benefit">
-                <icon-check-circle-fill style="color: #00b42a; font-size: 16px; flex-shrink: 0;" />
+                <icon-check-circle-fill style="color: #00b42a; font-size: 16px; flex-shrink: 0" />
                 <span>JWT Token 认证，安全可靠</span>
               </div>
             </div>
@@ -176,7 +187,9 @@
             <div class="step-number">3</div>
             <div class="step-content">
               <h4>配置 AI 客户端或工作区</h4>
-              <p>将 Token 与服务地址配置到 Claude Desktop / Cursor 等客户端；工作区在启动时会自动注入 MCP，无需手动连接。</p>
+              <p>
+                将 Token 与服务地址配置到 Claude Desktop / Cursor 等客户端；工作区在启动时会自动注入 MCP，无需手动连接。
+              </p>
             </div>
           </div>
         </div>
@@ -258,11 +271,26 @@ const mcpTools = [
   font-weight: 500;
 }
 
-.badge-blue { background: #e8f3ff; color: #165dff; }
-.badge-green { background: #e8ffea; color: #00b42a; }
-.badge-purple { background: #f0e8ff; color: #722ed1; }
-.badge-orange { background: #fff3e8; color: #ff7d00; }
-.badge-cyan { background: #e8fffb; color: #0fc6c2; }
+.badge-blue {
+  background: #e8f3ff;
+  color: #165dff;
+}
+.badge-green {
+  background: #e8ffea;
+  color: #00b42a;
+}
+.badge-purple {
+  background: #f0e8ff;
+  color: #722ed1;
+}
+.badge-orange {
+  background: #fff3e8;
+  color: #ff7d00;
+}
+.badge-cyan {
+  background: #e8fffb;
+  color: #0fc6c2;
+}
 
 /* 内容区块通用样式 */
 .docs-section {
@@ -290,7 +318,9 @@ const mcpTools = [
   padding: 24px;
   background: var(--color-fill-1);
   border-radius: 12px;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition:
+    transform 0.2s,
+    box-shadow 0.2s;
   border: 1px solid var(--color-border-1);
 }
 
@@ -356,7 +386,9 @@ const mcpTools = [
   text-align: center;
   border: 1px solid var(--color-border-2);
   text-decoration: none;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition:
+    transform 0.2s,
+    box-shadow 0.2s;
   cursor: pointer;
   display: block;
 }
@@ -373,15 +405,42 @@ const mcpTools = [
   margin-top: 2px;
 }
 
-.arch-frontend { background: #e8f3ff; color: #165dff; }
-.arch-mcp-client { background: #e8fffb; color: #0fc6c2; }
-.arch-api { background: #e8ffea; color: #00b42a; }
-.arch-mcp-srv { background: #e8fffb; color: #0fc6c2; }
-.arch-worker { background: #fff3e8; color: #ff7d00; }
-.arch-db { background: #f0e8ff; color: #722ed1; }
-.arch-redis { background: #ffe8e8; color: #f53f3f; }
-.arch-llm { background: #fff8e8; color: #faad14; }
-.arch-workspace { background: #e8f3ff; color: #165dff; }
+.arch-frontend {
+  background: #e8f3ff;
+  color: #165dff;
+}
+.arch-mcp-client {
+  background: #e8fffb;
+  color: #0fc6c2;
+}
+.arch-api {
+  background: #e8ffea;
+  color: #00b42a;
+}
+.arch-mcp-srv {
+  background: #e8fffb;
+  color: #0fc6c2;
+}
+.arch-worker {
+  background: #fff3e8;
+  color: #ff7d00;
+}
+.arch-db {
+  background: #f0e8ff;
+  color: #722ed1;
+}
+.arch-redis {
+  background: #ffe8e8;
+  color: #f53f3f;
+}
+.arch-llm {
+  background: #fff8e8;
+  color: #faad14;
+}
+.arch-workspace {
+  background: #e8f3ff;
+  color: #165dff;
+}
 
 .arch-arrow {
   font-size: 18px;

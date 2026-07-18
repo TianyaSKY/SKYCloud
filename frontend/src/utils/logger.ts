@@ -13,26 +13,26 @@ const isDev = import.meta.env.DEV
  * - 基本类型：null/undefined 显式化，其余走 String(arg)
  */
 function stringifyArg(arg: unknown): string {
-    if (arg instanceof Error) {
-        return arg.stack ? `${arg.message}\n${arg.stack}` : arg.message
+  if (arg instanceof Error) {
+    return arg.stack ? `${arg.message}\n${arg.stack}` : arg.message
+  }
+  if (arg === null) {
+    return 'null'
+  }
+  if (arg === undefined) {
+    return 'undefined'
+  }
+  if (typeof arg === 'string') {
+    return arg
+  }
+  if (typeof arg === 'object') {
+    try {
+      return JSON.stringify(arg)
+    } catch {
+      return String(arg)
     }
-    if (arg === null) {
-        return 'null'
-    }
-    if (arg === undefined) {
-        return 'undefined'
-    }
-    if (typeof arg === 'string') {
-        return arg
-    }
-    if (typeof arg === 'object') {
-        try {
-            return JSON.stringify(arg)
-        } catch {
-            return String(arg)
-        }
-    }
-    return String(arg)
+  }
+  return String(arg)
 }
 
 /**
@@ -43,43 +43,40 @@ function stringifyArg(arg: unknown): string {
  * 使用函数形式 replacer：返回值不做 $&/$$ 等特殊替换模式处理，
  * 因此含 $ 字符的字符串化结果不会被误解析。
  */
-function formatWithPlaceholders(
-    message: string,
-    args: unknown[]
-): {text: string, rest: unknown[]} {
-    let consumed = 0
-    const text = message.replace(/\{\}/g, () => {
-        if (consumed < args.length) {
-            return stringifyArg(args[consumed++])
-        }
-        return '{}'
-    })
-    return {text, rest: args.slice(consumed)}
+function formatWithPlaceholders(message: string, args: unknown[]): { text: string; rest: unknown[] } {
+  let consumed = 0
+  const text = message.replace(/\{\}/g, () => {
+    if (consumed < args.length) {
+      return stringifyArg(args[consumed++])
+    }
+    return '{}'
+  })
+  return { text, rest: args.slice(consumed) }
 }
 
 function logError(message: string, ...args: unknown[]): void {
-    if (isDev) {
-        const {text, rest} = formatWithPlaceholders(message, args)
-        console.error(`[ERROR] ${text}`, ...rest)
-    }
+  if (isDev) {
+    const { text, rest } = formatWithPlaceholders(message, args)
+    console.error(`[ERROR] ${text}`, ...rest)
+  }
 }
 
 function logWarn(message: string, ...args: unknown[]): void {
-    if (isDev) {
-        const {text, rest} = formatWithPlaceholders(message, args)
-        console.warn(`[WARN] ${text}`, ...rest)
-    }
+  if (isDev) {
+    const { text, rest } = formatWithPlaceholders(message, args)
+    console.warn(`[WARN] ${text}`, ...rest)
+  }
 }
 
 function logInfo(message: string, ...args: unknown[]): void {
-    if (isDev) {
-        const {text, rest} = formatWithPlaceholders(message, args)
-        console.info(`[INFO] ${text}`, ...rest)
-    }
+  if (isDev) {
+    const { text, rest } = formatWithPlaceholders(message, args)
+    console.info(`[INFO] ${text}`, ...rest)
+  }
 }
 
 export const logger = {
-    error: logError,
-    warn: logWarn,
-    info: logInfo,
+  error: logError,
+  warn: logWarn,
+  info: logInfo,
 }

@@ -83,19 +83,19 @@
 </template>
 
 <script lang="ts" setup>
-import MainLayout from "../components/MainLayout.vue";
-import FileTable from "../components/FileTable.vue";
-import FileModals from "../components/FileModals.vue";
-import FileToolbar from "../components/FileToolbar.vue";
-import FilePreview from "../components/FilePreview.vue";
-import FileDragOverlay from "../components/FileDragOverlay.vue";
-import { onUnmounted } from "vue";
-import { useFileDrag } from "../hooks/useFileDrag";
-import { useFilePreview } from "../hooks/useFilePreview";
-import { useFileOperations } from "../hooks/useFileOperations";
-import { useFileBrowser } from "../hooks/useFileBrowser";
-import { useUploadManager } from "../hooks/useUploadManager";
-import type { FileItem } from "../api/file";
+import MainLayout from '../components/MainLayout.vue'
+import FileTable from '../components/FileTable.vue'
+import FileModals from '../components/FileModals.vue'
+import FileToolbar from '../components/FileToolbar.vue'
+import FilePreview from '../components/FilePreview.vue'
+import FileDragOverlay from '../components/FileDragOverlay.vue'
+import { onUnmounted } from 'vue'
+import { useFileDrag } from '../hooks/useFileDrag'
+import { useFilePreview } from '../hooks/useFilePreview'
+import { useFileOperations } from '../hooks/useFileOperations'
+import { useFileBrowser } from '../hooks/useFileBrowser'
+import { useUploadManager } from '../hooks/useUploadManager'
+import type { FileItem } from '../api/file'
 
 const {
   loading,
@@ -117,22 +117,14 @@ const {
   handlePageChange,
   handlePageSizeChange,
   saveSearchType,
-} = useFileBrowser();
+} = useFileBrowser()
 
-const { startUpload, cancelAll } = useUploadManager(currentParentId, fetchFiles);
+const { startUpload, cancelAll } = useUploadManager(currentParentId, fetchFiles)
 
-const { isDragging, handleDragEnter, handleDragLeave, handleDrop } =
-  useFileDrag(currentParentId, startUpload);
+const { isDragging, handleDragEnter, handleDragLeave, handleDrop } = useFileDrag(currentParentId, startUpload)
 
-const {
-  previewVisible,
-  previewTitle,
-  previewUrl,
-  previewType,
-  textContent,
-  handleFileClick,
-  handlePreviewClose,
-} = useFilePreview();
+const { previewVisible, previewTitle, previewUrl, previewType, textContent, handleFileClick, handlePreviewClose } =
+  useFilePreview()
 
 const {
   folderForm,
@@ -161,20 +153,20 @@ const {
   handleFolderSelect,
   confirmMove,
   handleOrganize,
-} = useFileOperations(currentParentId, fetchFiles, selectedKeys, startUpload, fileList);
+} = useFileOperations(currentParentId, fetchFiles, selectedKeys, startUpload, fileList)
 
 const handleFileClickWrapper = async (record: FileItem) => {
   if (record.is_folder) {
-    enterFolder(record);
+    enterFolder(record)
   } else {
-    await handleFileClick(record);
+    await handleFileClick(record)
   }
-};
+}
 
 // 组件卸载时取消上传队列，避免后台继续派发新上传任务
 onUnmounted(() => {
-  cancelAll();
-});
+  cancelAll()
+})
 </script>
 
 <style scoped>

@@ -1,16 +1,14 @@
 <template>
   <div v-if="isDragging" class="drag-overlay" role="status" aria-live="polite">
     <div class="drag-content">
-      <icon-upload :style="{ fontSize: '48px', color: 'var(--color-primary-light-4)' }"/>
-      <div style="margin-top: 16px; font-size: 18px; color: var(--color-text-1);">
-        释放文件以上传到当前目录
-      </div>
+      <icon-upload :style="{ fontSize: '48px', color: 'var(--color-primary-light-4)' }" />
+      <div style="margin-top: 16px; font-size: 18px; color: var(--color-text-1)">释放文件以上传到当前目录</div>
     </div>
   </div>
 </template>
 
 <script lang="ts" setup>
-import {IconUpload} from '@arco-design/web-vue/es/icon'
+import { IconUpload } from '@arco-design/web-vue/es/icon'
 
 defineProps<{
   isDragging: boolean

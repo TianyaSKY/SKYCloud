@@ -1,29 +1,29 @@
 <template>
   <div
-      v-if="show"
-      :style="{
+    v-if="show"
+    :style="{
       left: position.x + 'px',
       top: position.y + 'px',
       bottom: 'auto',
-      right: 'auto'
+      right: 'auto',
     }"
-      class="chat-widget"
+    class="chat-widget"
   >
     <!-- 悬浮球：作为按钮对外暴露给屏幕阅读器与键盘 -->
     <div
-        :class="{ 'active': visible }"
-        class="chat-trigger"
-        role="button"
-        tabindex="0"
-        :aria-label="visible ? '关闭 AI 助手' : '打开 AI 助手'"
-        :aria-expanded="visible"
-        @click="handleClick"
-        @mousedown="handleMouseDown"
-        @keydown.enter="handleClick"
-        @keydown.space.prevent="handleClick"
+      :class="{ active: visible }"
+      class="chat-trigger"
+      role="button"
+      tabindex="0"
+      :aria-label="visible ? '关闭 AI 助手' : '打开 AI 助手'"
+      :aria-expanded="visible"
+      @click="handleClick"
+      @mousedown="handleMouseDown"
+      @keydown.enter="handleClick"
+      @keydown.space.prevent="handleClick"
     >
-      <icon-message v-if="!visible" :size="24"/>
-      <icon-close v-else :size="24"/>
+      <icon-message v-if="!visible" :size="24" />
+      <icon-close v-else :size="24" />
     </div>
 
     <!-- 聊天框 -->
@@ -34,21 +34,17 @@
           <div class="actions">
             <a-button size="mini" type="text" aria-label="清空历史" @click="clearHistory">
               <template #icon>
-                <icon-delete/>
+                <icon-delete />
               </template>
             </a-button>
           </div>
         </div>
 
         <div ref="messageContainer" class="chat-messages">
-          <div
-              v-for="(msg, index) in messages"
-              :key="index"
-              :class="['message-wrapper', msg.role]"
-          >
+          <div v-for="(msg, index) in messages" :key="index" :class="['message-wrapper', msg.role]">
             <div class="avatar">
-              <icon-robot v-if="msg.role === 'assistant'"/>
-              <icon-user v-else/>
+              <icon-robot v-if="msg.role === 'assistant'" />
+              <icon-user v-else />
             </div>
             <div class="message-content">
               <div class="text">
@@ -62,7 +58,7 @@
                     <span class="keywords-tag__divider"></span>
                     <span class="keywords-tag__text">{{ msg.keywords }}</span>
                   </div>
-                  <MarkdownRenderer :content="msg.content"/>
+                  <MarkdownRenderer :content="msg.content" />
                 </div>
                 <div v-else class="user-text">{{ msg.content }}</div>
               </div>
@@ -77,12 +73,12 @@
 
         <div class="chat-input">
           <a-input-search
-              v-model="inputValue"
-              :loading="loading"
-              button-text="发送"
-              placeholder="问问 AI 关于你的文件..."
-              @search="handleSend"
-              @press-enter="handleSend"
+            v-model="inputValue"
+            :loading="loading"
+            button-text="发送"
+            placeholder="问问 AI 关于你的文件..."
+            @search="handleSend"
+            @press-enter="handleSend"
           />
         </div>
       </div>
@@ -91,8 +87,8 @@
 </template>
 
 <script lang="ts" setup>
-import {nextTick, onMounted, onUnmounted, ref} from 'vue';
-import {Message} from '@arco-design/web-vue';
+import { nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { Message } from '@arco-design/web-vue'
 import {
   IconClose,
   IconDelete,
@@ -100,191 +96,189 @@ import {
   IconFilter,
   IconMessage,
   IconRobot,
-  IconUser
-} from '@arco-design/web-vue/es/icon';
-import MarkdownRenderer from './MarkdownRenderer.vue';
-import {useAuthStore} from '@/stores/auth';
-import {logger} from '@/utils/logger';
+  IconUser,
+} from '@arco-design/web-vue/es/icon'
+import MarkdownRenderer from './MarkdownRenderer.vue'
+import { useAuthStore } from '@/stores/auth'
+import { logger } from '@/utils/logger'
 
 defineProps<{
   show: boolean
-}>();
+}>()
 
-const visible = ref(false);
-const inputValue = ref('');
-const loading = ref(false);
-const messages = ref<ChatMessage[]>([]);
-const messageContainer = ref<HTMLElement | null>(null);
-const auth = useAuthStore();
+const visible = ref(false)
+const inputValue = ref('')
+const loading = ref(false)
+const messages = ref<ChatMessage[]>([])
+const messageContainer = ref<HTMLElement | null>(null)
+const auth = useAuthStore()
 // SSE 流的取消控制器：发起新请求或卸载组件时 abort，避免对已卸载组件写状态
-let abortController: AbortController | null = null;
+let abortController: AbortController | null = null
 
-const position = ref({x: window.innerWidth - 86, y: window.innerHeight - 86});
-const isDragging = ref(false);
-const dragOffset = ref({x: 0, y: 0});
-let startTime = 0;
+const position = ref({ x: window.innerWidth - 86, y: window.innerHeight - 86 })
+const isDragging = ref(false)
+const dragOffset = ref({ x: 0, y: 0 })
+let startTime = 0
 
 // scrollToBottom 节流：SSE 每 token 触发会高频滚动，加 80ms 时间戳节流降低重排开销。
 // force=true 时跳过节流（例如用户主动展开/发送后需要立刻贴底，避免延迟感）。
-let lastScrollTime = 0;
-const SCROLL_THROTTLE_MS = 80;
+let lastScrollTime = 0
+const SCROLL_THROTTLE_MS = 80
 
 interface ChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
-  keywords?: string;
-  status?: string;
-  loading?: boolean;
+  role: 'user' | 'assistant'
+  content: string
+  keywords?: string
+  status?: string
+  loading?: boolean
 }
 
 // 剥离模型输出中的思考/框选等控制标记，避免原样展示给用户
 const cleanSpecialTokens = (text: string) => {
-  if (!text) return '';
-  return text.replace(/<\|begin_of_box\|>|<\|end_of_box\|>|<\|thought\|>|<\/thought>/g, '').trim();
-};
+  if (!text) return ''
+  return text.replace(/<\|begin_of_box\|>|<\|end_of_box\|>|<\|thought\|>|<\/thought>/g, '').trim()
+}
 
 const handleMouseDown = (e: MouseEvent) => {
-  isDragging.value = false;
-  startTime = Date.now();
+  isDragging.value = false
+  startTime = Date.now()
   dragOffset.value = {
     x: e.clientX - position.value.x,
-    y: e.clientY - position.value.y
-  };
+    y: e.clientY - position.value.y,
+  }
 
-  window.addEventListener('mousemove', handleMouseMove);
-  window.addEventListener('mouseup', handleMouseUp);
-};
+  window.addEventListener('mousemove', handleMouseMove)
+  window.addEventListener('mouseup', handleMouseUp)
+}
 
 const handleMouseMove = (e: MouseEvent) => {
-  isDragging.value = true;
-  let newX = e.clientX - dragOffset.value.x;
-  let newY = e.clientY - dragOffset.value.y;
+  isDragging.value = true
+  let newX = e.clientX - dragOffset.value.x
+  let newY = e.clientY - dragOffset.value.y
 
-  const padding = 10;
-  newX = Math.max(padding, Math.min(window.innerWidth - 66, newX));
-  newY = Math.max(padding, Math.min(window.innerHeight - 66, newY));
+  const padding = 10
+  newX = Math.max(padding, Math.min(window.innerWidth - 66, newX))
+  newY = Math.max(padding, Math.min(window.innerHeight - 66, newY))
 
-  position.value = {x: newX, y: newY};
-};
+  position.value = { x: newX, y: newY }
+}
 
 const handleMouseUp = () => {
-  window.removeEventListener('mousemove', handleMouseMove);
-  window.removeEventListener('mouseup', handleMouseUp);
-};
+  window.removeEventListener('mousemove', handleMouseMove)
+  window.removeEventListener('mouseup', handleMouseUp)
+}
 
 const handleClick = () => {
-  if (!isDragging.value || (Date.now() - startTime < 200)) {
-    toggleChat();
+  if (!isDragging.value || Date.now() - startTime < 200) {
+    toggleChat()
   }
-};
+}
 
 const toggleChat = () => {
-  visible.value = !visible.value;
+  visible.value = !visible.value
   if (visible.value) {
-    void scrollToBottom(true);
+    void scrollToBottom(true)
   }
-};
+}
 
 const scrollToBottom = async (force = false) => {
-  const now = Date.now();
-  if (!force && now - lastScrollTime < SCROLL_THROTTLE_MS) return;
-  lastScrollTime = now;
-  await nextTick();
+  const now = Date.now()
+  if (!force && now - lastScrollTime < SCROLL_THROTTLE_MS) return
+  lastScrollTime = now
+  await nextTick()
   if (messageContainer.value) {
-    messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
+    messageContainer.value.scrollTop = messageContainer.value.scrollHeight
   }
-};
+}
 
 const clearHistory = () => {
-  messages.value = [];
-};
+  messages.value = []
+}
 
 const handleSend = async () => {
-  if (!inputValue.value.trim() || loading.value) return;
+  if (!inputValue.value.trim() || loading.value) return
 
-  const query = inputValue.value;
-  inputValue.value = '';
+  const query = inputValue.value
+  inputValue.value = ''
 
-  messages.value.push({role: 'user', content: query});
+  messages.value.push({ role: 'user', content: query })
 
   const aiMsg: ChatMessage = {
     role: 'assistant',
     content: '',
     keywords: '',
     status: '正在思考...',
-    loading: true
-  };
-  messages.value.push(aiMsg);
-  const aiIndex = messages.value.length - 1;
+    loading: true,
+  }
+  messages.value.push(aiMsg)
+  const aiIndex = messages.value.length - 1
 
-  loading.value = true;
-  await scrollToBottom(true);
+  loading.value = true
+  await scrollToBottom(true)
 
   try {
-    const history = messages.value
-        .slice(0, -1)
-        .map(m => ({role: m.role, content: m.content}));
+    const history = messages.value.slice(0, -1).map((m) => ({ role: m.role, content: m.content }))
 
     // 取消上一个未完成的流，避免并发写同一条 AI 消息
-    abortController?.abort();
-    abortController = new AbortController();
+    abortController?.abort()
+    abortController = new AbortController()
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': auth.token ? `Bearer ${auth.token}` : ''
+        Authorization: auth.token ? `Bearer ${auth.token}` : '',
       },
-      body: JSON.stringify({query, history}),
+      body: JSON.stringify({ query, history }),
       signal: abortController.signal,
-    });
+    })
 
     // fetch 不走 axios 拦截器，这里手动校验 HTTP 状态；非 2xx 抛错由后续 catch 统一兜底
     if (!response.ok) {
-      throw new Error(`AI 助手请求失败 status=${response.status} ${response.statusText}`);
+      throw new Error(`AI 助手请求失败 status=${response.status} ${response.statusText}`)
     }
-    if (!response.body) throw new Error('AI 助手响应无内容流');
+    if (!response.body) throw new Error('AI 助手响应无内容流')
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  const updateAssistantMessage = (patch: Partial<ChatMessage>) => {
-    const message = messages.value[aiIndex];
-    if (message) {
-      messages.value[aiIndex] = {...message, ...patch};
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    const updateAssistantMessage = (patch: Partial<ChatMessage>) => {
+      const message = messages.value[aiIndex]
+      if (message) {
+        messages.value[aiIndex] = { ...message, ...patch }
+      }
     }
-  };
 
-    updateAssistantMessage({status: '', loading: false});
+    updateAssistantMessage({ status: '', loading: false })
 
     while (true) {
-      const {value, done} = await reader.read();
-      if (done) break;
+      const { value, done } = await reader.read()
+      if (done) break
 
-      buffer += decoder.decode(value, {stream: true});
-      const lines = buffer.split('\n');
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
       // 保留最后一个可能不完整的行
-      buffer = lines.pop() || '';
+      buffer = lines.pop() || ''
 
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           try {
-            const data = JSON.parse(line.slice(6));
+            const data = JSON.parse(line.slice(6))
             if (data.type === 'token') {
-              const message = messages.value[aiIndex];
-              if (!message) continue;
+              const message = messages.value[aiIndex]
+              if (!message) continue
               updateAssistantMessage({
                 content: message.content + data.content,
                 status: '',
-                loading: false
-              });
-              void scrollToBottom();
+                loading: false,
+              })
+              void scrollToBottom()
             } else if (data.type === 'keywords') {
-              updateAssistantMessage({keywords: cleanSpecialTokens(data.content)});
+              updateAssistantMessage({ keywords: cleanSpecialTokens(data.content) })
             } else if (data.type === 'status') {
-              updateAssistantMessage({status: data.content});
+              updateAssistantMessage({ status: data.content })
             }
           } catch (e) {
-            logger.error('解析 SSE 数据失败', e);
+            logger.error('解析 SSE 数据失败', e)
           }
         }
       }
@@ -292,35 +286,35 @@ const handleSend = async () => {
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       // 用户卸载组件或发起新请求，静默退出，不更新 UI
-      return;
+      return
     }
-    logger.error('聊天请求失败', error);
-    Message.error('发送失败，请稍后重试');
+    logger.error('聊天请求失败', error)
+    Message.error('发送失败，请稍后重试')
     if (messages.value[aiIndex]) {
-      messages.value[aiIndex] = {...messages.value[aiIndex], content: '抱歉，发生了错误。'};
+      messages.value[aiIndex] = { ...messages.value[aiIndex], content: '抱歉，发生了错误。' }
     }
   } finally {
-    loading.value = false;
+    loading.value = false
     if (messages.value[aiIndex]) {
-      messages.value[aiIndex] = {...messages.value[aiIndex], status: '', loading: false};
+      messages.value[aiIndex] = { ...messages.value[aiIndex], status: '', loading: false }
     }
-    abortController = null;
+    abortController = null
   }
-};
+}
 
 const handleResize = () => {
-  position.value.x = Math.min(position.value.x, window.innerWidth - 66);
-  position.value.y = Math.min(position.value.y, window.innerHeight - 66);
-};
+  position.value.x = Math.min(position.value.x, window.innerWidth - 66)
+  position.value.y = Math.min(position.value.y, window.innerHeight - 66)
+}
 
 onMounted(() => {
-  window.addEventListener('resize', handleResize);
-});
+  window.addEventListener('resize', handleResize)
+})
 
 onUnmounted(() => {
-  abortController?.abort();
-  window.removeEventListener('resize', handleResize);
-});
+  abortController?.abort()
+  window.removeEventListener('resize', handleResize)
+})
 </script>
 
 <style scoped>
@@ -340,7 +334,9 @@ onUnmounted(() => {
   justify-content: center;
   cursor: move;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition:
+    transform 0.2s,
+    box-shadow 0.2s;
   /* 悬浮球禁止选中，避免拖拽时误选文字 */
   user-select: none;
 }
@@ -526,8 +522,15 @@ onUnmounted(() => {
 }
 
 @keyframes status-pulse {
-  0%, 100% { opacity: 0.4; transform: scale(0.85); }
-  50% { opacity: 1; transform: scale(1.1); }
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
 }
 
 .chat-input {

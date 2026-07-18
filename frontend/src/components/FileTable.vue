@@ -1,48 +1,50 @@
 <template>
   <a-table
-      v-model:selectedKeys="selection"
-      :data="data"
-      :loading="loading"
-      :pagination="pagination"
-      :row-selection="rowSelection"
-      row-key="id"
-      @page-change="$emit('page-change', $event)"
-      @page-size-change="$emit('page-size-change', $event)"
-      @sorter-change="handleSorterChange"
+    v-model:selectedKeys="selection"
+    :data="data"
+    :loading="loading"
+    :pagination="pagination"
+    :row-selection="rowSelection"
+    row-key="id"
+    @page-change="$emit('page-change', $event)"
+    @page-size-change="$emit('page-size-change', $event)"
+    @sorter-change="handleSorterChange"
   >
     <template #columns>
       <a-table-column
-          :sortable="{sortDirections: ['ascend', 'descend'], sorter: true}"
-          data-index="name"
-          title="文件名"
+        :sortable="{ sortDirections: ['ascend', 'descend'], sorter: true }"
+        data-index="name"
+        title="文件名"
       >
         <template #cell="{ record }">
           <a-space>
-            <icon-folder v-if="record.is_folder" :style="{ color: '#ffb400', fontSize: '18px' }"/>
-            <icon-file v-else :style="{ color: '#165dff', fontSize: '18px' }"/>
+            <icon-folder v-if="record.is_folder" :style="{ color: '#ffb400', fontSize: '18px' }" />
+            <icon-file v-else :style="{ color: '#165dff', fontSize: '18px' }" />
             <a-link @click="$emit('file-click', record)">{{ record.name }}</a-link>
-            <a-tooltip v-if="!record.is_folder && record.status && record.status !== 'success'"
-                       :content="getStatusTip(record.status)">
-              <a-badge :status="getStatusBadgeStatus(record.status)"/>
+            <a-tooltip
+              v-if="!record.is_folder && record.status && record.status !== 'success'"
+              :content="getStatusTip(record.status)"
+            >
+              <a-badge :status="getStatusBadgeStatus(record.status)" />
             </a-tooltip>
           </a-space>
         </template>
       </a-table-column>
       <a-table-column
-          :sortable="{sortDirections: ['ascend', 'descend'], sorter: true}"
-          :width="120"
-          data-index="size"
-          title="大小"
+        :sortable="{ sortDirections: ['ascend', 'descend'], sorter: true }"
+        :width="120"
+        data-index="size"
+        title="大小"
       >
         <template #cell="{ record }">
           {{ record.is_folder ? '-' : formatSize(record.size) }}
         </template>
       </a-table-column>
       <a-table-column
-          :sortable="{sortDirections: ['ascend', 'descend'], sorter: true}"
-          :width="200"
-          data-index="updated_at"
-          title="修改时间"
+        :sortable="{ sortDirections: ['ascend', 'descend'], sorter: true }"
+        :width="200"
+        data-index="updated_at"
+        title="修改时间"
       >
         <template #cell="{ record }">
           {{ formatDate(record.updated_at) }}
@@ -53,34 +55,23 @@
           <div class="row-actions">
             <a-tooltip content="下载" position="top" v-if="!record.is_folder">
               <a-button
-                  size="small"
-                  type="text"
-                  aria-label="下载"
-                  @click="$emit('download', record)"
-                  class="action-btn"
+                size="small"
+                type="text"
+                aria-label="下载"
+                @click="$emit('download', record)"
+                class="action-btn"
               >
                 <template #icon><icon-download /></template>
               </a-button>
             </a-tooltip>
             <a-tooltip content="分享" position="top" v-if="!record.is_folder">
-              <a-button
-                  size="small"
-                  type="text"
-                  aria-label="分享"
-                  @click="$emit('share', record)"
-                  class="action-btn"
-              >
+              <a-button size="small" type="text" aria-label="分享" @click="$emit('share', record)" class="action-btn">
                 <template #icon><icon-share-alt /></template>
               </a-button>
             </a-tooltip>
 
             <a-dropdown trigger="click" position="br">
-              <a-button
-                  size="small"
-                  type="text"
-                  aria-label="更多操作"
-                  class="action-btn"
-              >
+              <a-button size="small" type="text" aria-label="更多操作" class="action-btn">
                 <template #icon><icon-more /></template>
               </a-button>
               <template #content>
@@ -90,7 +81,10 @@
                 <a-doption @click="$emit('move', record)">
                   <template #icon><icon-drag-arrow /></template>移动
                 </a-doption>
-                <a-doption v-if="!record.is_folder && record.status === 'fail'" @click="$emit('retry-embedding', record)">
+                <a-doption
+                  v-if="!record.is_folder && record.status === 'fail'"
+                  @click="$emit('retry-embedding', record)"
+                >
                   <template #icon><icon-refresh /></template>重试
                 </a-doption>
                 <a-doption style="color: rgb(var(--danger-6))" @click="confirmDelete(record)">
@@ -108,7 +102,9 @@
     <a-alert>
       <div style="display: flex; align-items: center; justify-content: space-between; width: 100%">
         <a-space>
-          <span>已选择 <span style="font-weight: bold">{{ selection.length }}</span> 项</span>
+          <span
+            >已选择 <span style="font-weight: bold">{{ selection.length }}</span> 项</span
+          >
           <a-button size="mini" type="text" @click="selection = []">取消选择</a-button>
         </a-space>
         <a-space>
@@ -122,14 +118,21 @@
 </template>
 
 <script lang="ts" setup>
-import {computed, reactive, ref} from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { Modal } from '@arco-design/web-vue'
 import {
-  IconFile, IconFolder, IconDownload, IconShareAlt,
-  IconMore, IconEdit, IconDragArrow, IconRefresh, IconDelete
+  IconFile,
+  IconFolder,
+  IconDownload,
+  IconShareAlt,
+  IconMore,
+  IconEdit,
+  IconDragArrow,
+  IconRefresh,
+  IconDelete,
 } from '@arco-design/web-vue/es/icon'
-import type {FileItem} from '@/api/file'
-import {formatDate} from '@/utils/format'
+import type { FileItem } from '@/api/file'
+import { formatDate } from '@/utils/format'
 
 // 后端 FileItem 不含 status，但列表渲染依赖 process_status 推送的待索引状态；
 // 这里本地扩展一个带 status 字段的展示行类型，承载表格所需的可选字段。
@@ -154,7 +157,20 @@ const props = defineProps<{
   selectedKeys?: number[]
 }>()
 
-const emit = defineEmits(['file-click', 'download', 'share', 'delete', 'page-change', 'page-size-change', 'batch-delete', 'update:selectedKeys', 'sorter-change', 'retry-embedding', 'rename', 'move'])
+const emit = defineEmits([
+  'file-click',
+  'download',
+  'share',
+  'delete',
+  'page-change',
+  'page-size-change',
+  'batch-delete',
+  'update:selectedKeys',
+  'sorter-change',
+  'retry-embedding',
+  'rename',
+  'move',
+])
 
 const internalSelectedKeys = ref<number[]>([])
 
@@ -163,13 +179,13 @@ const selection = computed({
   set: (val: number[]) => {
     internalSelectedKeys.value = val
     emit('update:selectedKeys', val)
-  }
+  },
 })
 
 const rowSelection = reactive({
   type: 'checkbox',
   showCheckedAll: true,
-  onlyCurrent: false
+  onlyCurrent: false,
 })
 
 const confirmDelete = (record: FileTableRow) => {
@@ -179,12 +195,12 @@ const confirmDelete = (record: FileTableRow) => {
     hideCancel: false,
     onOk: () => {
       emit('delete', record)
-    }
+    },
   })
 }
 
 const handleSorterChange = (dataIndex: string, direction: string) => {
-  emit('sorter-change', {dataIndex, direction})
+  emit('sorter-change', { dataIndex, direction })
 }
 
 const formatSize = (size?: number) => {
