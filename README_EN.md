@@ -98,10 +98,10 @@ docker compose down
 
 ## MCP Access
 
-The MCP Server runs in a standalone container on the default port **5001**. Log in to the web app -> MCP Service page -> generate a token.
+The MCP Server runs in a standalone container on the default port **5001**. Each user is auto-provisioned with a **single** MCP token: open the avatar menu → **MCP Token** to copy or refresh. Workspaces inject this token automatically on create/start/restart — no manual "Connect MCP" step.
 
-| MCP Service | Token Usage |
-| ----------- | ----------- |
+| Workspace / MCP | Token Usage |
+| --------------- | ----------- |
 | ![MCP](images/mcp.png) | ![Token Usage](images/token-usage.png) |
 
 ## All-In-One Workspace
@@ -131,13 +131,14 @@ cd frontend && npm ci && npm run dev
 SKYCloud/
 ├── backend/
 │   ├── app/
+│   │   ├── api/            # HTTP: routers / schemas / dependencies / factory
+│   │   ├── mcp/            # MCP protocol adapter (tools / resources)
+│   │   ├── workers/        # Async jobs: indexing / organize / convert
+│   │   ├── services/       # Shared business logic (API / MCP / Worker)
 │   │   ├── models/         # SQLAlchemy models
-│   │   ├── routers/        # API routes
-│   │   ├── services/       # Business logic
-│   │   ├── factory.py      # Application factory
-│   │   ├── mcp_server.py   # MCP Server
-│   │   └── extensions.py   # Infrastructure
-│   ├── worker/             # Indexing / organization / format conversion
+│   │   ├── infra/          # Cache / queue / upload / datetime helpers
+│   │   ├── extensions.py   # DB / Redis infrastructure
+│   │   └── exceptions.py   # Shared exceptions
 │   ├── run.py              # API entry point
 │   ├── tasks.py            # Worker entry point
 │   └── mcp_run.py          # MCP entry point

@@ -11,14 +11,13 @@ from app.services import folder_service
 from app.services.file_service import (
     cleanup_expired_uploads,
 )
-from app.task_queue import (
+from app.infra.task_queue import (
     FILE_PROCESS_QUEUE,
     ORGANIZE_FILE_QUEUE,
     RabbitMQTaskConsumer,
 )
-from worker.indexing_handler import handle_file_indexing as handle_file_process
-from worker.indexing_handler import handle_batch_indexing
-from worker.organize_handler import handle_organize_process
+from app.workers.indexing_handler import handle_file_indexing,handle_batch_indexing
+from app.workers.organize_handler import handle_organize_process
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -50,7 +49,7 @@ def process_task(file_id, semaphore: threading.Semaphore):
     在线程中处理单个文件处理任务
     """
     try:
-        handle_file_process(file_id)
+        handle_file_indexing(file_id)
     except Exception as e:
         logger.exception(f"Error in thread processing file {file_id}: {e}")
     finally:

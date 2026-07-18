@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from app import initialize_application  # noqa: E402
-from app.mcp_server import mcp, get_mcp_app  # noqa: E402
+from app.mcp.server import mcp, get_mcp_app  # noqa: E402
 
 # 初始化数据库连接、表结构等（与 backend-api 的 lifespan 中相同）
 initialize_application()

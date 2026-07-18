@@ -1,4 +1,4 @@
-from app.cache import cacheable, evict_cache
+from app.infra.cache import cacheable, evict_cache
 from app.exceptions import BusinessRuleError, ResourceNotFoundError
 from app.extensions import db
 from app.models.sys_dict import SysDict
@@ -83,7 +83,7 @@ async def get_sys_dict_by_key(key):
 
 
 def get_sys_dict_by_key_sync(key):
-    """Synchronous lookup for worker/thread contexts."""
+    """Synchronous lookup for consumer/thread contexts."""
     if is_model_config_sys_dict_key(key):
         return None
     return (

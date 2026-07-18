@@ -3,7 +3,7 @@ from typing import cast
 
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
 
-from app.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
 
 

@@ -18,7 +18,7 @@ from app.services.model_config import (
     get_embedding_model_config,
     get_vl_model_config,
 )
-from worker.description_generator import generate_file_description
+from app.workers.description_generator import generate_file_description
 
 logger = logging.getLogger(__name__)
 

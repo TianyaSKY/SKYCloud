@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Enum
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from app.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
 
 

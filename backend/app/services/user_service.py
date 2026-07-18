@@ -1,4 +1,4 @@
-from app.cache import cacheable, evict_cache
+from app.infra.cache import cacheable, evict_cache
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
 from app.extensions import db
 from app.models.user import User

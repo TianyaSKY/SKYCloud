@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean, Text
 from sqlalchemy.orm import relationship, backref
 
-from app.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
 
 

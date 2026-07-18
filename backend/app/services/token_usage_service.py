@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import func, text
 
-from app.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.extensions import db, SessionLocal
 from app.models.token_usage_log import TokenUsageLog
 from app.models.user import User

@@ -10,7 +10,7 @@ import shutil
 import uuid
 from typing import Any, cast
 
-from app.cache import cacheable, evict_cache_pattern
+from app.infra.cache import cacheable, evict_cache_pattern
 from app.exceptions import (
     BusinessRuleError,
     ConflictError,
@@ -29,7 +29,7 @@ from app.models.folder import Folder
 from app.services import change_log_service
 from app.services import file_access_bloom
 from app.services.model_config import get_embedding_model_config
-from app.task_queue import publish_file_tasks
+from app.infra.task_queue import publish_file_tasks
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@ from datetime import datetime
 
 from sqlalchemy import Column, Integer, String, DateTime, BigInteger, Text
 
-from app.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base
 
 

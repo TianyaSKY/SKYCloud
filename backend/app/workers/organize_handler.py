@@ -21,10 +21,7 @@ from langchain_openai import ChatOpenAI
 import datetime
 import logging
 import os
-import sys
 import time
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 
 logger = logging.getLogger(__name__)

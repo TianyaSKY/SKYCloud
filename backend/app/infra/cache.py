@@ -14,7 +14,7 @@ Provides three decorators mirroring Spring Boot's caching annotations:
 
 Usage example:
 
-    from app.cache import cacheable, cache_evict, evict_cache
+    from app.infra.cache import cacheable, cache_evict, evict_cache
 
     @cacheable(prefix="user:profile", expire=3600)
     def get_user_dict(user_id: int) -> dict | None:

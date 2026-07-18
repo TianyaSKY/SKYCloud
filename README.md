@@ -98,9 +98,9 @@ docker compose down
 
 ## MCP 接入
 
-MCP Server 独立容器运行，默认端口 **5001**。登录网页端 → MCP 服务页面 → 生成 Token。
+MCP Server 独立容器运行，默认端口 **5001**。每个用户自动签发**唯一** MCP Token：登录后点击右上角头像 → **MCP Token** 即可复制或刷新。工作区在创建/启动/重启时会自动注入该 Token，无需手动「连接 MCP」。
 
-| MCP 服务               | Token 用量                            |
+| 工作区 / MCP           | Token 用量                            |
 | ---------------------- | ------------------------------------- |
 | ![MCP](images/mcp.png) | ![Token 用量](images/token-usage.png) |
 
@@ -131,13 +131,14 @@ cd frontend && npm ci && npm run dev
 SKYCloud/
 ├── backend/
 │   ├── app/
+│   │   ├── api/            # HTTP：routers / schemas / dependencies / factory
+│   │   ├── mcp/            # MCP 协议适配（tools / resources）
+│   │   ├── workers/        # 异步任务：索引 / 整理 / 格式转换
+│   │   ├── services/       # 共享业务逻辑（API / MCP / Worker 共用）
 │   │   ├── models/         # SQLAlchemy 模型
-│   │   ├── routers/        # API 路由
-│   │   ├── services/       # 业务逻辑
-│   │   ├── factory.py      # 应用工厂
-│   │   ├── mcp_server.py   # MCP Server
-│   │   └── extensions.py   # 基础设施
-│   ├── worker/             # 索引 / 整理 / 格式转换
+│   │   ├── infra/          # 缓存 / 队列 / 上传 / 时间工具
+│   │   ├── extensions.py   # DB / Redis 等基础设施
+│   │   └── exceptions.py   # 统一异常
 │   ├── run.py              # API 入口
 │   ├── tasks.py            # Worker 入口
 │   └── mcp_run.py          # MCP 入口

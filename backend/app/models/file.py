@@ -6,7 +6,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, Integer, String, BigInteger, DateTime, ForeignKey, Index
 from sqlalchemy.orm import relationship
 
-from app.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.extensions import Base, UPLOAD_FOLDER
 
 
