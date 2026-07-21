@@ -7,8 +7,9 @@ MCP 专用 JWT 额外校验库内是否仍有效（吊销后立即拒绝）。
 import jwt
 from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
 
-from app.extensions import SECRET_KEY
+from app.extensions import SECRET_KEY, get_db
 from app.models.user import User
 from app.services import user_service
 
@@ -18,6 +19,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 async def get_current_user(
         credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
         token: str | None = Query(default=None, alias="token"),
+        session: Session = Depends(get_db),
 ) -> User:
     """解析当前请求用户；Bearer 优先于 query token。
 
@@ -42,13 +44,13 @@ async def get_current_user(
         if payload.get("type") == "mcp":
             from app.services import mcp_token_service
 
-            if not mcp_token_service.get_active_mcp_token(token):
+            if not mcp_token_service.get_active_mcp_token(session, token):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="MCP token is revoked or expired!",
                 )
         user_id = int(user_id)
-        current_user = await user_service.get_user(user_id)
+        current_user = await user_service.get_user(session, user_id)
         if not current_user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found!"

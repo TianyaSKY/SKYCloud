@@ -11,11 +11,13 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
 from loguru import logger
+from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import Response
 
 from app.api.dependencies import get_current_user
 from app.api.schemas.workspace import WorkspaceCreateRequest
+from app.extensions import SessionLocal, get_db
 from app.models.user import User
 from app.services import workspace_service
 from app.services.workspace_types import CreateWorkspaceCommand
@@ -32,10 +34,11 @@ router = APIRouter(tags=["workspace"])
 async def create_workspace(
         payload: WorkspaceCreateRequest,
         current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """创建工作区记录（不立即启动容器）。"""
     workspace = workspace_service.create_workspace(
-        CreateWorkspaceCommand(user_id=current_user.id, name=payload.name)
+        session, CreateWorkspaceCommand(user_id=current_user.id, name=payload.name)
     )
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
@@ -44,9 +47,12 @@ async def create_workspace(
 
 
 @router.get("/workspace")
-async def list_workspaces(current_user: User = Depends(get_current_user)):
+async def list_workspaces(
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
     """列出当前用户的工作区摘要。"""
-    workspaces = workspace_service.list_workspaces(current_user.id)
+    workspaces = workspace_service.list_workspaces(session, current_user.id)
     return {"workspaces": [asdict(workspace) for workspace in workspaces], "code": 200}
 
 
@@ -54,9 +60,10 @@ async def list_workspaces(current_user: User = Depends(get_current_user)):
 async def get_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """获取单个工作区；不存在时 404。"""
-    ws = workspace_service.get_workspace(workspace_id, current_user.id)
+    ws = workspace_service.get_workspace(session, workspace_id, current_user.id)
     if not ws:
         from app.exceptions import ResourceNotFoundError
         raise ResourceNotFoundError("工作区不存在")
@@ -67,9 +74,10 @@ async def get_workspace(
 async def start_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """启动 OpenCode 容器。"""
-    workspace = workspace_service.start_workspace(workspace_id, current_user.id)
+    workspace = workspace_service.start_workspace(session, workspace_id, current_user.id)
     return asdict(workspace_service.to_summary(workspace))
 
 
@@ -77,9 +85,10 @@ async def start_workspace(
 async def stop_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """停止容器（保留工作区记录）。"""
-    workspace = workspace_service.stop_workspace(workspace_id, current_user.id)
+    workspace = workspace_service.stop_workspace(session, workspace_id, current_user.id)
     return asdict(workspace_service.to_summary(workspace))
 
 
@@ -87,9 +96,10 @@ async def stop_workspace(
 async def delete_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """销毁容器并删除工作区记录。"""
-    workspace_service.delete_workspace(workspace_id, current_user.id)
+    workspace_service.delete_workspace(session, workspace_id, current_user.id)
     return JSONResponse(status_code=200, content={"message": "已删除", "code": 200})
 
 
@@ -97,9 +107,10 @@ async def delete_workspace(
 async def restart_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """重启容器（配置变更后常用）。"""
-    workspace = workspace_service.restart_workspace(workspace_id, current_user.id)
+    workspace = workspace_service.restart_workspace(session, workspace_id, current_user.id)
     return asdict(workspace_service.to_summary(workspace))
 
 
@@ -107,9 +118,10 @@ async def restart_workspace(
 async def setup_mcp_connection(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """向运行中工作区写入 MCP 连接配置（含当前用户 JWT）。"""
-    result = workspace_service.setup_mcp_connection(workspace_id, current_user.id)
+    result = workspace_service.setup_mcp_connection(session, workspace_id, current_user.id)
     return {"success": True, "message": "MCP 连接配置成功", **asdict(result)}
 
 
@@ -137,7 +149,7 @@ def _make_auth_header(password: str) -> str:
 PROXY_COOKIE_NAME = "skycloud_ws_token"
 
 
-async def _resolve_proxy_user(request: Request) -> User:
+async def _resolve_proxy_user(request: Request, session: Session) -> User:
     """解析代理请求用户。
 
     优先级：query ``token``（iframe 首屏）→ Cookie（后续子资源）→ Authorization Bearer。
@@ -151,9 +163,9 @@ async def _resolve_proxy_user(request: Request) -> User:
     if effective_token:
         from fastapi.security import HTTPAuthorizationCredentials
         creds = HTTPAuthorizationCredentials(scheme="bearer", credentials=effective_token)
-        return await get_current_user(credentials=creds, token=None)
+        return await get_current_user(credentials=creds, token=None, session=session)
 
-    return await get_current_user(credentials=None, token=None)
+    return await get_current_user(credentials=None, token=None, session=session)
 
 
 # ---------------------------------------------------------------------------
@@ -170,11 +182,12 @@ async def proxy_http(
         workspace_id: int,
         path: str,
         request: Request,
+        session: Session = Depends(get_db),
 ):
     """将 HTTP 请求转发到 OpenCode 容器；外层统一记日志。"""
     import traceback
     try:
-        return await _proxy_http_inner(workspace_id, path, request)
+        return await _proxy_http_inner(workspace_id, path, request, session)
     except HTTPException:
         raise
     except Exception as exc:
@@ -187,14 +200,15 @@ async def _proxy_http_inner(
         workspace_id: int,
         path: str,
         request: Request,
+        session: Session,
 ):
     """代理实现：鉴权 → 校验 running → 转发 → 改写 HTML 资源路径 → 种鉴权 Cookie。"""
     try:
-        current_user = await _resolve_proxy_user(request)
+        current_user = await _resolve_proxy_user(request, session)
     except HTTPException:
         raise HTTPException(status_code=401, detail="认证失败，请重新打开工作区")
 
-    ws = workspace_service.get_workspace(workspace_id, current_user.id)
+    ws = workspace_service.get_workspace(session, workspace_id, current_user.id)
     if not ws:
         raise HTTPException(status_code=404, detail="工作区不存在")
     if ws.status != "running":
@@ -305,27 +319,34 @@ async def proxy_websocket(
     浏览器升级请求无法带自定义头，故仅用 query/Cookie 中的 JWT 鉴权；
     上游 Basic Auth 使用容器密码，且不转发客户端 token。
     """
-    # WebSocket 路由无法使用 Depends，须手动鉴权
+    # WebSocket 路由无法使用 Depends，须手动鉴权与 session
     token = websocket.query_params.get("token") or websocket.cookies.get(PROXY_COOKIE_NAME)
     if not token:
         await websocket.close(code=4001, reason="Missing token")
         return
+
+    session = SessionLocal()
     try:
-        from app.api.dependencies import get_current_user as _get_user
-        from fastapi.security import HTTPAuthorizationCredentials
+        try:
+            from app.api.dependencies import get_current_user as _get_user
+            from fastapi.security import HTTPAuthorizationCredentials
 
-        creds = HTTPAuthorizationCredentials(scheme="bearer", credentials=token)
-        current_user = await _get_user(credentials=creds, token=None)
-    except Exception:
-        await websocket.close(code=4001, reason="Invalid token")
-        return
+            creds = HTTPAuthorizationCredentials(scheme="bearer", credentials=token)
+            current_user = await _get_user(credentials=creds, token=None, session=session)
+        except Exception:
+            await websocket.close(code=4001, reason="Invalid token")
+            return
 
-    ws = workspace_service.get_workspace(workspace_id, current_user.id)
-    if not ws or ws.status != "running":
-        await websocket.close(code=4002, reason="Workspace not running")
-        return
+        ws = workspace_service.get_workspace(session, workspace_id, current_user.id)
+        if not ws or ws.status != "running":
+            await websocket.close(code=4002, reason="Workspace not running")
+            return
 
-    container_url = workspace_service.get_container_url(ws)
+        container_url = workspace_service.get_container_url(ws)
+        container_password = ws.container_password
+    finally:
+        session.close()
+
     container_ws_url = container_url.replace("http://", "ws://")
     target = f"{container_ws_url}/{path}"
     # 鉴权 token 仅供代理层
@@ -335,7 +356,7 @@ async def proxy_websocket(
         qs = "&".join(f"{k}={v}" for k, v in query_params.items())
         target += f"?{qs}"
 
-    auth_header = _make_auth_header(ws.container_password)
+    auth_header = _make_auth_header(container_password)
 
     await websocket.accept()
 

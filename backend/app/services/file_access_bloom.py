@@ -10,7 +10,7 @@ import time
 import uuid
 from typing import Iterable
 
-from app.extensions import db, redis_client
+from app.extensions import SessionLocal, redis_client
 from app.models.file import File
 
 logger = logging.getLogger(__name__)
@@ -52,11 +52,14 @@ def _hash_positions(file_id: int, bitmap_size: int, hash_count: int) -> list[int
 
 
 def _iter_file_ids(user_id: int | None) -> Iterable[int]:
-    query = db.session.query(File.id)
-    if user_id is not None:
-        query = query.filter(File.uploader_id == user_id)
-    for (file_id,) in query.all():
-        yield int(file_id)
+    session = SessionLocal()
+    try:
+        query = session.query(File.id)
+        if user_id is not None:
+            query = query.filter(File.uploader_id == user_id)
+        return [int(file_id) for (file_id,) in query.all()]
+    finally:
+        session.close()
 
 
 def _build_filter(user_id: int | None) -> bool:

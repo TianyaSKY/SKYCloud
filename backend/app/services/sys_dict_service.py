@@ -1,7 +1,8 @@
 """系统字典 CRUD 与缓存；禁止通过字典表写入模型 API 配置（改走环境变量）。"""
 
+from sqlalchemy.orm import Session
+
 from app.exceptions import BusinessRuleError, ResourceNotFoundError
-from app.extensions import db
 from app.infra.cache import cacheable, evict_cache
 from app.models.sys_dict import SysDict
 from app.services.model_config import is_model_config_sys_dict_key
@@ -23,19 +24,19 @@ def _invalidate_sys_dict_cache() -> None:
     evict_cache(SYS_DICT_CACHE_PREFIX)
 
 
-def create_sys_dict(data):
+def create_sys_dict(session: Session, data):
     _ensure_non_model_config_key(data.get("key"))
     new_dict = SysDict(
         key=data["key"], value=data["value"], des=data["des"], enable=data["enable"]
     )
-    db.session.add(new_dict)
-    db.session.commit()
+    session.add(new_dict)
+    session.commit()
     _invalidate_sys_dict_cache()
     return new_dict
 
 
-def update_sys_dict(id, data):
-    sys_dict = db.session.get(SysDict, id)
+def update_sys_dict(session: Session, id, data):
+    sys_dict = session.get(SysDict, id)
     if not sys_dict:
         raise ResourceNotFoundError("SysDict not found")
     next_key = data.get("key", sys_dict.key)
@@ -46,24 +47,28 @@ def update_sys_dict(id, data):
     sys_dict.value = data.get("value", sys_dict.value)
     sys_dict.des = data.get("des", sys_dict.des)
     sys_dict.enable = data.get("enable", sys_dict.enable)
-    db.session.commit()
+    session.commit()
     _invalidate_sys_dict_cache()
     return sys_dict
 
 
-def delete_sys_dict(id):
-    sys_dict = db.session.get(SysDict, id)
+def delete_sys_dict(session: Session, id):
+    sys_dict = session.get(SysDict, id)
     if not sys_dict:
         raise ResourceNotFoundError("SysDict not found")
-    db.session.delete(sys_dict)
-    db.session.commit()
+    session.delete(sys_dict)
+    session.commit()
     _invalidate_sys_dict_cache()
 
 
-@cacheable(prefix=SYS_DICT_CACHE_PREFIX, expire=SYS_DICT_CACHE_EXPIRE)
-def _get_sys_dict_all_cached() -> list[dict]:
+@cacheable(
+    prefix=SYS_DICT_CACHE_PREFIX,
+    expire=SYS_DICT_CACHE_EXPIRE,
+    key=lambda session, **_: "all",
+)
+def _get_sys_dict_all_cached(session: Session) -> list[dict]:
     # 过滤模型配置键，避免历史脏数据经缓存暴露
-    sys_dicts = db.session.query(SysDict).all()
+    sys_dicts = session.query(SysDict).all()
     return [
         sys_dict.to_dict()
         for sys_dict in sys_dicts
@@ -71,33 +76,34 @@ def _get_sys_dict_all_cached() -> list[dict]:
     ]
 
 
-async def get_sys_dict_all():
-    return _get_sys_dict_all_cached()
+async def get_sys_dict_all(session: Session):
+    return _get_sys_dict_all_cached(session)
 
 
-async def get_sys_dict_by_key(key):
+async def get_sys_dict_by_key(session: Session, key):
     if is_model_config_sys_dict_key(key):
         return None
-    all_dicts = await get_sys_dict_all()
+    all_dicts = await get_sys_dict_all(session)
     for item in all_dicts:
         if item["key"] == key and item["enable"]:
             return SysDict.from_cache(item)
     return None
 
 
-def get_sys_dict_by_key_sync(key):
+def get_sys_dict_by_key_sync(session: Session, key):
     """同步查询（consumer / 线程上下文不可用 async 时使用）。"""
     if is_model_config_sys_dict_key(key):
         return None
     return (
-        db.session.query(SysDict).filter_by(key=key, enable=True)
+        session.query(SysDict)
+        .filter_by(key=key, enable=True)
         .order_by(SysDict.id.desc())
         .first()
     )
 
 
-async def get_sys_dict(id):
-    all_dicts = await get_sys_dict_all()
+async def get_sys_dict(session: Session, id):
+    all_dicts = await get_sys_dict_all(session)
     for item in all_dicts:
         if item["id"] == int(id):
             return item

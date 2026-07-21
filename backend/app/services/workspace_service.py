@@ -8,9 +8,9 @@ import docker
 from docker.errors import DockerException, NotFound as ContainerNotFound
 from loguru import logger
 from sqlalchemy import and_
+from sqlalchemy.orm import Session
 
 from app.exceptions import BusinessRuleError, ResourceNotFoundError, ServiceOperationError
-from app.extensions import db
 from app.models.workspace import Workspace
 from app.services.workspace_types import CreateWorkspaceCommand, McpConnectionResult, WorkspaceSummary
 
@@ -41,29 +41,29 @@ def _get_docker_client() -> docker.DockerClient:
 # ---------------------------------------------------------------------------
 
 
-def list_workspaces(user_id: int) -> list[WorkspaceSummary]:
+def list_workspaces(session: Session, user_id: int) -> list[WorkspaceSummary]:
     """列出用户工作区，并尽力与 Docker 实际状态对齐。"""
     rows = (
-        db.session.query(Workspace)
+        session.query(Workspace)
         .filter(Workspace.user_id == user_id)
         .order_by(Workspace.created_at.desc())
         .all()
     )
     result = []
     for ws in rows:
-        _sync_status(ws)
+        _sync_status(session, ws)
         result.append(_to_summary(ws))
     return result
 
 
-def get_workspace(workspace_id: int, user_id: int) -> Workspace | None:
+def get_workspace(session: Session, workspace_id: int, user_id: int) -> Workspace | None:
     ws = (
-        db.session.query(Workspace)
+        session.query(Workspace)
         .filter(and_(Workspace.id == workspace_id, Workspace.user_id == user_id))
         .first()
     )
     if ws:
-        _sync_status(ws)
+        _sync_status(session, ws)
     return ws
 
 
@@ -72,11 +72,11 @@ def to_summary(ws: Workspace) -> WorkspaceSummary:
     return _to_summary(ws)
 
 
-def create_workspace(command: CreateWorkspaceCommand) -> Workspace:
+def create_workspace(session: Session, command: CreateWorkspaceCommand) -> Workspace:
     """落库后启动容器；失败标记 error，运行成功则注入 MCP。"""
     user_id = command.user_id
     count = (
-        db.session.query(Workspace)
+        session.query(Workspace)
         .filter(Workspace.user_id == user_id)
         .count()
     )
@@ -92,8 +92,8 @@ def create_workspace(command: CreateWorkspaceCommand) -> Workspace:
         container_password=password,
         status="creating",
     )
-    db.session.add(ws)
-    db.session.commit()
+    session.add(ws)
+    session.commit()
 
     try:
         container = _start_container(ws)
@@ -103,19 +103,19 @@ def create_workspace(command: CreateWorkspaceCommand) -> Workspace:
         logger.exception("启动工作区容器失败：workspace_id={} reason={}", ws.id, exc)
         ws.status = "error"
         ws.error_message = str(exc)[:500]
-    db.session.commit()
+    session.commit()
     if ws.status == "running":
-        _auto_setup_mcp_safe(ws.id, user_id)
+        _auto_setup_mcp_safe(session, ws.id, user_id)
     return ws
 
 
-def start_workspace(workspace_id: int, user_id: int) -> Workspace:
-    ws = get_workspace(workspace_id, user_id)
+def start_workspace(session: Session, workspace_id: int, user_id: int) -> Workspace:
+    ws = get_workspace(session, workspace_id, user_id)
     if not ws:
         raise ResourceNotFoundError("工作区不存在")
     if ws.status == "running":
         # 已在运行也补一次 MCP（幂等），Token 刷新后可恢复
-        _auto_setup_mcp_safe(workspace_id, user_id)
+        _auto_setup_mcp_safe(session, workspace_id, user_id)
         return ws
     try:
         client = _get_docker_client()
@@ -138,14 +138,14 @@ def start_workspace(workspace_id: int, user_id: int) -> Workspace:
         logger.exception("启动工作区容器失败：workspace_id={} reason={}", ws.id, exc)
         ws.status = "error"
         ws.error_message = str(exc)[:500]
-    db.session.commit()
+    session.commit()
     if ws.status == "running":
-        _auto_setup_mcp_safe(workspace_id, user_id)
+        _auto_setup_mcp_safe(session, workspace_id, user_id)
     return ws
 
 
-def stop_workspace(workspace_id: int, user_id: int) -> Workspace:
-    ws = get_workspace(workspace_id, user_id)
+def stop_workspace(session: Session, workspace_id: int, user_id: int) -> Workspace:
+    ws = get_workspace(session, workspace_id, user_id)
     if not ws:
         raise ResourceNotFoundError("工作区不存在")
     if ws.status == "stopped":
@@ -161,12 +161,12 @@ def stop_workspace(workspace_id: int, user_id: int) -> Workspace:
         logger.exception("停止工作区容器失败：workspace_id={} reason={}", ws.id, exc)
         ws.status = "error"
         ws.error_message = str(exc)[:500]
-    db.session.commit()
+    session.commit()
     return ws
 
 
-def delete_workspace(workspace_id: int, user_id: int) -> None:
-    ws = get_workspace(workspace_id, user_id)
+def delete_workspace(session: Session, workspace_id: int, user_id: int) -> None:
+    ws = get_workspace(session, workspace_id, user_id)
     if not ws:
         raise ResourceNotFoundError("工作区不存在")
     try:
@@ -177,8 +177,8 @@ def delete_workspace(workspace_id: int, user_id: int) -> None:
         pass
     except DockerException as exc:
         logger.exception("删除工作区容器失败：workspace_id={} reason={}", ws.id, exc)
-    db.session.delete(ws)
-    db.session.commit()
+    session.delete(ws)
+    session.commit()
 
 
 def get_container_url(ws: Workspace) -> str:
@@ -279,7 +279,7 @@ def _start_container(ws: Workspace) -> "docker.models.containers.Container":
     return container
 
 
-def _sync_status(ws: Workspace) -> None:
+def _sync_status(session: Session, ws: Workspace) -> None:
     """尽力把 DB status 与 Docker 实际状态对齐；失败仅记日志。"""
     if not ws.container_id:
         return
@@ -290,15 +290,15 @@ def _sync_status(ws: Workspace) -> None:
         if docker_status == "running":
             if ws.status != "running":
                 ws.status = "running"
-                db.session.commit()
+                session.commit()
         elif docker_status in ("exited", "dead"):
             if ws.status not in ("stopped", "error"):
                 ws.status = "stopped"
-                db.session.commit()
+                session.commit()
     except ContainerNotFound:
         if ws.status not in ("stopped", "error", "creating"):
             ws.status = "stopped"
-            db.session.commit()
+            session.commit()
     except DockerException as exc:
         logger.warning("同步工作区状态失败：workspace_id={} reason={}", ws.id, exc)
 
@@ -308,9 +308,9 @@ def _sync_status(ws: Workspace) -> None:
 # ---------------------------------------------------------------------------
 
 
-def restart_workspace(workspace_id: int, user_id: int) -> Workspace:
+def restart_workspace(session: Session, workspace_id: int, user_id: int) -> Workspace:
     """docker restart；容器不存在则重建并补 MCP。"""
-    ws = get_workspace(workspace_id, user_id)
+    ws = get_workspace(session, workspace_id, user_id)
     if not ws:
         raise ResourceNotFoundError("工作区不存在")
     if not ws.container_id:
@@ -335,9 +335,9 @@ def restart_workspace(workspace_id: int, user_id: int) -> Workspace:
         logger.exception("重启工作区容器失败：workspace_id={} reason={}", ws.id, exc)
         ws.status = "error"
         ws.error_message = str(exc)[:500]
-    db.session.commit()
+    session.commit()
     if ws.status == "running":
-        _auto_setup_mcp_safe(workspace_id, user_id)
+        _auto_setup_mcp_safe(session, workspace_id, user_id)
     return ws
 
 
@@ -396,11 +396,11 @@ def _write_mcp_config_to_container(container, mcp_url: str, mcp_token: str) -> N
         raise RuntimeError("Failed to verify config file in container")
 
 
-def setup_mcp_connection(workspace_id: int, user_id: int) -> McpConnectionResult:
+def setup_mcp_connection(session: Session, workspace_id: int, user_id: int) -> McpConnectionResult:
     """用用户唯一 MCP Token 写入 opencode.json（不新建 Token）。"""
     from app.services import mcp_token_service
 
-    ws = get_workspace(workspace_id, user_id)
+    ws = get_workspace(session, workspace_id, user_id)
     if not ws:
         raise ResourceNotFoundError("工作区不存在")
     if ws.status != "running":
@@ -408,7 +408,7 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> McpConnectionResult
     if not ws.container_id:
         raise BusinessRuleError("工作区容器不存在")
 
-    token_record, mcp_token = mcp_token_service.ensure_user_mcp_token(user_id)
+    token_record, mcp_token = mcp_token_service.ensure_user_mcp_token(session, user_id)
     mcp_url = _mcp_url_for_container()
 
     try:
@@ -434,10 +434,10 @@ def setup_mcp_connection(workspace_id: int, user_id: int) -> McpConnectionResult
         raise ServiceOperationError("配置 MCP 连接失败") from exc
 
 
-def _auto_setup_mcp_safe(workspace_id: int, user_id: int) -> None:
+def _auto_setup_mcp_safe(session: Session, workspace_id: int, user_id: int) -> None:
     """工作区就绪后自动注入 MCP；失败只记日志，不阻断生命周期。"""
     try:
-        setup_mcp_connection(workspace_id, user_id)
+        setup_mcp_connection(session, workspace_id, user_id)
     except Exception:
         logger.exception(
             "工作区自动配置 MCP 失败：workspace_id={}, user_id={}",
@@ -446,17 +446,17 @@ def _auto_setup_mcp_safe(workspace_id: int, user_id: int) -> None:
         )
 
 
-def resync_mcp_for_user(user_id: int) -> int:
+def resync_mcp_for_user(session: Session, user_id: int) -> int:
     """将当前唯一 MCP Token 同步到用户所有运行中工作区；返回成功数。"""
     rows = (
-        db.session.query(Workspace)
+        session.query(Workspace)
         .filter(Workspace.user_id == user_id, Workspace.status == "running")
         .all()
     )
     ok = 0
     for ws in rows:
         try:
-            setup_mcp_connection(ws.id, user_id)
+            setup_mcp_connection(session, ws.id, user_id)
             ok += 1
         except Exception:
             logger.exception(

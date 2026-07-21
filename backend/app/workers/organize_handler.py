@@ -11,6 +11,7 @@ import time
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
+from app.extensions import SessionLocal
 from app.services import change_log_service
 from app.services.model_config import get_chat_model_config
 from .organize_tools import (
@@ -179,55 +180,61 @@ def organize_files(user_id: int):
     checkpoint_target_event_id: int | None = None
     full_scan_mode = False
 
+    session = SessionLocal()
     try:
-        incremental_context = change_log_service.load_incremental_context(
-            user_id=user_id, max_events=MAX_INCREMENTAL_EVENTS
-        )
-    except Exception as exc:
-        logger.warning(
-            f"Load incremental context failed, fallback to full scan: {exc}")
-        incremental_context = {
-            "has_changes": True,
-            "overflow": True,
-            "summary_text": f"incremental_context_error: {exc}",
-            "target_event_id": 0,
-        }
+        try:
+            incremental_context = change_log_service.load_incremental_context(
+                session, user_id=user_id, max_events=MAX_INCREMENTAL_EVENTS
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Load incremental context failed, fallback to full scan: {exc}")
+            incremental_context = {
+                "has_changes": True,
+                "overflow": True,
+                "summary_text": f"incremental_context_error: {exc}",
+                "target_event_id": 0,
+            }
 
-    if not incremental_context.get("has_changes"):
-        if incremental_context.get("has_checkpoint"):
-            target_event_id = int(
+        if not incremental_context.get("has_changes"):
+            if incremental_context.get("has_checkpoint"):
+                target_event_id = int(
+                    incremental_context.get("target_event_id") or 0)
+                change_log_service.update_checkpoint(
+                    session, user_id, target_event_id, mark_full_scan=False
+                )
+                results.append("未检测到上次整理后的文件变更，已跳过本次整理。")
+                return total_usage, "\n\t".join(results)
+
+            # 无 checkpoint 时先做一次全量，建立基线
+            results.append("未检测到增量事件且无历史 checkpoint，执行首次全量整理。")
+            checkpoint_target_event_id = int(
                 incremental_context.get("target_event_id") or 0)
-            change_log_service.update_checkpoint(
-                user_id, target_event_id, mark_full_scan=False
-            )
-            results.append("未检测到上次整理后的文件变更，已跳过本次整理。")
-            return total_usage, "\n\t".join(results)
-
-        # 无 checkpoint 时先做一次全量，建立基线
-        results.append("未检测到增量事件且无历史 checkpoint，执行首次全量整理。")
-        checkpoint_target_event_id = int(
-            incremental_context.get("target_event_id") or 0)
-        full_scan_mode = True
-        prompt = _build_full_prompt(user_id)
-        current_messages = [("user", prompt)]
-    else:
-        checkpoint_target_event_id = int(
-            incremental_context.get("target_event_id") or 0)
-        full_scan_mode = bool(incremental_context.get("overflow"))
-
-        if full_scan_mode:
-            results.append(
-                f"增量事件过多（{incremental_context.get('total_events')} 条），回退到全量整理。"
-            )
+            full_scan_mode = True
             prompt = _build_full_prompt(user_id)
+            current_messages = [("user", prompt)]
         else:
-            results.append(
-                f"进入增量整理模式，处理事件区间 ({incremental_context.get('checkpoint_event_id')}, "
-                f"{incremental_context.get('target_event_id')}]。"
-            )
-            prompt = _build_incremental_prompt(user_id, incremental_context)
+            checkpoint_target_event_id = int(
+                incremental_context.get("target_event_id") or 0)
+            full_scan_mode = bool(incremental_context.get("overflow"))
 
-        current_messages = [("user", prompt)]
+            if full_scan_mode:
+                results.append(
+                    f"增量事件过多（{incremental_context.get('total_events')} 条），回退到全量整理。"
+                )
+                prompt = _build_full_prompt(user_id)
+            else:
+                results.append(
+                    f"进入增量整理模式，处理事件区间 ({incremental_context.get('checkpoint_event_id')}, "
+                    f"{incremental_context.get('target_event_id')}]。"
+                )
+                prompt = _build_incremental_prompt(user_id, incremental_context)
+
+            current_messages = [("user", prompt)]
+    finally:
+        # 长耗时 Agent 跑之前先释放连接，工具/校验各自开 session
+        session.close()
+
     validation_passed = False
 
     # 校验失败重试时复用完整对话，避免 Agent 遗忘已做操作
@@ -297,9 +304,13 @@ def organize_files(user_id: int):
         current_messages = list(all_messages)
 
     if validation_passed and checkpoint_target_event_id is not None:
-        change_log_service.update_checkpoint(
-            user_id, checkpoint_target_event_id, mark_full_scan=full_scan_mode
-        )
+        session = SessionLocal()
+        try:
+            change_log_service.update_checkpoint(
+                session, user_id, checkpoint_target_event_id, mark_full_scan=full_scan_mode
+            )
+        finally:
+            session.close()
         results.append(
             f"已推进整理 checkpoint 至事件 ID: {checkpoint_target_event_id}")
     elif checkpoint_target_event_id is not None:
@@ -349,11 +360,16 @@ def handle_organize_process(user_id: int):
 
     from app.services import inbox_service
 
-    inbox_service.create_inbox_message(
-        {
-            "user_id": user_id,
-            "title": f"您于 {time_start} 开始的文件整理任务已结束",
-            "content": content,
-        }
-    )
+    session = SessionLocal()
+    try:
+        inbox_service.create_inbox_message(
+            session,
+            {
+                "user_id": user_id,
+                "title": f"您于 {time_start} 开始的文件整理任务已结束",
+                "content": content,
+            },
+        )
+    finally:
+        session.close()
     return token_usage

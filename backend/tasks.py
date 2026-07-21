@@ -15,7 +15,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from app import initialize_application
-from app.extensions import db
 from app.infra.task_queue import (
     FILE_PROCESS_QUEUE,
     ORGANIZE_FILE_QUEUE,
@@ -64,11 +63,8 @@ def run_scheduler() -> None:
 
 
 def _finish_slot(semaphore: threading.Semaphore) -> None:
-    """线程任务收尾：清理 scoped_session 并归还并发槽位。"""
-    try:
-        db.session.remove()
-    finally:
-        semaphore.release()
+    """线程任务收尾：归还并发槽位。"""
+    semaphore.release()
 
 
 def process_indexing_task(file_ids: list[int], semaphore: threading.Semaphore) -> None:

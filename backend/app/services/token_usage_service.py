@@ -4,8 +4,9 @@ import logging
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, text
+from sqlalchemy.orm import Session
 
-from app.extensions import db, SessionLocal
+from app.extensions import SessionLocal
 from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.models.token_usage_log import TokenUsageLog
 from app.models.user import User
@@ -72,9 +73,9 @@ def record_usage(
         session.close()
 
 
-def get_user_token_stats(user_id: int) -> dict:
+def get_user_token_stats(session: Session, user_id: int) -> dict:
     """用户累计 token 统计（读 users 表冗余字段）。"""
-    user = db.session.get(User, user_id)
+    user = session.get(User, user_id)
     if not user:
         return {}
     return {
@@ -87,6 +88,7 @@ def get_user_token_stats(user_id: int) -> dict:
 
 
 def get_usage_logs(
+        session: Session,
         user_id: int,
         page: int = 1,
         page_size: int = 20,
@@ -95,7 +97,7 @@ def get_usage_logs(
         end_date: str | None = None,
 ) -> dict:
     """分页查询用户用量明细，可按 action / 日期过滤。"""
-    query = db.session.query(TokenUsageLog).filter(
+    query = session.query(TokenUsageLog).filter(
         TokenUsageLog.user_id == user_id
     )
 
@@ -132,11 +134,11 @@ def get_usage_logs(
     }
 
 
-def get_daily_stats(user_id: int, days: int = 30) -> list[dict]:
+def get_daily_stats(session: Session, user_id: int, days: int = 30) -> list[dict]:
     """用户最近 N 天每日聚合统计。"""
     since = beijing_now() - timedelta(days=days)
     rows = (
-        db.session.query(
+        session.query(
             func.date(TokenUsageLog.created_at).label("date"),
             func.sum(TokenUsageLog.prompt_tokens).label("prompt_tokens"),
             func.sum(TokenUsageLog.completion_tokens).label("completion_tokens"),
@@ -168,9 +170,9 @@ def get_daily_stats(user_id: int, days: int = 30) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def get_all_users_token_stats() -> list[dict]:
+def get_all_users_token_stats(session: Session) -> list[dict]:
     """全站用户累计 token 排行（admin）。"""
-    users = db.session.query(User).order_by(User.total_tokens.desc()).all()
+    users = session.query(User).order_by(User.total_tokens.desc()).all()
     return [
         {
             "user_id": u.id,
@@ -188,6 +190,7 @@ def get_all_users_token_stats() -> list[dict]:
 
 
 def get_all_users_usage_logs(
+        session: Session,
         page: int = 1,
         page_size: int = 20,
         action: str | None = None,
@@ -197,7 +200,7 @@ def get_all_users_usage_logs(
 ) -> dict:
     """全站用量明细分页（admin），附带 username。"""
     query = (
-        db.session.query(TokenUsageLog, User.username)
+        session.query(TokenUsageLog, User.username)
         .outerjoin(User, TokenUsageLog.user_id == User.id)
     )
 
@@ -243,11 +246,11 @@ def get_all_users_usage_logs(
     }
 
 
-def get_all_users_daily_stats(days: int = 30) -> list[dict]:
+def get_all_users_daily_stats(session: Session, days: int = 30) -> list[dict]:
     """全站合计最近 N 天每日统计（admin）。"""
     since = beijing_now() - timedelta(days=days)
     rows = (
-        db.session.query(
+        session.query(
             func.date(TokenUsageLog.created_at).label("date"),
             func.sum(TokenUsageLog.prompt_tokens).label("prompt_tokens"),
             func.sum(TokenUsageLog.completion_tokens).label("completion_tokens"),
@@ -271,11 +274,11 @@ def get_all_users_daily_stats(days: int = 30) -> list[dict]:
     ]
 
 
-def get_per_user_daily_stats(days: int = 30) -> list[dict]:
+def get_per_user_daily_stats(session: Session, days: int = 30) -> list[dict]:
     """按用户拆分的最近 N 天每日统计（admin）。"""
     since = beijing_now() - timedelta(days=days)
     rows = (
-        db.session.query(
+        session.query(
             TokenUsageLog.user_id,
             User.username,
             func.date(TokenUsageLog.created_at).label("date"),

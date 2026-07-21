@@ -3,8 +3,10 @@
 import uuid
 from typing import List
 
+from sqlalchemy.orm import Session
+
 from app.exceptions import PermissionDeniedError, ResourceNotFoundError
-from app.extensions import db, redis_client
+from app.extensions import redis_client
 from app.infra.cache import cacheable, evict_cache
 from app.infra.task_queue import publish_organize_task
 from app.models.file import File
@@ -32,15 +34,15 @@ def _invalidate_folder_caches(user_id: int) -> None:
     evict_cache(ROOT_FILES_CACHE_PREFIX, user_id)
 
 
-def create_folder(data):
+def create_folder(session: Session, data):
     try:
         new_folder = Folder(
             name=data["name"],
             user_id=data.get("user_id"),
             parent_id=data.get("parent_id"),
         )
-        db.session.add(new_folder)
-        db.session.commit()
+        session.add(new_folder)
+        session.commit()
 
         if new_folder.user_id:
             change_log_service.log_event(
@@ -59,27 +61,27 @@ def create_folder(data):
 
         return new_folder
     except Exception as e:
-        db.session.rollback()
+        session.rollback()
         raise e
 
 
-def get_folder(id):
-    folder = db.session.get(Folder, id)
+def get_folder(session: Session, id):
+    folder = session.get(Folder, id)
     if not folder:
         raise ResourceNotFoundError("Folder not found")
     return folder
 
 
-def get_authorized_folder(user_id: int, role: str, folder_id: int) -> Folder:
+def get_authorized_folder(session: Session, user_id: int, role: str, folder_id: int) -> Folder:
     """非 admin 仅可访问自己的文件夹。"""
-    folder = get_folder(folder_id)
+    folder = get_folder(session, folder_id)
     if role != "admin" and folder.user_id != user_id:
         raise PermissionDeniedError("Permission denied")
     return folder
 
 
-def update_folder(id, data):
-    folder = db.session.get(Folder, id)
+def update_folder(session: Session, id, data):
+    folder = session.get(Folder, id)
     if not folder:
         raise ResourceNotFoundError("Folder not found")
     try:
@@ -88,7 +90,7 @@ def update_folder(id, data):
 
         folder.name = data.get("name", folder.name)
         folder.parent_id = data.get("parent_id", folder.parent_id)
-        db.session.commit()
+        session.commit()
 
         name_changed = folder.name != old_name
         parent_changed = folder.parent_id != old_parent_id
@@ -115,13 +117,13 @@ def update_folder(id, data):
 
         return folder
     except Exception as e:
-        db.session.rollback()
+        session.rollback()
 
         raise e
 
 
-def delete_folder(id):
-    folder = db.session.get(Folder, id)
+def delete_folder(session: Session, id):
+    folder = session.get(Folder, id)
     if not folder:
         raise ResourceNotFoundError("Folder not found")
     user_id = folder.user_id
@@ -129,7 +131,7 @@ def delete_folder(id):
 
     try:
         # 先递归收集子树删除事件，最后统一 commit / 写变更日志
-        _delete_folder_recursive(folder, deleted_events)
+        _delete_folder_recursive(session, folder, deleted_events)
         deleted_events.append(
             {
                 "entity_type": "folder",
@@ -142,8 +144,8 @@ def delete_folder(id):
             }
         )
 
-        db.session.delete(folder)
-        db.session.commit()
+        session.delete(folder)
+        session.commit()
 
         if user_id and deleted_events:
             change_log_service.log_events_batch(user_id, deleted_events)
@@ -152,12 +154,12 @@ def delete_folder(id):
             _invalidate_folder_caches(user_id)
             _clear_search_cache(user_id)
     except Exception as e:
-        db.session.rollback()
+        session.rollback()
         raise e
 
 
-def _delete_folder_recursive(folder, deleted_events: list[dict]):
-    files = db.session.query(File).filter_by(parent_id=folder.id).all()
+def _delete_folder_recursive(session: Session, folder, deleted_events: list[dict]):
+    files = session.query(File).filter_by(parent_id=folder.id).all()
     for file in files:
         deleted_events.append(
             {
@@ -171,11 +173,11 @@ def _delete_folder_recursive(folder, deleted_events: list[dict]):
             }
         )
         # 递归删除时不单独 commit，由最外层 delete_folder 统一 commit
-        delete_file(file.id, commit=False, log_event=False)
+        delete_file(session, file.id, commit=False, log_event=False)
 
-    subfolders = db.session.query(Folder).filter_by(parent_id=folder.id).all()
+    subfolders = session.query(Folder).filter_by(parent_id=folder.id).all()
     for subfolder in subfolders:
-        _delete_folder_recursive(subfolder, deleted_events)
+        _delete_folder_recursive(session, subfolder, deleted_events)
         deleted_events.append(
             {
                 "entity_type": "folder",
@@ -187,30 +189,42 @@ def _delete_folder_recursive(folder, deleted_events: list[dict]):
                 "new_name": None,
             }
         )
-        db.session.delete(subfolder)
+        session.delete(subfolder)
 
 
-@cacheable(prefix=ROOT_FOLDER_CACHE_PREFIX, expire=FOLDER_CACHE_EXPIRE)
-def get_root_folder_id(user_id) -> int | None:
-    root_folder = db.session.query(Folder).filter_by(user_id=user_id, parent_id=None).first()
+@cacheable(
+    prefix=ROOT_FOLDER_CACHE_PREFIX,
+    expire=FOLDER_CACHE_EXPIRE,
+    key=lambda session, user_id, **_: user_id,
+)
+def get_root_folder_id(session: Session, user_id) -> int | None:
+    root_folder = session.query(Folder).filter_by(user_id=user_id, parent_id=None).first()
     if root_folder:
         return root_folder.id
     return None
 
 
-@cacheable(prefix=ROOT_FILES_CACHE_PREFIX, expire=FOLDER_CACHE_EXPIRE)
-def get_files_in_root_folder(user_id) -> List[dict]:
-    root_folder_id = get_root_folder_id(user_id)
+@cacheable(
+    prefix=ROOT_FILES_CACHE_PREFIX,
+    expire=FOLDER_CACHE_EXPIRE,
+    key=lambda session, user_id, **_: user_id,
+)
+def get_files_in_root_folder(session: Session, user_id) -> List[dict]:
+    root_folder_id = get_root_folder_id(session, user_id)
     if not root_folder_id:
         return []
 
-    files = db.session.query(File).filter_by(parent_id=root_folder_id).all()
+    files = session.query(File).filter_by(parent_id=root_folder_id).all()
     return [f.to_dict() for f in files]
 
 
-@cacheable(prefix=FOLDER_CACHE_PREFIX, expire=FOLDER_CACHE_EXPIRE)
-def get_folders(user_id) -> List[dict]:
-    folders = db.session.query(Folder).filter_by(user_id=user_id).all()
+@cacheable(
+    prefix=FOLDER_CACHE_PREFIX,
+    expire=FOLDER_CACHE_EXPIRE,
+    key=lambda session, user_id, **_: user_id,
+)
+def get_folders(session: Session, user_id) -> List[dict]:
+    folders = session.query(Folder).filter_by(user_id=user_id).all()
     return [f.to_dict() for f in folders]
 
 

@@ -27,7 +27,9 @@ from app.exceptions import (
     ResourceNotFoundError,
     ServiceOperationError,
 )
-from app.extensions import UPLOAD_FOLDER, db, redis_client
+from sqlalchemy.orm import Session
+
+from app.extensions import UPLOAD_FOLDER, redis_client
 from app.infra.cache import cacheable, evict_cache_pattern
 from app.infra.task_queue import publish_file_tasks
 from app.models.file import File
@@ -103,9 +105,9 @@ def _calculate_file_hash(path: str) -> str:
     return digest.hexdigest()
 
 
-def _get_reusable_source_file(content_hash: str, file_size: int) -> File | None:
+def _get_reusable_source_file(session: Session, content_hash: str, file_size: int) -> File | None:
     source_file = (
-        db.session.query(File).filter_by(content_hash=content_hash, file_size=file_size)
+        session.query(File).filter_by(content_hash=content_hash, file_size=file_size)
         .order_by(File.id.asc())
         .first()
     )
@@ -117,6 +119,7 @@ def _get_reusable_source_file(content_hash: str, file_size: int) -> File | None:
 
 
 def _persist_file_record(
+        session: Session,
         *,
         name: str,
         file_path: str,
@@ -141,8 +144,8 @@ def _persist_file_record(
         description=description,
         vector_info=vector_info,
     )
-    db.session.add(new_file)
-    db.session.commit()
+    session.add(new_file)
+    session.commit()
     file_access_bloom.add_file(
         cast(int, new_file.id), cast(int | None, new_file.uploader_id)
     )
@@ -166,6 +169,7 @@ def _log_file_created(file_obj: File) -> None:
 
 
 def _clone_existing_file(
+        session: Session,
         source_file: File,
         *,
         filename: str,
@@ -184,7 +188,7 @@ def _clone_existing_file(
     vector_info = source_file.vector_info if status == "success" else None
 
     try:
-        new_file = _persist_file_record(
+        new_file = _persist_file_record(session, 
             name=filename,
             file_path=cast(str, source_file.file_path),
             file_size=cast(int | None, source_file.file_size) or 0,
@@ -197,7 +201,7 @@ def _clone_existing_file(
             vector_info=vector_info,
         )
     except Exception as e:
-        db.session.rollback()
+        session.rollback()
         logger.exception(f"Failed to create instant upload record: {e}")
         raise ServiceOperationError("Failed to save file metadata")
 
@@ -209,7 +213,7 @@ def _clone_existing_file(
     return new_file
 
 
-def preflight_file_upload(uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
+def preflight_file_upload(session: Session, uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
     """上传预检：hash 命中则直接克隆记录，跳过分片传输。"""
     filename = (data.get("filename") or "").strip()
     if not filename:
@@ -223,11 +227,11 @@ def preflight_file_upload(uploader_id: int, data: dict[str, Any]) -> dict[str, A
     if not content_hash:
         raise BusinessRuleError("content_hash is required")
 
-    source_file = _get_reusable_source_file(content_hash, total_size)
+    source_file = _get_reusable_source_file(session, content_hash, total_size)
     if not source_file:
         return {"instant_upload": False, "exists": False}
 
-    new_file = _clone_existing_file(
+    new_file = _clone_existing_file(session, 
         source_file,
         filename=filename,
         uploader_id=uploader_id,
@@ -305,7 +309,7 @@ def _write_multipart_meta(meta_path: str, meta: dict[str, Any]) -> None:
         json.dump(meta, f, ensure_ascii=False)
 
 
-def create_file(file_obj: Any, data: dict[str, Any]) -> File:
+def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
     upload_folder = UPLOAD_FOLDER
     os.makedirs(upload_folder, exist_ok=True)
 
@@ -319,7 +323,7 @@ def create_file(file_obj: Any, data: dict[str, Any]) -> File:
 
     try:
         content_hash = _calculate_file_hash(full_path)
-        new_file = _persist_file_record(
+        new_file = _persist_file_record(session, 
             name=original_filename,
             file_path=unique_filename,
             file_size=file_size,
@@ -329,7 +333,7 @@ def create_file(file_obj: Any, data: dict[str, Any]) -> File:
             content_hash=content_hash,
         )
     except Exception as e:
-        db.session.rollback()
+        session.rollback()
         if os.path.exists(full_path):
             os.remove(full_path)
         logger.exception(f"Failed to save uploaded file metadata: {e}")
@@ -342,18 +346,19 @@ def create_file(file_obj: Any, data: dict[str, Any]) -> File:
     return new_file
 
 
-def create_uploaded_file(uploader_id: int, upload: Any, parent_id: int | None = None) -> File:
+def create_uploaded_file(session: Session, uploader_id: int, upload: Any, parent_id: int | None = None) -> File:
     """单文件上传：默认挂到用户根目录，并校验文件名非空。"""
     if not getattr(upload, "filename", None):
         raise BusinessRuleError("No selected file")
     if parent_id is None:
         from app.services import folder_service
 
-        parent_id = folder_service.get_root_folder_id(uploader_id)
-    return create_file(upload, {"uploader_id": uploader_id, "parent_id": parent_id})
+        parent_id = folder_service.get_root_folder_id(session, uploader_id)
+    return create_file(session, upload, {"uploader_id": uploader_id, "parent_id": parent_id})
 
 
 def batch_create_files(
+        session: Session,
         file_objs: list[Any], data: dict[str, Any]
 ) -> list[File]:
     upload_folder = UPLOAD_FOLDER
@@ -389,8 +394,8 @@ def batch_create_files(
     if not new_files:
         return []
 
-    db.session.add_all(new_files)
-    db.session.commit()
+    session.add_all(new_files)
+    session.commit()
     for file_obj in new_files:
         file_access_bloom.add_file(
             cast(int, file_obj.id), cast(int | None, file_obj.uploader_id)
@@ -418,6 +423,7 @@ def batch_create_files(
 
 
 def create_uploaded_files(
+        session: Session,
         uploader_id: int, uploads: list[Any], parent_id: int | None = None
 ) -> list[File]:
     valid_uploads = [upload for upload in uploads if getattr(upload, "filename", None)]
@@ -426,13 +432,13 @@ def create_uploaded_files(
     if parent_id is None:
         from app.services import folder_service
 
-        parent_id = folder_service.get_root_folder_id(uploader_id)
+        parent_id = folder_service.get_root_folder_id(session, uploader_id)
     return batch_create_files(
-        valid_uploads, {"uploader_id": uploader_id, "parent_id": parent_id}
+        session, valid_uploads, {"uploader_id": uploader_id, "parent_id": parent_id}
     )
 
 
-def init_multipart_upload(uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
+def init_multipart_upload(session: Session, uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
     filename = (data.get("filename") or "").strip()
     if not filename:
         raise BusinessRuleError("filename is required")
@@ -458,9 +464,9 @@ def init_multipart_upload(uploader_id: int, data: dict[str, Any]) -> dict[str, A
     content_hash = _normalize_content_hash(data.get("content_hash"))
 
     if content_hash:
-        source_file = _get_reusable_source_file(content_hash, total_size)
+        source_file = _get_reusable_source_file(session, content_hash, total_size)
         if source_file:
-            new_file = _clone_existing_file(
+            new_file = _clone_existing_file(session, 
                 source_file,
                 filename=filename,
                 uploader_id=uploader_id,
@@ -587,7 +593,7 @@ def save_multipart_chunk(
     }
 
 
-def complete_multipart_upload(uploader_id: int, upload_id: str) -> File:
+def complete_multipart_upload(session: Session, uploader_id: int, upload_id: str) -> File:
     safe_upload_id = _safe_upload_id(upload_id)
     meta = _load_multipart_meta(uploader_id, safe_upload_id)
 
@@ -648,13 +654,13 @@ def complete_multipart_upload(uploader_id: int, upload_id: str) -> File:
             uploader_id=uploader_id,
             parent_id=parent_id,
         )
-        db.session.add(new_file)
-        db.session.commit()
+        session.add(new_file)
+        session.commit()
         file_access_bloom.add_file(
             cast(int, new_file.id), cast(int | None, new_file.uploader_id)
         )
     except Exception as e:
-        db.session.rollback()
+        session.rollback()
         logger.exception(f"Failed to persist merged file: {e}")
         if os.path.exists(final_path):
             os.remove(final_path)
@@ -674,33 +680,34 @@ def abort_multipart_upload(uploader_id: int, upload_id: str) -> None:
     shutil.rmtree(upload_dir, ignore_errors=True)
 
 
-def get_file(id: int) -> File:
-    file_obj = db.session.get(File, id)
+def get_file(session: Session, id: int) -> File:
+    file_obj = session.get(File, id)
     if not file_obj:
         raise ResourceNotFoundError("File not found")
     return file_obj
 
 
-def get_authorized_file(user_id: int, role: str, file_id: int) -> File:
+def get_authorized_file(session: Session, user_id: int, role: str, file_id: int) -> File:
     """Bloom 预过滤后查库鉴权；区分 403/404，避免泄露他人文件存在性。"""
     if role != "admin" and not file_access_bloom.maybe_user_can_access_file(user_id, file_id):
         if file_access_bloom.maybe_file_exists(file_id):
             raise PermissionDeniedError("Permission denied")
         raise ResourceNotFoundError("File not found")
-    file_obj = get_file(file_id)
+    file_obj = get_file(session, file_id)
     if role != "admin" and file_obj.uploader_id != user_id:
         raise PermissionDeniedError("Permission denied")
     return file_obj
 
 
-def get_downloadable_file(user_id: int, role: str, file_id: int) -> File:
-    file_obj = get_authorized_file(user_id, role, file_id)
+def get_downloadable_file(session: Session, user_id: int, role: str, file_id: int) -> File:
+    file_obj = get_authorized_file(session, user_id, role, file_id)
     if not os.path.exists(file_obj.get_abs_path()):
         raise ResourceNotFoundError("File not found on server")
     return file_obj
 
 
 def get_files_and_folders(
+        session: Session,
         user_id: int,
         parent_id: int | None,
         page: int = 1,
@@ -712,7 +719,7 @@ def get_files_and_folders(
     if page < 1:
         page = 1
 
-    folder_query = db.session.query(Folder).filter_by(user_id=user_id, parent_id=parent_id)
+    folder_query = session.query(Folder).filter_by(user_id=user_id, parent_id=parent_id)
     if name:
         folder_query = folder_query.filter(Folder.name.ilike(f"%{_escape_like(name)}%", escape="\\"))
     if order == "asc":
@@ -720,7 +727,7 @@ def get_files_and_folders(
     else:
         folder_query = folder_query.order_by(Folder.name.desc())
 
-    file_query = db.session.query(File).filter_by(uploader_id=user_id, parent_id=parent_id)
+    file_query = session.query(File).filter_by(uploader_id=user_id, parent_id=parent_id)
     if name:
         file_query = file_query.filter(File.name.ilike(f"%{_escape_like(name)}%", escape="\\"))
 
@@ -767,8 +774,8 @@ def get_files_and_folders(
     }
 
 
-def update_file(id: int, data: dict[str, Any]) -> File:
-    file_obj = db.session.get(File, id)
+def update_file(session: Session, id: int, data: dict[str, Any]) -> File:
+    file_obj = session.get(File, id)
     if not file_obj:
         raise ResourceNotFoundError("File not found")
 
@@ -778,7 +785,7 @@ def update_file(id: int, data: dict[str, Any]) -> File:
     file_obj.name = data.get("name", file_obj.name)
     file_obj.status = data.get("status", file_obj.status)
     file_obj.parent_id = data.get("parent_id", file_obj.parent_id)
-    db.session.commit()
+    session.commit()
 
     name_changed = file_obj.name != old_name
     parent_changed = file_obj.parent_id != old_parent_id
@@ -804,12 +811,12 @@ def update_file(id: int, data: dict[str, Any]) -> File:
     return file_obj
 
 
-def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
+def delete_file(session: Session, id: int, commit: bool = True, log_event: bool = True) -> None:
     """删除文件记录；物理文件仅在无其它记录引用同一 path 时才删盘。
 
     commit/log_event=False 供递归批量删除时由外层统一提交。
     """
-    file_obj = db.session.get(File, id)
+    file_obj = session.get(File, id)
     if not file_obj:
         raise ResourceNotFoundError("File not found")
 
@@ -821,7 +828,7 @@ def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
     if os.path.exists(abs_path):
         try:
             # 秒传共享同一 file_path，有引用则不能删物理文件
-            remaining_ref = db.session.query(File).filter(
+            remaining_ref = session.query(File).filter(
                 File.file_path == file_obj.file_path, File.id != file_obj.id
             ).first()
             if not remaining_ref:
@@ -829,9 +836,9 @@ def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
         except OSError as e:
             logger.error(f"Error deleting file {abs_path}: {e}")
 
-    db.session.delete(file_obj)
+    session.delete(file_obj)
     if commit:
-        db.session.commit()
+        session.commit()
         if log_event:
             change_log_service.log_event(
                 user_id=uploader_id,
@@ -847,6 +854,7 @@ def delete_file(id: int, commit: bool = True, log_event: bool = True) -> None:
 
 
 async def search_files(
+        session: Session,
         user_id: int,
         query: str,
         page: int = 1,
@@ -859,19 +867,21 @@ async def search_files(
     target = _search_files_vector if search_type == "vector" else _search_files_fuzzy
 
     def _work():
-        try:
-            return target(user_id, query, page, page_size)
-        finally:
-            db.session.remove()
+        return target(session, user_id, query, page, page_size)
 
     return await asyncio.to_thread(_work)
 
 
-@cacheable(prefix=SEARCH_CACHE_PREFIX, expire=CACHE_EXPIRATION)
+@cacheable(
+    prefix=SEARCH_CACHE_PREFIX,
+    expire=CACHE_EXPIRATION,
+    key=lambda session, user_id, query, page, page_size, **_: f"{user_id}:{query}:{page}:{page_size}:fuzzy",
+)
 def _search_files_fuzzy(
+        session: Session,
         user_id: int, query: str, page: int, page_size: int
 ) -> dict[str, Any]:
-    base_query = db.session.query(File).filter(
+    base_query = session.query(File).filter(
         File.uploader_id == user_id, File.name.ilike(f"%{_escape_like(query)}%", escape="\\")
     )
     total = base_query.count()
@@ -887,6 +897,7 @@ def _search_files_fuzzy(
 
 
 def _search_files_vector(
+        session: Session,
         user_id: int, query: str, page: int, page_size: int
 ) -> dict[str, Any]:
     try:
@@ -903,14 +914,14 @@ def _search_files_vector(
 
         offset = (page - 1) * page_size
         items = (
-            db.session.query(File).filter(File.uploader_id == user_id, File.vector_info.isnot(None))
+            session.query(File).filter(File.uploader_id == user_id, File.vector_info.isnot(None))
             .order_by(File.vector_info.cosine_distance(embeddings))
             .limit(page_size)
             .offset(offset)
             .all()
         )
 
-        total = db.session.query(File).filter(
+        total = session.query(File).filter(
             File.uploader_id == user_id, File.vector_info.isnot(None)
         ).count()
 
@@ -935,40 +946,40 @@ def _clear_search_cache(user_id: int) -> None:
     evict_cache_pattern(SEARCH_CACHE_PREFIX)
 
 
-def get_root_file_id(user_id: int) -> int | None:
+def get_root_file_id(session: Session, user_id: int) -> int | None:
     cache_key = f"user:root:file:{user_id}"
     cached_id = redis_client.get(cache_key)
     if cached_id:
         return int(cached_id)
 
-    root_file = db.session.query(File).filter_by(uploader_id=user_id, parent_id=None).first()
+    root_file = session.query(File).filter_by(uploader_id=user_id, parent_id=None).first()
     if root_file:
         redis_client.set(cache_key, root_file.id)
         return root_file.id
     return None
 
 
-def upload_avatar(img_file: Any, user_id: int) -> dict[str, Any]:
+def upload_avatar(session: Session, img_file: Any, user_id: int) -> dict[str, Any]:
     from app.services import folder_service, share_service, user_service
 
-    root_folder = db.session.query(Folder).filter_by(user_id=1, parent_id=None).first()
+    root_folder = session.query(Folder).filter_by(user_id=1, parent_id=None).first()
     root_folder_id = root_folder.id if root_folder else None
 
-    folder = db.session.query(Folder).filter_by(
+    folder = session.query(Folder).filter_by(
         user_id=1, parent_id=root_folder_id, name="所有用户头像"
     ).first()
     if folder:
         folder_id = folder.id
     else:
         folder = folder_service.create_folder(
-            {"name": "所有用户头像", "parent_id": root_folder_id, "user_id": 1}
+            session, {"name": "所有用户头像", "parent_id": root_folder_id, "user_id": 1}
         )
         folder_id = folder.id
 
-    avatar = create_file(img_file, {"uploader_id": 1, "parent_id": folder_id})
-    share = share_service.create_share_link(1, avatar.id)
+    avatar = create_file(session, img_file, {"uploader_id": 1, "parent_id": folder_id})
+    share = share_service.create_share_link(session, 1, avatar.id)
     avatar_url = f"/api/share/{share.token}"
-    user_service.update_user(user_id, {"avatar": avatar_url})
+    user_service.update_user(session, user_id, {"avatar": avatar_url})
 
     result = avatar.to_dict()
     result["avatar_url"] = avatar_url
@@ -976,25 +987,26 @@ def upload_avatar(img_file: Any, user_id: int) -> dict[str, Any]:
 
 
 def upload_avatar_for_user(
+        session: Session,
         actor_id: int, actor_role: str, user_id: int, upload: Any
 ) -> dict[str, Any]:
     if actor_id != user_id and actor_role != "admin":
         raise PermissionDeniedError("Permission denied")
-    return upload_avatar(upload, user_id)
+    return upload_avatar(session, upload, user_id)
 
 
-def batch_delete_items(user_id: int, role: str, items: list[dict[str, Any]]) -> None:
+def batch_delete_items(session: Session, user_id: int, role: str, items: list[dict[str, Any]]) -> None:
     from app.services import folder_service
 
     for item in items:
         item_id = item.get("id")
         is_folder = item.get("is_folder", False)
         if is_folder:
-            folder_service.get_authorized_folder(user_id, role, item_id)
-            folder_service.delete_folder(item_id)
+            folder_service.get_authorized_folder(session, user_id, role, item_id)
+            folder_service.delete_folder(session, item_id)
         else:
-            get_authorized_file(user_id, role, item_id)
-            delete_file(item_id)
+            get_authorized_file(session, user_id, role, item_id)
+            delete_file(session, item_id)
 
 
 def embedding_desc(desc: str, config: dict[str, str], user_id: int = 0) -> list[float]:
@@ -1030,15 +1042,15 @@ def batch_embedding_desc(texts: list[str], config: dict[str, str], user_id: int 
         return [[] for _ in texts]
 
 
-def retry_embedding(file_id: int) -> None:
-    file_obj = db.session.get(File, file_id)
+def retry_embedding(session: Session, file_id: int) -> None:
+    file_obj = session.get(File, file_id)
     if not file_obj:
         return
     publish_file_tasks([cast(int, file_obj.id)])
 
 
-def rebuild_failed_indexes(user_id: int | None = None) -> int:
-    query = db.session.query(File).filter(File.status == "fail")
+def rebuild_failed_indexes(session: Session, user_id: int | None = None) -> int:
+    query = session.query(File).filter(File.status == "fail")
     if user_id is not None:
         query = query.filter(File.uploader_id == user_id)
 
@@ -1048,12 +1060,12 @@ def rebuild_failed_indexes(user_id: int | None = None) -> int:
 
     file_ids = [f.id for f in failed_files]
     try:
-        db.session.query(File).filter(File.id.in_(file_ids)).update(
+        session.query(File).filter(File.id.in_(file_ids)).update(
             {File.status: "pending"}, synchronize_session=False
         )
-        db.session.commit()
+        session.commit()
     except Exception:
-        db.session.rollback()
+        session.rollback()
         logger.exception("Failed to update file status to pending")
         return 0
 
@@ -1065,14 +1077,14 @@ def rebuild_failed_indexes(user_id: int | None = None) -> int:
     return len(file_ids)
 
 
-def get_all_files(user_id: int) -> list[File]:
-    return db.session.query(File).filter_by(uploader_id=user_id).all()
+def get_all_files(session: Session, user_id: int) -> list[File]:
+    return session.query(File).filter_by(uploader_id=user_id).all()
 
 
-async def process_status(user_id: int) -> dict[str, int]:
+async def process_status(session: Session, user_id: int) -> dict[str, int]:
     """按状态聚合统计；用 GROUP BY 避免把用户全部文件载入内存。"""
     rows = (
-        db.session.query(File.status, func.count(File.id))
+        session.query(File.status, func.count(File.id))
         .filter(File.uploader_id == user_id)
         .group_by(File.status)
         .all()

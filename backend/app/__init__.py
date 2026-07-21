@@ -6,7 +6,7 @@ import time
 
 from sqlalchemy import text
 
-from app.extensions import db, engine, Base, UPLOAD_FOLDER, DEFAULT_MODEL_PWD
+from app.extensions import engine, Base, UPLOAD_FOLDER, DEFAULT_MODEL_PWD
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)

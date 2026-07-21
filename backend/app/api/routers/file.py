@@ -18,6 +18,7 @@ from fastapi import (
 )
 from fastapi import UploadFile
 from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
 from app.api.schemas.file import (
@@ -29,6 +30,7 @@ from app.api.schemas.file import (
     RetryEmbeddingRequest,
 )
 from app.exceptions import DomainError
+from app.extensions import get_db
 from app.infra.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
 from app.services import file_service
 
@@ -40,11 +42,12 @@ def create_file(
         current_user=Depends(get_current_user),
         file: UploadFile = FastAPIFile(...),
         parent_id: int | None = Form(default=None),
+        session: Session = Depends(get_db),
 ):
     """单文件上传；未指定 parent_id 时落到用户根目录。"""
     try:
         new_file = file_service.create_uploaded_file(
-            current_user.id, FastAPIUploadAdapter(file), parent_id
+            session, current_user.id, FastAPIUploadAdapter(file), parent_id
         )
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
@@ -62,12 +65,13 @@ def batch_upload_files(
         current_user=Depends(get_current_user),
         files: list[UploadFile] | None = FastAPIFile(default=None),
         parent_id: int | None = Form(default=None),
+        session: Session = Depends(get_db),
 ):
     """批量上传；未指定 parent_id 时落到用户根目录。"""
     adapters = [FastAPIUploadAdapter(file) for file in (files or []) if file]
     try:
         new_files = file_service.create_uploaded_files(
-            current_user.id, adapters, parent_id
+            session, current_user.id, adapters, parent_id
         )
         return JSONResponse(
             status_code=status.HTTP_201_CREATED,
@@ -85,11 +89,12 @@ def batch_upload_files(
 def preflight_file_upload(
         payload: FilePreflightRequest,
         current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """上传前校验（哈希秒传、配额等），避免无效分片开销。"""
     try:
         return file_service.preflight_file_upload(
-            current_user.id, payload.model_dump(exclude_none=True)
+            session, current_user.id, payload.model_dump(exclude_none=True)
         )
     except (HTTPException, DomainError):
         raise
@@ -103,11 +108,12 @@ def preflight_file_upload(
 def init_multipart_upload(
         payload: MultipartInitRequest,
         current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """初始化分片上传会话。"""
     try:
         return file_service.init_multipart_upload(
-            current_user.id, payload.model_dump(exclude_none=True)
+            session, current_user.id, payload.model_dump(exclude_none=True)
         )
     except (HTTPException, DomainError):
         raise
@@ -149,11 +155,12 @@ def upload_multipart_chunk(
 def complete_multipart_upload(
         payload: MultipartCompleteRequest,
         current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """合并分片并落库，触发后续索引任务。"""
     try:
         new_file = file_service.complete_multipart_upload(
-            current_user.id, payload.upload_id
+            session, current_user.id, payload.upload_id
         )
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
@@ -194,10 +201,11 @@ def list_files(
         name: str | None = Query(default=None, max_length=255),
         sort_by: str = Query(default="created_at", min_length=1, max_length=50),
         order: str = Query(default="desc", pattern="^(asc|desc)$"),
+        session: Session = Depends(get_db),
 ):
     """目录浏览：文件与子文件夹分页列表。"""
     return file_service.get_files_and_folders(
-        current_user.id, parent_id, page, page_size, name, sort_by, order
+        session, current_user.id, parent_id, page, page_size, name, sort_by, order
     )
 
 
@@ -208,35 +216,49 @@ async def search_files(
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=10, ge=1, le=100),
         type: str = Query(default="fuzzy", pattern="^(fuzzy|semantic)$"),
+        session: Session = Depends(get_db),
 ):
     """文件名模糊或语义检索；空查询直接返回空页避免全表扫描。"""
     if not q:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
-    return await file_service.search_files(current_user.id, q, page, page_size, type)
+    return await file_service.search_files(session, current_user.id, q, page, page_size, type)
 
 
 @router.put("/files/{id}")
 def update_file(
-        id: int, payload: FileUpdateRequest, current_user=Depends(get_current_user)
+        id: int,
+        payload: FileUpdateRequest,
+        current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """重命名/移动文件等元数据更新。"""
-    file_service.get_authorized_file(current_user.id, current_user.role, id)
-    file_obj = file_service.update_file(id, payload.model_dump(exclude_none=True))
+    file_service.get_authorized_file(session, current_user.id, current_user.role, id)
+    file_obj = file_service.update_file(session, id, payload.model_dump(exclude_none=True))
     return file_obj.to_dict()
 
 
 @router.delete("/files/{id}")
-def delete_file(id: int, current_user=Depends(get_current_user)):
+def delete_file(
+        id: int,
+        current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
     """删除单个文件。"""
-    file_service.get_authorized_file(current_user.id, current_user.role, id)
-    file_service.delete_file(id)
+    file_service.get_authorized_file(session, current_user.id, current_user.role, id)
+    file_service.delete_file(session, id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/files/{id}/download")
-def download_file(id: int, current_user=Depends(get_current_user)):
+def download_file(
+        id: int,
+        current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
     """鉴权后以附件形式下载原始文件。"""
-    file_obj = file_service.get_downloadable_file(current_user.id, current_user.role, id)
+    file_obj = file_service.get_downloadable_file(
+        session, current_user.id, current_user.role, id
+    )
     abs_path = file_obj.get_abs_path()
 
     return FileResponse(
@@ -253,6 +275,7 @@ async def upload_avatar(
         avatar: UploadFile | None = FastAPIFile(default=None),
         avatar_base64: str | None = Form(default=None),
         current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """上传用户头像；兼容 multipart 文件、form base64 与 JSON body。"""
     adapter = None
@@ -281,7 +304,7 @@ async def upload_avatar(
         adapter = Base64UploadAdapter(avatar_text)
 
     result = file_service.upload_avatar_for_user(
-        current_user.id, current_user.role, id, adapter
+        session, current_user.id, current_user.role, id, adapter
     )
     # 兼容旧前端字段名 avatar
     if result.get("avatar_url") and "avatar" not in result:
@@ -291,42 +314,58 @@ async def upload_avatar(
 
 @router.post("/files/batch-delete")
 def batch_delete_files(
-        payload: BatchDeleteRequest, current_user=Depends(get_current_user)
+        payload: BatchDeleteRequest,
+        current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """批量删除文件与/或文件夹。"""
     items = [item.model_dump() for item in payload.items]
-    file_service.batch_delete_items(current_user.id, current_user.role, items)
+    file_service.batch_delete_items(session, current_user.id, current_user.role, items)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/files/retry_embedding")
 def retry_embedding(
-        payload: RetryEmbeddingRequest, current_user=Depends(get_current_user)
+        payload: RetryEmbeddingRequest,
+        current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
 ):
     """对单个失败文件重新入队索引。"""
     file_obj = file_service.get_authorized_file(
-        current_user.id, current_user.role, payload.file_id
+        session, current_user.id, current_user.role, payload.file_id
     )
-    file_service.retry_embedding(cast(int, file_obj.id))
+    file_service.retry_embedding(session, cast(int, file_obj.id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/files/rebuild_failed_indexes")
-def rebuild_failed_indexes(current_user=Depends(get_current_user)):
+def rebuild_failed_indexes(
+        current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
     """批量重试当前用户所有失败索引。"""
-    count = file_service.rebuild_failed_indexes(current_user.id)
+    count = file_service.rebuild_failed_indexes(session, current_user.id)
     return {"count": count}
 
 
 @router.get("/files/process_status")
-async def process_status(current_user=Depends(get_current_user)):
+async def process_status(
+        current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
     """查询当前用户文件处理状态汇总（pending/processing 等）。"""
-    return await file_service.process_status(current_user.id)
+    return await file_service.process_status(session, current_user.id)
 
 
 # 必须放在所有 /files/* 具体路由之后，避免 {id} 匹配 list、search 等路径段
 @router.get("/files/{id}")
-def get_file(id: int, current_user=Depends(get_current_user)):
+def get_file(
+        id: int,
+        current_user=Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
     """获取单文件元数据（含权限校验）。"""
-    file_obj = file_service.get_authorized_file(current_user.id, current_user.role, id)
+    file_obj = file_service.get_authorized_file(
+        session, current_user.id, current_user.role, id
+    )
     return file_obj.to_dict()

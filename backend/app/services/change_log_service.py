@@ -4,7 +4,9 @@ import json
 import logging
 from typing import Any
 
-from app.extensions import db
+from sqlalchemy.orm import Session
+
+from app.extensions import SessionLocal
 from app.infra.datetime_utils import beijing_now
 from app.models.file import File
 from app.models.file_change_event import FileChangeEvent
@@ -36,17 +38,18 @@ def _build_folder_path(folder_id: int | None, folder_map: dict[int, Folder]) -> 
 
 
 def _resolve_changed_details(
+        session: Session,
         user_id: int,
         changed_file_ids: list[int],
         changed_folder_ids: list[int],
 ) -> dict[str, Any]:
     """为增量摘要补充名称与完整路径，便于下游提示词消费。"""
-    all_folders = db.session.query(Folder).filter_by(user_id=user_id).all()
+    all_folders = session.query(Folder).filter_by(user_id=user_id).all()
     folder_map: dict[int, Folder] = {f.id: f for f in all_folders}
 
     changed_files_detail: list[dict[str, Any]] = []
     if changed_file_ids:
-        files = db.session.query(File).filter(
+        files = session.query(File).filter(
             File.id.in_(changed_file_ids),
             File.uploader_id == user_id,
         ).all()
@@ -122,7 +125,7 @@ def log_event(
 
 
 def log_events_batch(user_id: int, events: list[dict[str, Any]]) -> int:
-    """批量写入变更事件；失败 rollback 并返回 0，避免打断主业务事务。"""
+    """批量写入变更事件；使用独立 session，避免打断调用方事务。"""
     if not events:
         return 0
 
@@ -148,45 +151,48 @@ def log_events_batch(user_id: int, events: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
 
+    session = SessionLocal()
     try:
-        db.session.add_all(rows)
-        db.session.commit()
+        session.add_all(rows)
+        session.commit()
         return len(rows)
     except Exception as exc:
-        db.session.rollback()
+        session.rollback()
         logger.warning(
             f"Failed to write change events for user {user_id}: {exc}")
         return 0
+    finally:
+        session.close()
 
 
-def get_latest_event_id(user_id: int) -> int:
+def get_latest_event_id(session: Session, user_id: int) -> int:
     row = (
-        db.session.query(FileChangeEvent).filter_by(user_id=user_id)
+        session.query(FileChangeEvent).filter_by(user_id=user_id)
         .order_by(FileChangeEvent.id.desc())
         .first()
     )
     return int(row.id) if row else 0
 
 
-def get_checkpoint_event_id(user_id: int) -> int:
-    checkpoint = db.session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
+def get_checkpoint_event_id(session: Session, user_id: int) -> int:
+    checkpoint = session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
     if not checkpoint:
         return 0
     return int(checkpoint.last_event_id or 0)
 
 
 def update_checkpoint(
-        user_id: int, event_id: int, *, mark_full_scan: bool = False
+        session: Session, user_id: int, event_id: int, *, mark_full_scan: bool = False
 ) -> None:
     """推进整理检查点；last_event_id 只增不减，避免并发回退。"""
     target_event_id = max(0, int(event_id or 0))
-    checkpoint = db.session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
+    checkpoint = session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
     if checkpoint is None:
         checkpoint = OrganizeCheckpoint(
             user_id=user_id, last_event_id=target_event_id)
         if mark_full_scan:
             checkpoint.last_full_scan_at = beijing_now()
-        db.session.add(checkpoint)
+        session.add(checkpoint)
     else:
         checkpoint.last_event_id = max(
             int(checkpoint.last_event_id or 0), target_event_id)
@@ -194,24 +200,24 @@ def update_checkpoint(
             checkpoint.last_full_scan_at = beijing_now()
 
     try:
-        db.session.commit()
+        session.commit()
     except Exception as exc:
-        db.session.rollback()
+        session.rollback()
         logger.warning(
             f"Failed to update organize checkpoint for user {user_id}: {exc}")
 
 
 def load_incremental_context(
-        user_id: int, max_events: int = DEFAULT_MAX_INCREMENTAL_EVENTS
+        session: Session, user_id: int, max_events: int = DEFAULT_MAX_INCREMENTAL_EVENTS
 ) -> dict[str, Any]:
     """加载自检查点以来的变更摘要；超限时 overflow=True，由调用方决定是否全量整理。"""
     max_events = max(1, int(max_events or DEFAULT_MAX_INCREMENTAL_EVENTS))
 
-    checkpoint = db.session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
+    checkpoint = session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
     has_checkpoint = checkpoint is not None
     checkpoint_event_id = int(
         checkpoint.last_event_id or 0) if checkpoint else 0
-    target_event_id = get_latest_event_id(user_id)
+    target_event_id = get_latest_event_id(session, user_id)
 
     if target_event_id <= checkpoint_event_id:
         return {
@@ -229,7 +235,7 @@ def load_incremental_context(
         }
 
     query = (
-        db.session.query(FileChangeEvent).filter(FileChangeEvent.user_id == user_id)
+        session.query(FileChangeEvent).filter(FileChangeEvent.user_id == user_id)
         .filter(FileChangeEvent.id > checkpoint_event_id)
         .filter(FileChangeEvent.id <= target_event_id)
         .order_by(FileChangeEvent.id.asc())
@@ -246,6 +252,7 @@ def load_incremental_context(
     )
 
     details = _resolve_changed_details(
+        session,
         user_id,
         summary["changed_file_ids"],
         summary["changed_folder_ids"],

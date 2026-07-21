@@ -4,8 +4,8 @@
 独立容器运行；JWT 经 ASGI 中间件写入 ContextVar，工具侧无需手传 user_id。
 
 约束：
-1. 同步 DB 调用须经 _run_sync / to_thread，并在同一线程 remove scoped_session
-2. service 的 HTTPException 转为结构化 JSON 错误，避免 MCP 客户端拿到裸栈
+1. 同步 DB 调用须经 _run_sync / to_thread，并在同一线程 SessionLocal() + close()
+2. service 的 DomainError / HTTPException 转为结构化 JSON 错误，避免 MCP 客户端拿到裸栈
 3. 工具参数与名称保持稳定，供 Claude Desktop / Cursor / OpenCode 长期配置
 """
 
@@ -21,7 +21,8 @@ from fastapi import HTTPException
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
-from app.extensions import db
+from app.exceptions import DomainError
+from app.extensions import SessionLocal
 from app.infra.datetime_utils import beijing_now
 from app.services import file_service, folder_service, share_service
 from app.services.auth_service import decode_token
@@ -58,10 +59,14 @@ class JWTAuthMiddleware:
         if auth_value.lower().startswith("bearer "):
             token = auth_value.split(" ", 1)[1].strip()
             if token:
-                result = decode_token(token)
-                # decode_token 成功返回数字字符串 user_id，失败返回错误文案
-                if result and str(result).isdigit():
-                    user_id = int(result)
+                session = SessionLocal()
+                try:
+                    result = decode_token(session, token)
+                    # decode_token 成功返回数字字符串 user_id，失败返回错误文案
+                    if result and str(result).isdigit():
+                        user_id = int(result)
+                finally:
+                    session.close()
 
         token_ctx = _current_user_id.set(user_id)
         try:
@@ -91,16 +96,17 @@ def _get_authenticated_user_id() -> int:
 
 
 async def _run_sync(fn, *args, **kwargs):
-    """在线程池执行同步函数，并在同一线程 remove scoped_session。
+    """在线程池执行同步函数；同一线程内 SessionLocal()，结束后 close。
 
-    scoped_session 按线程绑定；若在事件循环线程 remove 会清错 session。
+    fn 的第一个参数须为 session（与 service 签名一致）。
     """
 
     def _work():
+        session = SessionLocal()
         try:
-            return fn(*args, **kwargs)
+            return fn(session, *args, **kwargs)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -108,6 +114,16 @@ async def _run_sync(fn, *args, **kwargs):
 def _error_json(msg: str) -> str:
     """MCP 工具统一错误载荷。"""
     return json.dumps({"error": msg}, ensure_ascii=False)
+
+
+def _service_error_json(exc: Exception) -> str:
+    """将 service 层 DomainError / HTTPException 转为 MCP 错误 JSON。"""
+    if isinstance(exc, DomainError):
+        return _error_json(str(exc))
+    if isinstance(exc, HTTPException):
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        return _error_json(detail)
+    return _error_json(str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -135,16 +151,17 @@ async def get_current_user() -> str:
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
             from app.models.user import User
-            user = db.session.get(User, user_id)
+            user = session.get(User, user_id)
             if not user:
                 return _error_json("User not found")
             info = user.to_dict()
             info.pop("password_hash", None)  # 绝不经 MCP 回传哈希
             return json.dumps(info, ensure_ascii=False, default=str)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -168,11 +185,15 @@ async def search_files(
               如果需要按文件内容查找，请使用 vector 模式。
     """
     user_id = _get_authenticated_user_id()
-    # service 内部已 to_thread，此处勿再包一层以免嵌套线程
-    result = await file_service.search_files(
-        user_id, query, page, page_size, search_type
-    )
-    return json.dumps(result, ensure_ascii=False, default=str)
+    # service 内部已 to_thread；session 在 await 完成后再 close
+    session = SessionLocal()
+    try:
+        result = await file_service.search_files(
+            session, user_id, query, page, page_size, search_type
+        )
+        return json.dumps(result, ensure_ascii=False, default=str)
+    finally:
+        session.close()
 
 
 @mcp.tool()
@@ -197,16 +218,17 @@ async def list_files(
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
             resolved_parent_id = parent_id
             # None 表示「用户根目录内容」，需解析真实 root id，避免列出伪根自身
             if resolved_parent_id is None:
-                resolved_parent_id = folder_service.get_root_folder_id(user_id)
+                resolved_parent_id = folder_service.get_root_folder_id(session, user_id)
             return file_service.get_files_and_folders(
-                user_id, resolved_parent_id, page, page_size, name, sort_by, order,
+                session, user_id, resolved_parent_id, page, page_size, name, sort_by, order,
             )
         finally:
-            db.session.remove()
+            session.close()
 
     result = await asyncio.to_thread(_work)
     return json.dumps(result, ensure_ascii=False, default=str)
@@ -222,15 +244,16 @@ async def get_file_info(file_id: int) -> str:
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
-            file_obj = file_service.get_file(file_id)
+            file_obj = file_service.get_file(session, file_id)
             if file_obj.uploader_id != user_id:
                 return _error_json("Permission denied")
             return json.dumps(file_obj.to_dict(), ensure_ascii=False, default=str)
-        except HTTPException as e:
-            return _error_json(e.detail)
+        except (DomainError, HTTPException) as e:
+            return _service_error_json(e)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -249,20 +272,22 @@ async def create_folder(
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
             # 与 list_files 一致：避免 parent_id=None 造出第二套「伪根」
             resolved_parent_id = parent_id
             if resolved_parent_id is None:
-                resolved_parent_id = folder_service.get_root_folder_id(user_id)
+                resolved_parent_id = folder_service.get_root_folder_id(session, user_id)
 
             folder = folder_service.create_folder(
+                session,
                 {"name": name, "user_id": user_id, "parent_id": resolved_parent_id},
             )
             return json.dumps(folder.to_dict(), ensure_ascii=False, default=str)
-        except HTTPException as e:
-            return _error_json(e.detail)
+        except (DomainError, HTTPException) as e:
+            return _service_error_json(e)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -283,8 +308,9 @@ async def move_file(
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
-            file_obj = file_service.get_file(file_id)
+            file_obj = file_service.get_file(session, file_id)
             if file_obj.uploader_id != user_id:
                 return _error_json("Permission denied")
 
@@ -297,12 +323,12 @@ async def move_file(
             if not update_data:
                 return _error_json("Please provide new_name or new_parent_id")
 
-            updated = file_service.update_file(file_id, update_data)
+            updated = file_service.update_file(session, file_id, update_data)
             return json.dumps(updated.to_dict(), ensure_ascii=False, default=str)
-        except HTTPException as e:
-            return _error_json(e.detail)
+        except (DomainError, HTTPException) as e:
+            return _service_error_json(e)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -317,20 +343,21 @@ async def delete_file(file_id: int) -> str:
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
-            file_obj = file_service.get_file(file_id)
+            file_obj = file_service.get_file(session, file_id)
             if file_obj.uploader_id != user_id:
                 return _error_json("Permission denied")
 
-            file_service.delete_file(file_id)
+            file_service.delete_file(session, file_id)
             return json.dumps(
                 {"success": True, "message": f"File {file_id} deleted"},
                 ensure_ascii=False,
             )
-        except HTTPException as e:
-            return _error_json(e.detail)
+        except (DomainError, HTTPException) as e:
+            return _service_error_json(e)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -397,8 +424,9 @@ async def get_file_download_url(
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
-            file_obj = file_service.get_file(file_id)
+            file_obj = file_service.get_file(session, file_id)
             if file_obj.uploader_id != user_id:
                 return _error_json("Permission denied")
 
@@ -406,7 +434,7 @@ async def get_file_download_url(
             hours = max(1, min(expires_hours, 168))
             expires_at = beijing_now() + timedelta(hours=hours)
 
-            share = share_service.create_share_link(user_id, file_id, expires_at)
+            share = share_service.create_share_link(session, user_id, file_id, expires_at)
             share_dict = share.to_dict()
 
             base_url = os.getenv("SKYCLOUD_BASE_URL", "http://localhost:5000")
@@ -423,10 +451,10 @@ async def get_file_download_url(
                 ensure_ascii=False,
                 default=str,
             )
-        except HTTPException as e:
-            return _error_json(e.detail)
+        except (DomainError, HTTPException) as e:
+            return _service_error_json(e)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -448,8 +476,9 @@ async def read_file_content(
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
-            file_obj = file_service.get_file(file_id)
+            file_obj = file_service.get_file(session, file_id)
             if file_obj.uploader_id != user_id:
                 return _error_json("Permission denied")
 
@@ -484,10 +513,10 @@ async def read_file_content(
                 ensure_ascii=False,
                 default=str,
             )
-        except HTTPException as e:
-            return _error_json(e.detail)
+        except (DomainError, HTTPException) as e:
+            return _service_error_json(e)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -508,8 +537,9 @@ async def move_folder(
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
-            folder = folder_service.get_folder(folder_id)
+            folder = folder_service.get_folder(session, folder_id)
             if folder.user_id != user_id:
                 return _error_json("Permission denied")
 
@@ -522,12 +552,12 @@ async def move_folder(
             if not update_data:
                 return _error_json("Please provide new_name or new_parent_id")
 
-            updated = folder_service.update_folder(folder_id, update_data)
+            updated = folder_service.update_folder(session, folder_id, update_data)
             return json.dumps(updated.to_dict(), ensure_ascii=False, default=str)
-        except HTTPException as e:
-            return _error_json(e.detail)
+        except (DomainError, HTTPException) as e:
+            return _service_error_json(e)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -542,21 +572,22 @@ async def delete_folder(folder_id: int) -> str:
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
-            folder = folder_service.get_folder(folder_id)
+            folder = folder_service.get_folder(session, folder_id)
             if folder.user_id != user_id:
                 return _error_json("Permission denied")
 
             folder_name = folder.name
-            folder_service.delete_folder(folder_id)
+            folder_service.delete_folder(session, folder_id)
             return json.dumps(
                 {"success": True, "message": f"Folder '{folder_name}' (ID: {folder_id}) deleted"},
                 ensure_ascii=False,
             )
-        except HTTPException as e:
-            return _error_json(e.detail)
+        except (DomainError, HTTPException) as e:
+            return _service_error_json(e)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -567,13 +598,14 @@ async def get_storage_overview() -> str:
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
             from sqlalchemy import func
             from app.models.file import File
             from app.models.folder import Folder
 
             file_stats = (
-                db.session.query(
+                session.query(
                     func.count(File.id).label("total_files"),
                     func.coalesce(func.sum(File.file_size), 0).label("total_size"),
                 )
@@ -581,7 +613,7 @@ async def get_storage_overview() -> str:
                 .first()
             )
             status_rows = (
-                db.session.query(File.status, func.count(File.id))
+                session.query(File.status, func.count(File.id))
                 .filter(File.uploader_id == user_id)
                 .group_by(File.status)
                 .all()
@@ -589,7 +621,7 @@ async def get_storage_overview() -> str:
             status_counts = dict(status_rows)
 
             folder_count = (
-                               db.session.query(func.count(Folder.id))
+                               session.query(func.count(Folder.id))
                                .filter(Folder.user_id == user_id)
                                .scalar()
                            ) or 0
@@ -620,7 +652,7 @@ async def get_storage_overview() -> str:
                 default=str,
             )
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -643,6 +675,7 @@ async def batch_delete(
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
             deleted = []
             errors = []
@@ -651,20 +684,24 @@ async def batch_delete(
                 is_folder = item.is_folder
                 try:
                     if is_folder:
-                        folder = folder_service.get_folder(item_id)
+                        folder = folder_service.get_folder(session, item_id)
                         if folder.user_id != user_id:
                             errors.append({"id": item_id, "error": "Permission denied"})
                             continue
-                        folder_service.delete_folder(item_id)
+                        folder_service.delete_folder(session, item_id)
                     else:
-                        file_obj = file_service.get_file(item_id)
+                        file_obj = file_service.get_file(session, item_id)
                         if file_obj.uploader_id != user_id:
                             errors.append({"id": item_id, "error": "Permission denied"})
                             continue
-                        file_service.delete_file(item_id)
+                        file_service.delete_file(session, item_id)
                     deleted.append(item_id)
-                except HTTPException as e:
-                    errors.append({"id": item_id, "error": e.detail})
+                except (DomainError, HTTPException) as e:
+                    if isinstance(e, DomainError):
+                        errors.append({"id": item_id, "error": str(e)})
+                    else:
+                        detail = e.detail if isinstance(e.detail, str) else str(e.detail)
+                        errors.append({"id": item_id, "error": detail})
 
             return json.dumps(
                 {
@@ -675,7 +712,7 @@ async def batch_delete(
                 ensure_ascii=False,
             )
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -690,12 +727,13 @@ async def get_folder_tree(max_depth: int = 3) -> str:
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
             from app.models.folder import Folder
 
             depth = max(1, min(max_depth, 10))
             all_folders = (
-                db.session.query(Folder)
+                session.query(Folder)
                 .filter(Folder.user_id == user_id)
                 .all()
             )
@@ -725,7 +763,7 @@ async def get_folder_tree(max_depth: int = 3) -> str:
             tree = _build_tree(None, 1)
             return json.dumps(tree, ensure_ascii=False, default=str)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 
@@ -741,48 +779,42 @@ async def get_upload_url(parent_id: int | None = None) -> str:
     Args:
         parent_id: 目标文件夹 ID（None 表示上传到根目录）
     """
-    user_id = _get_authenticated_user_id()
+    _get_authenticated_user_id()
 
-    def _work():
-        try:
-            # Docker 内用服务名；宿主机开发走 host.docker.internal 或环境变量
-            in_docker = os.path.exists("/.dockerenv")
-            if in_docker:
-                api_base = "http://skycloud-backend-api:5000"
-            else:
-                api_base = os.getenv("SKYCLOUD_BASE_URL", "http://host.docker.internal:5000")
-            upload_url = f"{api_base}/api/files"
+    # 无需 DB：仅拼装上传指引
+    in_docker = os.path.exists("/.dockerenv")
+    if in_docker:
+        api_base = "http://skycloud-backend-api:5000"
+    else:
+        api_base = os.getenv("SKYCLOUD_BASE_URL", "http://host.docker.internal:5000")
+    upload_url = f"{api_base}/api/files"
 
-            parent_flag = ""
-            if parent_id is not None:
-                parent_flag = f' -F "parent_id={parent_id}"'
+    parent_flag = ""
+    if parent_id is not None:
+        parent_flag = f' -F "parent_id={parent_id}"'
 
-            curl_example = (
-                f'curl -X POST "{upload_url}" '
-                f'-H "Authorization: Bearer $TOKEN" '
-                f'-F "file=@/path/to/your/file"'
-                f'{parent_flag}'
-            )
+    curl_example = (
+        f'curl -X POST "{upload_url}" '
+        f'-H "Authorization: Bearer $TOKEN" '
+        f'-F "file=@/path/to/your/file"'
+        f'{parent_flag}'
+    )
 
-            hint = (
-                "你的 MCP Token 就是当前连接 SKYCLOUD MCP 时使用的那个 Bearer Token。"
-                "可以从 /root/.config/opencode/opencode.json 中的 "
-                'mcp.SKYCLOUD.headers.Authorization 字段读取。'
-            )
+    hint = (
+        "你的 MCP Token 就是当前连接 SKYCLOUD MCP 时使用的那个 Bearer Token。"
+        "可以从 /root/.config/opencode/opencode.json 中的 "
+        'mcp.SKYCLOUD.headers.Authorization 字段读取。'
+    )
 
-            return json.dumps(
-                {
-                    "upload_url": upload_url,
-                    "curl_example": curl_example,
-                    "hint": hint,
-                    "parent_id": parent_id,
-                },
-                ensure_ascii=False,
-            )
-        finally:
-            db.session.remove()
-
-    return await asyncio.to_thread(_work)
+    return json.dumps(
+        {
+            "upload_url": upload_url,
+            "curl_example": curl_example,
+            "hint": hint,
+            "parent_id": parent_id,
+        },
+        ensure_ascii=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -803,15 +835,16 @@ async def get_user_file(file_id: int) -> str:
     user_id = _get_authenticated_user_id()
 
     def _work():
+        session = SessionLocal()
         try:
-            file_obj = file_service.get_file(file_id)
+            file_obj = file_service.get_file(session, file_id)
             if file_obj.uploader_id != user_id:
                 return _error_json("Permission denied")
             return json.dumps(file_obj.to_dict(), ensure_ascii=False, default=str)
-        except HTTPException as e:
-            return _error_json(e.detail)
+        except (DomainError, HTTPException) as e:
+            return _service_error_json(e)
         finally:
-            db.session.remove()
+            session.close()
 
     return await asyncio.to_thread(_work)
 

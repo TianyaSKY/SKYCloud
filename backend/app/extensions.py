@@ -1,11 +1,12 @@
 """基础设施扩展：数据库引擎/Session、Redis 客户端与全局配置。"""
 
 import os
+from collections.abc import Generator
 
 from dotenv import load_dotenv
 from redis import Redis
 from sqlalchemy import create_engine
-from sqlalchemy.orm import scoped_session, sessionmaker, declarative_base
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 load_dotenv()
 
@@ -60,39 +61,11 @@ engine = create_engine(
     connect_args={"connect_timeout": _db_connect_timeout},
 )
 
-# Session 工厂与线程安全 scoped_session
+# Session 工厂：每次调用 SessionLocal() 得到独立会话
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-_scoped_session = scoped_session(SessionLocal)
 
 # 声明式基类（所有 ORM 模型继承）
 Base = declarative_base()
-
-
-class DatabaseManager:
-    """数据库管理器：提供与 Flask-SQLAlchemy 风格兼容的 session / Model 接口。"""
-
-    def __init__(self):
-        self._session = _scoped_session
-
-    @property
-    def session(self):
-        return self._session
-
-    @property
-    def Model(self):
-        return Base
-
-    def create_all(self):
-        """创建所有已注册表。"""
-        Base.metadata.create_all(bind=engine)
-
-    def remove_session(self):
-        """移除当前线程绑定的 scoped_session。"""
-        self._session.remove()
-
-
-# 全局数据库实例
-db = DatabaseManager()
 
 # Redis 客户端：socket 超时，避免 localhost/IPv6 问题导致启动挂死
 redis_client = Redis(
@@ -105,7 +78,7 @@ redis_client = Redis(
 )
 
 
-def get_db():
+def get_db() -> Generator[Session, None, None]:
     """FastAPI 依赖注入：yield 独立 session，请求结束自动关闭。"""
     session = SessionLocal()
     try:

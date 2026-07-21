@@ -9,7 +9,7 @@ import logging
 from langchain.tools import tool
 from sqlalchemy import func
 
-from app.extensions import db, redis_client
+from app.extensions import SessionLocal, redis_client
 from app.models.file import File
 from app.models.folder import Folder
 
@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_session():
-    """工具执行用独立 session，避免与请求线程共享 scoped_session。"""
-    return db.session()
+    """工具执行用独立 session，调用方负责 finally 关闭。"""
+    return SessionLocal()
 
 
 def clear_user_cache(user_id):
