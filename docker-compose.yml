@@ -65,7 +65,7 @@ services:
       dockerfile: Dockerfile
     container_name: skycloud-backend-api
     restart: always
-    command: python run.py
+    command: python -m entry.api
     ports:
       - "${BACKEND_API_PORT}:5000"
     volumes:
@@ -101,9 +101,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: skycloud-backend-worker
+    container_name: skycloud-backend-consumer
     restart: always
-    command: python tasks.py
+    command: python -m entry.worker
     volumes:
       - ${UPLOAD_HOST_PATH}:/data/uploads
     env_file:
@@ -136,7 +136,7 @@ services:
       dockerfile: Dockerfile
     container_name: skycloud-backend-mcp
     restart: always
-    command: python mcp_run.py
+    command: python -m entry.mcp
     ports:
       - "${MCP_PORT:-5001}:5001"
     volumes:
