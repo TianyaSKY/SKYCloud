@@ -1,0 +1,275 @@
+"""文件/文件夹变更事件流水与整理检查点：为增量整理提供上下文。"""
+
+import json
+import logging
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.infra.extensions import SessionLocal
+from app.infra.datetime_utils import beijing_now
+from app.models.file import File
+from app.models.file_change_event import FileChangeEvent
+from app.models.folder import Folder
+from app.models.organize_checkpoint import OrganizeCheckpoint
+from app.features.folder.change_log_summary import summarize_events
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_INCREMENTAL_EVENTS = 200
+
+
+def _build_folder_path(folder_id: int | None, folder_map: dict[int, Folder]) -> str:
+    """由 parent 链拼完整路径；带环检测，避免脏数据死循环。"""
+    if folder_id is None or folder_id == 0:
+        return "根目录"
+    parts: list[str] = []
+    current_id = folder_id
+    seen: set[int] = set()
+    while current_id and current_id in folder_map:
+        if current_id in seen:
+            break
+        seen.add(current_id)
+        folder = folder_map[current_id]
+        parts.append(folder.name)
+        current_id = folder.parent_id
+    parts.reverse()
+    return "根目录/" + "/".join(parts) if parts else "根目录"
+
+
+def _resolve_changed_details(
+        session: Session,
+        user_id: int,
+        changed_file_ids: list[int],
+        changed_folder_ids: list[int],
+) -> dict[str, Any]:
+    """为增量摘要补充名称与完整路径，便于下游提示词消费。"""
+    all_folders = session.query(Folder).filter_by(user_id=user_id).all()
+    folder_map: dict[int, Folder] = {f.id: f for f in all_folders}
+
+    changed_files_detail: list[dict[str, Any]] = []
+    if changed_file_ids:
+        files = session.query(File).filter(
+            File.id.in_(changed_file_ids),
+            File.uploader_id == user_id,
+        ).all()
+        for f in files:
+            changed_files_detail.append({
+                "id": f.id,
+                "name": f.name,
+                "parent_id": f.parent_id,
+                "path": _build_folder_path(f.parent_id, folder_map),
+            })
+
+    changed_folders_detail: list[dict[str, Any]] = []
+    if changed_folder_ids:
+        for fid in changed_folder_ids:
+            if fid == 0:
+                changed_folders_detail.append({
+                    "id": 0, "name": "根目录", "path": "根目录",
+                })
+            elif fid in folder_map:
+                folder = folder_map[fid]
+                changed_folders_detail.append({
+                    "id": folder.id,
+                    "name": folder.name,
+                    "parent_id": folder.parent_id,
+                    "path": _build_folder_path(folder.id, folder_map),
+                })
+
+    return {
+        "changed_files_detail": changed_files_detail,
+        "changed_folders_detail": changed_folders_detail,
+    }
+
+
+def _to_payload_text(payload: dict[str, Any] | str | None) -> str | None:
+    if payload is None:
+        return None
+    if isinstance(payload, str):
+        return payload
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def log_event(
+        *,
+        user_id: int,
+        entity_type: str,
+        entity_id: int,
+        action: str,
+        old_parent_id: int | None = None,
+        new_parent_id: int | None = None,
+        old_name: str | None = None,
+        new_name: str | None = None,
+        payload: dict[str, Any] | str | None = None,
+) -> bool:
+    """单条变更事件的便捷封装；写库失败时返回 False 且不抛错。"""
+    return (
+            log_events_batch(
+                user_id,
+                [
+                    {
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "action": action,
+                        "old_parent_id": old_parent_id,
+                        "new_parent_id": new_parent_id,
+                        "old_name": old_name,
+                        "new_name": new_name,
+                        "payload": payload,
+                    }
+                ],
+            )
+            > 0
+    )
+
+
+def log_events_batch(user_id: int, events: list[dict[str, Any]]) -> int:
+    """批量写入变更事件；使用独立 session，避免打断调用方事务。"""
+    if not events:
+        return 0
+
+    rows = []
+    for event in events:
+        entity_id = event.get("entity_id")
+        if entity_id is None:
+            continue
+        rows.append(
+            FileChangeEvent(
+                user_id=user_id,
+                entity_type=str(event.get("entity_type") or "unknown"),
+                entity_id=int(entity_id),
+                action=str(event.get("action") or "update_meta"),
+                old_parent_id=event.get("old_parent_id"),
+                new_parent_id=event.get("new_parent_id"),
+                old_name=event.get("old_name"),
+                new_name=event.get("new_name"),
+                payload=_to_payload_text(event.get("payload")),
+            )
+        )
+
+    if not rows:
+        return 0
+
+    session = SessionLocal()
+    try:
+        session.add_all(rows)
+        session.commit()
+        return len(rows)
+    except Exception as exc:
+        session.rollback()
+        logger.warning(
+            f"Failed to write change events for user {user_id}: {exc}")
+        return 0
+    finally:
+        session.close()
+
+
+def get_latest_event_id(session: Session, user_id: int) -> int:
+    row = (
+        session.query(FileChangeEvent).filter_by(user_id=user_id)
+        .order_by(FileChangeEvent.id.desc())
+        .first()
+    )
+    return int(row.id) if row else 0
+
+
+def get_checkpoint_event_id(session: Session, user_id: int) -> int:
+    checkpoint = session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
+    if not checkpoint:
+        return 0
+    return int(checkpoint.last_event_id or 0)
+
+
+def update_checkpoint(
+        session: Session, user_id: int, event_id: int, *, mark_full_scan: bool = False
+) -> None:
+    """推进整理检查点；last_event_id 只增不减，避免并发回退。"""
+    target_event_id = max(0, int(event_id or 0))
+    checkpoint = session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
+    if checkpoint is None:
+        checkpoint = OrganizeCheckpoint(
+            user_id=user_id, last_event_id=target_event_id)
+        if mark_full_scan:
+            checkpoint.last_full_scan_at = beijing_now()
+        session.add(checkpoint)
+    else:
+        checkpoint.last_event_id = max(
+            int(checkpoint.last_event_id or 0), target_event_id)
+        if mark_full_scan:
+            checkpoint.last_full_scan_at = beijing_now()
+
+    try:
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.warning(
+            f"Failed to update organize checkpoint for user {user_id}: {exc}")
+
+
+def load_incremental_context(
+        session: Session, user_id: int, max_events: int = DEFAULT_MAX_INCREMENTAL_EVENTS
+) -> dict[str, Any]:
+    """加载自检查点以来的变更摘要；超限时 overflow=True，由调用方决定是否全量整理。"""
+    max_events = max(1, int(max_events or DEFAULT_MAX_INCREMENTAL_EVENTS))
+
+    checkpoint = session.query(OrganizeCheckpoint).filter_by(user_id=user_id).first()
+    has_checkpoint = checkpoint is not None
+    checkpoint_event_id = int(
+        checkpoint.last_event_id or 0) if checkpoint else 0
+    target_event_id = get_latest_event_id(session, user_id)
+
+    if target_event_id <= checkpoint_event_id:
+        return {
+            "has_changes": False,
+            "has_checkpoint": has_checkpoint,
+            "overflow": False,
+            "checkpoint_event_id": checkpoint_event_id,
+            "target_event_id": target_event_id,
+            "total_events": 0,
+            "events": [],
+            "summary_text": "No file-system changes since last organize checkpoint.",
+            "changed_file_ids": [],
+            "changed_folder_ids": [],
+            "action_breakdown": {},
+        }
+
+    query = (
+        session.query(FileChangeEvent).filter(FileChangeEvent.user_id == user_id)
+        .filter(FileChangeEvent.id > checkpoint_event_id)
+        .filter(FileChangeEvent.id <= target_event_id)
+        .order_by(FileChangeEvent.id.asc())
+    )
+    total_events = query.count()
+    events = query.limit(max_events).all()
+    overflow = total_events > max_events
+
+    summary = summarize_events(
+        events,
+        total_count=total_events,
+        from_event_id=checkpoint_event_id,
+        to_event_id=target_event_id,
+    )
+
+    details = _resolve_changed_details(
+        session,
+        user_id,
+        summary["changed_file_ids"],
+        summary["changed_folder_ids"],
+    )
+
+    return {
+        "has_changes": total_events > 0,
+        "has_checkpoint": has_checkpoint,
+        "overflow": overflow,
+        "checkpoint_event_id": checkpoint_event_id,
+        "target_event_id": target_event_id,
+        "total_events": total_events,
+        "events": events,
+        "summary_text": summary["summary_text"],
+        "changed_file_ids": summary["changed_file_ids"],
+        "changed_folder_ids": summary["changed_folder_ids"],
+        "action_breakdown": summary["action_breakdown"],
+        "changed_files_detail": details["changed_files_detail"],
+        "changed_folders_detail": details["changed_folders_detail"],
+    }

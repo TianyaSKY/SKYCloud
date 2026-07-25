@@ -22,10 +22,12 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from app.exceptions import DomainError
-from app.extensions import SessionLocal
+from app.infra.extensions import SessionLocal
 from app.infra.datetime_utils import beijing_now
-from app.services import file_service, folder_service, share_service
-from app.services.auth_service import decode_token
+from app.features.file import service as file_service
+from app.features.folder import service as folder_service
+from app.features.share import service as share_service
+from app.features.auth.service import decode_token
 
 logger = logging.getLogger(__name__)
 

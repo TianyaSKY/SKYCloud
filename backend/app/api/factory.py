@@ -5,8 +5,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import initialize_application
-from app.api.routers import auth, chat, file, folder, inbox, share, sys_dict, token_usage, user, workspace
 from app.exceptions import register_exception_handlers
+from app.features.auth.router import router as auth_router
+from app.features.chat.router import router as chat_router
+from app.features.file.router import router as file_router
+from app.features.folder.router import router as folder_router
+from app.features.inbox.router import router as inbox_router
+from app.features.share.router import router as share_router
+from app.features.sys_dict.router import router as sys_dict_router
+from app.features.token_usage.router import router as token_usage_router
+from app.features.workspace.router import router as workspace_router
 
 
 @asynccontextmanager
@@ -25,16 +33,15 @@ def create_fastapi_app() -> FastAPI:
     )
     register_exception_handlers(app)
 
-    app.include_router(auth.router, prefix="/api")
-    app.include_router(user.router, prefix="/api")
-    app.include_router(folder.router, prefix="/api")
-    app.include_router(file.router, prefix="/api")
-    app.include_router(sys_dict.router, prefix="/api")
-    app.include_router(share.router, prefix="/api")
-    app.include_router(inbox.router, prefix="/api")
-    app.include_router(chat.router, prefix="/api")
-    app.include_router(token_usage.router, prefix="/api")
-    app.include_router(workspace.router, prefix="/api")
+    app.include_router(auth_router, prefix="/api")
+    app.include_router(folder_router, prefix="/api")
+    app.include_router(file_router, prefix="/api")
+    app.include_router(sys_dict_router, prefix="/api")
+    app.include_router(share_router, prefix="/api")
+    app.include_router(inbox_router, prefix="/api")
+    app.include_router(chat_router, prefix="/api")
+    app.include_router(token_usage_router, prefix="/api")
+    app.include_router(workspace_router, prefix="/api")
 
     @app.get("/api/health")
     def health():

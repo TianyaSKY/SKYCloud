@@ -9,9 +9,9 @@ from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from app.extensions import SECRET_KEY, get_db
+from app.infra.extensions import SECRET_KEY, get_db
 from app.models.user import User
-from app.services import user_service
+from app.features.auth import user_service
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -42,7 +42,7 @@ async def get_current_user(
             )
         # MCP 长效 token 可被主动吊销，不能只信 JWT 签名
         if payload.get("type") == "mcp":
-            from app.services import mcp_token_service
+            from app.mcp import token_service as mcp_token_service
 
             if not mcp_token_service.get_active_mcp_token(session, token):
                 raise HTTPException(
