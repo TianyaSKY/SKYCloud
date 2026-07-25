@@ -9,12 +9,15 @@ from app.infra.datetime_utils import beijing_now, local_isoformat
 
 
 class Folder(Base):
-    """目录树节点表：支持父子递归；删除时级联子目录与下属文件记录。"""
+    """目录树节点表：支持父子递归；删除时级联子目录与下属文件记录。
+
+    文件夹归属于工作空间（workspace_id），而非用户。
+    """
 
     __tablename__ = "folder"
     id = Column(Integer, primary_key=True)
     name = Column(String(128), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
     parent_id = Column(Integer, ForeignKey("folder.id"))
     created_at = Column(DateTime, default=beijing_now)
 
@@ -42,7 +45,7 @@ class Folder(Base):
         return {
             "id": self.id,
             "name": "/" if self.parent_id is None else self.name,
-            "user_id": self.user_id,
+            "workspace_id": self.workspace_id,
             "parent_id": self.parent_id,
             "path": path,
             "created_at": local_isoformat(cast(datetime | None, self.created_at)),
@@ -53,7 +56,7 @@ class Folder(Base):
         return cls(
             id=d.get("id"),
             name=d.get("name"),
-            user_id=d.get("user_id"),
+            workspace_id=d.get("workspace_id"),
             parent_id=d.get("parent_id"),
             created_at=datetime.fromisoformat(cast(str, d.get("created_at")))
             if cast(str | None, d.get("created_at"))

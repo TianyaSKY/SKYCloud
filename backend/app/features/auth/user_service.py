@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
 from app.infra.cache import cacheable, evict_cache
 from app.models.user import User
-from app.features.folder import service as folder_service
+from app.models.workspace import Workspace, WorkspaceMember
+from app.models.folder import Folder
 
 USER_CACHE_PREFIX = "user:profile"
 USER_CACHE_EXPIRE = 3600
@@ -19,9 +20,24 @@ def create_user(session: Session, data):
         new_user.password_hash = data["password_hash"]
 
     session.add(new_user)
+    session.flush()  # 获取 new_user.id
+
+    # 创建私人工作空间 + owner 加为 admin 成员 + 根文件夹
+    workspace = Workspace(name=f"{new_user.username}的空间", owner_id=new_user.id)
+    session.add(workspace)
+    session.flush()  # 获取 workspace.id
+
+    member = WorkspaceMember(
+        workspace_id=workspace.id,
+        user_id=new_user.id,
+        role="admin",
+    )
+    session.add(member)
+
+    root_folder = Folder(name="/", workspace_id=workspace.id, parent_id=None)
+    session.add(root_folder)
+
     session.commit()
-    # 新用户必须有根目录，后续文件/文件夹均挂在其下
-    folder_service.create_folder(session, {"user_id": new_user.id, "name": "/"})
     return new_user
 
 

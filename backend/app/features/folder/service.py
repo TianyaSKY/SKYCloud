@@ -17,47 +17,35 @@ from app.features.file.service import delete_file, _clear_search_cache
 ORGANIZE_TASK_LOCK_PREFIX = "organize:task:lock"
 ORGANIZE_TASK_LOCK_TTL_SECONDS = 6 * 60 * 60
 
-FOLDER_CACHE_PREFIX = "user:folders"
-ROOT_FOLDER_CACHE_PREFIX = "user:root_folder"
-ROOT_FILES_CACHE_PREFIX = "user:root_files"
+FOLDER_CACHE_PREFIX = "workspace:folders"
+ROOT_FOLDER_CACHE_PREFIX = "workspace:root_folder"
+ROOT_FILES_CACHE_PREFIX = "workspace:root_files"
 FOLDER_CACHE_EXPIRE = 3600
 
 
-def _organize_task_lock_key(user_id: int) -> str:
-    return f"{ORGANIZE_TASK_LOCK_PREFIX}:{user_id}"
+def _organize_task_lock_key(workspace_id: int) -> str:
+    return f"{ORGANIZE_TASK_LOCK_PREFIX}:{workspace_id}"
 
 
-def _invalidate_folder_caches(user_id: int) -> None:
+def _invalidate_folder_caches(workspace_id: int) -> None:
     """目录树变更后失效相关缓存，避免列表读到旧结构。"""
-    evict_cache(FOLDER_CACHE_PREFIX, user_id)
-    evict_cache(ROOT_FOLDER_CACHE_PREFIX, user_id)
-    evict_cache(ROOT_FILES_CACHE_PREFIX, user_id)
+    evict_cache(FOLDER_CACHE_PREFIX, workspace_id)
+    evict_cache(ROOT_FOLDER_CACHE_PREFIX, workspace_id)
+    evict_cache(ROOT_FILES_CACHE_PREFIX, workspace_id)
 
 
 def create_folder(session: Session, data):
     try:
         new_folder = Folder(
             name=data["name"],
-            user_id=data.get("user_id"),
+            workspace_id=data.get("workspace_id"),
             parent_id=data.get("parent_id"),
         )
         session.add(new_folder)
         session.commit()
 
-        if new_folder.user_id:
-            change_log_service.log_event(
-                user_id=new_folder.user_id,
-                entity_type="folder",
-                entity_id=new_folder.id,
-                action="create",
-                old_parent_id=None,
-                new_parent_id=new_folder.parent_id,
-                old_name=None,
-                new_name=new_folder.name,
-            )
-
-        if new_folder.user_id:
-            _invalidate_folder_caches(new_folder.user_id)
+        if new_folder.workspace_id:
+            _invalidate_folder_caches(new_folder.workspace_id)
 
         return new_folder
     except Exception as e:
@@ -72,10 +60,10 @@ def get_folder(session: Session, id):
     return folder
 
 
-def get_authorized_folder(session: Session, user_id: int, role: str, folder_id: int) -> Folder:
-    """非 admin 仅可访问自己的文件夹。"""
+def get_authorized_folder(session: Session, workspace_id: int, user_id: int, folder_id: int) -> Folder:
+    """校验文件夹属于当前工作空间。"""
     folder = get_folder(session, folder_id)
-    if role != "admin" and folder.user_id != user_id:
+    if folder.workspace_id != workspace_id:
         raise PermissionDeniedError("Permission denied")
     return folder
 
@@ -92,33 +80,12 @@ def update_folder(session: Session, id, data):
         folder.parent_id = data.get("parent_id", folder.parent_id)
         session.commit()
 
-        name_changed = folder.name != old_name
-        parent_changed = folder.parent_id != old_parent_id
-        if name_changed or parent_changed:
-            action = "update_meta"
-            if name_changed and not parent_changed:
-                action = "rename"
-            elif parent_changed and not name_changed:
-                action = "move"
-
-            change_log_service.log_event(
-                user_id=folder.user_id,
-                entity_type="folder",
-                entity_id=folder.id,
-                action=action,
-                old_parent_id=old_parent_id,
-                new_parent_id=folder.parent_id,
-                old_name=old_name,
-                new_name=folder.name,
-            )
-
-        if folder.user_id:
-            _invalidate_folder_caches(folder.user_id)
+        if folder.workspace_id:
+            _invalidate_folder_caches(folder.workspace_id)
 
         return folder
     except Exception as e:
         session.rollback()
-
         raise e
 
 
@@ -126,11 +93,10 @@ def delete_folder(session: Session, id):
     folder = session.get(Folder, id)
     if not folder:
         raise ResourceNotFoundError("Folder not found")
-    user_id = folder.user_id
+    workspace_id = folder.workspace_id
     deleted_events: list[dict] = []
 
     try:
-        # 先递归收集子树删除事件，最后统一 commit / 写变更日志
         _delete_folder_recursive(session, folder, deleted_events)
         deleted_events.append(
             {
@@ -147,12 +113,9 @@ def delete_folder(session: Session, id):
         session.delete(folder)
         session.commit()
 
-        if user_id and deleted_events:
-            change_log_service.log_events_batch(user_id, deleted_events)
-
-        if user_id:
-            _invalidate_folder_caches(user_id)
-            _clear_search_cache(user_id)
+        if workspace_id:
+            _invalidate_folder_caches(workspace_id)
+            _clear_search_cache(workspace_id)
     except Exception as e:
         session.rollback()
         raise e
@@ -195,10 +158,10 @@ def _delete_folder_recursive(session: Session, folder, deleted_events: list[dict
 @cacheable(
     prefix=ROOT_FOLDER_CACHE_PREFIX,
     expire=FOLDER_CACHE_EXPIRE,
-    key=lambda session, user_id, **_: user_id,
+    key=lambda session, workspace_id, **_: workspace_id,
 )
-def get_root_folder_id(session: Session, user_id) -> int | None:
-    root_folder = session.query(Folder).filter_by(user_id=user_id, parent_id=None).first()
+def get_root_folder_id(session: Session, workspace_id) -> int | None:
+    root_folder = session.query(Folder).filter_by(workspace_id=workspace_id, parent_id=None).first()
     if root_folder:
         return root_folder.id
     return None
@@ -207,10 +170,10 @@ def get_root_folder_id(session: Session, user_id) -> int | None:
 @cacheable(
     prefix=ROOT_FILES_CACHE_PREFIX,
     expire=FOLDER_CACHE_EXPIRE,
-    key=lambda session, user_id, **_: user_id,
+    key=lambda session, workspace_id, **_: workspace_id,
 )
-def get_files_in_root_folder(session: Session, user_id) -> List[dict]:
-    root_folder_id = get_root_folder_id(session, user_id)
+def get_files_in_root_folder(session: Session, workspace_id) -> List[dict]:
+    root_folder_id = get_root_folder_id(session, workspace_id)
     if not root_folder_id:
         return []
 
@@ -221,20 +184,20 @@ def get_files_in_root_folder(session: Session, user_id) -> List[dict]:
 @cacheable(
     prefix=FOLDER_CACHE_PREFIX,
     expire=FOLDER_CACHE_EXPIRE,
-    key=lambda session, user_id, **_: user_id,
+    key=lambda session, workspace_id, **_: workspace_id,
 )
-def get_folders(session: Session, user_id) -> List[dict]:
-    folders = session.query(Folder).filter_by(user_id=user_id).all()
+def get_folders(session: Session, workspace_id) -> List[dict]:
+    folders = session.query(Folder).filter_by(workspace_id=workspace_id).all()
     return [f.to_dict() for f in folders]
 
 
-def _acquire_organize_task_lock_and_enqueue(user_id: int, lock_token: str) -> bool:
+def _acquire_organize_task_lock_and_enqueue(workspace_id: int, user_id: int, lock_token: str) -> bool:
     """加锁并入队：仅当锁不存在时设置并发布 RabbitMQ 任务。
 
     锁值格式: "<token>:<state>"，state 为 queued/running。
     入队失败则释放锁，避免永久占锁。
     """
-    lock_key = _organize_task_lock_key(user_id)
+    lock_key = _organize_task_lock_key(workspace_id)
     acquired = redis_client.set(
         lock_key,
         f"{lock_token}:queued",
@@ -245,14 +208,14 @@ def _acquire_organize_task_lock_and_enqueue(user_id: int, lock_token: str) -> bo
         return False
 
     try:
-        publish_organize_task(user_id, lock_token)
+        publish_organize_task(workspace_id, user_id, lock_token)
     except Exception:
-        release_organize_task_lock(user_id, lock_token)
+        release_organize_task_lock(workspace_id, lock_token)
         raise
     return True
 
 
-def mark_organize_task_running(user_id: int, lock_token: str) -> None:
+def mark_organize_task_running(workspace_id: int, lock_token: str) -> None:
     """仅当当前锁 token 匹配时，将状态改为 running 并续期。"""
     script = """
     local current = redis.call('GET', KEYS[1])
@@ -268,13 +231,13 @@ def mark_organize_task_running(user_id: int, lock_token: str) -> None:
     redis_client.eval(
         script,
         1,
-        _organize_task_lock_key(user_id),
+        _organize_task_lock_key(workspace_id),
         lock_token,
         ORGANIZE_TASK_LOCK_TTL_SECONDS,
     )
 
 
-def release_organize_task_lock(user_id: int, lock_token: str) -> None:
+def release_organize_task_lock(workspace_id: int, lock_token: str) -> None:
     """仅释放属于当前 token 的锁，避免误删新任务锁。"""
     script = """
     local current = redis.call('GET', KEYS[1])
@@ -286,10 +249,10 @@ def release_organize_task_lock(user_id: int, lock_token: str) -> None:
     end
     return redis.call('DEL', KEYS[1])
     """
-    redis_client.eval(script, 1, _organize_task_lock_key(user_id), lock_token)
+    redis_client.eval(script, 1, _organize_task_lock_key(workspace_id), lock_token)
 
 
-def organize_files(user_id: int) -> bool:
-    """入队整理任务；同用户已有任务在排队/执行时返回 False。"""
+def organize_files(workspace_id: int, user_id: int) -> bool:
+    """入队整理任务；同空间已有任务在排队/执行时返回 False。"""
     lock_token = str(uuid.uuid4())
-    return _acquire_organize_task_lock_and_enqueue(user_id, lock_token)
+    return _acquire_organize_task_lock_and_enqueue(workspace_id, user_id, lock_token)

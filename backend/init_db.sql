@@ -1,4 +1,4 @@
--- SKYCloud 数据库初始化 SQL 文件
+-- SKYCloud 数据库初始化 SQL 文件（工作空间机制）
 -- 注意：此脚本仅用于初始化空数据库，若表已存在可能会报错或跳过。
 -- 建议在执行前清空数据库或确保无冲突。
 
@@ -20,17 +20,45 @@ CREATE TABLE IF NOT EXISTS users
     last_active_at         TIMESTAMP
 );
 
--- 3. 创建文件夹表
+-- 3. 创建工作空间表（文件/文件夹的归属实体）
+CREATE TABLE IF NOT EXISTS workspaces
+(
+    id          SERIAL PRIMARY KEY,
+    name        VARCHAR(128) NOT NULL,
+    description VARCHAR(512),
+    owner_id    INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    created_at  TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()),
+    updated_at  TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
+);
+CREATE INDEX IF NOT EXISTS idx_workspaces_owner_id ON workspaces (owner_id);
+
+-- 4. 创建工作空间成员表（用户与空间的多对多关系及角色）
+CREATE TABLE IF NOT EXISTS workspace_members
+(
+    id           SERIAL PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    user_id      INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    role         VARCHAR(20) NOT NULL DEFAULT 'viewer', -- admin / editor / viewer
+    invited_by   INTEGER REFERENCES users (id),
+    joined_at    TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()),
+    CONSTRAINT uq_workspace_member UNIQUE (workspace_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wm_user_id ON workspace_members (user_id);
+CREATE INDEX IF NOT EXISTS idx_wm_workspace_id ON workspace_members (workspace_id);
+
+-- 5. 创建文件夹表（归属于工作空间）
 CREATE TABLE IF NOT EXISTS folder
 (
-    id         SERIAL PRIMARY KEY,
-    name       VARCHAR(255) NOT NULL,
-    parent_id  INTEGER REFERENCES folder (id) ON DELETE CASCADE,
-    user_id    INTEGER REFERENCES users (id) ON DELETE CASCADE,
-    created_at TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
+    id           SERIAL PRIMARY KEY,
+    name         VARCHAR(255) NOT NULL,
+    parent_id    INTEGER REFERENCES folder (id) ON DELETE CASCADE,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    created_at   TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
+CREATE INDEX IF NOT EXISTS idx_folder_workspace_id ON folder (workspace_id);
+CREATE INDEX IF NOT EXISTS idx_folder_ws_parent ON folder (workspace_id, parent_id);
 
--- 4. 创建文件表
+-- 6. 创建文件表（归属于工作空间，uploader_id 记录上传者）
 CREATE TABLE IF NOT EXISTS files
 (
     id           SERIAL PRIMARY KEY,
@@ -42,7 +70,8 @@ CREATE TABLE IF NOT EXISTS files
     status       VARCHAR(20)   DEFAULT 'pending',        -- pending, processing, success, fail
     vector_info  vector(1024),
     description  VARCHAR(4096),
-    uploader_id  INTEGER REFERENCES users (id),
+    workspace_id INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    uploader_id  INTEGER REFERENCES users (id),          -- 记录上传者，用于归属标注和通知
     parent_id    INTEGER REFERENCES folder (id),
     created_at   TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
@@ -50,11 +79,11 @@ CREATE TABLE IF NOT EXISTS files
 -- 创建向量索引 (HNSW, cosine distance)
 CREATE INDEX IF NOT EXISTS file_vector_idx ON files USING hnsw (vector_info vector_cosine_ops);
 -- 复合索引
-CREATE INDEX IF NOT EXISTS idx_files_uploader_parent ON files (uploader_id, parent_id);
-CREATE INDEX IF NOT EXISTS idx_files_uploader_status ON files (uploader_id, status);
+CREATE INDEX IF NOT EXISTS idx_files_ws_parent ON files (workspace_id, parent_id);
+CREATE INDEX IF NOT EXISTS idx_files_ws_status ON files (workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_files_content_hash_size ON files (content_hash, file_size);
 
--- 5. 创建分享表 (注意表名为 shares，与 SQLAlchemy 模型一致)
+-- 7. 创建分享表 (注意表名为 shares，与 SQLAlchemy 模型一致)
 CREATE TABLE IF NOT EXISTS shares
 (
     id         SERIAL PRIMARY KEY,
@@ -65,7 +94,7 @@ CREATE TABLE IF NOT EXISTS shares
     expires_at TIMESTAMP
 );
 
--- 6. 创建消息收件箱表
+-- 8. 创建消息收件箱表
 CREATE TABLE IF NOT EXISTS inbox
 (
     id         SERIAL PRIMARY KEY,
@@ -78,7 +107,7 @@ CREATE TABLE IF NOT EXISTS inbox
     is_deleted BOOLEAN DEFAULT FALSE
 );
 
--- 7. 创建系统字典表
+-- 9. 创建系统字典表
 CREATE TABLE IF NOT EXISTS sys_dict
 (
     id         SERIAL PRIMARY KEY,
@@ -89,11 +118,11 @@ CREATE TABLE IF NOT EXISTS sys_dict
     created_at TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
 
--- 8. 创建文件变更事件表（用于增量整理）
+-- 10. 创建文件变更事件表（用于增量整理，按工作空间追踪）
 CREATE TABLE IF NOT EXISTS file_change_events
 (
     id            SERIAL PRIMARY KEY,
-    user_id       INTEGER REFERENCES users (id) ON DELETE CASCADE,
+    workspace_id  INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
     entity_type   VARCHAR(20)  NOT NULL, -- file / folder
     entity_id     INTEGER      NOT NULL,
     action        VARCHAR(32)  NOT NULL, -- create / move / rename / delete / update_meta
@@ -104,21 +133,21 @@ CREATE TABLE IF NOT EXISTS file_change_events
     payload       TEXT,
     created_at    TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
-CREATE INDEX IF NOT EXISTS idx_file_change_events_user_created
-    ON file_change_events (user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_file_change_events_user_id
-    ON file_change_events (user_id, id);
+CREATE INDEX IF NOT EXISTS idx_file_change_events_ws_created
+    ON file_change_events (workspace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_file_change_events_ws_id
+    ON file_change_events (workspace_id, id);
 
--- 9. 创建整理检查点表（用于增量整理游标）
+-- 11. 创建整理检查点表（用于增量整理游标，按工作空间）
 CREATE TABLE IF NOT EXISTS organize_checkpoints
 (
-    user_id          INTEGER PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+    workspace_id     INTEGER PRIMARY KEY REFERENCES workspaces (id) ON DELETE CASCADE,
     last_event_id    INTEGER DEFAULT 0 NOT NULL,
     last_full_scan_at TIMESTAMP,
     updated_at       TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
 
--- 10. 创建 MCP Token 表（每用户有且仅有一条有效记录；token_value 供复制与工作区注入）
+-- 12. 创建 MCP Token 表（每用户有且仅有一条有效记录；token_value 供复制与工作区注入）
 CREATE TABLE IF NOT EXISTS mcp_tokens
 (
     id            SERIAL PRIMARY KEY,
@@ -135,7 +164,7 @@ CREATE TABLE IF NOT EXISTS mcp_tokens
 CREATE INDEX IF NOT EXISTS idx_mcp_tokens_user_id ON mcp_tokens (user_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_tokens_token_hash ON mcp_tokens (token_hash);
 
--- 11. 创建 Token 使用记录表
+-- 13. 创建 Token 使用记录表
 CREATE TABLE IF NOT EXISTS token_usage_logs
 (
     id                SERIAL PRIMARY KEY,
@@ -172,16 +201,27 @@ INSERT INTO sys_dict (key, value, des)
 VALUES ('site_name', 'SKYCloud', '站点名称（显示在网页标题与 Logo 旁）')
        ON CONFLICT (key) DO NOTHING;
 
--- 3. 初始化根目录（固定 id=1，属于 admin(id=1)）
-INSERT INTO folder (id, name, user_id, parent_id)
+-- 3. 初始化管理员的私人工作空间 (固定 id=1)
+INSERT INTO workspaces (id, name, description, owner_id)
+VALUES (1, 'admin的空间', '管理员默认工作空间', 1)
+ON CONFLICT (id) DO NOTHING;
+
+-- 4. 初始化管理员为工作空间成员 (admin 角色)
+INSERT INTO workspace_members (workspace_id, user_id, role)
+VALUES (1, 1, 'admin')
+ON CONFLICT (workspace_id, user_id) DO NOTHING;
+
+-- 5. 初始化根目录（固定 id=1，属于 admin 的工作空间 id=1）
+INSERT INTO folder (id, name, workspace_id, parent_id)
 VALUES (1, '/', 1, NULL)
 ON CONFLICT (id) DO NOTHING;
 
--- 4. 初始化头像文件夹（固定 id=2，根目录固定 parent_id=1）
-INSERT INTO folder (id, name, user_id, parent_id)
+-- 6. 初始化头像文件夹（固定 id=2，根目录固定 parent_id=1）
+INSERT INTO folder (id, name, workspace_id, parent_id)
 VALUES (2, '所有用户头像', 1, 1)
 ON CONFLICT (id) DO NOTHING;
 
--- 5. 修正序列，避免后续自增主键冲突
+-- 7. 修正序列，避免后续自增主键冲突
 SELECT setval(pg_get_serial_sequence('users', 'id'), COALESCE((SELECT MAX(id) FROM users), 1), true);
+SELECT setval(pg_get_serial_sequence('workspaces', 'id'), COALESCE((SELECT MAX(id) FROM workspaces), 1), true);
 SELECT setval(pg_get_serial_sequence('folder', 'id'), COALESCE((SELECT MAX(id) FROM folder), 1), true);

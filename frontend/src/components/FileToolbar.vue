@@ -1,8 +1,8 @@
 <template>
   <div class="toolbar">
     <a-space size="medium">
-      <!-- 核心操作组 -->
-      <a-button-group>
+      <!-- 核心操作组（仅 editor+ 可见） -->
+      <a-button-group v-if="canWrite">
         <a-button type="primary" @click="triggerUpload">
           <template #icon>
             <icon-upload />
@@ -26,8 +26,8 @@
         刷新
       </a-button>
 
-      <!-- 低频/系统操作收纳 -->
-      <a-dropdown trigger="click">
+      <!-- 低频/系统操作收纳（仅 editor+ 可见） -->
+      <a-dropdown v-if="canWrite" trigger="click">
         <a-button>
           <template #icon>
             <icon-more />
@@ -57,9 +57,13 @@
 import { ref } from 'vue'
 import { IconBulb, IconFolderAdd, IconMore, IconRefresh, IconTool, IconUpload } from '@arco-design/web-vue/es/icon'
 
-const props = defineProps<{
-  handleBatchUpload: (files: File[]) => void
-}>()
+const props = withDefaults(
+  defineProps<{
+    handleBatchUpload: (files: File[]) => void
+    canWrite?: boolean
+  }>(),
+  { canWrite: true },
+)
 
 defineEmits(['create-folder', 'organize', 'refresh', 'rebuild-indexes'])
 

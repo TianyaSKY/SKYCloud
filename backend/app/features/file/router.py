@@ -20,7 +20,8 @@ from fastapi import UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, get_current_workspace, require_workspace_role
+from app.models.workspace import Workspace
 from app.features.file.schemas import (
     BatchDeleteRequest,
     FilePreflightRequest,
@@ -40,14 +41,15 @@ router = APIRouter(tags=["file"])
 @router.post("/files")
 def create_file(
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(require_workspace_role("editor")),
         file: UploadFile = FastAPIFile(...),
         parent_id: int | None = Form(default=None),
         session: Session = Depends(get_db),
 ):
-    """单文件上传；未指定 parent_id 时落到用户根目录。"""
+    """单文件上传；未指定 parent_id 时落到工作空间根目录。"""
     try:
         new_file = file_service.create_uploaded_file(
-            session, current_user.id, FastAPIUploadAdapter(file), parent_id
+            session, workspace.id, current_user.id, FastAPIUploadAdapter(file), parent_id
         )
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
@@ -63,15 +65,16 @@ def create_file(
 @router.post("/files/batch")
 def batch_upload_files(
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(require_workspace_role("editor")),
         files: list[UploadFile] | None = FastAPIFile(default=None),
         parent_id: int | None = Form(default=None),
         session: Session = Depends(get_db),
 ):
-    """批量上传；未指定 parent_id 时落到用户根目录。"""
+    """批量上传；未指定 parent_id 时落到工作空间根目录。"""
     adapters = [FastAPIUploadAdapter(file) for file in (files or []) if file]
     try:
         new_files = file_service.create_uploaded_files(
-            session, current_user.id, adapters, parent_id
+            session, workspace.id, current_user.id, adapters, parent_id
         )
         return JSONResponse(
             status_code=status.HTTP_201_CREATED,
@@ -89,12 +92,13 @@ def batch_upload_files(
 def preflight_file_upload(
         payload: FilePreflightRequest,
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(require_workspace_role("editor")),
         session: Session = Depends(get_db),
 ):
     """上传前校验（哈希秒传、配额等），避免无效分片开销。"""
     try:
         return file_service.preflight_file_upload(
-            session, current_user.id, payload.model_dump(exclude_none=True)
+            session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
         )
     except (HTTPException, DomainError):
         raise
@@ -108,12 +112,13 @@ def preflight_file_upload(
 def init_multipart_upload(
         payload: MultipartInitRequest,
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(require_workspace_role("editor")),
         session: Session = Depends(get_db),
 ):
     """初始化分片上传会话。"""
     try:
         return file_service.init_multipart_upload(
-            session, current_user.id, payload.model_dump(exclude_none=True)
+            session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
         )
     except (HTTPException, DomainError):
         raise
@@ -129,6 +134,7 @@ def upload_multipart_chunk(
         chunk_index: int = Form(...),
         chunk: UploadFile = FastAPIFile(...),
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(require_workspace_role("editor")),
 ):
     """写入单个分片。"""
     if not chunk.filename:
@@ -138,7 +144,7 @@ def upload_multipart_chunk(
 
     try:
         return file_service.save_multipart_chunk(
-            current_user.id,
+            workspace.id,
             upload_id,
             chunk_index,
             FastAPIUploadAdapter(chunk),
@@ -155,12 +161,13 @@ def upload_multipart_chunk(
 def complete_multipart_upload(
         payload: MultipartCompleteRequest,
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(require_workspace_role("editor")),
         session: Session = Depends(get_db),
 ):
     """合并分片并落库，触发后续索引任务。"""
     try:
         new_file = file_service.complete_multipart_upload(
-            session, current_user.id, payload.upload_id
+            session, workspace.id, current_user.id, payload.upload_id
         )
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
@@ -177,24 +184,27 @@ def complete_multipart_upload(
 def get_multipart_upload_status(
         upload_id: str,
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(get_current_workspace),
 ):
     """查询分片上传进度（已收分片等）。"""
-    return file_service.get_multipart_upload_status(current_user.id, upload_id)
+    return file_service.get_multipart_upload_status(workspace.id, upload_id)
 
 
 @router.delete("/files/multipart/{upload_id}")
 def abort_multipart_upload(
         upload_id: str,
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(require_workspace_role("editor")),
 ):
     """中止并清理未完成的分片会话。"""
-    file_service.abort_multipart_upload(current_user.id, upload_id)
+    file_service.abort_multipart_upload(workspace.id, upload_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/files/list")
 def list_files(
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(get_current_workspace),
         parent_id: int | None = Query(default=None, ge=1),
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=10, ge=1, le=100),
@@ -205,13 +215,14 @@ def list_files(
 ):
     """目录浏览：文件与子文件夹分页列表。"""
     return file_service.get_files_and_folders(
-        session, current_user.id, parent_id, page, page_size, name, sort_by, order
+        session, workspace.id, parent_id, page, page_size, name, sort_by, order
     )
 
 
 @router.get("/files/search")
 async def search_files(
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(get_current_workspace),
         q: str = Query(default="", max_length=255),
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=10, ge=1, le=100),
@@ -221,7 +232,7 @@ async def search_files(
     """文件名模糊或语义检索；空查询直接返回空页避免全表扫描。"""
     if not q:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
-    return await file_service.search_files(session, current_user.id, q, page, page_size, type)
+    return await file_service.search_files(session, workspace.id, q, page, page_size, type)
 
 
 @router.put("/files/{id}")
@@ -229,10 +240,11 @@ def update_file(
         id: int,
         payload: FileUpdateRequest,
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(require_workspace_role("editor")),
         session: Session = Depends(get_db),
 ):
     """重命名/移动文件等元数据更新。"""
-    file_service.get_authorized_file(session, current_user.id, current_user.role, id)
+    file_service.get_authorized_file(session, workspace.id, current_user.id, id)
     file_obj = file_service.update_file(session, id, payload.model_dump(exclude_none=True))
     return file_obj.to_dict()
 
@@ -241,10 +253,11 @@ def update_file(
 def delete_file(
         id: int,
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(require_workspace_role("editor")),
         session: Session = Depends(get_db),
 ):
     """删除单个文件。"""
-    file_service.get_authorized_file(session, current_user.id, current_user.role, id)
+    file_service.get_authorized_file(session, workspace.id, current_user.id, id)
     file_service.delete_file(session, id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -253,11 +266,12 @@ def delete_file(
 def download_file(
         id: int,
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(get_current_workspace),
         session: Session = Depends(get_db),
 ):
     """鉴权后以附件形式下载原始文件。"""
     file_obj = file_service.get_downloadable_file(
-        session, current_user.id, current_user.role, id
+        session, workspace.id, current_user.id, id
     )
     abs_path = file_obj.get_abs_path()
 
@@ -316,11 +330,12 @@ async def upload_avatar(
 def batch_delete_files(
         payload: BatchDeleteRequest,
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(require_workspace_role("editor")),
         session: Session = Depends(get_db),
 ):
     """批量删除文件与/或文件夹。"""
     items = [item.model_dump() for item in payload.items]
-    file_service.batch_delete_items(session, current_user.id, current_user.role, items)
+    file_service.batch_delete_items(session, workspace.id, current_user.id, items)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -328,11 +343,12 @@ def batch_delete_files(
 def retry_embedding(
         payload: RetryEmbeddingRequest,
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(get_current_workspace),
         session: Session = Depends(get_db),
 ):
     """对单个失败文件重新入队索引。"""
     file_obj = file_service.get_authorized_file(
-        session, current_user.id, current_user.role, payload.file_id
+        session, workspace.id, current_user.id, payload.file_id
     )
     file_service.retry_embedding(session, cast(int, file_obj.id))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -341,20 +357,22 @@ def retry_embedding(
 @router.post("/files/rebuild_failed_indexes")
 def rebuild_failed_indexes(
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(get_current_workspace),
         session: Session = Depends(get_db),
 ):
-    """批量重试当前用户所有失败索引。"""
-    count = file_service.rebuild_failed_indexes(session, current_user.id)
+    """批量重试当前工作空间所有失败索引。"""
+    count = file_service.rebuild_failed_indexes(session, workspace.id)
     return {"count": count}
 
 
 @router.get("/files/process_status")
 async def process_status(
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(get_current_workspace),
         session: Session = Depends(get_db),
 ):
-    """查询当前用户文件处理状态汇总（pending/processing 等）。"""
-    return await file_service.process_status(session, current_user.id)
+    """查询当前工作空间文件处理状态汇总（pending/processing 等）。"""
+    return await file_service.process_status(session, workspace.id)
 
 
 # 必须放在所有 /files/* 具体路由之后，避免 {id} 匹配 list、search 等路径段
@@ -362,10 +380,11 @@ async def process_status(
 def get_file(
         id: int,
         current_user=Depends(get_current_user),
+        workspace: Workspace = Depends(get_current_workspace),
         session: Session = Depends(get_db),
 ):
     """获取单文件元数据（含权限校验）。"""
     file_obj = file_service.get_authorized_file(
-        session, current_user.id, current_user.role, id
+        session, workspace.id, current_user.id, id
     )
     return file_obj.to_dict()

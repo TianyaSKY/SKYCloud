@@ -1,17 +1,19 @@
-"""HTTP 鉴权依赖：JWT 解析、管理员校验、资源归属检查。
+"""HTTP 鉴权依赖：JWT 解析、管理员校验、资源归属检查、工作空间上下文。
 
 支持 Authorization Bearer 与 query ``token``（iframe / SSE 等无法自定义头的场景）。
 MCP 专用 JWT 额外校验库内是否仍有效（吊销后立即拒绝）。
 """
 
 import jwt
-from fastapi import Depends, HTTPException, status, Query
+from fastapi import Depends, HTTPException, Request, status, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.infra.extensions import SECRET_KEY, get_db
 from app.models.user import User
+from app.models.workspace import Workspace
 from app.features.auth import user_service
+from app.features.workspace.permissions import assert_member, check_role_level
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -88,3 +90,66 @@ def ensure_owner_or_admin(current_user: User, owner_id: int) -> None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
         )
+
+
+# ---------------------------------------------------------------------------
+# 工作空间上下文依赖
+# ---------------------------------------------------------------------------
+
+
+async def get_current_workspace(
+        request: Request,
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
+) -> Workspace:
+    """从 X-Workspace-Id header 解析当前工作空间，校验用户为成员。
+
+    前端所有文件/文件夹操作均需携带此 header。
+    """
+    ws_id = request.headers.get("X-Workspace-Id")
+    if not ws_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-Workspace-Id header is required",
+        )
+    try:
+        workspace_id = int(ws_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid X-Workspace-Id header",
+        )
+
+    workspace = session.get(Workspace, workspace_id)
+    if not workspace:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found",
+        )
+
+    # 校验用户为工作空间成员
+    assert_member(session, workspace_id, int(current_user.id))
+    return workspace
+
+
+def require_workspace_role(min_role: str):
+    """依赖工厂：校验当前用户在当前工作空间的最低角色。
+
+    用法：Depends(require_workspace_role("editor"))
+    """
+
+    async def checker(
+            workspace: Workspace = Depends(get_current_workspace),
+            current_user: User = Depends(get_current_user),
+            session: Session = Depends(get_db),
+    ) -> Workspace:
+        from app.features.workspace.permissions import get_member_role
+        role = get_member_role(session, workspace.id, int(current_user.id))
+        if role is None or not check_role_level(role, min_role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires {min_role} role or higher",
+            )
+        return workspace
+
+    return checker

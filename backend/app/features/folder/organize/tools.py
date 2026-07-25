@@ -1,6 +1,6 @@
 """整理 Agent 工具集：供 ReAct 调用的目录读写操作。
 
-边界：工具内直接操作 DB/Redis，不做 LLM 决策；每个变更工具必须带 user_id 做归属校验。
+边界：工具内直接操作 DB/Redis，不做 LLM 决策；每个变更工具必须带 workspace_id 做归属校验。
 会话使用独立 session 并在 finally 关闭，避免与 Agent 多步并发串 session。
 """
 
@@ -21,12 +21,12 @@ def get_session():
     return SessionLocal()
 
 
-def clear_user_cache(user_id):
+def clear_workspace_cache(workspace_id):
     """目录变更后清文件夹缓存与搜索缓存；SCAN 代替 KEYS 避免阻塞 Redis。"""
     try:
-        redis_client.delete(f"user:folders:{user_id}")
+        redis_client.delete(f"workspace:folders:{workspace_id}")
         cursor = 0
-        pattern = f"search:*:{user_id}:*"
+        pattern = f"search:*:{workspace_id}:*"
         while True:
             cursor, keys = redis_client.scan(cursor=cursor, match=pattern, count=100)
             if keys:
@@ -34,10 +34,10 @@ def clear_user_cache(user_id):
             if cursor == 0:
                 break
     except Exception as e:
-        logger.error(f"Error clearing cache for user {user_id}: {e}")
+        logger.error(f"Error clearing cache for workspace {workspace_id}: {e}")
 
 
-def _check_mixed_folders(session, user_id: int) -> tuple[bool, list[dict]]:
+def _check_mixed_folders(session, workspace_id: int) -> tuple[bool, list[dict]]:
     """查找「文件+子文件夹共存」的目录（违反单一内容原则）。
 
     返回 (is_clean, mixed_folders_list)；用聚合计数消除 N+1。
@@ -45,8 +45,8 @@ def _check_mixed_folders(session, user_id: int) -> tuple[bool, list[dict]]:
     mixed_folders: list[dict] = []
 
     # 根目录 parent_id 为 None，需单独判断
-    has_root_subfolders = session.query(Folder).filter_by(user_id=user_id, parent_id=None).count() > 0
-    has_root_files = session.query(File).filter_by(uploader_id=user_id, parent_id=None).count() > 0
+    has_root_subfolders = session.query(Folder).filter_by(workspace_id=workspace_id, parent_id=None).count() > 0
+    has_root_files = session.query(File).filter_by(workspace_id=workspace_id, parent_id=None).count() > 0
     if has_root_subfolders and has_root_files:
         mixed_folders.append({"id": 0, "name": "根目录"})
 
@@ -63,7 +63,7 @@ def _check_mixed_folders(session, user_id: int) -> tuple[bool, list[dict]]:
         .all()
     )
 
-    folders = session.query(Folder).filter_by(user_id=user_id).all()
+    folders = session.query(Folder).filter_by(workspace_id=workspace_id).all()
     for folder in folders:
         has_subfolders = subfolder_counts.get(folder.id, 0) > 0
         has_files = file_counts.get(folder.id, 0) > 0
@@ -73,7 +73,7 @@ def _check_mixed_folders(session, user_id: int) -> tuple[bool, list[dict]]:
     return len(mixed_folders) == 0, mixed_folders
 
 
-def _check_empty_folders(session, user_id: int) -> tuple[bool, list[dict]]:
+def _check_empty_folders(session, workspace_id: int) -> tuple[bool, list[dict]]:
     """查找空文件夹；聚合计数消除 N+1。"""
     subfolder_counts = dict(
         session.query(Folder.parent_id, func.count(Folder.id))
@@ -88,7 +88,7 @@ def _check_empty_folders(session, user_id: int) -> tuple[bool, list[dict]]:
         .all()
     )
 
-    folders = session.query(Folder).filter_by(user_id=user_id).all()
+    folders = session.query(Folder).filter_by(workspace_id=workspace_id).all()
     empty_folders: list[dict] = []
     for folder in folders:
         has_subfolders = subfolder_counts.get(folder.id, 0) > 0
@@ -99,11 +99,11 @@ def _check_empty_folders(session, user_id: int) -> tuple[bool, list[dict]]:
     return len(empty_folders) == 0, empty_folders
 
 
-def check_mixed_folders_internal(user_id: int) -> tuple[bool, str]:
+def check_mixed_folders_internal(workspace_id: int) -> tuple[bool, str]:
     """校验单一内容原则；返回 (是否干净, 可读消息)。"""
     session = get_session()
     try:
-        is_clean, mixed_folders = _check_mixed_folders(session, user_id)
+        is_clean, mixed_folders = _check_mixed_folders(session, workspace_id)
         if is_clean:
             return True, "未发现既包含文件又包含子文件夹的文件夹。"
         lines = [f"ID: {f['id']}, Name: {f['name']}" for f in mixed_folders]
@@ -114,11 +114,11 @@ def check_mixed_folders_internal(user_id: int) -> tuple[bool, str]:
         session.close()
 
 
-def check_empty_folders_internal(user_id: int) -> tuple[bool, str]:
+def check_empty_folders_internal(workspace_id: int) -> tuple[bool, str]:
     """校验是否仍有空文件夹。"""
     session = get_session()
     try:
-        is_clean, empty_folders = _check_empty_folders(session, user_id)
+        is_clean, empty_folders = _check_empty_folders(session, workspace_id)
         if is_clean:
             return True, "未发现空文件夹。"
         lines = [f"ID: {f['id']}, Name: {f['name']}" for f in empty_folders]
@@ -130,11 +130,11 @@ def check_empty_folders_internal(user_id: int) -> tuple[bool, str]:
 
 
 @tool
-def get_all_files(user_id: int) -> str:
-    """列出指定用户全部文件（ID/名称/父目录），供分类决策。"""
+def get_all_files(workspace_id: int) -> str:
+    """列出指定工作空间全部文件（ID/名称/父目录），供分类决策。"""
     session = get_session()
     try:
-        files = session.query(File).filter_by(uploader_id=user_id).all()
+        files = session.query(File).filter_by(workspace_id=workspace_id).all()
         if not files:
             return "没有找到文件。"
 
@@ -149,11 +149,11 @@ def get_all_files(user_id: int) -> str:
 
 
 @tool
-def get_folder_tree(user_id: int) -> str:
-    """列出指定用户全部文件夹（扁平：ID/名称/父 ID）。"""
+def get_folder_tree(workspace_id: int) -> str:
+    """列出指定工作空间全部文件夹（扁平：ID/名称/父 ID）。"""
     session = get_session()
     try:
-        folders = session.query(Folder).filter_by(user_id=user_id).all()
+        folders = session.query(Folder).filter_by(workspace_id=workspace_id).all()
         paths = []
         for folder in folders:
             paths.append(f"ID: {folder.id}, Name: {folder.name}, Parent ID: {folder.parent_id}")
@@ -165,26 +165,26 @@ def get_folder_tree(user_id: int) -> str:
 
 
 @tool
-def create_folder(name: str, parent_id: int, user_id: int) -> str:
+def create_folder(name: str, parent_id: int, workspace_id: int) -> str:
     """在指定父目录下创建文件夹；同名已存在则返回已有 ID。"""
     session = get_session()
     try:
         pid = parent_id if parent_id and parent_id != 0 else None
         existing_folder = session.query(Folder).filter_by(
             name=name,
-            user_id=user_id,
+            workspace_id=workspace_id,
             parent_id=pid
         ).first()
 
         if existing_folder:
             return f"文件夹 '{name}' 已存在 (ID: {existing_folder.id})"
 
-        new_folder = Folder(name=name, user_id=user_id, parent_id=pid)
+        new_folder = Folder(name=name, workspace_id=workspace_id, parent_id=pid)
         session.add(new_folder)
         session.commit()
         session.refresh(new_folder)
         folder_id = new_folder.id
-        clear_user_cache(user_id)
+        clear_workspace_cache(workspace_id)
         return f"已创建文件夹 '{name}' (ID: {folder_id})"
     except Exception as e:
         session.rollback()
@@ -194,7 +194,7 @@ def create_folder(name: str, parent_id: int, user_id: int) -> str:
 
 
 @tool
-def rename_folder(folder_id: int, new_name: str, user_id: int) -> str:
+def rename_folder(folder_id: int, new_name: str, workspace_id: int) -> str:
     """重命名文件夹；须校验归属，且同级不重名。"""
     session = get_session()
     try:
@@ -202,13 +202,13 @@ def rename_folder(folder_id: int, new_name: str, user_id: int) -> str:
         if not folder:
             return f"文件夹 {folder_id} 不存在"
 
-        if folder.user_id != user_id:
-            return f"权限错误：文件夹 {folder_id} 不属于用户 {user_id}"
+        if folder.workspace_id != workspace_id:
+            return f"权限错误：文件夹 {folder_id} 不属于工作空间 {workspace_id}"
 
         existing_folder = session.query(Folder).filter_by(
             name=new_name,
             parent_id=folder.parent_id,
-            user_id=folder.user_id
+            workspace_id=folder.workspace_id
         ).first()
 
         if existing_folder and existing_folder.id != folder_id:
@@ -216,7 +216,7 @@ def rename_folder(folder_id: int, new_name: str, user_id: int) -> str:
 
         folder.name = new_name
         session.commit()
-        clear_user_cache(folder.user_id)
+        clear_workspace_cache(folder.workspace_id)
         return f"已将文件夹 {folder_id} 重命名为 '{new_name}'"
     except Exception as e:
         session.rollback()
@@ -226,7 +226,7 @@ def rename_folder(folder_id: int, new_name: str, user_id: int) -> str:
 
 
 @tool
-def move_file(file_id: int, target_folder_id: int, user_id: int) -> str:
+def move_file(file_id: int, target_folder_id: int, workspace_id: int) -> str:
     """移动文件到目标文件夹；校验文件与目标归属。"""
     session = get_session()
     try:
@@ -234,8 +234,8 @@ def move_file(file_id: int, target_folder_id: int, user_id: int) -> str:
         if not file:
             return f"文件 {file_id} 不存在"
 
-        if file.uploader_id != user_id:
-            return f"权限错误：文件 {file_id} 不属于用户 {user_id}"
+        if file.workspace_id != workspace_id:
+            return f"权限错误：文件 {file_id} 不属于工作空间 {workspace_id}"
 
         target_id = target_folder_id if target_folder_id and target_folder_id != 0 else None
 
@@ -243,12 +243,12 @@ def move_file(file_id: int, target_folder_id: int, user_id: int) -> str:
             target_folder = session.get(Folder, target_id)
             if not target_folder:
                 return f"目标文件夹 {target_folder_id} 不存在"
-            if target_folder.user_id != user_id:
-                return f"权限错误：目标文件夹 {target_folder_id} 不属于用户 {user_id}"
+            if target_folder.workspace_id != workspace_id:
+                return f"权限错误：目标文件夹 {target_folder_id} 不属于工作空间 {workspace_id}"
 
         file.parent_id = target_id
         session.commit()
-        clear_user_cache(file.uploader_id)
+        clear_workspace_cache(file.workspace_id)
         return f"已将文件 {file_id} 移动到文件夹 {target_folder_id}"
     except Exception as e:
         session.rollback()
@@ -286,7 +286,7 @@ def get_file_information(file_id: int) -> str:
 
 
 @tool
-def delete_folder(folder_id: int, user_id: int) -> str:
+def delete_folder(folder_id: int, workspace_id: int) -> str:
     """仅允许删除空文件夹；非空返回失败原因。"""
     session = get_session()
     try:
@@ -294,8 +294,8 @@ def delete_folder(folder_id: int, user_id: int) -> str:
         if not folder:
             return f"文件夹 {folder_id} 不存在"
 
-        if folder.user_id != user_id:
-            return f"权限错误：文件夹 {folder_id} 不属于用户 {user_id}"
+        if folder.workspace_id != workspace_id:
+            return f"权限错误：文件夹 {folder_id} 不属于工作空间 {workspace_id}"
 
         subfolders_count = session.query(Folder).filter_by(parent_id=folder.id).count()
         if subfolders_count > 0:
@@ -307,7 +307,7 @@ def delete_folder(folder_id: int, user_id: int) -> str:
 
         session.delete(folder)
         session.commit()
-        clear_user_cache(folder.user_id)
+        clear_workspace_cache(folder.workspace_id)
         return f"已删除文件夹 {folder_id}"
     except Exception as e:
         session.rollback()
@@ -317,7 +317,7 @@ def delete_folder(folder_id: int, user_id: int) -> str:
 
 
 @tool
-def merge_folders(source_folder_id: int, target_folder_id: int, user_id: int) -> str:
+def merge_folders(source_folder_id: int, target_folder_id: int, workspace_id: int) -> str:
     """将源目录内容并入目标后删除源；禁止合并到自身子树，重名子目录递归合并。"""
     session = get_session()
     try:
@@ -327,10 +327,10 @@ def merge_folders(source_folder_id: int, target_folder_id: int, user_id: int) ->
         if not source or not target:
             return "源文件夹或目标文件夹不存在"
 
-        if source.user_id != user_id:
-            return f"权限错误：源文件夹 {source_folder_id} 不属于用户 {user_id}"
-        if target.user_id != user_id:
-            return f"权限错误：目标文件夹 {target_folder_id} 不属于用户 {user_id}"
+        if source.workspace_id != workspace_id:
+            return f"权限错误：源文件夹 {source_folder_id} 不属于工作空间 {workspace_id}"
+        if target.workspace_id != workspace_id:
+            return f"权限错误：目标文件夹 {target_folder_id} 不属于工作空间 {workspace_id}"
 
         if source.id == target.id:
             return "不能合并同一个文件夹"
@@ -367,7 +367,7 @@ def merge_folders(source_folder_id: int, target_folder_id: int, user_id: int) ->
 
         session.delete(source)
         session.commit()
-        clear_user_cache(source.user_id)
+        clear_workspace_cache(source.workspace_id)
         return f"已将文件夹 {source_folder_id} 合并到 {target_folder_id}"
     except Exception as e:
         session.rollback()
@@ -395,11 +395,11 @@ def _merge_folder_contents(session, source: Folder, target: Folder):
 
 
 @tool
-def find_duplicate_folders(user_id: int) -> str:
+def find_duplicate_folders(workspace_id: int) -> str:
     """查找同父目录下同名文件夹，便于后续 merge。"""
     session = get_session()
     try:
-        folders = session.query(Folder).filter_by(user_id=user_id).all()
+        folders = session.query(Folder).filter_by(workspace_id=workspace_id).all()
         grouped = {}
         for f in folders:
             key = (f.name, f.parent_id)
@@ -424,7 +424,7 @@ def find_duplicate_folders(user_id: int) -> str:
 
 
 @tool
-def move_folder(folder_id: int, target_folder_id: int, user_id: int) -> str:
+def move_folder(folder_id: int, target_folder_id: int, workspace_id: int) -> str:
     """移动文件夹到目标下；禁止移入自身子树，0/None 表示根。"""
     session = get_session()
     try:
@@ -432,8 +432,8 @@ def move_folder(folder_id: int, target_folder_id: int, user_id: int) -> str:
         if not folder:
             return f"文件夹 {folder_id} 不存在"
 
-        if folder.user_id != user_id:
-            return f"权限错误：文件夹 {folder_id} 不属于用户 {user_id}"
+        if folder.workspace_id != workspace_id:
+            return f"权限错误：文件夹 {folder_id} 不属于工作空间 {workspace_id}"
 
         if folder.id == target_folder_id:
             return "不能将文件夹移动到自身"
@@ -441,15 +441,15 @@ def move_folder(folder_id: int, target_folder_id: int, user_id: int) -> str:
         if not target_folder_id or target_folder_id == 0:
             folder.parent_id = None
             session.commit()
-            clear_user_cache(folder.user_id)
+            clear_workspace_cache(folder.workspace_id)
             return f"已将文件夹 {folder_id} 移动到根目录"
 
         target = session.get(Folder, target_folder_id)
         if not target:
             return f"目标文件夹 {target_folder_id} 不存在"
 
-        if target.user_id != user_id:
-            return f"权限错误：目标文件夹 {target_folder_id} 不属于用户 {user_id}"
+        if target.workspace_id != workspace_id:
+            return f"权限错误：目标文件夹 {target_folder_id} 不属于工作空间 {workspace_id}"
 
         current = target
         while current:
@@ -462,7 +462,7 @@ def move_folder(folder_id: int, target_folder_id: int, user_id: int) -> str:
 
         folder.parent_id = target.id
         session.commit()
-        clear_user_cache(folder.user_id)
+        clear_workspace_cache(folder.workspace_id)
         return f"已将文件夹 {folder_id} 移动到 {target.name} (ID: {target.id})"
     except Exception as e:
         session.rollback()
@@ -472,14 +472,14 @@ def move_folder(folder_id: int, target_folder_id: int, user_id: int) -> str:
 
 
 @tool
-def find_mixed_content_folders(user_id: int) -> str:
+def find_mixed_content_folders(workspace_id: int) -> str:
     """Agent 工具封装：返回违反单一内容原则的目录说明。"""
-    _, message = check_mixed_folders_internal(user_id)
+    _, message = check_mixed_folders_internal(workspace_id)
     return message
 
 
 @tool
-def find_empty_folders(user_id: int) -> str:
+def find_empty_folders(workspace_id: int) -> str:
     """Agent 工具封装：返回空文件夹列表说明。"""
-    _, message = check_empty_folders_internal(user_id)
+    _, message = check_empty_folders_internal(workspace_id)
     return message

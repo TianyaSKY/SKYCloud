@@ -1,8 +1,9 @@
-import { onMounted, reactive, ref, shallowRef } from 'vue'
+import { onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import type { FileItem } from '../api/file'
 import { getFiles, getProcessStatus, getRootFolderId, searchFiles } from '../api/file'
 import { Notification } from '@arco-design/web-vue'
 import { logger } from '../utils/logger'
+import { useWorkspaceStore } from '../stores/workspace'
 
 export function useFileBrowser() {
   const loading = ref(false)
@@ -239,6 +240,17 @@ export function useFileBrowser() {
     initPageSettings()
     goRoot()
   })
+
+  // 工作空间切换时重置文件列表
+  const wsStore = useWorkspaceStore()
+  watch(
+    () => wsStore.currentWorkspace?.id,
+    (newId, oldId) => {
+      if (newId && newId !== oldId) {
+        goRoot()
+      }
+    },
+  )
 
   return {
     loading,

@@ -15,14 +15,15 @@
   >
     <div
       class="file-content"
-      @dragenter="handleDragEnter"
-      @dragleave="handleDragLeave"
-      @drop="handleDrop"
+      @dragenter="canWrite && handleDragEnter($event)"
+      @dragleave="canWrite && handleDragLeave($event)"
+      @drop="canWrite && handleDrop($event)"
       @dragover.prevent
     >
       <FileDragOverlay :is-dragging="isDragging" />
 
       <FileToolbar
+        :can-write="canWrite"
         :handle-batch-upload="handleBatchUpload"
         @organize="handleOrganize"
         @refresh="fetchFiles"
@@ -32,6 +33,7 @@
 
       <FileTable
         v-model:selected-keys="selectedKeys"
+        :can-write="canWrite"
         :data="fileList"
         :loading="loading"
         :pagination="pagination"
@@ -95,7 +97,11 @@ import { useFilePreview } from '../hooks/useFilePreview'
 import { useFileOperations } from '../hooks/useFileOperations'
 import { useFileBrowser } from '../hooks/useFileBrowser'
 import { useUploadManager } from '../hooks/useUploadManager'
+import { useWorkspaceStore } from '../stores/workspace'
 import type { FileItem } from '../api/file'
+
+const wsStore = useWorkspaceStore()
+const canWrite = computed(() => wsStore.canWrite)
 
 const {
   loading,

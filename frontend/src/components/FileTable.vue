@@ -70,7 +70,7 @@
               </a-button>
             </a-tooltip>
 
-            <a-dropdown trigger="click" position="br">
+            <a-dropdown v-if="canWrite" trigger="click" position="br">
               <a-button size="small" type="text" aria-label="更多操作" class="action-btn">
                 <template #icon><icon-more /></template>
               </a-button>
@@ -98,7 +98,7 @@
     </template>
   </a-table>
 
-  <div v-if="selection.length > 0" style="margin-top: 16px">
+  <div v-if="canWrite && selection.length > 0" style="margin-top: 16px">
     <a-alert>
       <div style="display: flex; align-items: center; justify-content: space-between; width: 100%">
         <a-space>
@@ -150,12 +150,16 @@ interface PaginationConfig {
   pageSizeOptions?: number[]
 }
 
-const props = defineProps<{
-  data: FileTableRow[]
-  loading: boolean
-  pagination: PaginationConfig
-  selectedKeys?: number[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    data: FileTableRow[]
+    loading: boolean
+    pagination: PaginationConfig
+    selectedKeys?: number[]
+    canWrite?: boolean
+  }>(),
+  { canWrite: true },
+)
 
 const emit = defineEmits([
   'file-click',

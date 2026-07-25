@@ -103,11 +103,11 @@ def publish_file_tasks(file_ids: Iterable[int]) -> None:
     publish_messages(FILE_PROCESS_QUEUE, file_ids)
 
 
-def publish_organize_task(user_id: int, lock_token: str) -> None:
+def publish_organize_task(workspace_id: int, user_id: int, lock_token: str) -> None:
     """发布整理任务；lock_token 用于 worker 侧幂等释放分布式锁。"""
     publish_messages(
         ORGANIZE_FILE_QUEUE,
-        [json.dumps({"user_id": user_id, "lock_token": lock_token})],
+        [json.dumps({"workspace_id": workspace_id, "user_id": user_id, "lock_token": lock_token})],
     )
 
 

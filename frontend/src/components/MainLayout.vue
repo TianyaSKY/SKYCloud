@@ -126,6 +126,7 @@ import ChatWidget from './ChatWidget.vue'
 import { getUserInfo, updatePassword, uploadAvatar } from '@/api/user'
 import { getMcpToken, refreshMcpToken } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
+import { useWorkspaceStore } from '@/stores/workspace'
 import { logger } from '@/utils/logger'
 import { passwordChangeSchema } from '@/schemas/user'
 import { copyText } from '@/utils/clipboard'
@@ -332,7 +333,7 @@ const MENU_ROUTE_MAP: Record<string, string> = {
   share: '/shares',
   inbox: '/inbox',
   docs: '/docs',
-  workspace: '/workspace',
+  workspaces: '/workspaces',
   'token-usage': '/token-usage',
   'admin-token-usage': '/admin/token-usage',
   'sys-dicts': '/sys_dicts',
@@ -347,6 +348,7 @@ const handleMenuClick = (key: string) => {
 
 const handleLogout = () => {
   auth.logout()
+  useWorkspaceStore().reset()
   router.push('/')
 }
 </script>

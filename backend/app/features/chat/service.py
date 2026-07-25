@@ -73,19 +73,19 @@ def get_embeddings_model():
 
 def _vector_search_docs(
         query_text: str,
-        user_id: int,
+        workspace_id: int,
         embeddings: "OpenAIEmbeddings",
         limit: int,
 ) -> list[Document]:
     """单条查询的完整向量检索（embedding + DB）；保留向后兼容。"""
     query_vector = embeddings.embed_query(query_text)[:1024]
-    return _db_search_by_vector(query_vector, query_text, user_id, limit)
+    return _db_search_by_vector(query_vector, query_text, workspace_id, limit)
 
 
 def _db_search_by_vector(
         query_vector: list[float],
         query_text: str,
-        user_id: int,
+        workspace_id: int,
         limit: int,
 ) -> list[Document]:
     """用预计算向量查库；独立 session 保证线程池并发安全。"""
@@ -94,7 +94,7 @@ def _db_search_by_vector(
                 FROM files
                 WHERE description IS NOT NULL
                   AND description != ''
-           AND uploader_id = :user_id
+           AND workspace_id = :workspace_id
                 ORDER BY vector_info <=> :vector
                    LIMIT :limit
                 """)
@@ -103,7 +103,7 @@ def _db_search_by_vector(
     try:
         results = session.execute(
             sql,
-            {"vector": str(query_vector), "user_id": user_id, "limit": limit},
+            {"vector": str(query_vector), "workspace_id": workspace_id, "limit": limit},
         ).fetchall()
     finally:
         session.close()
@@ -155,11 +155,11 @@ def _fuse_docs_with_rrf(
     return fused_docs
 
 
-async def custom_db_retriever(query_text: str, user_id: int):
+async def custom_db_retriever(query_text: str, workspace_id: int):
     """单查询向量检索 + rerank；保留兼容旧调用。"""
     embeddings = get_embeddings_model()
     docs = _vector_search_docs(
-        query_text, user_id, embeddings, RAG_VECTOR_FETCH_K)
+        query_text, workspace_id, embeddings, RAG_VECTOR_FETCH_K)
     docs = await rerank_documents(query_text, docs)
     logger.info(f"单查询检索结果: {len(docs)}")
     return docs
@@ -167,7 +167,7 @@ async def custom_db_retriever(query_text: str, user_id: int):
 
 async def multi_query_db_retriever(
         question: str,
-        user_id: int,
+        workspace_id: int,
         dimensions: RewriteKeywordDimensions,
         original_vector: list[float] | None = None,
 ):
@@ -220,7 +220,7 @@ async def multi_query_db_retriever(
     # ---------------------------------------------------------------------------
     async def _search_one(q_text: str, vec: list[float]) -> list[Document]:
         return await loop.run_in_executor(
-            None, _db_search_by_vector, vec, q_text, user_id, RAG_VECTOR_FETCH_K
+            None, _db_search_by_vector, vec, q_text, workspace_id, RAG_VECTOR_FETCH_K
         )
 
     search_tasks = [_search_one(qt, v) for qt, v in zip(queries, all_vectors)]
@@ -290,15 +290,15 @@ async def retrieve_docs_with_rewrite(payload: dict):
     question = str(payload.get("question", "") or "")
     rewrite_output = payload.get("rewrite_output")
     original_vector = payload.get("original_vector") or None
-    current_user_id = int(payload["user_id"])
+    workspace_id = int(payload["workspace_id"])
 
     dimensions = require_keyword_dimensions(rewrite_output)
     return await multi_query_db_retriever(
-        question, current_user_id, dimensions, original_vector=original_vector
+        question, workspace_id, dimensions, original_vector=original_vector
     )
 
 
-async def generate_chat_events(user_id, query: str, history: list):
+async def generate_chat_events(user_id: int, workspace_id: int, query: str, history: list):
     """SSE 异步生成器：关键词 → 检索状态 → 回答 token，并统一记 token 用量。"""
     from app.infra.llm.client import record_llm_usage, TrackingOpenAIEmbeddings
 
@@ -369,7 +369,7 @@ async def generate_chat_events(user_id, query: str, history: list):
                                    embed_original_question
                                ).with_config({"run_name": "embed_original"}),
                                "question": itemgetter("question"),
-                               "user_id": itemgetter("user_id"),
+                               "workspace_id": itemgetter("workspace_id"),
                            } | RunnableLambda(retrieve_docs_with_rewrite).with_config(
                     {"run_name": "custom_db_retriever"}
                 ) | format_docs,
@@ -391,7 +391,7 @@ async def generate_chat_events(user_id, query: str, history: list):
 
     try:
         async for event in rag_chain.astream_events(
-                {"question": query, "history": formatted_history, "user_id": user_id},
+                {"question": query, "history": formatted_history, "user_id": user_id, "workspace_id": workspace_id},
                 version="v2"
         ):
             kind = event["event"]

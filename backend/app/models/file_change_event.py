@@ -11,7 +11,7 @@ class FileChangeEvent(Base):
     __tablename__ = "file_change_events"
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
     entity_type = Column(String(20), nullable=False)  # file / folder
     entity_id = Column(Integer, nullable=False)
     # create / move / rename / delete / update_meta
@@ -23,12 +23,12 @@ class FileChangeEvent(Base):
     payload = Column(Text, nullable=True)  # 可选扩展 JSON/文本
     created_at = Column(DateTime, default=beijing_now, nullable=False, index=True)
 
-    user = relationship("User", backref="file_change_events")
+    workspace = relationship("Workspace", backref="file_change_events")
 
     def to_dict(self) -> dict:
         return {
             "id": self.id,
-            "user_id": self.user_id,
+            "workspace_id": self.workspace_id,
             "entity_type": self.entity_type,
             "entity_id": self.entity_id,
             "action": self.action,

@@ -2,6 +2,7 @@ import axios, { type AxiosRequestConfig } from 'axios'
 import { Message } from '@arco-design/web-vue'
 import router from '../router'
 import { useAuthStore } from '../stores/auth'
+import { useWorkspaceStore } from '../stores/workspace'
 import { logger } from '../utils/logger'
 
 const service = axios.create({
@@ -39,12 +40,16 @@ export class BizError extends Error {
   }
 }
 
-// 请求拦截器：从 store 注入 Authorization
+// 请求拦截器：从 store 注入 Authorization 和 X-Workspace-Id
 service.interceptors.request.use(
   (config) => {
     const auth = useAuthStore()
     if (auth.token) {
       config.headers.Authorization = `Bearer ${auth.token}`
+    }
+    const wsStore = useWorkspaceStore()
+    if (wsStore.currentWorkspace) {
+      config.headers['X-Workspace-Id'] = String(wsStore.currentWorkspace.id)
     }
     return config
   },

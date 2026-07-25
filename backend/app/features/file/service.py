@@ -35,7 +35,6 @@ from app.infra.task_queue import publish_file_tasks
 from app.models.file import File
 from app.models.folder import Folder
 from app.features.folder import change_log as change_log_service
-from app.features.file import bloom as file_access_bloom
 from app.infra.llm.config import get_embedding_model_config
 
 logger = logging.getLogger(__name__)
@@ -125,6 +124,7 @@ def _persist_file_record(
         file_path: str,
         file_size: int,
         mime_type: str | None,
+        workspace_id: int,
         uploader_id: int | None,
         parent_id: int | None,
         content_hash: str | None,
@@ -137,6 +137,7 @@ def _persist_file_record(
         file_path=file_path,
         file_size=file_size,
         mime_type=mime_type,
+        workspace_id=workspace_id,
         uploader_id=uploader_id,
         parent_id=parent_id,
         content_hash=content_hash,
@@ -146,18 +147,15 @@ def _persist_file_record(
     )
     session.add(new_file)
     session.commit()
-    file_access_bloom.add_file(
-        cast(int, new_file.id), cast(int | None, new_file.uploader_id)
-    )
     return new_file
 
 
 def _log_file_created(file_obj: File) -> None:
-    uploader_id = cast(int | None, file_obj.uploader_id)
-    if not uploader_id:
+    workspace_id = cast(int | None, file_obj.workspace_id)
+    if not workspace_id:
         return
     change_log_service.log_event(
-        user_id=uploader_id,
+        workspace_id=workspace_id,
         entity_type="file",
         entity_id=cast(int, file_obj.id),
         action="create",
@@ -173,6 +171,7 @@ def _clone_existing_file(
         source_file: File,
         *,
         filename: str,
+        workspace_id: int,
         uploader_id: int,
         parent_id: int | None,
         mime_type: str | None,
@@ -193,6 +192,7 @@ def _clone_existing_file(
             file_path=cast(str, source_file.file_path),
             file_size=cast(int | None, source_file.file_size) or 0,
             mime_type=resolved_mime,
+            workspace_id=workspace_id,
             uploader_id=uploader_id,
             parent_id=parent_id,
             content_hash=content_hash,
@@ -207,13 +207,13 @@ def _clone_existing_file(
 
     _log_file_created(new_file)
     if status != "success":
-        _push_processing_queue([cast(int, new_file.id)], uploader_id)
+        _push_processing_queue([cast(int, new_file.id)], workspace_id)
     else:
-        _clear_search_cache(uploader_id)
+        _clear_search_cache(workspace_id)
     return new_file
 
 
-def preflight_file_upload(session: Session, uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
+def preflight_file_upload(session: Session, workspace_id: int, uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
     """上传预检：hash 命中则直接克隆记录，跳过分片传输。"""
     filename = (data.get("filename") or "").strip()
     if not filename:
@@ -234,6 +234,7 @@ def preflight_file_upload(session: Session, uploader_id: int, data: dict[str, An
     new_file = _clone_existing_file(session, 
         source_file,
         filename=filename,
+        workspace_id=workspace_id,
         uploader_id=uploader_id,
         parent_id=data.get("parent_id"),
         mime_type=data.get("mime_type"),
@@ -242,19 +243,19 @@ def preflight_file_upload(session: Session, uploader_id: int, data: dict[str, An
     return {"instant_upload": True, "exists": True, "file": new_file.to_dict()}
 
 
-def _push_processing_queue(file_ids: list[int], uploader_id: int | None) -> None:
+def _push_processing_queue(file_ids: list[int], workspace_id: int | None) -> None:
     if not file_ids:
         return
     try:
         publish_file_tasks(file_ids)
-        if uploader_id:
-            _clear_search_cache(uploader_id)
+        if workspace_id:
+            _clear_search_cache(workspace_id)
     except Exception as e:
         logger.exception(f"Error publishing to RabbitMQ queue: {e}")
 
 
-def _multipart_upload_dir(uploader_id: int, upload_id: str) -> str:
-    return os.path.join(MULTIPART_ROOT, str(uploader_id), upload_id)
+def _multipart_upload_dir(workspace_id: int, upload_id: str) -> str:
+    return os.path.join(MULTIPART_ROOT, str(workspace_id), upload_id)
 
 
 def _multipart_chunks_dir(upload_dir: str) -> str:
@@ -286,9 +287,9 @@ def _list_uploaded_chunks(chunks_dir: str) -> list[int]:
     return uploaded
 
 
-def _load_multipart_meta(uploader_id: int, upload_id: str) -> dict[str, Any]:
+def _load_multipart_meta(workspace_id: int, upload_id: str) -> dict[str, Any]:
     safe_upload_id = _safe_upload_id(upload_id)
-    upload_dir = _multipart_upload_dir(uploader_id, safe_upload_id)
+    upload_dir = _multipart_upload_dir(workspace_id, safe_upload_id)
     meta_path = _multipart_meta_path(upload_dir)
     if not os.path.exists(meta_path):
         raise ResourceNotFoundError("Upload session not found")
@@ -299,7 +300,7 @@ def _load_multipart_meta(uploader_id: int, upload_id: str) -> dict[str, Any]:
         logger.exception(f"Failed to read upload metadata: {e}")
         raise ServiceOperationError("Upload session corrupted")
 
-    if int(meta.get("uploader_id", -1)) != uploader_id:
+    if int(meta.get("workspace_id", -1)) != workspace_id:
         raise PermissionDeniedError("Permission denied")
     return meta
 
@@ -328,6 +329,7 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
             file_path=unique_filename,
             file_size=file_size,
             mime_type=mime_type,
+            workspace_id=data.get("workspace_id"),
             uploader_id=data.get("uploader_id"),
             parent_id=data.get("parent_id"),
             content_hash=content_hash,
@@ -341,20 +343,20 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
 
     _log_file_created(new_file)
     _push_processing_queue(
-        [cast(int, new_file.id)], cast(int | None, new_file.uploader_id)
+        [cast(int, new_file.id)], cast(int | None, new_file.workspace_id)
     )
     return new_file
 
 
-def create_uploaded_file(session: Session, uploader_id: int, upload: Any, parent_id: int | None = None) -> File:
-    """单文件上传：默认挂到用户根目录，并校验文件名非空。"""
+def create_uploaded_file(session: Session, workspace_id: int, uploader_id: int, upload: Any, parent_id: int | None = None) -> File:
+    """单文件上传：默认挂到工作空间根目录，并校验文件名非空。"""
     if not getattr(upload, "filename", None):
         raise BusinessRuleError("No selected file")
     if parent_id is None:
         from app.features.folder import service as folder_service
 
-        parent_id = folder_service.get_root_folder_id(session, uploader_id)
-    return create_file(session, upload, {"uploader_id": uploader_id, "parent_id": parent_id})
+        parent_id = folder_service.get_root_folder_id(session, workspace_id)
+    return create_file(session, upload, {"workspace_id": workspace_id, "uploader_id": uploader_id, "parent_id": parent_id})
 
 
 def batch_create_files(
@@ -365,6 +367,7 @@ def batch_create_files(
     os.makedirs(upload_folder, exist_ok=True)
 
     new_files = []
+    workspace_id = data.get("workspace_id")
     uploader_id = data.get("uploader_id")
 
     for file_obj in file_objs:
@@ -386,6 +389,7 @@ def batch_create_files(
             file_size=file_size,
             mime_type=mime_type,
             content_hash=content_hash,
+            workspace_id=workspace_id,
             uploader_id=uploader_id,
             parent_id=data.get("parent_id"),
         )
@@ -396,14 +400,10 @@ def batch_create_files(
 
     session.add_all(new_files)
     session.commit()
-    for file_obj in new_files:
-        file_access_bloom.add_file(
-            cast(int, file_obj.id), cast(int | None, file_obj.uploader_id)
-        )
 
     if uploader_id:
         change_log_service.log_events_batch(
-            uploader_id,
+            workspace_id,
             [
                 {
                     "entity_type": "file",
@@ -418,13 +418,13 @@ def batch_create_files(
             ],
         )
 
-    _push_processing_queue([cast(int, f.id) for f in new_files], uploader_id)
+    _push_processing_queue([cast(int, f.id) for f in new_files], workspace_id)
     return new_files
 
 
 def create_uploaded_files(
         session: Session,
-        uploader_id: int, uploads: list[Any], parent_id: int | None = None
+        workspace_id: int, uploader_id: int, uploads: list[Any], parent_id: int | None = None
 ) -> list[File]:
     valid_uploads = [upload for upload in uploads if getattr(upload, "filename", None)]
     if not valid_uploads:
@@ -432,13 +432,13 @@ def create_uploaded_files(
     if parent_id is None:
         from app.features.folder import service as folder_service
 
-        parent_id = folder_service.get_root_folder_id(session, uploader_id)
+        parent_id = folder_service.get_root_folder_id(session, workspace_id)
     return batch_create_files(
-        session, valid_uploads, {"uploader_id": uploader_id, "parent_id": parent_id}
+        session, valid_uploads, {"workspace_id": workspace_id, "uploader_id": uploader_id, "parent_id": parent_id}
     )
 
 
-def init_multipart_upload(session: Session, uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
+def init_multipart_upload(session: Session, workspace_id: int, uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
     filename = (data.get("filename") or "").strip()
     if not filename:
         raise BusinessRuleError("filename is required")
@@ -469,6 +469,7 @@ def init_multipart_upload(session: Session, uploader_id: int, data: dict[str, An
             new_file = _clone_existing_file(session, 
                 source_file,
                 filename=filename,
+                workspace_id=workspace_id,
                 uploader_id=uploader_id,
                 parent_id=parent_id,
                 mime_type=mime_type,
@@ -486,14 +487,14 @@ def init_multipart_upload(session: Session, uploader_id: int, data: dict[str, An
     upload_id = data.get("upload_id") or uuid.uuid4().hex
     upload_id = _safe_upload_id(upload_id)
 
-    upload_dir = _multipart_upload_dir(uploader_id, upload_id)
+    upload_dir = _multipart_upload_dir(workspace_id, upload_id)
     chunks_dir = _multipart_chunks_dir(upload_dir)
     meta_path = _multipart_meta_path(upload_dir)
 
     os.makedirs(chunks_dir, exist_ok=True)
 
     if os.path.exists(meta_path):
-        meta = _load_multipart_meta(uploader_id, upload_id)
+        meta = _load_multipart_meta(workspace_id, upload_id)
         expected = (
             meta.get("filename"),
             int(meta.get("total_size", 0)),
@@ -506,6 +507,7 @@ def init_multipart_upload(session: Session, uploader_id: int, data: dict[str, An
     else:
         meta = {
             "upload_id": upload_id,
+            "workspace_id": workspace_id,
             "uploader_id": uploader_id,
             "filename": filename,
             "total_size": total_size,
@@ -526,9 +528,9 @@ def init_multipart_upload(session: Session, uploader_id: int, data: dict[str, An
     }
 
 
-def get_multipart_upload_status(uploader_id: int, upload_id: str) -> dict[str, Any]:
-    meta = _load_multipart_meta(uploader_id, upload_id)
-    upload_dir = _multipart_upload_dir(uploader_id, _safe_upload_id(upload_id))
+def get_multipart_upload_status(workspace_id: int, upload_id: str) -> dict[str, Any]:
+    meta = _load_multipart_meta(workspace_id, upload_id)
+    upload_dir = _multipart_upload_dir(workspace_id, _safe_upload_id(upload_id))
     chunks_dir = _multipart_chunks_dir(upload_dir)
     return {
         "upload_id": meta["upload_id"],
@@ -539,13 +541,13 @@ def get_multipart_upload_status(uploader_id: int, upload_id: str) -> dict[str, A
 
 
 def save_multipart_chunk(
-        uploader_id: int,
+        workspace_id: int,
         upload_id: str,
         chunk_index: int,
         chunk_obj: Any,
 ) -> dict[str, Any]:
     safe_upload_id = _safe_upload_id(upload_id)
-    meta = _load_multipart_meta(uploader_id, safe_upload_id)
+    meta = _load_multipart_meta(workspace_id, safe_upload_id)
 
     try:
         idx = int(chunk_index)
@@ -559,7 +561,7 @@ def save_multipart_chunk(
     if idx < 0 or idx >= total_chunks:
         raise BusinessRuleError("chunk_index out of range")
 
-    upload_dir = _multipart_upload_dir(uploader_id, safe_upload_id)
+    upload_dir = _multipart_upload_dir(workspace_id, safe_upload_id)
     chunks_dir = _multipart_chunks_dir(upload_dir)
     os.makedirs(chunks_dir, exist_ok=True)
 
@@ -593,9 +595,9 @@ def save_multipart_chunk(
     }
 
 
-def complete_multipart_upload(session: Session, uploader_id: int, upload_id: str) -> File:
+def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: int, upload_id: str) -> File:
     safe_upload_id = _safe_upload_id(upload_id)
-    meta = _load_multipart_meta(uploader_id, safe_upload_id)
+    meta = _load_multipart_meta(workspace_id, safe_upload_id)
 
     total_chunks = int(meta["total_chunks"])
     total_size = int(meta["total_size"])
@@ -604,7 +606,7 @@ def complete_multipart_upload(session: Session, uploader_id: int, upload_id: str
     mime_type = meta.get("mime_type")
     content_hash = _normalize_content_hash(meta.get("content_hash"))
 
-    upload_dir = _multipart_upload_dir(uploader_id, safe_upload_id)
+    upload_dir = _multipart_upload_dir(workspace_id, safe_upload_id)
     chunks_dir = _multipart_chunks_dir(upload_dir)
 
     uploaded_chunks = set(_list_uploaded_chunks(chunks_dir))
@@ -651,14 +653,12 @@ def complete_multipart_upload(session: Session, uploader_id: int, upload_id: str
             file_size=total_size,
             mime_type=resolved_mime,
             content_hash=content_hash or _calculate_file_hash(final_path),
+            workspace_id=workspace_id,
             uploader_id=uploader_id,
             parent_id=parent_id,
         )
         session.add(new_file)
         session.commit()
-        file_access_bloom.add_file(
-            cast(int, new_file.id), cast(int | None, new_file.uploader_id)
-        )
     except Exception as e:
         session.rollback()
         logger.exception(f"Failed to persist merged file: {e}")
@@ -670,13 +670,13 @@ def complete_multipart_upload(session: Session, uploader_id: int, upload_id: str
 
     _log_file_created(new_file)
 
-    _push_processing_queue([cast(int, new_file.id)], uploader_id)
+    _push_processing_queue([cast(int, new_file.id)], workspace_id)
     return new_file
 
 
-def abort_multipart_upload(uploader_id: int, upload_id: str) -> None:
+def abort_multipart_upload(workspace_id: int, upload_id: str) -> None:
     safe_upload_id = _safe_upload_id(upload_id)
-    upload_dir = _multipart_upload_dir(uploader_id, safe_upload_id)
+    upload_dir = _multipart_upload_dir(workspace_id, safe_upload_id)
     shutil.rmtree(upload_dir, ignore_errors=True)
 
 
@@ -687,20 +687,17 @@ def get_file(session: Session, id: int) -> File:
     return file_obj
 
 
-def get_authorized_file(session: Session, user_id: int, role: str, file_id: int) -> File:
-    """Bloom 预过滤后查库鉴权；区分 403/404，避免泄露他人文件存在性。"""
-    if role != "admin" and not file_access_bloom.maybe_user_can_access_file(user_id, file_id):
-        if file_access_bloom.maybe_file_exists(file_id):
-            raise PermissionDeniedError("Permission denied")
-        raise ResourceNotFoundError("File not found")
+def get_authorized_file(session: Session, workspace_id: int, user_id: int, file_id: int) -> File:
+    """校验用户为文件所属工作空间的成员。"""
     file_obj = get_file(session, file_id)
-    if role != "admin" and file_obj.uploader_id != user_id:
+    # 校验文件属于当前工作空间
+    if file_obj.workspace_id != workspace_id:
         raise PermissionDeniedError("Permission denied")
     return file_obj
 
 
-def get_downloadable_file(session: Session, user_id: int, role: str, file_id: int) -> File:
-    file_obj = get_authorized_file(session, user_id, role, file_id)
+def get_downloadable_file(session: Session, workspace_id: int, user_id: int, file_id: int) -> File:
+    file_obj = get_authorized_file(session, workspace_id, user_id, file_id)
     if not os.path.exists(file_obj.get_abs_path()):
         raise ResourceNotFoundError("File not found on server")
     return file_obj
@@ -708,7 +705,7 @@ def get_downloadable_file(session: Session, user_id: int, role: str, file_id: in
 
 def get_files_and_folders(
         session: Session,
-        user_id: int,
+        workspace_id: int,
         parent_id: int | None,
         page: int = 1,
         page_size: int = 10,
@@ -719,7 +716,7 @@ def get_files_and_folders(
     if page < 1:
         page = 1
 
-    folder_query = session.query(Folder).filter_by(user_id=user_id, parent_id=parent_id)
+    folder_query = session.query(Folder).filter_by(workspace_id=workspace_id, parent_id=parent_id)
     if name:
         folder_query = folder_query.filter(Folder.name.ilike(f"%{_escape_like(name)}%", escape="\\"))
     if order == "asc":
@@ -727,7 +724,7 @@ def get_files_and_folders(
     else:
         folder_query = folder_query.order_by(Folder.name.desc())
 
-    file_query = session.query(File).filter_by(uploader_id=user_id, parent_id=parent_id)
+    file_query = session.query(File).filter_by(workspace_id=workspace_id, parent_id=parent_id)
     if name:
         file_query = file_query.filter(File.name.ilike(f"%{_escape_like(name)}%", escape="\\"))
 
@@ -797,7 +794,7 @@ def update_file(session: Session, id: int, data: dict[str, Any]) -> File:
             action = "move"
 
         change_log_service.log_event(
-            user_id=file_obj.uploader_id,
+            workspace_id=file_obj.workspace_id,
             entity_type="file",
             entity_id=file_obj.id,
             action=action,
@@ -807,7 +804,7 @@ def update_file(session: Session, id: int, data: dict[str, Any]) -> File:
             new_name=file_obj.name,
         )
 
-    _clear_search_cache(file_obj.uploader_id)
+    _clear_search_cache(file_obj.workspace_id)
     return file_obj
 
 
@@ -841,7 +838,7 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
         session.commit()
         if log_event:
             change_log_service.log_event(
-                user_id=uploader_id,
+                workspace_id=file_obj.workspace_id,
                 entity_type="file",
                 entity_id=entity_id,
                 action="delete",
@@ -850,12 +847,12 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
                 old_name=old_name,
                 new_name=None,
             )
-        _clear_search_cache(uploader_id)
+        _clear_search_cache(file_obj.workspace_id)
 
 
 async def search_files(
         session: Session,
-        user_id: int,
+        workspace_id: int,
         query: str,
         page: int = 1,
         page_size: int = 10,
@@ -867,7 +864,7 @@ async def search_files(
     target = _search_files_vector if search_type == "vector" else _search_files_fuzzy
 
     def _work():
-        return target(session, user_id, query, page, page_size)
+        return target(session, workspace_id, query, page, page_size)
 
     return await asyncio.to_thread(_work)
 
@@ -875,14 +872,14 @@ async def search_files(
 @cacheable(
     prefix=SEARCH_CACHE_PREFIX,
     expire=CACHE_EXPIRATION,
-    key=lambda session, user_id, query, page, page_size, **_: f"{user_id}:{query}:{page}:{page_size}:fuzzy",
+    key=lambda session, workspace_id, query, page, page_size, **_: f"{workspace_id}:{query}:{page}:{page_size}:fuzzy",
 )
 def _search_files_fuzzy(
         session: Session,
-        user_id: int, query: str, page: int, page_size: int
+        workspace_id: int, query: str, page: int, page_size: int
 ) -> dict[str, Any]:
     base_query = session.query(File).filter(
-        File.uploader_id == user_id, File.name.ilike(f"%{_escape_like(query)}%", escape="\\")
+        File.workspace_id == workspace_id, File.name.ilike(f"%{_escape_like(query)}%", escape="\\")
     )
     total = base_query.count()
     offset = (page - 1) * page_size
@@ -898,11 +895,11 @@ def _search_files_fuzzy(
 
 def _search_files_vector(
         session: Session,
-        user_id: int, query: str, page: int, page_size: int
+        workspace_id: int, query: str, page: int, page_size: int
 ) -> dict[str, Any]:
     try:
         emb_config = get_embedding_model_config()
-        embeddings = embedding_desc(query, emb_config, user_id=user_id)
+        embeddings = embedding_desc(query, emb_config)
         if not embeddings:
             return {
                 "items": [],
@@ -914,7 +911,7 @@ def _search_files_vector(
 
         offset = (page - 1) * page_size
         items = (
-            session.query(File).filter(File.uploader_id == user_id, File.vector_info.isnot(None))
+            session.query(File).filter(File.workspace_id == workspace_id, File.vector_info.isnot(None))
             .order_by(File.vector_info.cosine_distance(embeddings))
             .limit(page_size)
             .offset(offset)
@@ -922,7 +919,7 @@ def _search_files_vector(
         )
 
         total = session.query(File).filter(
-            File.uploader_id == user_id, File.vector_info.isnot(None)
+            File.workspace_id == workspace_id, File.vector_info.isnot(None)
         ).count()
 
         return {
@@ -942,17 +939,17 @@ def _search_files_vector(
         }
 
 
-def _clear_search_cache(user_id: int) -> None:
+def _clear_search_cache(workspace_id: int | None) -> None:
     evict_cache_pattern(SEARCH_CACHE_PREFIX)
 
 
-def get_root_file_id(session: Session, user_id: int) -> int | None:
-    cache_key = f"user:root:file:{user_id}"
+def get_root_file_id(session: Session, workspace_id: int) -> int | None:
+    cache_key = f"workspace:root:file:{workspace_id}"
     cached_id = redis_client.get(cache_key)
     if cached_id:
         return int(cached_id)
 
-    root_file = session.query(File).filter_by(uploader_id=user_id, parent_id=None).first()
+    root_file = session.query(File).filter_by(workspace_id=workspace_id, parent_id=None).first()
     if root_file:
         redis_client.set(cache_key, root_file.id)
         return root_file.id
@@ -962,21 +959,22 @@ def get_root_file_id(session: Session, user_id: int) -> int | None:
 def upload_avatar(session: Session, img_file: Any, user_id: int) -> dict[str, Any]:
     from app.features.folder import service as folder_service, share_service, user_service
 
-    root_folder = session.query(Folder).filter_by(user_id=1, parent_id=None).first()
+    # 头像存储在 workspace_id=1 的公共空间中
+    root_folder = session.query(Folder).filter_by(workspace_id=1, parent_id=None).first()
     root_folder_id = root_folder.id if root_folder else None
 
     folder = session.query(Folder).filter_by(
-        user_id=1, parent_id=root_folder_id, name="所有用户头像"
+        workspace_id=1, parent_id=root_folder_id, name="所有用户头像"
     ).first()
     if folder:
         folder_id = folder.id
     else:
         folder = folder_service.create_folder(
-            session, {"name": "所有用户头像", "parent_id": root_folder_id, "user_id": 1}
+            session, {"name": "所有用户头像", "parent_id": root_folder_id, "workspace_id": 1}
         )
         folder_id = folder.id
 
-    avatar = create_file(session, img_file, {"uploader_id": 1, "parent_id": folder_id})
+    avatar = create_file(session, img_file, {"workspace_id": 1, "uploader_id": 1, "parent_id": folder_id})
     share = share_service.create_share_link(session, 1, avatar.id)
     avatar_url = f"/api/share/{share.token}"
     user_service.update_user(session, user_id, {"avatar": avatar_url})
@@ -995,17 +993,17 @@ def upload_avatar_for_user(
     return upload_avatar(session, upload, user_id)
 
 
-def batch_delete_items(session: Session, user_id: int, role: str, items: list[dict[str, Any]]) -> None:
+def batch_delete_items(session: Session, workspace_id: int, user_id: int, items: list[dict[str, Any]]) -> None:
     from app.features.folder import service as folder_service
 
     for item in items:
         item_id = item.get("id")
         is_folder = item.get("is_folder", False)
         if is_folder:
-            folder_service.get_authorized_folder(session, user_id, role, item_id)
+            folder_service.get_authorized_folder(session, workspace_id, user_id, item_id)
             folder_service.delete_folder(session, item_id)
         else:
-            get_authorized_file(session, user_id, role, item_id)
+            get_authorized_file(session, workspace_id, user_id, item_id)
             delete_file(session, item_id)
 
 
@@ -1049,10 +1047,10 @@ def retry_embedding(session: Session, file_id: int) -> None:
     publish_file_tasks([cast(int, file_obj.id)])
 
 
-def rebuild_failed_indexes(session: Session, user_id: int | None = None) -> int:
+def rebuild_failed_indexes(session: Session, workspace_id: int | None = None) -> int:
     query = session.query(File).filter(File.status == "fail")
-    if user_id is not None:
-        query = query.filter(File.uploader_id == user_id)
+    if workspace_id is not None:
+        query = query.filter(File.workspace_id == workspace_id)
 
     failed_files = query.all()
     if not failed_files:
@@ -1077,15 +1075,15 @@ def rebuild_failed_indexes(session: Session, user_id: int | None = None) -> int:
     return len(file_ids)
 
 
-def get_all_files(session: Session, user_id: int) -> list[File]:
-    return session.query(File).filter_by(uploader_id=user_id).all()
+def get_all_files(session: Session, workspace_id: int) -> list[File]:
+    return session.query(File).filter_by(workspace_id=workspace_id).all()
 
 
-async def process_status(session: Session, user_id: int) -> dict[str, int]:
-    """按状态聚合统计；用 GROUP BY 避免把用户全部文件载入内存。"""
+async def process_status(session: Session, workspace_id: int) -> dict[str, int]:
+    """按状态聚合统计；用 GROUP BY 避免把空间全部文件载入内存。"""
     rows = (
         session.query(File.status, func.count(File.id))
-        .filter(File.uploader_id == user_id)
+        .filter(File.workspace_id == workspace_id)
         .group_by(File.status)
         .all()
     )
@@ -1109,13 +1107,13 @@ def cleanup_expired_uploads(max_age_hours: int = 24) -> int:
     expiration = max_age_hours * 3600
 
     try:
-        for uploader_id_str in os.listdir(MULTIPART_ROOT):
-            user_dir = os.path.join(MULTIPART_ROOT, uploader_id_str)
-            if not os.path.isdir(user_dir):
+        for ws_id_str in os.listdir(MULTIPART_ROOT):
+            ws_dir = os.path.join(MULTIPART_ROOT, ws_id_str)
+            if not os.path.isdir(ws_dir):
                 continue
 
-            for upload_id in os.listdir(user_dir):
-                upload_dir = os.path.join(user_dir, upload_id)
+            for upload_id in os.listdir(ws_dir):
+                upload_dir = os.path.join(ws_dir, upload_id)
                 if not os.path.isdir(upload_dir):
                     continue
 
@@ -1129,8 +1127,8 @@ def cleanup_expired_uploads(max_age_hours: int = 24) -> int:
                     logger.warning(f"Error accessing/deleting {upload_dir}: {e}")
 
             try:
-                if not os.listdir(user_dir):
-                    os.rmdir(user_dir)
+                if not os.listdir(ws_dir):
+                    os.rmdir(ws_dir)
             except OSError:
                 pass
 

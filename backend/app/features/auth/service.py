@@ -120,15 +120,8 @@ def get_mcp_token(session: Session, user_id: int) -> dict:
 
 
 def refresh_mcp_token(session: Session, user_id: int) -> dict:
-    """刷新用户唯一 MCP Token，并同步到所有运行中的工作区。"""
+    """刷新用户唯一 MCP Token。"""
     record, raw = mcp_token_service.refresh_user_mcp_token(session, user_id)
-    # 刷新后把新 Token 注入运行中的工作区，避免工作区仍用旧凭证
-    try:
-        from app.features.workspace import service as workspace_service
-
-        workspace_service.resync_mcp_for_user(session, user_id)
-    except Exception:
-        logger.exception("刷新 MCP Token 后同步工作区失败：user_id={}", user_id)
     return {
         "mcp_token": raw,
         "token": record.to_dict(),

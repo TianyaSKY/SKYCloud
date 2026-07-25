@@ -25,6 +25,23 @@
         </template>
       </a-button>
     </div>
+
+    <!-- 工作空间切换器 -->
+    <div class="ws-switcher" v-if="!collapsed">
+      <a-select
+        :model-value="wsStore.currentWorkspace?.id"
+        placeholder="选择工作空间"
+        size="small"
+        @change="handleWsChange"
+      >
+        <a-option
+          v-for="ws in wsStore.workspaces"
+          :key="ws.id"
+          :value="ws.id"
+          :label="ws.name"
+        />
+      </a-select>
+    </div>
     <a-menu :selected-keys="[activeMenu]" :style="{ width: '100%' }" @menu-item-click="handleMenuClick">
       <a-menu-item key="all">
         <template #icon>
@@ -45,11 +62,11 @@
         收件箱
       </a-menu-item>
 
-      <a-menu-item key="workspace">
+      <a-menu-item key="workspaces">
         <template #icon>
           <icon-desktop />
         </template>
-        工作区
+        管理工作空间
       </a-menu-item>
       <a-menu-item key="token-usage">
         <template #icon>
@@ -88,6 +105,7 @@ import {
   IconMenuUnfold,
 } from '@arco-design/web-vue/es/icon'
 import { useAuthStore } from '@/stores/auth'
+import { useWorkspaceStore } from '@/stores/workspace'
 
 defineProps<{
   activeMenu: string
@@ -96,6 +114,7 @@ defineProps<{
 const emit = defineEmits(['menu-click'])
 
 const auth = useAuthStore()
+const wsStore = useWorkspaceStore()
 // 响应式订阅 store，登录态/角色变化会自动刷新菜单
 const { isAdmin } = storeToRefs(auth)
 
@@ -107,6 +126,15 @@ watch(collapsed, (newVal) => {
 
 const handleMenuClick = (key: string) => {
   emit('menu-click', key)
+}
+
+const handleWsChange = (wsId: number) => {
+  const ws = wsStore.workspaces.find((w) => w.id === wsId)
+  if (ws) {
+    wsStore.switchWorkspace(ws)
+    // 切换空间后刷新文件列表
+    emit('menu-click', 'all')
+  }
 }
 </script>
 
@@ -128,5 +156,10 @@ const handleMenuClick = (key: string) => {
   font-size: 18px;
   font-weight: bold;
   color: var(--color-text-1);
+}
+
+.ws-switcher {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
 }
 </style>

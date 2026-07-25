@@ -1,8 +1,8 @@
 """MCP Server 独立进程入口（Streamable HTTP + JWT 鉴权）。
 
 作为独立容器/进程运行，所有请求经 Authorization: Bearer <token> 鉴权。
-本地：python -m entry.mcp
-Docker：command: python -m entry.mcp
+本地：python -m entry.mcp_run
+Docker：command: python -m entry.mcp_run
 """
 
 import logging

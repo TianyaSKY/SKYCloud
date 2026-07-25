@@ -80,22 +80,22 @@ def process_batch_task(file_ids: list[int], semaphore: threading.Semaphore):
         semaphore.release()
 
 
-def process_organize_task(user_id: int, lock_token: str | None = None,
+def process_organize_task(workspace_id: int, user_id: int, lock_token: str | None = None,
                           semaphore: threading.Semaphore | None = None):
     """
     在线程中处理文件整理任务
     """
-    token = lock_token or f"legacy-{user_id}"
+    token = lock_token or f"legacy-{workspace_id}"
     try:
-        folder_service.mark_organize_task_running(user_id, token)
-        logger.info(f"Starting organize_files for user {user_id}")
-        result = handle_organize_process(user_id)
-        logger.info(f"Finished organize_files for user {user_id}: {result}")
+        folder_service.mark_organize_task_running(workspace_id, token)
+        logger.info(f"Starting organize_files for workspace {workspace_id}")
+        result = handle_organize_process(workspace_id, user_id)
+        logger.info(f"Finished organize_files for workspace {workspace_id}: {result}")
     except Exception as e:
         logger.exception(
-            f"Error in thread organizing files for user {user_id}: {e}")
+            f"Error in thread organizing files for workspace {workspace_id}: {e}")
     finally:
-        folder_service.release_organize_task_lock(user_id, token)
+        folder_service.release_organize_task_lock(workspace_id, token)
         if semaphore:
             semaphore.release()
 
@@ -137,22 +137,26 @@ def run_worker(max_workers):
                                 process_task, first_id, semaphore)
                     elif queue_name == ORGANIZE_FILE_QUEUE:
                         lock_token = None
+                        workspace_id = None
                         user_id = None
                         try:
                             payload = json.loads(data)
                             if isinstance(payload, dict):
-                                user_id = int(payload["user_id"])
+                                workspace_id = int(payload["workspace_id"])
+                                user_id = int(payload.get("user_id") or 0)
                                 lock_token = str(
                                     payload.get("lock_token") or "")
                         except (json.JSONDecodeError, TypeError, KeyError, ValueError):
-                            user_id = int(data)
+                            # 兼容旧格式：纯数字为 workspace_id
+                            workspace_id = int(data)
+                            user_id = 0
 
-                        if user_id is None:
+                        if workspace_id is None:
                             raise ValueError(
                                 f"Invalid organize queue payload: {data}")
 
                         executor.submit(process_organize_task,
-                                        user_id, lock_token, semaphore)
+                                        workspace_id, user_id, lock_token, semaphore)
                 except ValueError:
                     logger.exception(
                         f"Invalid data received from queue {queue_name}: {data}"

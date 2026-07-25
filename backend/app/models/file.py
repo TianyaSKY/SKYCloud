@@ -28,7 +28,8 @@ class File(Base):
     vector_info = Column(Vector(1024))  # 语义检索向量（余弦距离索引）
     description = Column(String(4096))  # AI 生成的文件描述
 
-    uploader_id = Column(Integer, ForeignKey("users.id"))
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
+    uploader_id = Column(Integer, ForeignKey("users.id"))  # 记录上传者，用于归属标注和通知
     parent_id = Column(Integer, ForeignKey("folder.id"), nullable=True)
     created_at = Column(DateTime, default=beijing_now)
 
@@ -43,8 +44,8 @@ class File(Base):
             postgresql_using="hnsw",
             postgresql_ops={"vector_info": "vector_cosine_ops"},
         ),
-        Index("idx_files_uploader_parent", "uploader_id", "parent_id"),
-        Index("idx_files_uploader_status", "uploader_id", "status"),
+        Index("idx_files_ws_parent", "workspace_id", "parent_id"),
+        Index("idx_files_ws_status", "workspace_id", "status"),
     )
 
     def get_abs_path(self):
@@ -61,6 +62,7 @@ class File(Base):
             "file_size": cast(int | None, self.file_size),
             "mime_type": cast(str | None, self.mime_type),
             "content_hash": cast(str | None, self.content_hash),
+            "workspace_id": cast(int | None, self.workspace_id),
             "uploader_id": cast(int | None, self.uploader_id),
             "parent_id": cast(int | None, self.parent_id),
             "created_at": local_isoformat(created_at),
@@ -76,6 +78,7 @@ class File(Base):
             file_size=d.get("file_size"),
             mime_type=d.get("mime_type"),
             content_hash=d.get("content_hash"),
+            workspace_id=d.get("workspace_id"),
             uploader_id=d.get("uploader_id"),
             parent_id=d.get("parent_id"),
             created_at=datetime.fromisoformat(cast(str, d.get("created_at")))

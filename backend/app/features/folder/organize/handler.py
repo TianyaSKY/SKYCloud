@@ -44,12 +44,12 @@ def get_llm_config():
     return config["api"], config["key"], config["model"]
 
 
-def _build_full_prompt(user_id: int) -> str:
-    """全量整理系统提示（英文指令供 LLM；user_id 必须写入约束）。"""
+def _build_full_prompt(workspace_id: int) -> str:
+    """全量整理系统提示（英文指令供 LLM；workspace_id 必须写入约束）。"""
     return f"""
-You are an intelligent file organization assistant. Your goal is to keep the user's file system well-organized.
+You are an intelligent file organization assistant. Your goal is to keep the workspace's file system well-organized.
 
-Current User ID: {user_id}
+Current Workspace ID: {workspace_id}
 
 Your task consists of the following parts:
 1. **Information Gathering**:
@@ -76,8 +76,8 @@ Your task consists of the following parts:
    - Before finishing, call `find_empty_folders`.
 
 General Constraints:
-- All operations are only for user_id: {user_id}.
-- IMPORTANT: Every tool that modifies data requires a `user_id` parameter. Always pass {user_id}.
+- All operations are only for workspace_id: {workspace_id}.
+- IMPORTANT: Every tool that modifies data requires a `workspace_id` parameter. Always pass {workspace_id}.
 - You can only move/read files; do NOT modify or delete file content.
 - Step-by-step: perform 3-5 operations per turn, observe results, then continue.
 """
@@ -105,7 +105,7 @@ def _format_folders_detail(folders_detail: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _build_incremental_prompt(user_id: int, context: dict) -> str:
+def _build_incremental_prompt(workspace_id: int, context: dict) -> str:
     """增量整理提示：仅聚焦变更项，禁止全库扫描（防 Token 浪费）。"""
     summary_text = context.get("summary_text") or "No summary."
     checkpoint_event_id = context.get("checkpoint_event_id", 0)
@@ -119,7 +119,7 @@ def _build_incremental_prompt(user_id: int, context: dict) -> str:
     return f"""
 You are an intelligent file organization assistant performing INCREMENTAL organization.
 
-Current User ID: {user_id}
+Current Workspace ID: {workspace_id}
 Event range: ({checkpoint_event_id}, {target_event_id}]
 
 ## What Changed (event log summary)
@@ -142,14 +142,14 @@ Event range: ({checkpoint_event_id}, {target_event_id}]
 ## Constraints
 - **SCOPE RESTRICTION**: Do NOT scan or reorganize the entire file library. Only use `get_all_files` or `get_folder_tree` if you need to find a suitable destination for a changed file.
 - If file content is unclear from the name alone, use `get_file_information` to read its description.
-- All operations are only for user_id: {user_id}.
-- IMPORTANT: Every tool that modifies data requires a `user_id` parameter. Always pass {user_id}.
+- All operations are only for workspace_id: {workspace_id}.
+- IMPORTANT: Every tool that modifies data requires a `workspace_id` parameter. Always pass {workspace_id}.
 - You can only move/read files; do NOT modify or delete file content.
 - Step-by-step: perform 3-5 operations per turn, observe results, then continue.
 """
 
 
-def organize_files(user_id: int):
+def organize_files(workspace_id: int):
     """ReAct 整理主流程：增量优先，溢出/无 checkpoint 则全量；校验通过才推进 checkpoint。"""
     url, key, model = get_llm_config()
     llm = ChatOpenAI(
@@ -184,7 +184,7 @@ def organize_files(user_id: int):
     try:
         try:
             incremental_context = change_log_service.load_incremental_context(
-                session, user_id=user_id, max_events=MAX_INCREMENTAL_EVENTS
+                session, workspace_id=workspace_id, max_events=MAX_INCREMENTAL_EVENTS
             )
         except Exception as exc:
             logger.warning(
@@ -201,7 +201,7 @@ def organize_files(user_id: int):
                 target_event_id = int(
                     incremental_context.get("target_event_id") or 0)
                 change_log_service.update_checkpoint(
-                    session, user_id, target_event_id, mark_full_scan=False
+                    session, workspace_id, target_event_id, mark_full_scan=False
                 )
                 results.append("未检测到上次整理后的文件变更，已跳过本次整理。")
                 return total_usage, "\n\t".join(results)
@@ -211,7 +211,7 @@ def organize_files(user_id: int):
             checkpoint_target_event_id = int(
                 incremental_context.get("target_event_id") or 0)
             full_scan_mode = True
-            prompt = _build_full_prompt(user_id)
+            prompt = _build_full_prompt(workspace_id)
             current_messages = [("user", prompt)]
         else:
             checkpoint_target_event_id = int(
@@ -222,13 +222,13 @@ def organize_files(user_id: int):
                 results.append(
                     f"增量事件过多（{incremental_context.get('total_events')} 条），回退到全量整理。"
                 )
-                prompt = _build_full_prompt(user_id)
+                prompt = _build_full_prompt(workspace_id)
             else:
                 results.append(
                     f"进入增量整理模式，处理事件区间 ({incremental_context.get('checkpoint_event_id')}, "
                     f"{incremental_context.get('target_event_id')}]。"
                 )
-                prompt = _build_incremental_prompt(user_id, incremental_context)
+                prompt = _build_incremental_prompt(workspace_id, incremental_context)
 
             current_messages = [("user", prompt)]
     finally:
@@ -242,7 +242,7 @@ def organize_files(user_id: int):
 
     for attempt in range(MAX_VALIDATION_RETRIES):
         config = {
-            "configurable": {"thread_id": f"file_org_{user_id}_{int(time.time() * 1000)}_{attempt}"},
+            "configurable": {"thread_id": f"file_org_{workspace_id}_{int(time.time() * 1000)}_{attempt}"},
             "recursion_limit": RECURSION_LIMIT,
         }
 
@@ -273,14 +273,14 @@ def organize_files(user_id: int):
                     f"Agent 达到最大步数限制 ({RECURSION_LIMIT})，停止当前轮次。"
                 )
                 logger.warning(
-                    f"Recursion limit reached for user {user_id} on attempt {attempt}"
+                    f"Recursion limit reached for workspace {workspace_id} on attempt {attempt}"
                 )
             else:
                 raise
 
         # 结构化校验：单一内容原则 + 无空文件夹
-        is_mixed_clean, mixed_info = check_mixed_folders_internal(user_id)
-        is_empty_clean, empty_info = check_empty_folders_internal(user_id)
+        is_mixed_clean, mixed_info = check_mixed_folders_internal(workspace_id)
+        is_empty_clean, empty_info = check_empty_folders_internal(workspace_id)
 
         if is_mixed_clean and is_empty_clean:
             validation_passed = True
@@ -307,7 +307,7 @@ def organize_files(user_id: int):
         session = SessionLocal()
         try:
             change_log_service.update_checkpoint(
-                session, user_id, checkpoint_target_event_id, mark_full_scan=full_scan_mode
+                session, workspace_id, checkpoint_target_event_id, mark_full_scan=full_scan_mode
             )
         finally:
             session.close()
@@ -319,12 +319,12 @@ def organize_files(user_id: int):
     return total_usage, "\n\t".join(results)
 
 
-def handle_organize_process(user_id: int):
+def handle_organize_process(workspace_id: int, user_id: int):
     """整理入口：计时、记 Token、无论成败都写收件箱（锁释放在 tasks 层）。"""
     time_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     timestamp_start = time.time()
     try:
-        token_usage, results = organize_files(user_id)
+        token_usage, results = organize_files(workspace_id)
         content = (
             f"用时 {time.time() - timestamp_start:.2f} 秒\n"
             "Token 计费详情：\n"

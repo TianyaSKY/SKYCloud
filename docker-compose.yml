@@ -136,7 +136,7 @@ services:
       dockerfile: Dockerfile
     container_name: skycloud-backend-mcp
     restart: always
-    command: python -m entry.mcp
+    command: python -m entry.mcp_run
     ports:
       - "${MCP_PORT:-5001}:5001"
     volumes:
