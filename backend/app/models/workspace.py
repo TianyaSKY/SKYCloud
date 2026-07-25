@@ -2,7 +2,7 @@
 
 from sqlalchemy import Column, Integer, String, DateTime, Enum, Text
 
-from app.extensions import Base
+from app.infra.extensions import Base
 from app.infra.datetime_utils import beijing_now, local_isoformat
 
 

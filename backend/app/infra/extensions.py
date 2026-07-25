@@ -6,7 +6,7 @@ from collections.abc import Generator
 from dotenv import load_dotenv
 from redis import Redis
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, declarative_base, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, scoped_session, sessionmaker
 
 load_dotenv()
 
@@ -63,6 +63,20 @@ engine = create_engine(
 
 # Session 工厂：每次调用 SessionLocal() 得到独立会话
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# 线程作用域会话：Worker / 后台线程中使用 db.session 访问数据库
+ScopedSession = scoped_session(SessionLocal)
+
+
+class _DBProxy:
+    """Flask-SQLAlchemy 风格代理，兼容旧代码 db.session 调用。"""
+
+    @property
+    def session(self) -> Session:
+        return ScopedSession()
+
+
+db = _DBProxy()
 
 # 声明式基类（所有 ORM 模型继承）
 Base = declarative_base()

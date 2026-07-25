@@ -8,15 +8,16 @@ import datetime
 import logging
 
 from app.exceptions import ResourceNotFoundError
-from app.extensions import SessionLocal
+from app.infra.extensions import SessionLocal
 from app.models.file import File
-from app.services import file_service, inbox_service
-from app.services.model_config import (
+from app.features.file import service as file_service
+from app.features.inbox import service as inbox_service
+from app.infra.llm.config import (
     get_chat_model_config,
     get_embedding_model_config,
     get_vl_model_config,
 )
-from app.workers.description_generator import generate_file_description
+from app.features.folder.organize.description import generate_file_description
 
 logger = logging.getLogger(__name__)
 

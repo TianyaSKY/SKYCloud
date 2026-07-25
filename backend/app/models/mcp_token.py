@@ -3,7 +3,7 @@ import hashlib
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
-from app.extensions import Base
+from app.infra.extensions import Base
 from app.infra.datetime_utils import beijing_now, local_isoformat, to_beijing_naive
 
 

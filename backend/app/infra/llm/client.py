@@ -41,7 +41,7 @@ def _safe_record(
 ) -> None:
     """写 token 用量；异常吞掉，避免用量记录拖垮主链路。"""
     try:
-        from app.services.token_usage_service import record_usage
+        from app.features.token_usage.service import record_usage
 
         record_usage(
             user_id=user_id,
