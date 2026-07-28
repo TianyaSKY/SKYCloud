@@ -1,10 +1,10 @@
 """认证与会话：JWT 签发/解析、登录注册，以及 MCP Token 与登录生命周期联动。"""
 
 import datetime as _dt
-import logging
 import uuid
 
 import jwt
+from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.exceptions import AuthenticationError, BusinessRuleError
@@ -12,8 +12,6 @@ from app.infra.extensions import SECRET_KEY
 from app.models.user import User
 from app.mcp import token_service as mcp_token_service
 from app.features.auth.user_service import create_user
-
-logger = logging.getLogger(__name__)
 
 
 def generate_token(user_id):
@@ -101,6 +99,9 @@ def register_user(session: Session, username: str, password: str, avatar: str | 
     """注册用户；成功后自动配置唯一 MCP Token（初始化失败不阻断注册）。"""
     if not username or not password:
         raise BusinessRuleError("Missing username or password")
+    existing = session.query(User).filter_by(username=username).first()
+    if existing:
+        raise BusinessRuleError(f"Username '{username}' already exists")
     try:
         user = create_user(session, {"username": username, "password": password, "avatar": avatar})
         # 注册即自动配置唯一 MCP Token
@@ -110,6 +111,7 @@ def register_user(session: Session, username: str, password: str, avatar: str | 
             logger.exception("注册后初始化 MCP Token 失败：user_id={}", user.id)
         return user
     except Exception as exc:
+        session.rollback()
         logger.exception("用户注册失败：{}", exc)
         raise BusinessRuleError(str(exc)) from exc
 
