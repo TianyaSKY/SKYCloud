@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from app.exceptions import DomainError
 from app.infra.extensions import SessionLocal
 from app.infra.datetime_utils import beijing_now
+from app.infra.storage import get_storage_client
 from app.features.file import service as file_service
 from app.features.folder import service as folder_service
 from app.features.share import service as share_service
@@ -494,15 +495,25 @@ async def read_file_content(
                     ensure_ascii=False,
                 )
 
-            abs_path = file_obj.get_abs_path()
-            if not os.path.exists(abs_path):
+            storage = get_storage_client()
+            object_name = str(file_obj.file_path)
+            if not storage.file_exists(object_name):
                 return _error_json("File not found on server")
 
-            file_size = os.path.getsize(abs_path)
+            file_size = storage.get_file_size(object_name)
             truncated = file_size > _MAX_READ_BYTES
 
-            with open(abs_path, "r", encoding=encoding, errors="replace") as f:
-                content = f.read(_MAX_READ_BYTES)
+            # 下载到临时文件后读取文本内容
+            import tempfile
+            tmp_fd, tmp_path = tempfile.mkstemp()
+            os.close(tmp_fd)
+            try:
+                storage.download_file(object_name, tmp_path)
+                with open(tmp_path, "r", encoding=encoding, errors="replace") as f:
+                    content = f.read(_MAX_READ_BYTES)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
 
             return json.dumps(
                 {

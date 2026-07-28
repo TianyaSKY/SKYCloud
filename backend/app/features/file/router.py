@@ -17,8 +17,9 @@ from fastapi import (
     status,
 )
 from fastapi import UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
+from starlette.background import BackgroundTask
 
 from app.api.dependencies import get_current_user, get_current_workspace, require_workspace_role
 from app.models.workspace import Workspace
@@ -33,6 +34,7 @@ from app.features.file.schemas import (
 from app.exceptions import DomainError
 from app.infra.extensions import get_db
 from app.infra.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
+from app.infra.storage import get_storage_client
 from app.features.file import service as file_service
 
 router = APIRouter(tags=["file"])
@@ -269,16 +271,25 @@ def download_file(
         workspace: Workspace = Depends(get_current_workspace),
         session: Session = Depends(get_db),
 ):
-    """鉴权后以附件形式下载原始文件。"""
+    """鉴权后以附件形式下载原始文件（从 MinIO 流式读取）。"""
     file_obj = file_service.get_downloadable_file(
         session, workspace.id, current_user.id, id
     )
-    abs_path = file_obj.get_abs_path()
+    storage = get_storage_client()
+    object_name = cast(str, file_obj.file_path)
+    file_stream = storage.get_file_stream(object_name)
 
-    return FileResponse(
-        abs_path,
-        filename=cast(str | None, file_obj.name),
-        media_type=cast(str | None, file_obj.mime_type),
+    from urllib.parse import quote
+    filename = cast(str | None, file_obj.name) or "download"
+    encoded_filename = quote(filename)
+
+    return StreamingResponse(
+        file_stream,
+        media_type=cast(str | None, file_obj.mime_type) or "application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+        },
+        background=BackgroundTask(storage.close_file_stream, file_stream),
     )
 
 

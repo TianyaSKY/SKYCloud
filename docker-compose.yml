@@ -59,6 +59,27 @@ services:
     networks:
       - skycloud-network
 
+  minio:
+    image: minio/minio:latest
+    container_name: skycloud-minio
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: [ "CMD", "mc", "ready", "local" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - skycloud-network
+
   backend-api:
     build:
       context: ./backend
@@ -85,6 +106,12 @@ services:
       - RABBITMQ_USER=${RABBITMQ_USER:-skycloud}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-skycloud}
       - RABBITMQ_VHOST=${RABBITMQ_VHOST:-/}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=${MINIO_BUCKET:-skycloud}
+      - MINIO_SECURE=${MINIO_SECURE:-false}
+      - UPLOAD_FOLDER=/data/uploads
       - OPENCODE_IMAGE=${OPENCODE_IMAGE:-skycloud/opencode-workspace:latest}
       - SKYCLOUD_DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-skycloud}_skycloud-network
     depends_on:
@@ -93,6 +120,8 @@ services:
       redis:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     networks:
       - skycloud-network
@@ -120,12 +149,20 @@ services:
       - RABBITMQ_USER=${RABBITMQ_USER:-skycloud}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-skycloud}
       - RABBITMQ_VHOST=${RABBITMQ_VHOST:-/}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=${MINIO_BUCKET:-skycloud}
+      - MINIO_SECURE=${MINIO_SECURE:-false}
+      - UPLOAD_FOLDER=/data/uploads
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     networks:
       - skycloud-network
@@ -155,6 +192,12 @@ services:
       - RABBITMQ_USER=${RABBITMQ_USER:-skycloud}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-skycloud}
       - RABBITMQ_VHOST=${RABBITMQ_VHOST:-/}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=${MINIO_BUCKET:-skycloud}
+      - MINIO_SECURE=${MINIO_SECURE:-false}
+      - UPLOAD_FOLDER=/data/uploads
       - MCP_PORT=5001
     depends_on:
       db:
@@ -162,6 +205,8 @@ services:
       redis:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     networks:
       - skycloud-network
@@ -187,3 +232,4 @@ volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
+  minio_data:

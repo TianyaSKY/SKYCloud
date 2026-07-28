@@ -2,11 +2,13 @@
 
 import os
 from datetime import datetime
+from typing import cast
 
 from sqlalchemy.orm import Session
 
 from app.exceptions import BusinessRuleError, ResourceNotFoundError
 from app.infra.datetime_utils import beijing_now, to_beijing_naive
+from app.infra.storage import get_storage_client
 from app.models.file import File
 from app.models.share import Share
 
@@ -81,11 +83,14 @@ def cancel_share_for_user(session: Session, share_id: int, user_id: int) -> None
 
 
 def resolve_shared_file(session: Session, token: str) -> File:
-    """公开下载入口：校验链接有效且磁盘文件仍存在。"""
+    """公开下载入口：校验链接有效且对象存储中文件仍存在。"""
     share = get_share_by_token(session, token)
     if not share:
         raise ResourceNotFoundError("Link invalid or expired")
     file = share.file
-    if not file or not os.path.exists(file.get_abs_path()):
+    if not file:
+        raise ResourceNotFoundError("File not found")
+    storage = get_storage_client()
+    if not storage.file_exists(cast(str, file.file_path)):
         raise ResourceNotFoundError("File not found")
     return file

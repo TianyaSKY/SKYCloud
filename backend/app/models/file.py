@@ -17,7 +17,7 @@ class File(Base):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False)
-    file_path = Column(String(512), nullable=False)  # 仅存文件名；绝对路径见 get_abs_path
+    file_path = Column(String(512), nullable=False)  # MinIO 对象键
     file_size = Column(BigInteger)  # 字节数，用于容量统计
     mime_type = Column(String(255))  # 如 image/jpeg、application/pdf
     content_hash = Column(String(64))  # 内容 SHA-256，秒传去重
@@ -49,7 +49,7 @@ class File(Base):
     )
 
     def get_abs_path(self):
-        """拼接上传根目录，得到磁盘绝对路径。"""
+        """兼容旧调用：返回本地临时文件的可能路径，不用于对象存储读取。"""
         return os.path.join(UPLOAD_FOLDER, cast(str, self.file_path))
 
     def to_dict(self):

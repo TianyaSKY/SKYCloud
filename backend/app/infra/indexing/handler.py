@@ -2,13 +2,16 @@
 
 由 RabbitMQ 消费者调用；失败标记 status=fail 并写收件箱通知。
 单文件与批量路径共享失败收尾逻辑，避免连接池上的半事务。
+文件从 MinIO 对象存储下载到临时目录后交给描述生成模块处理。
 """
 
 import datetime
 import logging
+import os
 
 from app.exceptions import ResourceNotFoundError
 from app.infra.extensions import SessionLocal
+from app.infra.storage import get_storage_client
 from app.models.file import File
 from app.features.file import service as file_service
 from app.features.inbox import service as inbox_service
@@ -25,6 +28,7 @@ logger = logging.getLogger(__name__)
 def handle_file_indexing(file_id: int) -> None:
     """索引单个文件：processing → 描述 → 向量 → success；异常则 fail + 通知。"""
     session = SessionLocal()
+    tmp_path = None
     try:
         try:
             file: File = file_service.get_file(session, file_id)
@@ -41,15 +45,19 @@ def handle_file_indexing(file_id: int) -> None:
         chat_config = get_chat_model_config()
         emb_config = get_embedding_model_config()
 
-        abs_path = file.get_abs_path()
+        # 从 MinIO 下载到临时文件
+        storage = get_storage_client()
+        object_name = str(file.file_path)
+        suffix = os.path.splitext(str(file.name))[-1] or ""
+        tmp_path = storage.download_to_temp(object_name, suffix=suffix)
 
         # 文本走 Chat，其它走 VL
         description = generate_file_description(
-            abs_path, vl_config, chat_config, user_id=file.uploader_id or 0)
+            tmp_path, vl_config, chat_config, user_id=file.uploader_id or 0)
         file.description = description
         session.commit()
 
-        # 文件名拼进 embedding 文本，使纯文件名查询也能命中
+        # 文件名拼进 embedding 文本，使纯文件名查询也能够命中
         embedding_text = f"文件名: {file.name}\n{description}"
         file.vector_info = file_service.embedding_desc(
             embedding_text, emb_config, user_id=file.uploader_id or 0)
@@ -82,6 +90,9 @@ def handle_file_indexing(file_id: int) -> None:
                 },
             )
     finally:
+        # 清理临时文件
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
         session.close()
 
 
@@ -121,8 +132,10 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
     vl_config = get_vl_model_config()
     chat_config = get_chat_model_config()
     emb_config = get_embedding_model_config()
+    storage = get_storage_client()
 
     session = SessionLocal()
+    tmp_paths: list[str] = []  # 记录临时文件以便统一清理
     try:
         # 阶段 1：逐个生成描述（VL 难批量）
         described_files: list[tuple[File, str]] = []
@@ -135,9 +148,14 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
                 file.status = "processing"
                 session.commit()
 
-                abs_path = file.get_abs_path()
+                # 从 MinIO 下载到临时文件
+                object_name = str(file.file_path)
+                suffix = os.path.splitext(str(file.name))[-1] or ""
+                tmp_path = storage.download_to_temp(object_name, suffix=suffix)
+                tmp_paths.append(tmp_path)
+
                 description = generate_file_description(
-                    abs_path, vl_config, chat_config, user_id=file.uploader_id or 0)
+                    tmp_path, vl_config, chat_config, user_id=file.uploader_id or 0)
                 file.description = description
                 session.commit()
 
@@ -178,6 +196,10 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
                     f"[Batch] Error saving vector for file {file.id}: {e}")
                 _mark_file_failed(session, file.id, e)
     finally:
+        # 清理所有临时文件
+        for p in tmp_paths:
+            if os.path.exists(p):
+                os.remove(p)
         session.close()
 
 

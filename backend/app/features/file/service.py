@@ -1,6 +1,7 @@
 """文件上传/下载/搜索/embedding 及分片上传会话管理。
 
 含秒传（content_hash 复用）、Bloom 预鉴权、物理文件引用计数删除等边界。
+存储后端已迁移至 MinIO 对象存储（兼容 S3 API）。
 """
 
 import asyncio
@@ -32,6 +33,7 @@ from sqlalchemy.orm import Session
 from app.infra.extensions import UPLOAD_FOLDER, redis_client
 from app.infra.cache import cacheable, evict_cache_pattern
 from app.infra.task_queue import publish_file_tasks
+from app.infra.storage import get_storage_client
 from app.models.file import File
 from app.models.folder import Folder
 from app.features.folder import change_log as change_log_service
@@ -112,7 +114,8 @@ def _get_reusable_source_file(session: Session, content_hash: str, file_size: in
     )
     if not source_file:
         return None
-    if not os.path.exists(source_file.get_abs_path()):
+    storage = get_storage_client()
+    if not storage.file_exists(cast(str, source_file.file_path)):
         return None
     return source_file
 
@@ -311,19 +314,25 @@ def _write_multipart_meta(meta_path: str, meta: dict[str, Any]) -> None:
 
 
 def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
-    upload_folder = UPLOAD_FOLDER
-    os.makedirs(upload_folder, exist_ok=True)
+    storage = get_storage_client()
+    # 分片临时目录仍用本地
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
     original_filename = file_obj.filename or "unknown"
     unique_filename = _generate_unique_filename(original_filename)
-    full_path = os.path.join(upload_folder, unique_filename)
+    local_tmp_path = os.path.join(UPLOAD_FOLDER, unique_filename)
 
-    file_obj.save(full_path)
-    file_size = os.path.getsize(full_path)
-    mime_type = _resolve_mime_type(full_path, getattr(file_obj, "mimetype", None))
+    file_obj.save(local_tmp_path)
+    file_size = os.path.getsize(local_tmp_path)
+    mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
 
+    uploaded_object = False
     try:
-        content_hash = _calculate_file_hash(full_path)
+        content_hash = _calculate_file_hash(local_tmp_path)
+        # 上传到 MinIO 对象存储
+        storage.upload_file(local_tmp_path, unique_filename)
+        uploaded_object = True
+
         new_file = _persist_file_record(session, 
             name=original_filename,
             file_path=unique_filename,
@@ -336,10 +345,17 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
         )
     except Exception as e:
         session.rollback()
-        if os.path.exists(full_path):
-            os.remove(full_path)
+        if uploaded_object:
+            try:
+                storage.delete_file(unique_filename)
+            except Exception as cleanup_exc:
+                logger.error("删除未入库的 MinIO 对象失败 {}: {}", unique_filename, cleanup_exc)
         logger.exception(f"Failed to save uploaded file metadata: {e}")
         raise ServiceOperationError("Failed to save file metadata")
+    finally:
+        # 清理本地临时文件
+        if os.path.exists(local_tmp_path):
+            os.remove(local_tmp_path)
 
     _log_file_created(new_file)
     _push_processing_queue(
@@ -363,25 +379,42 @@ def batch_create_files(
         session: Session,
         file_objs: list[Any], data: dict[str, Any]
 ) -> list[File]:
-    upload_folder = UPLOAD_FOLDER
-    os.makedirs(upload_folder, exist_ok=True)
+    valid_files = [file_obj for file_obj in file_objs if file_obj and file_obj.filename]
+    if not valid_files:
+        return []
+
+    storage = get_storage_client()
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
     new_files = []
+    uploaded_objects: list[str] = []
     workspace_id = data.get("workspace_id")
     uploader_id = data.get("uploader_id")
 
-    for file_obj in file_objs:
-        if not file_obj or not file_obj.filename:
-            continue
+    for file_obj in valid_files:
 
         original_filename = file_obj.filename
         unique_filename = _generate_unique_filename(original_filename)
-        full_path = os.path.join(upload_folder, unique_filename)
+        local_tmp_path = os.path.join(UPLOAD_FOLDER, unique_filename)
 
-        file_obj.save(full_path)
-        file_size = os.path.getsize(full_path)
-        mime_type = _resolve_mime_type(full_path, getattr(file_obj, "mimetype", None))
-        content_hash = _calculate_file_hash(full_path)
+        try:
+            file_obj.save(local_tmp_path)
+            file_size = os.path.getsize(local_tmp_path)
+            mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
+            content_hash = _calculate_file_hash(local_tmp_path)
+
+            storage.upload_file(local_tmp_path, unique_filename)
+            uploaded_objects.append(unique_filename)
+        except Exception as exc:
+            for object_name in uploaded_objects:
+                try:
+                    storage.delete_file(object_name)
+                except Exception as cleanup_exc:
+                    logger.error("删除未入库的 MinIO 对象失败 {}: {}", object_name, cleanup_exc)
+            raise ServiceOperationError("Failed to upload file") from exc
+        finally:
+            if os.path.exists(local_tmp_path):
+                os.remove(local_tmp_path)
 
         new_file = File(
             name=original_filename,
@@ -395,11 +428,17 @@ def batch_create_files(
         )
         new_files.append(new_file)
 
-    if not new_files:
-        return []
-
-    session.add_all(new_files)
-    session.commit()
+    try:
+        session.add_all(new_files)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        for object_name in uploaded_objects:
+            try:
+                storage.delete_file(object_name)
+            except Exception as cleanup_exc:
+                logger.error("删除未入库的 MinIO 对象失败 {}: {}", object_name, cleanup_exc)
+        raise ServiceOperationError("Failed to save uploaded file metadata") from exc
 
     if uploader_id:
         change_log_service.log_events_batch(
@@ -623,6 +662,7 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
     if os.path.exists(tmp_final_path):
         os.remove(tmp_final_path)
 
+    uploaded_object = False
     try:
         with open(tmp_final_path, "wb") as target:
             for idx in range(total_chunks):
@@ -646,6 +686,11 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
         raise ServiceOperationError("Failed to merge chunks")
 
     try:
+        # 上传合并后的文件到 MinIO
+        storage = get_storage_client()
+        storage.upload_file(final_path, unique_filename)
+        uploaded_object = True
+
         resolved_mime = _resolve_mime_type(final_path, mime_type)
         new_file = File(
             name=filename,
@@ -661,11 +706,17 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
         session.commit()
     except Exception as e:
         session.rollback()
+        if uploaded_object:
+            try:
+                storage.delete_file(unique_filename)
+            except Exception as cleanup_exc:
+                logger.error("删除未入库的 MinIO 对象失败 {}: {}", unique_filename, cleanup_exc)
         logger.exception(f"Failed to persist merged file: {e}")
-        if os.path.exists(final_path):
-            os.remove(final_path)
         raise ServiceOperationError("Failed to save file metadata")
     finally:
+        # 清理本地合并文件与分片目录
+        if os.path.exists(final_path):
+            os.remove(final_path)
         shutil.rmtree(upload_dir, ignore_errors=True)
 
     _log_file_created(new_file)
@@ -698,7 +749,8 @@ def get_authorized_file(session: Session, workspace_id: int, user_id: int, file_
 
 def get_downloadable_file(session: Session, workspace_id: int, user_id: int, file_id: int) -> File:
     file_obj = get_authorized_file(session, workspace_id, user_id, file_id)
-    if not os.path.exists(file_obj.get_abs_path()):
+    storage = get_storage_client()
+    if not storage.file_exists(cast(str, file_obj.file_path)):
         raise ResourceNotFoundError("File not found on server")
     return file_obj
 
@@ -809,7 +861,7 @@ def update_file(session: Session, id: int, data: dict[str, Any]) -> File:
 
 
 def delete_file(session: Session, id: int, commit: bool = True, log_event: bool = True) -> None:
-    """删除文件记录；物理文件仅在无其它记录引用同一 path 时才删盘。
+    """删除文件记录；对象存储中的文件仅在无其它记录引用同一 path 时才删除。
 
     commit/log_event=False 供递归批量删除时由外层统一提交。
     """
@@ -821,17 +873,19 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
     old_parent_id = file_obj.parent_id
     old_name = file_obj.name
     entity_id = file_obj.id
-    abs_path = file_obj.get_abs_path()
-    if os.path.exists(abs_path):
-        try:
-            # 秒传共享同一 file_path，有引用则不能删物理文件
-            remaining_ref = session.query(File).filter(
-                File.file_path == file_obj.file_path, File.id != file_obj.id
-            ).first()
-            if not remaining_ref:
-                os.remove(abs_path)
-        except OSError as e:
-            logger.error(f"Error deleting file {abs_path}: {e}")
+    object_name = cast(str, file_obj.file_path)
+
+    try:
+        # 秒传共享同一 file_path，有引用则不能删对象存储文件
+        remaining_ref = session.query(File).filter(
+            File.file_path == file_obj.file_path, File.id != file_obj.id
+        ).first()
+        if not remaining_ref:
+            storage = get_storage_client()
+            if storage.file_exists(object_name):
+                storage.delete_file(object_name)
+    except Exception as e:
+        logger.error(f"Error deleting file from MinIO {object_name}: {e}")
 
     session.delete(file_obj)
     if commit:
@@ -957,7 +1011,9 @@ def get_root_file_id(session: Session, workspace_id: int) -> int | None:
 
 
 def upload_avatar(session: Session, img_file: Any, user_id: int) -> dict[str, Any]:
-    from app.features.folder import service as folder_service, share_service, user_service
+    from app.features.folder import service as folder_service
+    from app.features.share import service as share_service
+    from app.features.auth import user_service
 
     # 头像存储在 workspace_id=1 的公共空间中
     root_folder = session.query(Folder).filter_by(workspace_id=1, parent_id=None).first()
