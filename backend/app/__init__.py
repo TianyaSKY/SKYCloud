@@ -118,6 +118,7 @@ def initialize_application():
     from app.models import (
         User,
         File,
+        FileChunk,
         Folder,
         SysDict,
         Share,

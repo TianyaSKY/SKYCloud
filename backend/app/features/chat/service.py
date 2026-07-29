@@ -90,12 +90,13 @@ def _db_search_by_vector(
 ) -> list[Document]:
     """用预计算向量查库；独立 session 保证线程池并发安全。"""
     sql = text("""
-               SELECT id, name, description, mime_type, (vector_info <=> :vector) AS distance
-                FROM files
-                WHERE description IS NOT NULL
-                  AND description != ''
-           AND workspace_id = :workspace_id
-                ORDER BY vector_info <=> :vector
+               SELECT c.id, f.id, f.name, c.content, f.mime_type, c.chunk_index,
+                      c.page_number, (c.vector_info <=> :vector) AS distance
+                FROM file_chunks c
+                JOIN files f ON f.id = c.file_id
+                WHERE c.workspace_id = :workspace_id
+                  AND c.vector_info IS NOT NULL
+                ORDER BY c.vector_info <=> :vector
                    LIMIT :limit
                 """)
 
@@ -110,12 +111,15 @@ def _db_search_by_vector(
 
     docs: list[Document] = []
     for rank, row in enumerate(results, start=1):
-        content = f"文件名: {row[1]}\n描述: {row[2]}"
+        content = f"文件名: {row[2]}\n内容: {row[3]}"
         metadata = {
-            "id": row[0],
-            "name": row[1],
-            "mime_type": row[3],
-            "distance": float(row[4]) if row[4] is not None else None,
+            "id": row[1],
+            "retrieval_id": f"chunk:{row[0]}",
+            "name": row[2],
+            "mime_type": row[4],
+            "chunk_index": row[5],
+            "page_number": row[6],
+            "distance": float(row[7]) if row[7] is not None else None,
             "rank": rank,
             "query_text": query_text,
         }
@@ -132,12 +136,12 @@ def _fuse_docs_with_rrf(
     if not result_sets:
         return []
 
-    scores: dict[int, float] = defaultdict(float)
-    doc_map: dict[int, Document] = {}
+    scores: dict[str | int, float] = defaultdict(float)
+    doc_map: dict[str | int, Document] = {}
 
     for docs in result_sets:
         for rank, doc in enumerate(docs, start=1):
-            doc_id = int(doc.metadata["id"])
+            doc_id = doc.metadata.get("retrieval_id", doc.metadata["id"])
             scores[doc_id] += 1.0 / (rrf_k + rank)
             if doc_id not in doc_map:
                 doc_map[doc_id] = doc
@@ -262,6 +266,8 @@ def format_docs(docs):
     for doc in docs:
         m = doc.metadata
         info = f"[文件: {m['name']} (ID: {m['id']})]\n{doc.page_content}"
+        if m.get("page_number"):
+            info = f"[文件: {m['name']} (ID: {m['id']}，第 {m['page_number']} 页)]\n{doc.page_content}"
         # 图片需提示模型用固定 Markdown 路径引用，前端才能渲染
         if m.get('mime_type', '').startswith('image/'):
             info += f"\n(这是一张图片，你可以使用 Markdown 语法展示它: ![图片名](/api/files/{m['id']}/download))"

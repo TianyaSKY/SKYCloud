@@ -8,11 +8,13 @@
 import datetime
 import logging
 import os
+from typing import cast
 
 from app.exceptions import ResourceNotFoundError
 from app.infra.extensions import SessionLocal
 from app.infra.storage import get_storage_client
 from app.models.file import File
+from app.models.file_chunk import FileChunk
 from app.features.file import service as file_service
 from app.features.inbox import service as inbox_service
 from app.infra.llm.config import (
@@ -20,9 +22,47 @@ from app.infra.llm.config import (
     get_embedding_model_config,
     get_vl_model_config,
 )
-from app.features.folder.organize.description import generate_file_description
+from app.features.folder.organize.description import (
+    extract_file_sections,
+    generate_file_description,
+)
+from app.infra.indexing.chunking import TextSection, build_text_chunks
 
 logger = logging.getLogger(__name__)
+
+
+def _replace_file_chunks(
+        session, file: File, local_path: str, description: str, emb_config: dict, user_id: int
+) -> int:
+    """用最新文件内容重建 chunk 向量，旧 chunk 在同一事务中替换。"""
+    sections = extract_file_sections(local_path)
+    if not sections:
+        # 图像、视频或扫描件没有可抽取正文时，保留 AI 描述作为唯一可检索片段。
+        sections = [TextSection(description)]
+    chunks = build_text_chunks(sections)
+    if not chunks:
+        raise ValueError("未能从文件中提取可索引内容")
+
+    embedding_texts = [f"文件名: {file.name}\n内容:\n{chunk.content}" for chunk in chunks]
+    vectors = file_service.batch_embedding_desc(embedding_texts, emb_config, user_id=user_id)
+    if len(vectors) != len(chunks):
+        raise RuntimeError("Embedding 返回数量与分块数量不一致")
+
+    session.query(FileChunk).filter(FileChunk.file_id == file.id).delete(
+        synchronize_session=False
+    )
+    session.add_all([
+        FileChunk(
+            file_id=file.id,
+            workspace_id=file.workspace_id,
+            chunk_index=chunk.chunk_index,
+            page_number=chunk.page_number,
+            content=chunk.content,
+            vector_info=vector or None,
+        )
+        for chunk, vector in zip(chunks, vectors)
+    ])
+    return len(chunks)
 
 
 def handle_file_indexing(file_id: int) -> None:
@@ -61,10 +101,13 @@ def handle_file_indexing(file_id: int) -> None:
         embedding_text = f"文件名: {file.name}\n{description}"
         file.vector_info = file_service.embedding_desc(
             embedding_text, emb_config, user_id=file.uploader_id or 0)
+        chunk_count = _replace_file_chunks(
+            session, file, tmp_path, description, emb_config, file.uploader_id or 0
+        )
 
         file.status = "success"
         session.commit()
-        logger.info(f"Finished indexing file ID: {file_id} successfully.")
+        logger.info(f"Finished indexing file ID: {file_id} successfully with {chunk_count} chunks.")
 
     except Exception as e:
         logger.error(f"Error indexing file {file_id}: {e}")
@@ -187,10 +230,18 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
         for (file, _), vector in zip(described_files, vectors):
             try:
                 file.vector_info = vector
+                object_name = str(file.file_path)
+                suffix = os.path.splitext(str(file.name))[-1] or ""
+                chunk_tmp_path = storage.download_to_temp(object_name, suffix=suffix)
+                tmp_paths.append(chunk_tmp_path)
+                chunk_count = _replace_file_chunks(
+                    session, file, chunk_tmp_path, cast(str, file.description),
+                    emb_config, file.uploader_id or 0,
+                )
                 file.status = "success"
                 session.commit()
                 logger.info(
-                    f"[Batch] Finished indexing file ID: {file.id} successfully.")
+                    f"[Batch] Finished indexing file ID: {file.id} successfully with {chunk_count} chunks.")
             except Exception as e:
                 logger.error(
                     f"[Batch] Error saving vector for file {file.id}: {e}")

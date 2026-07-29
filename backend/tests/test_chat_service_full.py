@@ -25,7 +25,9 @@ class TestChatServiceModels:
         from app.features.chat.service import _db_search_by_vector
         mock_session = MagicMock()
         mock_result = MagicMock()
-        mock_result.__getitem__ = MagicMock(side_effect=lambda i: [1, "file.txt", "desc", "text/plain", 0.1][i])
+        mock_result.__getitem__ = MagicMock(
+            side_effect=lambda i: [11, 1, "file.txt", "命中的正文", "text/plain", 0, None, 0.1][i]
+        )
         mock_session.execute.return_value.fetchall.return_value = [mock_result]
         with patch("app.features.chat.service.SessionLocal", return_value=mock_session):
             docs = _db_search_by_vector([0.1] * 1024, "test", 1, 10)

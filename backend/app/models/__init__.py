@@ -1,6 +1,7 @@
 """ORM 模型导出：用户、文件树、分享、工作空间、MCP Token 等持久化实体。"""
 
 from .file import File
+from .file_chunk import FileChunk
 from .file_change_event import FileChangeEvent
 from .folder import Folder
 from .inbox import Inbox

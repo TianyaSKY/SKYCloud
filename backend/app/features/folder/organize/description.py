@@ -11,7 +11,11 @@ import tempfile
 from pathlib import Path
 
 import cv2
+import fitz
+import pandas as pd
 from docx import Document
+
+from app.infra.indexing.chunking import TextSection
 
 from .converter import (
     convert_office_to_pdf,
@@ -242,6 +246,31 @@ def _extract_text_content(local_path: str) -> str:
         except:
             return ""
 
+    if ext == ".pdf":
+        try:
+            document = fitz.open(local_path)
+            try:
+                return "\n".join(page.get_text("text") for page in document)
+            finally:
+                document.close()
+        except Exception:
+            logger.exception("PDF 文本提取失败 path=%s", local_path)
+            return ""
+
+    if ext in {".csv", ".xlsx", ".xls"}:
+        try:
+            if ext == ".csv":
+                frame = pd.read_csv(local_path, dtype=str, keep_default_na=False)
+                return frame.to_csv(index=False)
+            sheets = pd.read_excel(local_path, sheet_name=None, dtype=str)
+            return "\n\n".join(
+                f"工作表: {name}\n{frame.fillna('').to_csv(index=False)}"
+                for name, frame in sheets.items()
+            )
+        except Exception:
+            logger.exception("表格文本提取失败 path=%s", local_path)
+            return ""
+
     if ext in TEXT_EXTENSIONS or not ext:
         try:
             return path.read_text(encoding="utf-8", errors="ignore")
@@ -249,6 +278,26 @@ def _extract_text_content(local_path: str) -> str:
             return ""
 
     return ""
+
+
+def extract_file_sections(local_path: str) -> list[TextSection]:
+    """提取供分块索引使用的文本；PDF 保留真实页码，其它格式页码未知。"""
+    path = Path(local_path)
+    if path.suffix.lower() == ".pdf":
+        try:
+            document = fitz.open(local_path)
+            try:
+                return [
+                    TextSection(page.get_text("text"), page_number=index + 1)
+                    for index, page in enumerate(document)
+                    if page.get_text("text").strip()
+                ]
+            finally:
+                document.close()
+        except Exception:
+            logger.exception("PDF 分页文本提取失败 path=%s", local_path)
+    text = _extract_text_content(local_path)
+    return [TextSection(text)] if text.strip() else []
 
 
 # 兼容旧 import 名

@@ -36,6 +36,7 @@ class File(Base):
     uploader = relationship("User", backref="files")
     # 文件删除时级联清理分享记录
     shares = relationship("Share", back_populates="file", cascade="all, delete-orphan")
+    chunks = relationship("FileChunk", cascade="all, delete-orphan", passive_deletes=True)
 
     __table_args__ = (
         Index(

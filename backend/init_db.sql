@@ -90,6 +90,22 @@ CREATE INDEX IF NOT EXISTS idx_files_ws_parent ON files (workspace_id, parent_id
 CREATE INDEX IF NOT EXISTS idx_files_ws_status ON files (workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_files_content_hash_size ON files (content_hash, file_size);
 
+-- 6.1 文件内容分块表：RAG 按 chunk 检索，避免长文件只命中一段摘要
+CREATE TABLE IF NOT EXISTS file_chunks
+(
+    id           SERIAL PRIMARY KEY,
+    file_id      INTEGER NOT NULL REFERENCES files (id) ON DELETE CASCADE,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    chunk_index  INTEGER NOT NULL,
+    page_number  INTEGER,
+    content      TEXT NOT NULL,
+    vector_info  vector(1024),
+    created_at   TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()) NOT NULL,
+    CONSTRAINT uq_file_chunks_file_index UNIQUE (file_id, chunk_index)
+);
+CREATE INDEX IF NOT EXISTS file_chunk_vector_idx ON file_chunks USING hnsw (vector_info vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_file_chunks_ws_file ON file_chunks (workspace_id, file_id);
+
 -- 7. 创建分享表 (注意表名为 shares，与 SQLAlchemy 模型一致)
 CREATE TABLE IF NOT EXISTS shares
 (
