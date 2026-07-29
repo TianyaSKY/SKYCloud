@@ -915,12 +915,22 @@ async def search_files(
     if not query:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
-    target = _search_files_vector if search_type == "vector" else _search_files_fuzzy
+    if search_type != "vector":
+        return await asyncio.to_thread(
+            _search_files_fuzzy, session, workspace_id, query, page, page_size)
 
-    def _work():
-        return target(session, workspace_id, query, page, page_size)
-
-    return await asyncio.to_thread(_work)
+    try:
+        embeddings = await embedding_desc(query, get_embedding_model_config())
+        return await asyncio.to_thread(
+            _search_files_vector_by_embedding,
+            session, workspace_id, embeddings, page, page_size,
+        )
+    except Exception as e:
+        logger.exception(f"Vector search error: {e}")
+        return {
+            "items": [], "total": 0, "page": page, "page_size": page_size,
+            "error": str(e),
+        }
 
 
 @cacheable(
@@ -947,50 +957,38 @@ def _search_files_fuzzy(
     }
 
 
-def _search_files_vector(
+def _search_files_vector_by_embedding(
         session: Session,
-        workspace_id: int, query: str, page: int, page_size: int
+        workspace_id: int, embeddings: list[float], page: int, page_size: int
 ) -> dict[str, Any]:
-    try:
-        emb_config = get_embedding_model_config()
-        embeddings = embedding_desc(query, emb_config)
-        if not embeddings:
-            return {
-                "items": [],
-                "total": 0,
-                "page": page,
-                "page_size": page_size,
-                "error": "No embeddings returned",
-            }
-
-        offset = (page - 1) * page_size
-        items = (
-            session.query(File).filter(File.workspace_id == workspace_id, File.vector_info.isnot(None))
-            .order_by(File.vector_info.cosine_distance(embeddings))
-            .limit(page_size)
-            .offset(offset)
-            .all()
-        )
-
-        total = session.query(File).filter(
-            File.workspace_id == workspace_id, File.vector_info.isnot(None)
-        ).count()
-
-        return {
-            "items": [file_obj.to_dict() for file_obj in items],
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-        }
-    except Exception as e:
-        logger.exception(f"Vector search error: {e}")
+    if not embeddings:
         return {
             "items": [],
             "total": 0,
             "page": page,
             "page_size": page_size,
-            "error": str(e),
+            "error": "No embeddings returned",
         }
+
+    offset = (page - 1) * page_size
+    items = (
+        session.query(File).filter(File.workspace_id == workspace_id, File.vector_info.isnot(None))
+        .order_by(File.vector_info.cosine_distance(embeddings))
+        .limit(page_size)
+        .offset(offset)
+        .all()
+    )
+
+    total = session.query(File).filter(
+        File.workspace_id == workspace_id, File.vector_info.isnot(None)
+    ).count()
+
+    return {
+        "items": [file_obj.to_dict() for file_obj in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 def _clear_search_cache(workspace_id: int | None) -> None:
@@ -1063,11 +1061,11 @@ def batch_delete_items(session: Session, workspace_id: int, user_id: int, items:
             delete_file(session, item_id)
 
 
-def embedding_desc(desc: str, config: dict[str, str], user_id: int = 0) -> list[float]:
+async def embedding_desc(desc: str, config: dict[str, str], user_id: int = 0) -> list[float]:
     """单条文本 embedding；失败返回空列表，避免索引任务硬失败。"""
     try:
         from app.infra.llm.client import embed_texts
-        vectors = embed_texts(
+        vectors = await embed_texts(
             texts=desc,
             config=config,
             user_id=user_id,
@@ -1079,13 +1077,13 @@ def embedding_desc(desc: str, config: dict[str, str], user_id: int = 0) -> list[
         return []
 
 
-def batch_embedding_desc(texts: list[str], config: dict[str, str], user_id: int = 0) -> list[list[float]]:
+async def batch_embedding_desc(texts: list[str], config: dict[str, str], user_id: int = 0) -> list[list[float]]:
     """批量 embedding；失败时按输入长度返回空向量占位，保持对齐。"""
     if not texts:
         return []
     try:
         from app.infra.llm.client import embed_texts
-        return embed_texts(
+        return await embed_texts(
             texts=texts,
             config=config,
             user_id=user_id,

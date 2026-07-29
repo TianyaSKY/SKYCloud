@@ -3,28 +3,44 @@
 LangChain 等无法替换底层调用的场景，用 record_llm_usage() 手动补记。
 """
 
+import asyncio
 import logging
 from typing import Any
 
 from langchain_openai import OpenAIEmbeddings
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 连接池
 # ---------------------------------------------------------------------------
-_client_cache: dict[tuple, OpenAI] = {}
+_client_cache: dict[tuple[str, str, int], AsyncOpenAI] = {}
 
 
-def _get_client(api_base: str, api_key: str) -> OpenAI:
-    """按 (api_base, api_key) 复用 OpenAI 客户端，减少连接开销。"""
-    cache_key = (api_base, api_key)
+def _get_client(api_base: str, api_key: str) -> AsyncOpenAI:
+    """按 (api_base, api_key) 复用异步 OpenAI 客户端，减少连接开销。"""
+    # AsyncClient 的连接池绑定事件循环。Web 进程通常只有一个事件循环，
+    # 但 Worker 会为每个任务调用 asyncio.run()，因此不能跨循环复用。
+    try:
+        loop_id = id(asyncio.get_running_loop())
+    except RuntimeError:
+        # 仅供命令行/测试预创建客户端；实际网络调用仍必须发生在协程中。
+        loop_id = 0
+    cache_key = (api_base, api_key, loop_id)
     if cache_key not in _client_cache:
-        _client_cache[cache_key] = OpenAI(
+        _client_cache[cache_key] = AsyncOpenAI(
             api_key=api_key, base_url=api_base, timeout=120
         )
     return _client_cache[cache_key]
+
+
+async def close_llm_clients() -> None:
+    """关闭进程内复用的异步 HTTP 连接池。"""
+    clients = list(_client_cache.values())
+    _client_cache.clear()
+    for client in clients:
+        await client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +77,7 @@ def _safe_record(
 # ---------------------------------------------------------------------------
 
 
-def chat_completion(
+async def chat_completion(
         *,
         messages: list[dict[str, Any]],
         config: dict[str, str],
@@ -70,14 +86,14 @@ def chat_completion(
         query_summary: str | None = None,
         **kwargs: Any,
 ) -> Any:
-    """同步 Chat Completion；成功后按 resp.usage 自动记 token。
+    """异步 Chat Completion；成功后按 resp.usage 自动记 token。
 
     config 需含 api / key / model；kwargs 透传给 OpenAI client。
     """
     client = _get_client(config["api"], config["key"])
     model = config.get("model", "")
 
-    resp = client.chat.completions.create(
+    resp = await client.chat.completions.create(
         model=model,
         messages=messages,
         **kwargs,
@@ -97,7 +113,7 @@ def chat_completion(
     return resp
 
 
-def embed_texts(
+async def embed_texts(
         *,
         texts: list[str] | str,
         config: dict[str, str],
@@ -113,7 +129,7 @@ def embed_texts(
     client = _get_client(config["api"], config["key"])
     model = config.get("model", "Qwen/Qwen3-Embedding-8B")
 
-    resp = client.embeddings.create(model=model, input=texts)
+    resp = await client.embeddings.create(model=model, input=texts)
     sorted_data = sorted(resp.data, key=lambda x: x.index)
     vectors = [item.embedding[:1024] for item in sorted_data]
 
@@ -186,20 +202,20 @@ class TrackingOpenAIEmbeddings(OpenAIEmbeddings):
             "model": self.model,
         }
 
-    def embed_documents(
+    async def aembed_documents(
             self, texts: list[str], chunk_size: int | None = None
     ) -> list[list[float]]:
         if not texts:
             return []
-        return embed_texts(
+        return await embed_texts(
             texts=texts,
             config=self._as_config(),
             user_id=self._tracking_user_id,
             query_summary=f"chat_rag({len(texts)} texts)",
         )
 
-    def embed_query(self, text: str) -> list[float]:
-        result = embed_texts(
+    async def aembed_query(self, text: str) -> list[float]:
+        result = await embed_texts(
             texts=[text],
             config=self._as_config(),
             user_id=self._tracking_user_id,

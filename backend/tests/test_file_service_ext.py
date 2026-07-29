@@ -1,9 +1,10 @@
 """文件服务扩展测试：embedding/重建索引/清理/头像/批量删除等。"""
 
+import asyncio
 import os
 import time
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.exceptions import PermissionDeniedError, ResourceNotFoundError
 from app.models.file import File
@@ -37,19 +38,21 @@ from app.features.file.service import (
 
 class TestEmbeddingDesc:
     def test_exception_returns_empty(self):
-        with patch("app.infra.llm.client.embed_texts", side_effect=Exception("api err")):
-            result = embedding_desc("hello", {"api": "a", "key": "k", "model": "m"})
+        with patch("app.infra.llm.client.embed_texts", new_callable=AsyncMock,
+                   side_effect=Exception("api err")):
+            result = asyncio.run(embedding_desc("hello", {"api": "a", "key": "k", "model": "m"}))
         assert result == []
 
 
 class TestBatchEmbeddingDesc:
     def test_empty_texts(self):
-        result = batch_embedding_desc([], {"api": "a", "key": "k", "model": "m"})
+        result = asyncio.run(batch_embedding_desc([], {"api": "a", "key": "k", "model": "m"}))
         assert result == []
 
     def test_exception_returns_placeholders(self):
-        with patch("app.infra.llm.client.embed_texts", side_effect=Exception("err")):
-            result = batch_embedding_desc(["a", "b"], {"api": "a", "key": "k", "model": "m"})
+        with patch("app.infra.llm.client.embed_texts", new_callable=AsyncMock,
+                   side_effect=Exception("err")):
+            result = asyncio.run(batch_embedding_desc(["a", "b"], {"api": "a", "key": "k", "model": "m"}))
         assert result == [[], []]
 
 

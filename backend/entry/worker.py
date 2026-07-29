@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import time
@@ -18,6 +19,7 @@ from app.infra.task_queue import (
 from app.infra.indexing.handler import handle_file_indexing as handle_file_process
 from app.infra.indexing.handler import handle_batch_indexing
 from app.features.folder.organize.handler import handle_organize_process
+from app.infra.llm.client import close_llm_clients
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -49,7 +51,7 @@ def process_task(file_id, semaphore: threading.Semaphore):
     在线程中处理单个文件处理任务
     """
     try:
-        handle_file_process(file_id)
+        asyncio.run(_run_with_closed_llm_clients(handle_file_process(file_id)))
     except Exception as e:
         logger.exception(f"Error in thread processing file {file_id}: {e}")
     finally:
@@ -71,7 +73,7 @@ def process_batch_task(file_ids: list[int], semaphore: threading.Semaphore):
     try:
         logger.info(
             f"[Batch] Processing batch of {len(file_ids)} files: {file_ids}")
-        handle_batch_indexing(file_ids)
+        asyncio.run(_run_with_closed_llm_clients(handle_batch_indexing(file_ids)))
         logger.info(
             f"[Batch] Batch processing completed for {len(file_ids)} files.")
     except Exception as e:
@@ -89,7 +91,8 @@ def process_organize_task(workspace_id: int, user_id: int, lock_token: str | Non
     try:
         folder_service.mark_organize_task_running(workspace_id, token)
         logger.info(f"Starting organize_files for workspace {workspace_id}")
-        result = handle_organize_process(workspace_id, user_id)
+        result = asyncio.run(_run_with_closed_llm_clients(
+            handle_organize_process(workspace_id, user_id)))
         logger.info(f"Finished organize_files for workspace {workspace_id}: {result}")
     except Exception as e:
         logger.exception(
@@ -98,6 +101,14 @@ def process_organize_task(workspace_id: int, user_id: int, lock_token: str | Non
         folder_service.release_organize_task_lock(workspace_id, token)
         if semaphore:
             semaphore.release()
+
+
+async def _run_with_closed_llm_clients(coro):
+    """运行一个 Worker 协程，并在其专属事件循环结束前关闭 HTTP 连接。"""
+    try:
+        return await coro
+    finally:
+        await close_llm_clients()
 
 
 def run_worker(max_workers):

@@ -72,13 +72,12 @@ def get_embeddings_model():
 
 
 def _vector_search_docs(
+        query_vector: list[float],
         query_text: str,
         workspace_id: int,
-        embeddings: "OpenAIEmbeddings",
         limit: int,
 ) -> list[Document]:
-    """单条查询的完整向量检索（embedding + DB）；保留向后兼容。"""
-    query_vector = embeddings.embed_query(query_text)[:1024]
+    """按已生成的向量查询数据库；由调用方异步请求 embedding。"""
     return _db_search_by_vector(query_vector, query_text, workspace_id, limit)
 
 
@@ -162,8 +161,14 @@ def _fuse_docs_with_rrf(
 async def custom_db_retriever(query_text: str, workspace_id: int):
     """单查询向量检索 + rerank；保留兼容旧调用。"""
     embeddings = get_embeddings_model()
-    docs = _vector_search_docs(
-        query_text, workspace_id, embeddings, RAG_VECTOR_FETCH_K)
+    query_vector = (await embeddings.aembed_query(query_text))[:1024]
+    docs = await asyncio.to_thread(
+        _vector_search_docs,
+        query_vector,
+        query_text,
+        workspace_id,
+        RAG_VECTOR_FETCH_K,
+    )
     docs = await rerank_documents(query_text, docs)
     logger.info(f"单查询检索结果: {len(docs)}")
     return docs
@@ -201,9 +206,7 @@ async def multi_query_db_retriever(
     if original_vector and queries:
         additional_queries = queries[1:]  # queries[0] 始终是原始问题
         if additional_queries:
-            extra_vectors = await loop.run_in_executor(
-                None, embeddings.embed_documents, additional_queries
-            )
+            extra_vectors = await embeddings.aembed_documents(additional_queries)
             all_vectors = [original_vector] + [v[:1024] for v in extra_vectors]
         else:
             all_vectors = [original_vector]
@@ -212,9 +215,7 @@ async def multi_query_db_retriever(
             f"[计时] 增量 embedding {len(additional_queries)} 条: {t2 - t1:.2f}s"
             f" (原始问题已并行预计算)")
     else:
-        all_vectors = await loop.run_in_executor(
-            None, embeddings.embed_documents, queries
-        )
+        all_vectors = await embeddings.aembed_documents(queries)
         all_vectors = [v[:1024] for v in all_vectors]
         t2 = time.perf_counter()
         logger.info(f"[计时] 批量 embedding {len(queries)} 条: {t2 - t1:.2f}s")
@@ -287,8 +288,7 @@ async def embed_original_question(payload: dict) -> list[float]:
     if not question:
         return []
     embeddings = get_embeddings_model()
-    loop = asyncio.get_running_loop()
-    vector = await loop.run_in_executor(None, embeddings.embed_query, question)
+    vector = await embeddings.aembed_query(question)
     return vector[:1024]
 
 

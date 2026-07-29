@@ -114,7 +114,7 @@ def _get_visual_urls(local_path: str) -> list:
     return image_uris
 
 
-def _generate_text_description(local_path: str, config: dict, user_id: int = 0) -> str:
+async def _generate_text_description(local_path: str, config: dict, user_id: int = 0) -> str:
     """纯文本文件用 Chat 模型生成描述（比 VL 更快更省 Token）。"""
     from app.infra.llm.client import chat_completion
 
@@ -134,7 +134,7 @@ def _generate_text_description(local_path: str, config: dict, user_id: int = 0) 
     )
 
     try:
-        response = chat_completion(
+        response = await chat_completion(
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": text_content},
@@ -154,7 +154,7 @@ def _generate_text_description(local_path: str, config: dict, user_id: int = 0) 
         raise e
 
 
-def generate_file_description(
+async def generate_file_description(
         local_path: str, config: dict, chat_config: dict | None = None, user_id: int = 0
 ) -> str:
     """生成中文文件描述：文本走 Chat，其余走 VL。
@@ -171,7 +171,7 @@ def generate_file_description(
 
     if ext in TEXT_EXTENSIONS:
         text_config = chat_config or config
-        return _generate_text_description(local_path, text_config, user_id=user_id)
+        return await _generate_text_description(local_path, text_config, user_id=user_id)
 
     visual_contents = _get_visual_urls(local_path)
     if not visual_contents:
@@ -194,7 +194,7 @@ def generate_file_description(
     )
 
     try:
-        response = chat_completion(
+        response = await chat_completion(
             messages=[{"role": "user", "content": content}],
             config=config,
             user_id=user_id,

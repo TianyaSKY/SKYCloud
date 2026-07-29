@@ -149,7 +149,7 @@ Event range: ({checkpoint_event_id}, {target_event_id}]
 """
 
 
-def organize_files(workspace_id: int):
+async def organize_files(workspace_id: int):
     """ReAct 整理主流程：增量优先，溢出/无 checkpoint 则全量；校验通过才推进 checkpoint。"""
     url, key, model = get_llm_config()
     llm = ChatOpenAI(
@@ -247,7 +247,7 @@ def organize_files(workspace_id: int):
         }
 
         try:
-            for chunk in agent_executor.stream({"messages": current_messages}, config):
+            async for chunk in agent_executor.astream({"messages": current_messages}, config):
                 if "agent" in chunk:
                     message = chunk["agent"]["messages"][0]
                     results.append(f"Agent: {message.tool_calls}")
@@ -319,12 +319,12 @@ def organize_files(workspace_id: int):
     return total_usage, "\n\t".join(results)
 
 
-def handle_organize_process(workspace_id: int, user_id: int):
+async def handle_organize_process(workspace_id: int, user_id: int):
     """整理入口：计时、记 Token、无论成败都写收件箱（锁释放在 tasks 层）。"""
     time_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     timestamp_start = time.time()
     try:
-        token_usage, results = organize_files(workspace_id)
+        token_usage, results = await organize_files(workspace_id)
         content = (
             f"用时 {time.time() - timestamp_start:.2f} 秒\n"
             "Token 计费详情：\n"

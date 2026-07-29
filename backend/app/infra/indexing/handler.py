@@ -31,7 +31,7 @@ from app.infra.indexing.chunking import TextSection, build_text_chunks
 logger = logging.getLogger(__name__)
 
 
-def _replace_file_chunks(
+async def _replace_file_chunks(
         session, file: File, local_path: str, description: str, emb_config: dict, user_id: int
 ) -> int:
     """用最新文件内容重建 chunk 向量，旧 chunk 在同一事务中替换。"""
@@ -44,7 +44,8 @@ def _replace_file_chunks(
         raise ValueError("未能从文件中提取可索引内容")
 
     embedding_texts = [f"文件名: {file.name}\n内容:\n{chunk.content}" for chunk in chunks]
-    vectors = file_service.batch_embedding_desc(embedding_texts, emb_config, user_id=user_id)
+    vectors = await file_service.batch_embedding_desc(
+        embedding_texts, emb_config, user_id=user_id)
     if len(vectors) != len(chunks):
         raise RuntimeError("Embedding 返回数量与分块数量不一致")
 
@@ -65,7 +66,7 @@ def _replace_file_chunks(
     return len(chunks)
 
 
-def handle_file_indexing(file_id: int) -> None:
+async def handle_file_indexing(file_id: int) -> None:
     """索引单个文件：processing → 描述 → 向量 → success；异常则 fail + 通知。"""
     session = SessionLocal()
     tmp_path = None
@@ -92,16 +93,16 @@ def handle_file_indexing(file_id: int) -> None:
         tmp_path = storage.download_to_temp(object_name, suffix=suffix)
 
         # 文本走 Chat，其它走 VL
-        description = generate_file_description(
+        description = await generate_file_description(
             tmp_path, vl_config, chat_config, user_id=file.uploader_id or 0)
         file.description = description
         session.commit()
 
         # 文件名拼进 embedding 文本，使纯文件名查询也能够命中
         embedding_text = f"文件名: {file.name}\n{description}"
-        file.vector_info = file_service.embedding_desc(
+        file.vector_info = await file_service.embedding_desc(
             embedding_text, emb_config, user_id=file.uploader_id or 0)
-        chunk_count = _replace_file_chunks(
+        chunk_count = await _replace_file_chunks(
             session, file, tmp_path, description, emb_config, file.uploader_id or 0
         )
 
@@ -167,7 +168,7 @@ def _mark_file_failed(session, file_id: int, error: Exception) -> None:
         session.rollback()
 
 
-def handle_batch_indexing(file_ids: list[int]) -> None:
+async def handle_batch_indexing(file_ids: list[int]) -> None:
     """批量索引：描述仍逐文件（VL 难批），embedding 一次 batch 调用降延迟。"""
     if not file_ids:
         return
@@ -197,7 +198,7 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
                 tmp_path = storage.download_to_temp(object_name, suffix=suffix)
                 tmp_paths.append(tmp_path)
 
-                description = generate_file_description(
+                description = await generate_file_description(
                     tmp_path, vl_config, chat_config, user_id=file.uploader_id or 0)
                 file.description = description
                 session.commit()
@@ -223,7 +224,8 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
 
         # Token 记账挂到批次首文件上传者
         batch_user_id = described_files[0][0].uploader_id or 0 if described_files else 0
-        vectors = file_service.batch_embedding_desc(texts, emb_config, user_id=batch_user_id)
+        vectors = await file_service.batch_embedding_desc(
+            texts, emb_config, user_id=batch_user_id)
         logger.info(f"[Batch] Received {len(vectors)} embedding vectors.")
 
         # 阶段 3：逐文件写回向量与状态
@@ -234,7 +236,7 @@ def handle_batch_indexing(file_ids: list[int]) -> None:
                 suffix = os.path.splitext(str(file.name))[-1] or ""
                 chunk_tmp_path = storage.download_to_temp(object_name, suffix=suffix)
                 tmp_paths.append(chunk_tmp_path)
-                chunk_count = _replace_file_chunks(
+                chunk_count = await _replace_file_chunks(
                     session, file, chunk_tmp_path, cast(str, file.description),
                     emb_config, file.uploader_id or 0,
                 )

@@ -1,7 +1,13 @@
 """organize/handler.py 和 description.py 单元测试。"""
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+async def _async_iter(items):
+    for item in items:
+        yield item
 
 
 class TestHandlerHelpers:
@@ -74,7 +80,7 @@ class TestOrganizeFiles:
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint") as m_upd:
-            usage, results = organize_files(test_workspace.id)
+            usage, results = asyncio.run(organize_files(test_workspace.id))
         m_upd.assert_called_once()
         assert "跳过" in results or "跳过" in results
 
@@ -87,7 +93,7 @@ class TestOrganizeFiles:
             "target_event_id": 0,
         }
         mock_agent = MagicMock()
-        mock_agent.stream.return_value = iter([])
+        mock_agent.astream.return_value = _async_iter([])
 
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
@@ -100,7 +106,7 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id)
+            usage, results = asyncio.run(organize_files(test_workspace.id))
         assert usage["input_tokens"] == 0
 
     def test_incremental_mode(self, session, test_workspace):
@@ -118,7 +124,7 @@ class TestOrganizeFiles:
             "total_events": 5,
         }
         mock_agent = MagicMock()
-        mock_agent.stream.return_value = iter([])
+        mock_agent.astream.return_value = _async_iter([])
 
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
@@ -131,7 +137,7 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id)
+            usage, results = asyncio.run(organize_files(test_workspace.id))
         assert "增量" in results
 
     def test_overflow_full_scan(self, session, test_workspace):
@@ -147,7 +153,7 @@ class TestOrganizeFiles:
             "total_events": 300,
         }
         mock_agent = MagicMock()
-        mock_agent.stream.return_value = iter([])
+        mock_agent.astream.return_value = _async_iter([])
 
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
@@ -160,14 +166,14 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id)
+            usage, results = asyncio.run(organize_files(test_workspace.id))
         assert "全量" in results
 
     def test_load_context_fallback(self, session, test_workspace):
         """load_incremental_context 异常时回退全量。"""
         from app.features.folder.organize.handler import organize_files
         mock_agent = MagicMock()
-        mock_agent.stream.return_value = iter([])
+        mock_agent.astream.return_value = _async_iter([])
 
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
@@ -180,7 +186,7 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id)
+            usage, results = asyncio.run(organize_files(test_workspace.id))
         # 回退全量模式，包含 incremental_context_error 或 首次全量
         assert "incremental_context_error" in results or "全量" in results or "首次" in results
 
@@ -193,7 +199,7 @@ class TestOrganizeFiles:
             "target_event_id": 0,
         }
         mock_agent = MagicMock()
-        mock_agent.stream.return_value = iter([])
+        mock_agent.astream.return_value = _async_iter([])
 
         # 第一次校验失败，第二次通过
         mixed_results = [(False, "mixed error"), (True, "clean")]
@@ -210,7 +216,7 @@ class TestOrganizeFiles:
                    side_effect=mixed_results), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    side_effect=empty_results):
-            usage, results = organize_files(test_workspace.id)
+            usage, results = asyncio.run(organize_files(test_workspace.id))
         assert "校验失败" in results or "校验通过" in results
 
     def test_recursion_error_handling(self, session, test_workspace):
@@ -226,7 +232,7 @@ class TestOrganizeFiles:
             pass
 
         mock_agent = MagicMock()
-        mock_agent.stream.side_effect = GraphRecursionError("Recursion limit")
+        mock_agent.astream.side_effect = GraphRecursionError("Recursion limit")
 
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
@@ -240,7 +246,7 @@ class TestOrganizeFiles:
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
             # GraphRecursionError 名称含 "RecursionError" -> 被捕获不抛出
-            usage, results = organize_files(test_workspace.id)
+            usage, results = asyncio.run(organize_files(test_workspace.id))
         assert "最大步数限制" in results or "校验通过" in results
 
 
@@ -248,38 +254,38 @@ class TestHandleOrganizeProcess:
     def test_handle_organize_success(self, session, test_workspace, test_user):
         """整理入口：成功写收件箱。"""
         from app.features.folder.organize.handler import handle_organize_process
-        with patch("app.features.folder.organize.handler.organize_files",
+        with patch("app.features.folder.organize.handler.organize_files", new_callable=AsyncMock,
                    return_value=({"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}, "done")), \
              patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
              patch("app.infra.llm.client.record_llm_usage") as m_rec, \
              patch("app.infra.llm.config.get_chat_model_config", return_value={"model": "test"}), \
              patch("app.features.inbox.service.create_inbox_message") as m_inbox:
-            result = handle_organize_process(test_workspace.id, test_user.id)
+             result = asyncio.run(handle_organize_process(test_workspace.id, test_user.id))
         m_inbox.assert_called_once()
         assert result["total_tokens"] == 15
 
     def test_handle_organize_no_tokens(self, session, test_workspace, test_user):
         """Token 为 0 时不记录用量。"""
         from app.features.folder.organize.handler import handle_organize_process
-        with patch("app.features.folder.organize.handler.organize_files",
+        with patch("app.features.folder.organize.handler.organize_files", new_callable=AsyncMock,
                    return_value=({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, "done")), \
              patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
              patch("app.infra.llm.client.record_llm_usage"), \
              patch("app.infra.llm.config.get_chat_model_config", return_value={"model": "test"}), \
              patch("app.features.inbox.service.create_inbox_message"):
-            result = handle_organize_process(test_workspace.id, test_user.id)
+             result = asyncio.run(handle_organize_process(test_workspace.id, test_user.id))
         assert result["total_tokens"] == 0
 
     def test_handle_organize_exception(self, session, test_workspace, test_user):
         """整理失败时写错误收件箱。"""
         from app.features.folder.organize.handler import handle_organize_process
-        with patch("app.features.folder.organize.handler.organize_files",
+        with patch("app.features.folder.organize.handler.organize_files", new_callable=AsyncMock,
                    side_effect=Exception("Organize failed")), \
              patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
              patch("app.infra.llm.client.record_llm_usage"), \
              patch("app.infra.llm.config.get_chat_model_config", return_value={"model": "test"}), \
              patch("app.features.inbox.service.create_inbox_message") as m_inbox:
-            result = handle_organize_process(test_workspace.id, test_user.id)
+             result = asyncio.run(handle_organize_process(test_workspace.id, test_user.id))
         m_inbox.assert_called_once()
         assert result == {}
 
@@ -359,7 +365,8 @@ class TestDescription:
         from app.features.folder.organize.description import _generate_text_description
         f = tmp_path / "empty.txt"
         f.write_text("")
-        result = _generate_text_description(str(f), {"api": "x", "key": "y", "model": "z"})
+        result = asyncio.run(_generate_text_description(
+            str(f), {"api": "x", "key": "y", "model": "z"}))
         assert result == "空文件"
 
     def test_generate_text_description_success(self, tmp_path):
@@ -369,8 +376,10 @@ class TestDescription:
         mock_resp = MagicMock()
         mock_resp.choices = [MagicMock()]
         mock_resp.choices[0].message.content = "Python 编程文档"
-        with patch("app.infra.llm.client.chat_completion", return_value=mock_resp):
-            result = _generate_text_description(str(f), {"api": "x", "key": "y", "model": "z"})
+        with patch("app.infra.llm.client.chat_completion", new_callable=AsyncMock,
+                   return_value=mock_resp):
+            result = asyncio.run(_generate_text_description(
+                str(f), {"api": "x", "key": "y", "model": "z"}))
         assert result == "Python 编程文档"
 
     def test_generate_text_description_no_content(self, tmp_path):
@@ -380,9 +389,11 @@ class TestDescription:
         mock_resp = MagicMock()
         mock_resp.choices = [MagicMock()]
         mock_resp.choices[0].message.content = ""
-        with patch("app.infra.llm.client.chat_completion", return_value=mock_resp):
+        with patch("app.infra.llm.client.chat_completion", new_callable=AsyncMock,
+                   return_value=mock_resp):
             with pytest.raises(Exception, match="无法生成"):
-                _generate_text_description(str(f), {"api": "x", "key": "y", "model": "z"})
+                asyncio.run(_generate_text_description(
+                    str(f), {"api": "x", "key": "y", "model": "z"}))
 
     def test_generate_file_description_text_path(self, tmp_path):
         from app.features.folder.organize.description import generate_file_description
@@ -391,11 +402,12 @@ class TestDescription:
         mock_resp = MagicMock()
         mock_resp.choices = [MagicMock()]
         mock_resp.choices[0].message.content = "Python function"
-        with patch("app.infra.llm.client.chat_completion", return_value=mock_resp):
-            result = generate_file_description(
+        with patch("app.infra.llm.client.chat_completion", new_callable=AsyncMock,
+                   return_value=mock_resp):
+            result = asyncio.run(generate_file_description(
                 str(f), {"api": "x", "key": "y", "model": "z"},
                 chat_config={"api": "x", "key": "y", "model": "z"}
-            )
+            ))
         assert result == "Python function"
 
     def test_generate_file_description_image_path(self, tmp_path):
@@ -407,8 +419,10 @@ class TestDescription:
         mock_resp.choices[0].message.content = "A JPEG image"
         with patch("app.features.folder.organize.description._get_visual_urls", return_value=["data:image/jpeg;base64,abc"]), \
              patch("app.features.folder.organize.description._extract_text_content", return_value=""), \
-             patch("app.infra.llm.client.chat_completion", return_value=mock_resp):
-            result = generate_file_description(str(f), {"api": "x", "key": "y", "model": "z"})
+              patch("app.infra.llm.client.chat_completion", new_callable=AsyncMock,
+                    return_value=mock_resp):
+            result = asyncio.run(generate_file_description(
+                str(f), {"api": "x", "key": "y", "model": "z"}))
         assert result == "A JPEG image"
 
     def test_desc_file_alias(self):

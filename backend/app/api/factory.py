@@ -21,7 +21,14 @@ from app.features.workspace.router import router as workspace_router
 async def lifespan(_: FastAPI):
     """应用生命周期：启动初始化。"""
     initialize_application()
-    yield
+    try:
+        yield
+    finally:
+        from app.features.chat.rerank import close_rerank_client
+        from app.infra.llm.client import close_llm_clients
+
+        await close_rerank_client()
+        await close_llm_clients()
 
 
 def create_fastapi_app() -> FastAPI:

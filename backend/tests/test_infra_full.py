@@ -1,8 +1,9 @@
 """infra 层单元测试：cache / remote_embed / task_queue / llm client / app init。"""
 import asyncio
+import builtins
 import json
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -262,10 +263,16 @@ class TestRemoteEmbedder:
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"embeddings": [[0.1, 0.2]]}
         mock_resp.raise_for_status = MagicMock()
-        with patch("app.infra.llm.remote_embed.requests.post", return_value=mock_resp), \
-             patch("builtins.__import__", side_effect=lambda n, *a: MagicMock() if n == "torch" else __builtins__.__import__(n, *a)):
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(return_value=mock_resp)
+        mock_context = MagicMock()
+        mock_context.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_context.__aexit__ = AsyncMock(return_value=None)
+        real_import = builtins.__import__
+        with patch("app.infra.llm.remote_embed.httpx.AsyncClient", return_value=mock_context), \
+              patch("builtins.__import__", side_effect=lambda n, *a: MagicMock() if n == "torch" else real_import(n, *a)):
             # torch is mocked in conftest, so import torch returns a MagicMock
-            result = embedder.process(["text"])
+            result = asyncio.run(embedder.process(["text"]))
         assert result is not None
 
     def test_process_no_embeddings_key(self):
@@ -274,17 +281,26 @@ class TestRemoteEmbedder:
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"unexpected": "data"}
         mock_resp.raise_for_status = MagicMock()
-        with patch("app.infra.llm.remote_embed.requests.post", return_value=mock_resp):
-            result = embedder.process(["text"])
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(return_value=mock_resp)
+        mock_context = MagicMock()
+        mock_context.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_context.__aexit__ = AsyncMock(return_value=None)
+        with patch("app.infra.llm.remote_embed.httpx.AsyncClient", return_value=mock_context):
+            result = asyncio.run(embedder.process(["text"]))
         assert result is None
 
     def test_process_request_exception(self):
-        import requests as req
+        import httpx
         from app.infra.llm.remote_embed import RemoteEmbedder
         embedder = RemoteEmbedder("http://localhost:5001")
-        with patch("app.infra.llm.remote_embed.requests.post",
-                   side_effect=req.exceptions.RequestException("Connection refused")):
-            result = embedder.process(["text"])
+        mock_http = MagicMock()
+        mock_http.post = AsyncMock(side_effect=httpx.RequestError("Connection refused"))
+        mock_context = MagicMock()
+        mock_context.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_context.__aexit__ = AsyncMock(return_value=None)
+        with patch("app.infra.llm.remote_embed.httpx.AsyncClient", return_value=mock_context):
+            result = asyncio.run(embedder.process(["text"]))
         assert result is None
 
     def test_get_embedder_singleton(self):
@@ -488,14 +504,14 @@ class TestLLMClient:
         mock_resp.usage.completion_tokens = 5
         mock_resp.usage.total_tokens = 15
         mock_resp.usage.model_dump.return_value = {}
-        mock_client.chat.completions.create.return_value = mock_resp
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_resp)
         with patch.object(client, "_get_client", return_value=mock_client), \
              patch.object(client, "_safe_record") as m_rec:
-            resp = client.chat_completion(
+            resp = asyncio.run(client.chat_completion(
                 messages=[{"role": "user", "content": "hi"}],
                 config={"api": "x", "key": "y", "model": "z"},
                 user_id=1,
-            )
+            ))
         assert resp is mock_resp
         m_rec.assert_called_once()
 
@@ -504,13 +520,13 @@ class TestLLMClient:
         mock_client = MagicMock()
         mock_resp = MagicMock()
         mock_resp.usage = None
-        mock_client.chat.completions.create.return_value = mock_resp
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_resp)
         with patch.object(client, "_get_client", return_value=mock_client), \
              patch.object(client, "_safe_record") as m_rec:
-            resp = client.chat_completion(
+            resp = asyncio.run(client.chat_completion(
                 messages=[],
                 config={"api": "x", "key": "y", "model": "z"},
-            )
+            ))
         assert resp is mock_resp
         m_rec.assert_not_called()
 
@@ -525,13 +541,13 @@ class TestLLMClient:
         mock_resp.usage = MagicMock()
         mock_resp.usage.total_tokens = 5
         mock_resp.usage.prompt_tokens = 5
-        mock_client.embeddings.create.return_value = mock_resp
+        mock_client.embeddings.create = AsyncMock(return_value=mock_resp)
         with patch.object(client, "_get_client", return_value=mock_client), \
              patch.object(client, "_safe_record"):
-            vectors = client.embed_texts(
+            vectors = asyncio.run(client.embed_texts(
                 texts="hello",
                 config={"api": "x", "key": "y", "model": "z"},
-            )
+            ))
         assert len(vectors) == 1
         assert len(vectors[0]) == 1024  # truncated
 
@@ -543,19 +559,19 @@ class TestLLMClient:
         item2 = MagicMock(); item2.index = 0; item2.embedding = [0.1] * 1025
         mock_resp.data = [item1, item2]  # unsorted
         mock_resp.usage = None
-        mock_client.embeddings.create.return_value = mock_resp
+        mock_client.embeddings.create = AsyncMock(return_value=mock_resp)
         with patch.object(client, "_get_client", return_value=mock_client), \
              patch.object(client, "_safe_record"):
-            vectors = client.embed_texts(
+            vectors = asyncio.run(client.embed_texts(
                 texts=["a", "b"],
                 config={"api": "x", "key": "y", "model": "z"},
-            )
+            ))
         assert len(vectors) == 2
         assert vectors[0][0] == 0.1  # sorted by index
 
     def test_embed_texts_empty(self):
         from app.infra.llm import client
-        vectors = client.embed_texts(texts=[], config={"api": "x", "key": "y"})
+        vectors = asyncio.run(client.embed_texts(texts=[], config={"api": "x", "key": "y"}))
         assert vectors == []
 
     def test_embed_texts_with_usage(self):
@@ -567,14 +583,14 @@ class TestLLMClient:
         mock_resp.usage = MagicMock()
         mock_resp.usage.total_tokens = 10
         mock_resp.usage.prompt_tokens = 8
-        mock_client.embeddings.create.return_value = mock_resp
+        mock_client.embeddings.create = AsyncMock(return_value=mock_resp)
         with patch.object(client, "_get_client", return_value=mock_client), \
              patch.object(client, "_safe_record") as m_rec:
-            vectors = client.embed_texts(
+            vectors = asyncio.run(client.embed_texts(
                 texts=["test"],
                 config={"api": "x", "key": "y", "model": "z"},
                 user_id=1,
-            )
+            ))
         m_rec.assert_called_once()
 
     def test_record_llm_usage_zero_skip(self):
@@ -601,14 +617,15 @@ class TestLLMClient:
         """TrackingOpenAIEmbeddings.embed_documents 调用 embed_texts。"""
         from app.infra.llm import client
         # 直接测试方法逻辑，不创建实例（基类被 mock）
-        with patch.object(client, "embed_texts", return_value=[[0.1, 0.2]]) as m_et:
+        with patch.object(client, "embed_texts", new_callable=AsyncMock,
+                          return_value=[[0.1, 0.2]]) as m_et:
             # 模拟 embed_documents 方法的行为
-            result = client.embed_texts(
+            result = asyncio.run(client.embed_texts(
                 texts=["text"],
                 config={"api": "x", "key": "y", "model": "z"},
                 user_id=0,
                 query_summary="chat_rag(1 texts)",
-            )
+            ))
         m_et.assert_called_once()
         assert result == [[0.1, 0.2]]
 
@@ -616,29 +633,30 @@ class TestLLMClient:
         """空列表不调用 embed_texts。"""
         from app.infra.llm import client
         # 直接验证 embed_texts 对空列表的处理
-        result = client.embed_texts(texts=[], config={"api": "x", "key": "y"})
+        result = asyncio.run(client.embed_texts(texts=[], config={"api": "x", "key": "y"}))
         assert result == []
 
     def test_tracking_embeddings_embed_query(self):
         """embed_query 返回单个向量。"""
         from app.infra.llm import client
-        with patch.object(client, "embed_texts", return_value=[[0.1, 0.2]]):
+        with patch.object(client, "embed_texts", new_callable=AsyncMock,
+                          return_value=[[0.1, 0.2]]):
             # 模拟 embed_query 逻辑：调用 embed_texts 并取第一个
-            result = client.embed_texts(
+            result = asyncio.run(client.embed_texts(
                 texts=["text"],
                 config={"api": "x", "key": "y", "model": "z"},
                 query_summary="chat_rag_query",
-            )
+            ))
         assert result[0] == [0.1, 0.2]
 
     def test_tracking_embeddings_embed_query_empty_result(self):
         """embed_texts 返回空时 embed_query 返回空列表。"""
         from app.infra.llm import client
-        with patch.object(client, "embed_texts", return_value=[]):
-            result = client.embed_texts(
+        with patch.object(client, "embed_texts", new_callable=AsyncMock, return_value=[]):
+            result = asyncio.run(client.embed_texts(
                 texts=["text"],
                 config={"api": "x", "key": "y", "model": "z"},
-            )
+            ))
         # embed_query 逻辑：result[0] if result else []
         assert result == []
 

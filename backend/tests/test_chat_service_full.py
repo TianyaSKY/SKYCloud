@@ -51,7 +51,9 @@ class TestChatServiceModels:
 
     def test_custom_db_retriever(self):
         from app.features.chat.service import custom_db_retriever
-        with patch("app.features.chat.service.get_embeddings_model"), \
+        mock_emb = MagicMock()
+        mock_emb.aembed_query = AsyncMock(return_value=[0.1] * 1024)
+        with patch("app.features.chat.service.get_embeddings_model", return_value=mock_emb), \
              patch("app.features.chat.service._vector_search_docs", return_value=[]), \
              patch("app.features.chat.rerank.rerank_documents", new_callable=AsyncMock, return_value=[]):
             result = asyncio.run(custom_db_retriever("test", 1))
@@ -67,7 +69,7 @@ class TestChatServiceMultiQuery:
             file_type_terms=[], action_terms=[], synonym_terms=[]
         )
         mock_emb = MagicMock()
-        mock_emb.embed_documents = MagicMock(return_value=[[0.1] * 1024])
+        mock_emb.aembed_documents = AsyncMock(return_value=[[0.1] * 1024])
         with patch("app.features.chat.service.get_embeddings_model", return_value=mock_emb), \
              patch("app.features.chat.service._db_search_by_vector", return_value=[]), \
              patch("app.features.chat.service.build_retrieval_query", return_value="test"), \
@@ -83,7 +85,7 @@ class TestChatServiceMultiQuery:
             file_type_terms=[], action_terms=[], synonym_terms=[]
         )
         mock_emb = MagicMock()
-        mock_emb.embed_documents = MagicMock(return_value=[[0.2] * 1024])
+        mock_emb.aembed_documents = AsyncMock(return_value=[[0.2] * 1024])
         with patch("app.features.chat.service.get_embeddings_model", return_value=mock_emb), \
              patch("app.features.chat.service._db_search_by_vector", return_value=[]), \
              patch("app.features.chat.service.build_retrieval_query", return_value="test"), \
@@ -94,7 +96,7 @@ class TestChatServiceMultiQuery:
     def test_embed_original_question(self):
         from app.features.chat.service import embed_original_question
         mock_emb = MagicMock()
-        mock_emb.embed_query = MagicMock(return_value=[0.1] * 1024)
+        mock_emb.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         with patch("app.features.chat.service.get_embeddings_model", return_value=mock_emb):
             result = asyncio.run(embed_original_question({"question": "test"}))
         assert len(result) == 1024

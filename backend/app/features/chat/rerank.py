@@ -25,6 +25,14 @@ def _get_rerank_client() -> httpx.AsyncClient:
     return _rerank_client
 
 
+async def close_rerank_client() -> None:
+    """在应用停止时关闭重排序 API 的连接池。"""
+    global _rerank_client
+    if _rerank_client is not None:
+        await _rerank_client.aclose()
+        _rerank_client = None
+
+
 def _get_index(item: dict[str, Any]) -> int | None:
     # 兼容不同厂商的字段名
     for key in ("index", "document_index", "doc_index"):
