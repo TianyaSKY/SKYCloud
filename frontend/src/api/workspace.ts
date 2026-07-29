@@ -58,12 +58,12 @@ export const removeMember = (workspaceId: number, userId: number) => {
   return request.delete<void>(`/workspace/${workspaceId}/members/${userId}`)
 }
 
-/** 启动协作空间关联的 OpenCode Docker 工作区。 */
-export const startOpenCode = (workspaceId: number) => {
+/** 启动协作空间关联的 SKYcode Docker 工作区。 */
+export const startSkycode = (workspaceId: number) => {
   return request.post<unknown>(`/workspace/${workspaceId}/opencode/start`).then(workspaceInfoSchema.parse)
 }
 
-/** 停止协作空间关联的 OpenCode Docker 工作区。 */
-export const stopOpenCode = (workspaceId: number) => {
+/** 停止协作空间关联的 SKYcode Docker 工作区。 */
+export const stopSkycode = (workspaceId: number) => {
   return request.post<unknown>(`/workspace/${workspaceId}/opencode/stop`).then(workspaceInfoSchema.parse)
 }

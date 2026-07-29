@@ -158,7 +158,7 @@ def get_access_url(workspace: Workspace) -> str | None:
 
 def setup_mcp(session: Session, workspace: Workspace, user_id: int) -> None:
     if workspace.status != "running" or not workspace.container_id:
-        raise BusinessRuleError("OpenCode 工作区未运行")
+        raise BusinessRuleError("SKYcode 工作区未运行")
     record, token = mcp_token_service.ensure_user_mcp_token(session, user_id)
     config = {
         "$schema": "https://opencode.ai/config.json",

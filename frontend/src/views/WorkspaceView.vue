@@ -309,7 +309,7 @@ const openWorkspace = (ws: WorkspaceInfo) => {
       Message.error('工作区地址不在允许范围内，已阻止打开')
       return
     }
-    // 在新标签页打开直连地址，获得完整 WebSocket 与原生 opencode UI 体验
+    // 在新标签页打开直连地址，获得完整 WebSocket 与原生 SKYcode UI 体验
     window.open(ws.access_url, `workspace-${ws.id}`)
   } else {
     // 兜底：通过反向代理在模态 iframe 中打开

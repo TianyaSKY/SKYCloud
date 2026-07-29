@@ -60,9 +60,9 @@ docker-compose up -d --build
 
 > 非演示环境请首次登录后立即修改密码。`SECRET_KEY` 未设置时会使用不安全的默认值，生产环境务必配置。
 
-### 停止服务（含 OpenCode 工作区）
+### 停止服务（含 SKYcode 工作区）
 
-OpenCode 工作区是后端动态 `docker run` 创建的，**不在** `docker-compose.yml` 中，单独执行 `docker compose down` 不会停掉它们。
+SKYcode 工作区是后端动态 `docker run` 创建的，**不在** `docker-compose.yml` 中，单独执行 `docker compose down` 不会停掉它们。
 
 请使用仓库脚本一并清理：
 

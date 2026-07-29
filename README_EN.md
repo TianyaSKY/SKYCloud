@@ -68,9 +68,9 @@ After startup, visit `http://localhost` (default port 80). The default administr
 > For non-demo environments, change the password immediately after the first login. If `SECRET_KEY` is not configured,
 > an insecure default value is used. Always configure it in production.
 
-### Stopping services (including OpenCode workspaces)
+### Stopping services (including SKYcode workspaces)
 
-OpenCode workspaces are created dynamically with `docker run` by the backend and are **not** listed in
+SKYcode workspaces are created dynamically with `docker run` by the backend and are **not** listed in
 `docker-compose.yml`. Running `docker compose down` alone will not stop them.
 
 Use the repo scripts to tear everything down together:

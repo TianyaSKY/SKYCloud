@@ -14,7 +14,7 @@
           <span class="badge badge-purple">LangChain</span>
           <span class="badge badge-orange">pgvector</span>
           <span class="badge badge-cyan">MCP</span>
-          <span class="badge badge-blue">OpenCode</span>
+          <span class="badge badge-blue">SKYcode</span>
         </div>
       </div>
 
