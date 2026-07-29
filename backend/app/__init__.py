@@ -100,6 +100,18 @@ def _ensure_mcp_token_value_column() -> None:
         logger.warning(f"Warning: Could not ensure mcp_tokens.token_value column: {e}")
 
 
+def _ensure_workspace_docker_columns() -> None:
+    """为已部署的协作空间补齐 OpenCode 容器生命周期字段。"""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS container_id VARCHAR(64)"))
+            conn.execute(text("ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'stopped'"))
+            conn.execute(text("ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS error_message TEXT"))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Warning: Could not ensure OpenCode workspace columns: {e}")
+
+
 def initialize_application():
     """初始化应用：建上传目录、连通数据库、建表并对齐必要列/索引。"""
     # 导入模型以注册到 Base.metadata
@@ -157,6 +169,7 @@ def initialize_application():
     Base.metadata.create_all(bind=engine)
     _ensure_file_content_hash_column()
     _ensure_mcp_token_value_column()
+    _ensure_workspace_docker_columns()
 
     # 向量索引与检索距离度量保持一致
     _ensure_file_vector_index()

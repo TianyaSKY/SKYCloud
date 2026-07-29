@@ -27,10 +27,17 @@ CREATE TABLE IF NOT EXISTS workspaces
     name        VARCHAR(128) NOT NULL,
     description VARCHAR(512),
     owner_id    INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    container_id VARCHAR(64),
+    status       VARCHAR(20) NOT NULL DEFAULT 'stopped', -- stopped / running / error
+    error_message TEXT,
     created_at  TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()),
     updated_at  TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
 );
 CREATE INDEX IF NOT EXISTS idx_workspaces_owner_id ON workspaces (owner_id);
+-- 兼容已初始化实例：为既有协作空间补上 OpenCode Docker 生命周期字段。
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS container_id VARCHAR(64);
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'stopped';
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS error_message TEXT;
 
 -- 4. 创建工作空间成员表（用户与空间的多对多关系及角色）
 CREATE TABLE IF NOT EXISTS workspace_members

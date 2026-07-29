@@ -15,6 +15,8 @@ from app.features.workspace.schemas import (
     MemberRoleUpdateRequest,
 )
 from app.features.workspace.permissions import assert_member, assert_admin
+from app.features.workspace.permissions import assert_can_write
+from app.features.workspace import docker_service
 
 router = APIRouter(tags=["workspace"])
 
@@ -50,6 +52,9 @@ async def list_workspaces(
 ):
     """列出当前用户加入的所有工作空间。"""
     workspaces = workspace_service.get_user_workspaces(session, current_user.id)
+    for workspace in workspaces:
+        entity = workspace_service.get_workspace(session, workspace["id"])
+        workspace.update(docker_service.summary(session, entity))
     return {"workspaces": workspaces, "code": 200}
 
 
@@ -63,7 +68,70 @@ async def get_workspace(
     # 校验成员身份
     assert_member(session, workspace_id, current_user.id)
     detail = workspace_service.get_workspace_detail(session, workspace_id, current_user.id)
+    detail.update(docker_service.summary(session, workspace_service.get_workspace(session, workspace_id)))
     return detail
+
+
+# ---------------------------------------------------------------------------
+# OpenCode Docker 工作区
+# ---------------------------------------------------------------------------
+
+
+def _docker_response(session: Session, workspace_id: int) -> dict:
+    workspace = workspace_service.get_workspace(session, workspace_id)
+    return {**workspace.to_dict(), **docker_service.summary(session, workspace)}
+
+
+@router.post("/workspace/{workspace_id}/opencode/start")
+async def start_opencode_workspace(
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
+    """启动当前协作空间的 OpenCode 容器；编辑者及以上可操作。"""
+    assert_can_write(session, workspace_id, current_user.id)
+    workspace = workspace_service.get_workspace(session, workspace_id)
+    docker_service.start(session, workspace, current_user.id)
+    return _docker_response(session, workspace_id)
+
+
+@router.post("/workspace/{workspace_id}/opencode/stop")
+async def stop_opencode_workspace(
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
+    """停止当前协作空间的 OpenCode 容器。"""
+    assert_can_write(session, workspace_id, current_user.id)
+    workspace = workspace_service.get_workspace(session, workspace_id)
+    docker_service.stop(session, workspace)
+    return _docker_response(session, workspace_id)
+
+
+@router.post("/workspace/{workspace_id}/opencode/restart")
+async def restart_opencode_workspace(
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
+    """重启当前协作空间的 OpenCode 容器并刷新 MCP 配置。"""
+    assert_can_write(session, workspace_id, current_user.id)
+    workspace = workspace_service.get_workspace(session, workspace_id)
+    docker_service.restart(session, workspace, current_user.id)
+    return _docker_response(session, workspace_id)
+
+
+@router.post("/workspace/{workspace_id}/opencode/setup-mcp")
+async def setup_opencode_mcp(
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
+    """重新写入当前用户的 MCP Token，用于 Token 刷新后的修复。"""
+    assert_can_write(session, workspace_id, current_user.id)
+    workspace = workspace_service.get_workspace(session, workspace_id)
+    docker_service.setup_mcp(session, workspace, current_user.id)
+    return {"success": True, **_docker_response(session, workspace_id)}
 
 
 @router.put("/workspace/{workspace_id}")

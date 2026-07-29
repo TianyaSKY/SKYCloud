@@ -7,7 +7,7 @@
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, Index
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, Index, Text
 from sqlalchemy.orm import relationship
 
 from app.infra.extensions import Base
@@ -17,7 +17,7 @@ from app.infra.datetime_utils import beijing_now, local_isoformat
 class Workspace(Base):
     """协作空间表：文件/文件夹的归属实体。
 
-    预留字段说明：未来合并 Docker 工作区时可增加 container_id, status, access_url 等。
+    每个协作空间可以按需关联一个 OpenCode Docker 容器。
     """
 
     __tablename__ = "workspaces"
@@ -28,6 +28,10 @@ class Workspace(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=beijing_now)
     updated_at = Column(DateTime, default=beijing_now, onupdate=beijing_now)
+    # OpenCode 容器生命周期。字段保持可空，兼容既有工作空间记录。
+    container_id = Column(String(64), nullable=True)
+    status = Column(String(20), nullable=False, default="stopped")
+    error_message = Column(Text, nullable=True)
 
     # 关系
     owner = relationship("User", foreign_keys=[owner_id], backref="owned_workspaces")
@@ -44,6 +48,9 @@ class Workspace(Base):
             "owner_id": cast(int | None, self.owner_id),
             "created_at": local_isoformat(cast(datetime | None, self.created_at)),
             "updated_at": local_isoformat(cast(datetime | None, self.updated_at)),
+            "container_id": self.container_id[:12] if self.container_id else None,
+            "status": self.status,
+            "error_message": self.error_message,
         }
 
 

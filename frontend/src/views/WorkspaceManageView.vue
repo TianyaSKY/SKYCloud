@@ -31,8 +31,14 @@
             <p class="ws-desc">{{ ws.description || '暂无描述' }}</p>
             <div class="ws-meta">
               <span>{{ ws.member_count ?? 0 }} 位成员</span>
+              <a-tag :color="ws.status === 'running' ? 'green' : ws.status === 'error' ? 'red' : 'gray'" size="small">
+                OpenCode {{ ws.status === 'running' ? '运行中' : ws.status === 'error' ? '异常' : '已停止' }}
+              </a-tag>
             </div>
             <div class="ws-actions" @click.stop>
+              <a-button v-if="ws.status === 'running' && ws.access_url" size="mini" type="primary" @click="openOpenCode(ws)">打开 OpenCode</a-button>
+              <a-button v-if="ws.my_role !== 'viewer' && ws.status !== 'running'" size="mini" type="text" @click="handleStartOpenCode(ws)">启动 OpenCode</a-button>
+              <a-button v-if="ws.my_role !== 'viewer' && ws.status === 'running'" size="mini" type="text" status="warning" @click="handleStopOpenCode(ws)">停止 OpenCode</a-button>
               <a-button size="mini" type="text" @click="openDetail(ws)">成员管理</a-button>
               <a-button
                 v-if="ws.my_role === 'admin'"
@@ -124,6 +130,8 @@ import {
   listMembers,
   removeMember,
   updateMemberRole,
+  startOpenCode,
+  stopOpenCode,
   type MemberInfo,
   type WorkspaceInfo,
 } from '@/api/workspace'
@@ -168,6 +176,32 @@ const handleDelete = (ws: WorkspaceInfo) => {
       await wsStore.loadWorkspaces()
     },
   })
+}
+
+const refreshWorkspaces = () => wsStore.loadWorkspaces()
+
+const handleStartOpenCode = async (ws: WorkspaceInfo) => {
+  try {
+    await startOpenCode(ws.id)
+    Message.success('OpenCode 工作区已启动')
+    await refreshWorkspaces()
+  } catch {
+    // 请求拦截器会显示错误
+  }
+}
+
+const handleStopOpenCode = async (ws: WorkspaceInfo) => {
+  try {
+    await stopOpenCode(ws.id)
+    Message.success('OpenCode 工作区已停止')
+    await refreshWorkspaces()
+  } catch {
+    // 请求拦截器会显示错误
+  }
+}
+
+const openOpenCode = (ws: WorkspaceInfo) => {
+  if (ws.access_url) window.open(ws.access_url, `opencode-workspace-${ws.id}`)
 }
 
 // 成员管理
@@ -271,6 +305,9 @@ const handleRemoveMember = (userId: number) => {
 }
 
 .ws-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   color: var(--color-text-3);
 }

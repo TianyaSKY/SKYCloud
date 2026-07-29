@@ -34,6 +34,10 @@ export const workspaceInfoSchema = z.object({
   updated_at: z.string().nullable().optional(),
   my_role: z.string().nullable().optional(),
   member_count: z.number().int().optional(),
+  container_id: z.string().nullable().optional(),
+  status: z.enum(['stopped', 'running', 'error']).optional(),
+  error_message: z.string().nullable().optional(),
+  access_url: z.string().url().nullable().optional(),
   members: z.array(z.object({
     id: z.number().int(),
     workspace_id: z.number().int(),

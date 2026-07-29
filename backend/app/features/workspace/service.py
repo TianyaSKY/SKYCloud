@@ -9,7 +9,7 @@ from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
 from app.models.folder import Folder
 from app.models.inbox import Inbox
-from app.features.workspace.permissions import WorkspaceRole, assert_admin
+from app.features.workspace.permissions import WorkspaceRole, assert_admin, assert_can_write
 
 
 def create_workspace(session: Session, owner_id: int, name: str, description: str | None = None) -> Workspace:
@@ -124,6 +124,9 @@ def delete_workspace(session: Session, workspace_id: int, user_id: int) -> None:
     if workspace.owner_id != user_id:
         raise PermissionDeniedError("只有空间所有者可以删除空间")
 
+    # 容器不受数据库外键约束，删除协作空间前需显式释放 Docker 资源。
+    from app.features.workspace import docker_service
+    docker_service.remove_container(workspace)
     session.delete(workspace)
     session.commit()
     logger.info("删除工作空间：ws_id={}, user={}", workspace_id, user_id)
