@@ -1,13 +1,15 @@
 """文件描述生成（Worker 适配）：多模态 VL / Chat 产出中文描述供 embedding。
 
 业务边界：只负责「文件 → 描述文本」；索引落库与向量写入在 indexing_handler。
-LLM 调用统一走 llm_client.chat_completion，便于记 Token。
+Worker LLM 调用统一走同步 sync_client.chat_completion，便于记 Token。
 """
 
 import base64
 import logging
 import mimetypes
+import os
 import tempfile
+import threading
 from pathlib import Path
 
 import cv2
@@ -56,6 +58,15 @@ VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg"}
 
+# These are resource limits, not task-concurrency limits.  They protect the
+# local conversion tools when several indexing threads process large files.
+_document_conversion_semaphore = threading.Semaphore(
+    max(1, int(os.getenv("WORKER_DOCUMENT_CONVERSION_WORKERS", "2")))
+)
+_video_processing_semaphore = threading.Semaphore(
+    max(1, int(os.getenv("WORKER_VIDEO_PROCESSING_WORKERS", "2")))
+)
+
 
 def image_to_base64(image_path: str) -> str:
     """图片文件 → Base64 Data URI，供 VL image_url 字段。"""
@@ -81,21 +92,23 @@ def _get_visual_urls(local_path: str) -> list:
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
             if ext in DOCUMENT_EXTENSIONS:
-                target_pdf = (
-                    local_path
-                    if ext == ".pdf"
-                    else convert_office_to_pdf(local_path, tmpdir)
-                )
-                images = convert_pdf_to_images(
-                    target_pdf, tmpdir, max_pages=20)
+                with _document_conversion_semaphore:
+                    target_pdf = (
+                        local_path
+                        if ext == ".pdf"
+                        else convert_office_to_pdf(local_path, tmpdir)
+                    )
+                    images = convert_pdf_to_images(
+                        target_pdf, tmpdir, max_pages=20)
                 for img_path in images:
                     uri = image_to_base64(img_path)
                     if uri:
                         image_uris.append(uri)
 
             elif ext in VIDEO_EXTENSIONS:
-                frames = extract_video_frames(
-                    local_path, tmpdir, frame_count=20)
+                with _video_processing_semaphore:
+                    frames = extract_video_frames(
+                        local_path, tmpdir, frame_count=20)
                 for img_path in frames:
                     uri = image_to_base64(img_path)
                     if uri:
@@ -114,9 +127,9 @@ def _get_visual_urls(local_path: str) -> list:
     return image_uris
 
 
-async def _generate_text_description(local_path: str, config: dict, user_id: int = 0) -> str:
+def _generate_text_description(local_path: str, config: dict, user_id: int = 0) -> str:
     """纯文本文件用 Chat 模型生成描述（比 VL 更快更省 Token）。"""
-    from app.infra.llm.client import chat_completion
+    from app.infra.llm.sync_client import chat_completion
 
     text_content = _extract_text_content(local_path)
     if not text_content.strip():
@@ -134,7 +147,7 @@ async def _generate_text_description(local_path: str, config: dict, user_id: int
     )
 
     try:
-        response = await chat_completion(
+        response = chat_completion(
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": text_content},
@@ -154,7 +167,7 @@ async def _generate_text_description(local_path: str, config: dict, user_id: int
         raise e
 
 
-async def generate_file_description(
+def generate_file_description(
         local_path: str, config: dict, chat_config: dict | None = None, user_id: int = 0
 ) -> str:
     """生成中文文件描述：文本走 Chat，其余走 VL。
@@ -164,14 +177,14 @@ async def generate_file_description(
     :param chat_config: 可选 Chat 配置；缺省回退到 config
     :param user_id: 用于 Token 记账
     """
-    from app.infra.llm.client import chat_completion
+    from app.infra.llm.sync_client import chat_completion
 
     path = Path(local_path)
     ext = path.suffix.lower()
 
     if ext in TEXT_EXTENSIONS:
         text_config = chat_config or config
-        return await _generate_text_description(local_path, text_config, user_id=user_id)
+        return _generate_text_description(local_path, text_config, user_id=user_id)
 
     visual_contents = _get_visual_urls(local_path)
     if not visual_contents:
@@ -194,7 +207,7 @@ async def generate_file_description(
     )
 
     try:
-        response = await chat_completion(
+        response = chat_completion(
             messages=[{"role": "user", "content": content}],
             config=config,
             user_id=user_id,

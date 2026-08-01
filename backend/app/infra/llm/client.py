@@ -10,6 +10,8 @@ from typing import Any
 from langchain_openai import OpenAIEmbeddings
 from openai import AsyncOpenAI
 
+from app.infra.llm.usage import safe_record as _safe_record
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -20,8 +22,8 @@ _client_cache: dict[tuple[str, str, int], AsyncOpenAI] = {}
 
 def _get_client(api_base: str, api_key: str) -> AsyncOpenAI:
     """按 (api_base, api_key) 复用异步 OpenAI 客户端，减少连接开销。"""
-    # AsyncClient 的连接池绑定事件循环。Web 进程通常只有一个事件循环，
-    # 但 Worker 会为每个任务调用 asyncio.run()，因此不能跨循环复用。
+    # AsyncClient 的连接池绑定事件循环。API 进程通常只有一个事件循环；
+    # Worker 不使用此模块，而是使用独立的同步 client。
     try:
         loop_id = id(asyncio.get_running_loop())
     except RuntimeError:
@@ -41,35 +43,6 @@ async def close_llm_clients() -> None:
     _client_cache.clear()
     for client in clients:
         await client.close()
-
-
-# ---------------------------------------------------------------------------
-# 安全记录
-# ---------------------------------------------------------------------------
-def _safe_record(
-        user_id: int,
-        action: str,
-        model_name: str | None,
-        prompt_tokens: int,
-        completion_tokens: int,
-        total_tokens: int,
-        query_summary: str | None = None,
-) -> None:
-    """写 token 用量；异常吞掉，避免用量记录拖垮主链路。"""
-    try:
-        from app.features.token_usage.service import record_usage
-
-        record_usage(
-            user_id=user_id,
-            action=action,
-            model_name=model_name,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            query_summary=query_summary,
-        )
-    except Exception as e:
-        logger.warning(f"Failed to record token usage ({action}): {e}")
 
 
 # ---------------------------------------------------------------------------
