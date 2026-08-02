@@ -12,6 +12,7 @@ from app.features.assistant import repository, service
 from app.features.assistant.clients.opencode_auth import server_password
 from app.features.assistant.clients.opencode_events import map_opencode_event
 from app.features.assistant.engines.fast_engine import FastEngine
+from app.features.assistant.engines.expert_engine import _text_from_messages
 from app.features.assistant.event_protocol import AssistantEvent
 from app.features.assistant.router import (
     delete_assistant_conversation,
@@ -467,7 +468,14 @@ def test_opencode_event_mapping_emits_token_tool_and_permission():
     permission = map_opencode_event(
         {
             "type": "permission.asked",
-            "properties": {"sessionID": "ses_1", "permission": {"id": "perm_1", "title": "Run command", "command": "pytest"}},
+            "properties": {
+                "sessionID": "ses_1",
+                "permission": {
+                    "id": "perm_1",
+                    "title": "Run command",
+                    "command": {"name": "pytest", "input": {"args": ["tests"]}},
+                },
+            },
         },
         "ses_1",
         state,
@@ -476,6 +484,106 @@ def test_opencode_event_mapping_emits_token_tool_and_permission():
     assert tool[0].type == "tool_started"
     assert permission[0].type == "permission_required"
     assert permission[0].payload["permission_id"] == "perm_1"
+    assert permission[0].payload["tool"] == 'pytest: {"args":["tests"]}'
+
+
+def test_opencode_event_mapping_hides_user_prompt_and_reasoning():
+    state = {"__user_query": "安装前端 Skill"}
+    map_opencode_event(
+        {
+            "type": "message.updated",
+            "properties": {"info": {"id": "msg_user", "role": "user"}},
+        },
+        "ses_1",
+        state,
+    )
+    user_part = map_opencode_event(
+        {
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "part_user",
+                    "messageID": "msg_user",
+                    "type": "text",
+                    "text": "安装前端 Skill",
+                }
+            },
+        },
+        "ses_1",
+        state,
+    )
+    reasoning = map_opencode_event(
+        {
+            "type": "message.part.updated",
+            "properties": {
+                "part": {
+                    "id": "part_reasoning",
+                    "messageID": "msg_assistant",
+                    "type": "reasoning",
+                    "text": "**Planning the answer**",
+                }
+            },
+        },
+        "ses_1",
+        state,
+    )
+    assistant = map_opencode_event(
+        {
+            "type": "message.updated",
+            "properties": {"info": {"id": "msg_assistant", "role": "assistant"}},
+        },
+        "ses_1",
+        state,
+    )
+    assistant.extend(
+        map_opencode_event(
+            {
+                "type": "message.part.updated",
+                "properties": {
+                    "part": {
+                        "id": "part_answer",
+                        "messageID": "msg_assistant",
+                        "type": "text",
+                        "text": "回答内容",
+                    }
+                },
+            },
+            "ses_1",
+            state,
+        )
+    )
+
+    assert user_part == []
+    assert reasoning[0].type == "title"
+    assert reasoning[0].payload["content"] == "Planning the answer"
+    assert [event.payload["content"] for event in assistant if event.type == "token"] == ["回答内容"]
+
+
+def test_opencode_message_fallback_separates_title_from_answer():
+    text, provider_id, usage, title = _text_from_messages(
+        [
+            {
+                "info": {"id": "msg_user", "role": "user"},
+                "parts": [{"type": "text", "text": "询问内容"}],
+            },
+            {
+                "info": {
+                    "id": "msg_assistant",
+                    "role": "assistant",
+                    "tokens": {"output": 12},
+                },
+                "parts": [
+                    {"type": "reasoning", "text": "**内部规划**"},
+                    {"type": "text", "text": "最终回答"},
+                ],
+            },
+        ]
+    )
+
+    assert text == "最终回答"
+    assert provider_id == "msg_assistant"
+    assert usage == {"output": 12}
+    assert title == "内部规划"
 
 
 def test_runtime_basic_auth_is_deterministic_and_scoped():

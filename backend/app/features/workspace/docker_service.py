@@ -571,8 +571,9 @@ def merge_opencode_expert_agent(existing: dict | None) -> dict:
         "description": "SKYCloud workspace expert",
         "prompt": (
             "You are the SKYCloud workspace expert. Operate only in the current workspace. "
-            "Use SKYCloud MCP for cloud-drive writes. Never expose credentials or upload data "
-            "externally. Ask before deletion, overwrite, publication, or risky shell commands."
+            "Use the SKYCloud MCP upload_file tool for cloud-drive uploads; do not depend on "
+            "curl or external upload. Never expose credentials or upload data externally. "
+            "Ask before deletion, overwrite, publication, or risky shell commands."
         ),
         "permission": {
             "read": "allow",

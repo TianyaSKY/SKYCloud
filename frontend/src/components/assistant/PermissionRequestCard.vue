@@ -5,7 +5,7 @@
       <span>权限确认</span>
     </div>
     <div class="permission-title">{{ permission.title }}</div>
-    <code v-if="permission.tool" class="permission-tool">{{ permission.tool }}</code>
+    <code v-if="toolLabel" class="permission-tool">{{ toolLabel }}</code>
     <div class="permission-actions">
       <a-button size="mini" type="primary" :loading="loading" @click="$emit('respond', 'once')">本次允许</a-button>
       <a-button size="mini" status="danger" type="outline" :disabled="loading" @click="$emit('respond', 'reject')">拒绝</a-button>
@@ -14,11 +14,26 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { IconExclamationCircle } from '@arco-design/web-vue/es/icon'
 import type { AssistantPermission } from '@/stores/assistant'
 
-defineProps<{ permission: AssistantPermission; loading?: boolean }>()
+const props = defineProps<{ permission: AssistantPermission; loading?: boolean }>()
 defineEmits<{ (event: 'respond', response: 'once' | 'reject'): void }>()
+
+function formatTool(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value && typeof value === 'object') {
+    try {
+      return JSON.stringify(value, null, 2)
+    } catch {
+      return '工具详情不可用'
+    }
+  }
+  return value == null ? '' : String(value)
+}
+
+const toolLabel = computed(() => formatTool(props.permission.tool))
 </script>
 
 <style scoped>

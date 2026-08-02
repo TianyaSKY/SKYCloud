@@ -32,13 +32,14 @@ export interface AssistantToolCall {
 export interface AssistantPermission {
   permission_id: string
   title: string
-  tool?: string
+  tool?: unknown
 }
 
 export interface AssistantMessage {
   id: number
   role: 'user' | 'assistant' | 'system'
   content: string
+  title?: string
   status: AssistantMessageRecord['status']
   keywords?: string
   sources?: Array<Record<string, unknown>>
@@ -83,6 +84,7 @@ export const useAssistantStore = defineStore('assistant', () => {
       id: record.id,
       role: record.role,
       content: record.content,
+      title: typeof metadata.title === 'string' ? metadata.title : undefined,
       status: record.status,
       keywords: typeof metadata.keywords === 'string' ? metadata.keywords : undefined,
       sources: Array.isArray(metadata.sources) ? (metadata.sources as Array<Record<string, unknown>>) : undefined,
@@ -90,6 +92,45 @@ export const useAssistantStore = defineStore('assistant', () => {
       diff: Array.isArray(metadata.diff) ? (metadata.diff as Array<Record<string, unknown>>) : undefined,
       usage: record.usage,
     }
+  }
+
+  function legacyTitle(line: string): string | undefined {
+    const value = line.trim()
+    let title = ''
+    if (value.startsWith('#')) title = value.replace(/^#+\s*/, '')
+    else if (value.startsWith('**') && value.endsWith('**')) title = value.slice(2, -2).trim()
+    else if (value.startsWith('__') && value.endsWith('__')) title = value.slice(2, -2).trim()
+    return title && title.length <= 160 ? title : undefined
+  }
+
+  function normalizeLegacyExpertMessage(message: AssistantMessage, previousUserContent: string) {
+    if (message.role !== 'assistant' || message.title || !previousUserContent) return
+    const content = message.content.trimStart()
+    if (!content.startsWith(previousUserContent)) return
+
+    let remainder = content.slice(previousUserContent.length).trimStart()
+    const titles: string[] = []
+    while (remainder) {
+      const newline = remainder.indexOf('\n')
+      const line = newline === -1 ? remainder : remainder.slice(0, newline)
+      const title = legacyTitle(line)
+      if (!title) break
+      titles.push(title)
+      remainder = newline === -1 ? '' : remainder.slice(newline + 1).trimStart()
+    }
+    if (!titles.length) return
+    message.title = titles[0]
+    message.content = remainder.trimStart()
+  }
+
+  function mapMessages(records: AssistantMessageRecord[], mode: AssistantMode) {
+    let previousUserContent = ''
+    return records.map((record) => {
+      const message = mapMessage(record)
+      if (message.role === 'user') previousUserContent = message.content
+      else if (mode === 'expert') normalizeLegacyExpertMessage(message, previousUserContent)
+      return message
+    })
   }
 
   function mergeConversation(conversation: AssistantConversation) {
@@ -135,7 +176,7 @@ export const useAssistantStore = defineStore('assistant', () => {
       if (conversation) {
         conversationIds.value[mode] = conversation.id
         const history = await getAssistantMessages(conversation.id)
-        messagesByConversation.value[conversation.id] = history.messages.map(mapMessage)
+        messagesByConversation.value[conversation.id] = mapMessages(history.messages, mode)
         await refreshActiveRun(mode, conversation.id)
       } else if (mode === currentMode.value) {
         conversationIds.value[mode] = null
@@ -186,7 +227,7 @@ export const useAssistantStore = defineStore('assistant', () => {
     conversationIds.value[conversation.mode] = id
     if (!messagesByConversation.value[id]) {
       const history = await getAssistantMessages(id)
-      messagesByConversation.value[id] = history.messages.map(mapMessage)
+      messagesByConversation.value[id] = mapMessages(history.messages, conversation.mode)
     }
     await refreshActiveRun(conversation.mode, id)
   }
@@ -226,7 +267,7 @@ export const useAssistantStore = defineStore('assistant', () => {
     mergeConversation(conversation)
     conversationIds.value[conversation.mode] = id
     const history = await getAssistantMessages(id)
-    messagesByConversation.value[id] = history.messages.map(mapMessage)
+    messagesByConversation.value[id] = mapMessages(history.messages, conversation.mode)
     currentMode.value = conversation.mode
     await refreshActiveRun(conversation.mode, id)
   }
@@ -275,6 +316,8 @@ export const useAssistantStore = defineStore('assistant', () => {
     if (event.type === 'token') {
       message.content += typeof payload.content === 'string' ? payload.content : ''
       message.status = 'streaming'
+    } else if (event.type === 'title') {
+      message.title = String(payload.content || '') || undefined
     } else if (event.type === 'keywords') {
       message.keywords = String(payload.content || '')
     } else if (event.type === 'sources') {
@@ -392,7 +435,7 @@ export const useAssistantStore = defineStore('assistant', () => {
     conversationIds.value.expert = target.id
     currentMode.value = 'expert'
     const history = await getAssistantMessages(target.id)
-    messagesByConversation.value[target.id] = history.messages.map(mapMessage)
+    messagesByConversation.value[target.id] = mapMessages(history.messages, 'expert')
   }
 
   function clearCurrentConversation() {

@@ -17,16 +17,23 @@
           <span class="message-author">{{
             message.role === 'user' ? '我' : mode === 'expert' ? '专家 · OpenCode' : '助手 · 快速模式'
           }}</span>
+          <span v-if="message.role === 'user'" class="message-type">询问</span>
           <span v-if="message.status !== 'completed'" class="message-status">{{ statusLabel(message.status) }}</span>
         </div>
         <div class="message-bubble">
-          <div v-if="message.role === 'assistant' && message.keywords" class="keyword-line">
-            <span class="meta-label">检索词</span>{{ message.keywords }}
+          <div v-if="message.role === 'assistant' && message.title" class="assistant-title">
+            <span class="section-label">标题</span>
+            <span>{{ message.title }}</span>
           </div>
-          <MarkdownRenderer
-            v-if="message.role !== 'user'"
-            :content="message.content || (message.status === 'streaming' ? '正在处理…' : '')"
-          />
+          <div v-if="message.role === 'assistant'" class="answer-block">
+            <div class="section-label answer-label">回答</div>
+            <div class="answer-content">
+              <div v-if="message.keywords" class="keyword-line">
+                <span class="meta-label">检索词</span>{{ message.keywords }}
+              </div>
+              <MarkdownRenderer :content="message.content || (message.status === 'streaming' ? '正在处理…' : '')" />
+            </div>
+          </div>
           <div v-else class="user-content">{{ message.content }}</div>
           <div v-if="message.sources?.length" class="source-line">
             <span class="meta-label">来源</span>
@@ -201,6 +208,25 @@ function statusLabel(status: string) {
   color: var(--color-text-2);
 }
 
+.message-type,
+.section-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  color: rgb(var(--arcoblue-6));
+  background-color: rgb(var(--arcoblue-1));
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+}
+
+.message-row.user .message-type {
+  color: rgba(255, 255, 255, 0.9);
+  background-color: rgba(255, 255, 255, 0.18);
+}
+
 .message-status {
   padding: 0 6px;
   font-size: 11px;
@@ -229,6 +255,33 @@ function statusLabel(status: string) {
   background-color: rgb(var(--arcoblue-6));
   border-color: rgb(var(--arcoblue-6));
   border-radius: 10px 4px 10px 10px;
+}
+
+.assistant-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: -2px 0 10px;
+  padding: 8px 10px;
+  color: var(--color-text-1);
+  background: linear-gradient(135deg, rgb(var(--arcoblue-1)), #fff);
+  border-left: 3px solid rgb(var(--arcoblue-6));
+  border-radius: 4px 8px 8px 4px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.answer-block {
+  margin-top: 2px;
+}
+
+.answer-label {
+  margin-bottom: 5px;
+}
+
+.answer-content {
+  min-width: 0;
 }
 
 .user-content {

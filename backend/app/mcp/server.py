@@ -10,8 +10,11 @@
 """
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
+import mimetypes
 import os
 from contextvars import ContextVar
 from datetime import timedelta
@@ -26,6 +29,7 @@ from app.exceptions import DomainError, PermissionDeniedError
 from app.infra.datetime_utils import beijing_now
 from app.infra.extensions import SECRET_KEY, SessionLocal
 from app.infra.storage import get_storage_client
+from app.infra.upload_adapter import Base64UploadAdapter
 from app.features.auth.service import decode_token
 from app.features.file import service as file_service
 from app.features.folder import service as folder_service
@@ -46,6 +50,8 @@ from app.mcp import runtime_token_service
 from app.mcp.audit import audited_tool
 
 logger = logging.getLogger(__name__)
+
+MCP_INLINE_UPLOAD_MAX_BYTES = 8 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # 请求级认证上下文
@@ -318,7 +324,8 @@ mcp = FastMCP(
     instructions=(
         "SKYCloud 是一个智能云盘系统。你可以通过以下工具来搜索文件、浏览文件夹、"
         "获取文件信息、创建文件夹、移动/重命名文件、删除文件、"
-        "获取文件下载链接以及读取文本文件内容。\n"
+        "读取文本文件内容，以及使用 upload_file 直接上传文件内容到云盘。"
+        "上传不依赖 curl。\n"
         "所有操作需要在连接时提供有效的 JWT Bearer Token 进行身份认证，"
         "无需手动传递 user_id。"
     ),
@@ -997,8 +1004,8 @@ async def get_folder_tree(max_depth: int = 3) -> str:
 async def get_upload_url(parent_id: int | None = None) -> str:
     """获取文件上传所需的 API 地址和认证信息。
 
-    返回上传 URL、认证 Token 和示例 curl 命令。
-    在 opencode 工作区中，可直接在终端使用返回的 curl 命令上传文件到 SKYCloud 云盘。
+    返回上传 URL、认证 Token 和兼容旧客户端的 curl 示例。
+    OpenCode Runtime 应优先使用 upload_file，不依赖 curl。
     上传后文件会自动进行 AI 处理（描述生成、向量索引）。
 
     Args:
@@ -1042,6 +1049,111 @@ async def get_upload_url(parent_id: int | None = None) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _inline_upload_adapter(
+    filename: str,
+    content: str,
+    content_encoding: str,
+    mime_type: str | None,
+) -> Base64UploadAdapter:
+    """Build a bounded upload adapter from text or Base64 MCP content."""
+
+    normalized_filename = (filename or "").strip()
+    if not normalized_filename:
+        raise ValueError("filename is required")
+    if len(normalized_filename) > 255:
+        raise ValueError("filename is too long")
+
+    encoding = (content_encoding or "utf-8").strip().lower().replace("_", "-")
+    if encoding in {"utf-8", "utf8", "text", "plain"}:
+        raw = content.encode("utf-8")
+        effective_mime = mime_type or mimetypes.guess_type(normalized_filename)[0] or "text/plain"
+        encoded = base64.b64encode(raw).decode("ascii")
+    elif encoding == "base64":
+        compact = "".join((content or "").split())
+        if compact.startswith("data:"):
+            try:
+                header, compact = compact.split(",", 1)
+            except ValueError as exc:
+                raise ValueError("content contains an invalid data URI") from exc
+            data_mime = header[5:].split(";", 1)[0].strip()
+        else:
+            data_mime = None
+        try:
+            raw = base64.b64decode(compact, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("content must be valid Base64") from exc
+        effective_mime = mime_type or data_mime or mimetypes.guess_type(normalized_filename)[0]
+        effective_mime = effective_mime or "application/octet-stream"
+        encoded = base64.b64encode(raw).decode("ascii")
+    else:
+        raise ValueError("content_encoding must be utf-8 or base64")
+
+    if len(raw) > MCP_INLINE_UPLOAD_MAX_BYTES:
+        raise ValueError(
+            f"inline upload exceeds {MCP_INLINE_UPLOAD_MAX_BYTES // (1024 * 1024)} MB"
+        )
+
+    adapter = Base64UploadAdapter(
+        f"data:{effective_mime};base64,{encoded}",
+        filename=normalized_filename,
+    )
+    adapter.mimetype = effective_mime
+    return adapter
+
+
+@mcp.tool()
+@audited_tool("upload_file")
+async def upload_file(
+        filename: str,
+        content: str,
+        content_encoding: str = "utf-8",
+        parent_id: int | None = None,
+        mime_type: str | None = None,
+) -> str:
+    """直接把文本或 Base64 文件内容上传到当前工作空间云盘。
+
+    这是专家 Runtime 上传文件的首选工具，不需要 curl、外部 HTTP 请求或
+    读取任何 Token。文本文件默认使用 utf-8；图片、PDF 等二进制文件请将
+    content_encoding 设置为 base64。单次内联上传上限为 8 MB。
+
+    Args:
+        filename: 云盘中的文件名，例如 ``report.md``。
+        content: 文件正文（文本或 Base64 字符串）。
+        content_encoding: ``utf-8``（默认）或 ``base64``。
+        parent_id: 目标文件夹 ID；不传则上传到根目录。
+        mime_type: 可选 MIME 类型，例如 ``text/markdown``。
+    """
+
+    context = _require_write_context()
+    try:
+        adapter = _inline_upload_adapter(filename, content, content_encoding, mime_type)
+    except (TypeError, UnicodeError, ValueError) as exc:
+        return _error_json(str(exc))
+
+    def _work(session):
+        try:
+            file_obj = file_service.create_uploaded_file(
+                session,
+                context.workspace_id,
+                context.user_id,
+                adapter,
+                parent_id,
+            )
+            return {
+                "success": True,
+                "file": file_obj.to_dict(),
+                "message": "文件已上传到 SKYCloud 云盘",
+            }
+        except (DomainError, HTTPException) as exc:
+            return json.loads(_service_error_json(exc))
+
+    try:
+        result = await _run_sync(_work)
+    except Exception as exc:
+        return _service_error_json(exc)
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 # ---------------------------------------------------------------------------

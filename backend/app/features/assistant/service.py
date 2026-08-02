@@ -492,6 +492,8 @@ async def stream_prepared_run(
 
             if event.type == "token":
                 answer_parts.append(_event_content(event))
+            elif event.type == "title":
+                metadata["title"] = _event_content(event)
             elif event.type == "keywords":
                 metadata["keywords"] = _event_content(event)
             elif event.type == "sources":

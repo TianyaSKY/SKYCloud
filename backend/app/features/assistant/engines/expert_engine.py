@@ -11,7 +11,10 @@ from app.exceptions import ConflictError, ServiceOperationError
 from app.features.assistant import repository
 from app.features.assistant.clients.opencode_auth import server_password, server_username
 from app.features.assistant.clients.opencode_client import OpenCodeClient, OpenCodeClientError
-from app.features.assistant.clients.opencode_events import map_opencode_event
+from app.features.assistant.clients.opencode_events import (
+    extract_reasoning_title,
+    map_opencode_event,
+)
 from app.features.assistant.event_protocol import AssistantEvent
 from app.features.workspace import docker_service, runtime_service
 import app.infra.extensions as extensions
@@ -23,6 +26,7 @@ EXPERT_SYSTEM_PROMPT = """你是 SKYCloud 专家助手。
 
 你可以：
 - 使用 SKYCloud MCP 搜索和读取当前工作空间文件；
+- 使用 SKYCloud MCP 的 upload_file 工具直接上传文件到云盘，不依赖 curl；文本传 utf-8 内容，二进制传 Base64；
 - 分析代码和文档；
 - 在当前 Runtime 中执行必要命令；
 - 创建分析结果和文件。
@@ -42,18 +46,26 @@ def _permission_ui_enabled() -> bool:
     return value is None or value.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _text_from_messages(messages: list[dict[str, Any]]) -> tuple[str, str | None, dict[str, Any]]:
+def _text_from_messages(
+    messages: list[dict[str, Any]],
+) -> tuple[str, str | None, dict[str, Any], str | None]:
     latest_text = ""
     provider_id: str | None = None
     usage: dict[str, Any] = {}
+    title: str | None = None
     for item in messages:
         info = item.get("info") if isinstance(item, dict) else None
         if isinstance(info, dict):
-            if info.get("role") == "assistant":
+            is_assistant = info.get("role") == "assistant"
+            if is_assistant:
                 provider_id = str(info.get("id") or provider_id or "") or provider_id
-            tokens = info.get("tokens") or info.get("usage")
-            if isinstance(tokens, dict):
-                usage.update(tokens)
+                tokens = info.get("tokens") or info.get("usage")
+                if isinstance(tokens, dict):
+                    usage.update(tokens)
+        else:
+            is_assistant = False
+        if not is_assistant:
+            continue
         parts = item.get("parts") if isinstance(item, dict) else None
         if not isinstance(parts, list):
             continue
@@ -61,13 +73,18 @@ def _text_from_messages(messages: list[dict[str, Any]]) -> tuple[str, str | None
         for part in parts:
             if not isinstance(part, dict):
                 continue
-            if str(part.get("type") or "").lower() in {"text", "reasoning"}:
+            part_type = str(part.get("type") or "").lower()
+            if part_type == "reasoning" and title is None:
+                reasoning = part.get("text")
+                if isinstance(reasoning, str):
+                    title = extract_reasoning_title(reasoning)
+            elif part_type == "text":
                 value = part.get("text")
                 if isinstance(value, str):
                     pieces.append(value)
         if pieces:
             latest_text = "".join(pieces)
-    return latest_text, provider_id, usage
+    return latest_text, provider_id, usage, title
 
 
 def _conversation_context(
@@ -200,7 +217,8 @@ class ExpertEngine:
             agent = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
             session_id = self.conversation.opencode_session_id
             emitted_text = ""
-            text_state: dict[str, str] = {}
+            emitted_title: str | None = None
+            text_state: dict[str, str] = {"__user_query": query}
             done_seen = False
 
             async with OpenCodeClient(
@@ -354,10 +372,13 @@ class ExpertEngine:
                     # If the event connection dropped after the provider accepted
                     # the prompt, rebuild the answer from the durable message API.
                     messages = await client.get_messages(str(session_id))
-                    final_text, provider_id, usage = _text_from_messages(messages)
+                    final_text, provider_id, usage, title = _text_from_messages(messages)
                     if final_text and not emitted_text:
                         yield AssistantEvent("token", {"content": final_text})
                         emitted_text = final_text
+                    if title and not emitted_title:
+                        yield AssistantEvent("title", {"content": title})
+                        emitted_title = title
                     if provider_id or usage:
                         yield AssistantEvent(
                             "usage",
@@ -367,7 +388,10 @@ class ExpertEngine:
                         raise
     
                 messages = await client.get_messages(str(session_id))
-                final_text, provider_id, usage = _text_from_messages(messages)
+                final_text, provider_id, usage, title = _text_from_messages(messages)
+                if title and not emitted_title:
+                    yield AssistantEvent("title", {"content": title})
+                    emitted_title = title
                 if final_text:
                     if final_text.startswith(emitted_text):
                         suffix = final_text[len(emitted_text):]
