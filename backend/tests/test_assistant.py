@@ -1,6 +1,7 @@
 """Assistant persistence, event mapping, and security regression tests."""
 
 import asyncio
+from datetime import timedelta
 from unittest.mock import patch
 
 import jwt
@@ -11,6 +12,7 @@ from app.features.assistant.clients.opencode_events import map_opencode_event
 from app.features.assistant.engines.fast_engine import FastEngine
 from app.features.assistant.event_protocol import AssistantEvent
 from app.infra.extensions import SECRET_KEY
+from app.infra.datetime_utils import beijing_now
 from app.models.assistant import AssistantMessage
 from app.models.user import User
 from app.models.workspace import WorkspaceMember
@@ -97,6 +99,40 @@ def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_wo
     assert message is not None
     assert message.status == "completed"
     assert message.content == "已找到"
+
+
+def test_prepare_run_recovers_abandoned_stream(session, test_user, test_workspace):
+    conversation = repository.create_conversation(
+        session, test_workspace.id, test_user.id, "fast", "恢复测试"
+    )
+    session.commit()
+    conversation, abandoned_run, _ = service.prepare_run(
+        session,
+        test_workspace,
+        test_user.id,
+        conversation.id,
+        "第一次请求",
+        request_id="req-abandoned-1",
+    )
+    abandoned_run.started_at = beijing_now() - timedelta(minutes=5)
+    session.commit()
+
+    _, replacement_run, _ = service.prepare_run(
+        session,
+        test_workspace,
+        test_user.id,
+        conversation.id,
+        "重新发送",
+        request_id="req-abandoned-2",
+    )
+
+    session.refresh(abandoned_run)
+    assert abandoned_run.status == "failed"
+    assert abandoned_run.error_code == "stream_abandoned"
+    assert replacement_run.id != abandoned_run.id
+    abandoned_message = session.get(AssistantMessage, abandoned_run.assistant_message_id)
+    assert abandoned_message is not None
+    assert abandoned_message.status == "failed"
 
 
 def test_viewer_unfiltered_list_hides_expert_metadata(session, test_user, test_workspace):

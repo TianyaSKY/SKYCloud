@@ -6,9 +6,11 @@ import json
 import os
 import shlex
 import socket
+import time
 import uuid
 
 import docker
+import httpx
 from loguru import logger
 from sqlalchemy.orm import Session
 
@@ -30,8 +32,11 @@ def _docker_exception_type(name: str) -> type[Exception]:
 
 DockerException = _docker_exception_type("DockerException")
 ContainerNotFound = _docker_exception_type("NotFound")
+ImageNotFound = _docker_exception_type("ImageNotFound")
 
-OPENCODE_IMAGE = os.getenv("OPENCODE_IMAGE", "skycloud/opencode-workspace:latest")
+# Use the upstream image directly. The lifecycle code pulls it on demand, so
+# local development does not require a separate project-owned image build.
+OPENCODE_IMAGE = os.getenv("OPENCODE_IMAGE", "ghcr.io/anomalyco/opencode:latest")
 SKYCLOUD_DOCKER_NETWORK = os.getenv("SKYCLOUD_DOCKER_NETWORK", "skycloud_skycloud-network")
 WORKSPACE_MEM_LIMIT = os.getenv("WORKSPACE_MEM_LIMIT", "1g")
 WORKSPACE_CPU_QUOTA = int(os.getenv("WORKSPACE_CPU_QUOTA", "100000"))
@@ -44,6 +49,154 @@ OPENCODE_EXPERT_AGENT = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
 def _client() -> docker.DockerClient:
     docker_host = os.getenv("DOCKER_HOST")
     return docker.DockerClient(base_url=docker_host) if docker_host else docker.from_env()
+
+
+def _ensure_opencode_image(client: docker.DockerClient) -> None:
+    """Ensure the configured upstream Runtime image is available locally."""
+
+    try:
+        client.images.get(OPENCODE_IMAGE)
+        return
+    except ImageNotFound:
+        logger.info("正在拉取 OpenCode 官方镜像：{}", OPENCODE_IMAGE)
+
+    try:
+        client.images.pull(OPENCODE_IMAGE)
+    except DockerException as exc:
+        raise DockerException(f"拉取 OpenCode 官方镜像失败：{OPENCODE_IMAGE}") from exc
+
+
+def _container_uses_configured_image(container) -> bool:
+    """Whether an existing Runtime was created from the current image ref."""
+
+    try:
+        image_ref = container.attrs.get("Config", {}).get("Image")
+    except (AttributeError, TypeError):
+        # Lightweight Docker fakes used by callers/tests may not expose attrs.
+        return True
+    return not image_ref or image_ref == OPENCODE_IMAGE
+
+
+def runtime_uses_configured_image(runtime: OpenCodeRuntime) -> bool:
+    """Check whether a persisted Runtime already uses ``OPENCODE_IMAGE``.
+
+    A Runtime created before an image-setting change should be rebuilt on its
+    next use, rather than continuing to run a stale project-owned image.
+    """
+
+    if not runtime.container_id:
+        return False
+    try:
+        container = _client().containers.get(runtime.container_id)
+    except ContainerNotFound:
+        return False
+    except DockerException as exc:
+        logger.warning(
+            "无法检查 OpenCode Runtime 镜像：runtime_id={}, reason={}",
+            runtime.id,
+            exc,
+        )
+        # Do not destroy a healthy Runtime merely because Docker is
+        # temporarily unavailable; the caller will surface its normal error.
+        return True
+    return _container_uses_configured_image(container)
+
+
+def _api_runs_in_docker() -> bool:
+    """Whether this API process can address runtime containers by Docker DNS."""
+
+    configured = os.getenv("SKYCLOUD_RUNTIME_NETWORK_MODE", "").strip().lower()
+    if configured in {"docker", "container"}:
+        return True
+    if configured in {"host", "local"}:
+        return False
+    return os.path.exists("/.dockerenv")
+
+
+def get_runtime_base_url(
+    workspace: Workspace,
+    user_id: int,
+    runtime: OpenCodeRuntime | None = None,
+) -> str:
+    """Return a Runtime URL that works for Docker and hybrid local setups.
+
+    A Dockerized API reaches a Runtime by its Docker-network hostname.  When
+    the API is launched directly on the host (the common macOS development
+    setup), it must use the Runtime's loopback-only published port instead.
+    """
+
+    configured = os.getenv("OPENCODE_RUNTIME_BASE_URL") or os.getenv("OPENCODE_SERVER_URL")
+    if configured:
+        try:
+            return configured.format(
+                workspace_id=int(workspace.id),
+                user_id=int(user_id),
+                runtime_id=int(runtime.id) if runtime and runtime.id else "",
+            ).rstrip("/")
+        except (KeyError, ValueError):
+            return configured.rstrip("/")
+
+    if not _api_runs_in_docker() and runtime is not None:
+        access_url = get_access_url(runtime)
+        if access_url:
+            return access_url
+    return f"http://{_name(workspace, user_id)}:3000"
+
+
+def _mcp_endpoint() -> str:
+    configured = os.getenv("OPENCODE_MCP_URL")
+    if configured:
+        return configured.rstrip("/")
+    if _api_runs_in_docker():
+        return f"http://skycloud-backend-mcp:{MCP_PORT}/mcp"
+    # Docker Desktop for macOS/Windows resolves this host name to the host
+    # system, so a Runtime can reach an MCP server started directly by Python.
+    return f"http://host.docker.internal:{MCP_PORT}/mcp"
+
+
+def _startup_timeout_seconds() -> float:
+    try:
+        return max(float(os.getenv("OPENCODE_STARTUP_TIMEOUT", "30")), 1.0)
+    except ValueError:
+        return 30.0
+
+
+def _sync_mcp_via_runtime_api(
+    workspace: Workspace,
+    user_id: int,
+    runtime: OpenCodeRuntime,
+    config: dict,
+) -> None:
+    """Apply fresh MCP credentials to the live Runtime without a restart."""
+
+    base_url = get_runtime_base_url(workspace, user_id, runtime)
+    auth = httpx.BasicAuth(
+        server_username(),
+        server_password(int(runtime.id), int(user_id), int(workspace.id)),
+    )
+    deadline = time.monotonic() + _startup_timeout_seconds()
+    last_error: str | None = None
+    with httpx.Client(base_url=base_url, auth=auth, timeout=3.0) as client:
+        while time.monotonic() < deadline:
+            try:
+                response = client.get("/global/health")
+                if response.status_code == 200:
+                    break
+                if response.status_code == 401:
+                    raise DockerException("OpenCode Runtime 认证失败")
+                last_error = f"HTTP {response.status_code}"
+            except httpx.HTTPError as exc:
+                last_error = exc.__class__.__name__
+            time.sleep(0.25)
+        else:
+            detail = f"（最后错误：{last_error}）" if last_error else ""
+            raise DockerException(f"OpenCode Runtime 未在启动超时内就绪{detail}")
+
+        try:
+            response = client.post("/mcp", json={"name": "SKYCLOUD", "config": config})
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise DockerException("向 OpenCode Runtime 注入 MCP 配置失败") from exc
 
 
 def _random_loopback_port() -> int:
@@ -118,6 +271,16 @@ def _runtime_summary(session: Session, runtime: OpenCodeRuntime) -> dict:
     }
 
 
+def _runtime_error_message(exc: Exception) -> str:
+    message = str(exc)
+    if "No such image" in message or "pull access denied" in message:
+        return (
+            f"无法获取 OpenCode 官方镜像（{OPENCODE_IMAGE}）。"
+            f"请检查 Docker Desktop 是否能访问 ghcr.io，或手动执行：docker pull {OPENCODE_IMAGE}"
+        )
+    return message[:500]
+
+
 def summary(
         session: Session,
         workspace: Workspace,
@@ -150,15 +313,29 @@ def start(session: Session, workspace: Workspace, user_id: int) -> Workspace:
     """Start the caller's per-workspace runtime and provision a fresh token."""
 
     runtime = runtime_service.get_or_create_runtime(session, workspace.id, user_id)
+    created = False
     try:
         if runtime.container_id:
             try:
                 container = _client().containers.get(runtime.container_id)
-                container.start()
+                if _container_uses_configured_image(container):
+                    container.start()
+                else:
+                    logger.info(
+                        "OpenCode Runtime 镜像已更新，正在重建：workspace_id={}, user_id={}, image={}",
+                        workspace.id,
+                        user_id,
+                        OPENCODE_IMAGE,
+                    )
+                    container.remove(force=True)
+                    container = _create(workspace, user_id, runtime.id)
+                    created = True
             except ContainerNotFound:
                 container = _create(workspace, user_id, runtime.id)
+                created = True
         else:
             container = _create(workspace, user_id, runtime.id)
+            created = True
 
         runtime.container_id = container.id
         runtime.status = "running"
@@ -166,12 +343,18 @@ def start(session: Session, workspace: Workspace, user_id: int) -> Workspace:
         runtime.last_started_at = beijing_now()
         runtime.last_used_at = beijing_now()
         session.commit()
-        setup_mcp(session, workspace, user_id, runtime=runtime)
+        setup_mcp(
+            session,
+            workspace,
+            user_id,
+            runtime=runtime,
+            reload_runtime_config=created,
+        )
     except DockerException as exc:
         session.rollback()
         runtime = runtime_service.get_or_create_runtime(session, workspace.id, user_id)
         runtime.status = "error"
-        runtime.error_message = str(exc)[:500]
+        runtime.error_message = _runtime_error_message(exc)
         session.commit()
         logger.exception("启动 OpenCode Runtime 失败：workspace_id={}, user_id={}, reason={}", workspace.id, user_id, exc)
     return workspace
@@ -399,8 +582,15 @@ def setup_mcp(
         user_id: int,
         *,
         runtime: OpenCodeRuntime | None = None,
+        reload_runtime_config: bool = False,
 ) -> None:
-    """Issue a scoped runtime token and atomically merge its MCP config."""
+    """Issue a scoped runtime token and atomically merge its MCP config.
+
+    The official image reads the agent config only when the server starts.
+    Newly created Runtimes therefore restart once after the initial write;
+    later token refreshes are applied through the live MCP API without a
+    disruptive restart.
+    """
 
     if runtime is None:
         runtime = runtime_service.get_runtime(session, workspace.id, user_id)
@@ -421,7 +611,7 @@ def setup_mcp(
     )
     config = {
         "type": "remote",
-        "url": f"http://skycloud-backend-mcp:{MCP_PORT}/mcp",
+        "url": _mcp_endpoint(),
         "enabled": True,
         "oauth": False,
         "headers": {"Authorization": f"Bearer {token}"},
@@ -437,6 +627,9 @@ def setup_mcp(
         merged = merge_opencode_mcp_config(existing, config)
         merged = merge_opencode_expert_agent(merged)
         _write_opencode_config(container, merged)
+        if reload_runtime_config:
+            container.restart(timeout=3)
+        _sync_mcp_via_runtime_api(workspace, user_id, runtime, config)
         runtime.config_version = int(runtime.config_version or 0) + 1
         runtime.last_used_at = beijing_now()
         session.commit()
@@ -466,6 +659,7 @@ def _create(
         runtime_id: int | None = None,
 ):
     client = _client()
+    _ensure_opencode_image(client)
     try:
         client.containers.get(_name(workspace, user_id)).remove(force=True)
     except (ContainerNotFound, DockerException):
@@ -474,6 +668,8 @@ def _create(
         image=OPENCODE_IMAGE,
         name=_name(workspace, user_id),
         detach=True,
+        # The upstream image's ENTRYPOINT is ``opencode``.
+        command=["serve", "--hostname", "0.0.0.0", "--port", "3000"],
         environment={
             "SKYCLOUD_WORKSPACE_ID": str(workspace.id),
             "SKYCLOUD_USER_ID": str(user_id),

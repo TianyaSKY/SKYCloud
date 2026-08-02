@@ -1,6 +1,7 @@
 """MCP/OpenCode token-refresh and runtime isolation regression tests."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 from app.features.workspace import docker_service
 from app.features.workspace import service as workspace_service
@@ -22,6 +23,92 @@ def test_runtime_container_name_is_unique_per_user_and_workspace():
 
     assert docker_service._name(Workspace(), 8) == "skycloud-opencode-w12-u8"
     assert docker_service._name(Workspace(), 19) == "skycloud-opencode-w12-u19"
+
+
+def test_local_api_uses_runtime_loopback_port(monkeypatch):
+    class Workspace:
+        id = 12
+
+    runtime = SimpleNamespace(id=7, container_id="runtime-container")
+    monkeypatch.delenv("OPENCODE_RUNTIME_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENCODE_SERVER_URL", raising=False)
+    monkeypatch.setattr(docker_service.os.path, "exists", lambda _path: False)
+
+    with patch(
+        "app.features.workspace.docker_service.get_access_url",
+        return_value="http://localhost:39123",
+    ):
+        assert (
+            docker_service.get_runtime_base_url(Workspace(), 8, runtime)
+            == "http://localhost:39123"
+        )
+
+
+def test_containerized_api_uses_runtime_docker_dns(monkeypatch):
+    class Workspace:
+        id = 12
+
+    runtime = SimpleNamespace(id=7, container_id="runtime-container")
+    monkeypatch.delenv("OPENCODE_RUNTIME_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENCODE_SERVER_URL", raising=False)
+    monkeypatch.setattr(docker_service.os.path, "exists", lambda _path: True)
+
+    assert (
+        docker_service.get_runtime_base_url(Workspace(), 8, runtime)
+        == "http://skycloud-opencode-w12-u8:3000"
+    )
+
+
+def test_local_api_runtime_uses_host_docker_internal_for_mcp(monkeypatch):
+    monkeypatch.delenv("OPENCODE_MCP_URL", raising=False)
+    monkeypatch.setattr(docker_service.os.path, "exists", lambda _path: False)
+
+    assert docker_service._mcp_endpoint() == f"http://host.docker.internal:{docker_service.MCP_PORT}/mcp"
+
+
+def test_missing_official_image_is_pulled_automatically(monkeypatch):
+    image = "ghcr.io/anomalyco/opencode:latest"
+    client = Mock()
+    client.images.get.side_effect = docker_service.ImageNotFound("not found")
+    monkeypatch.setattr(docker_service, "OPENCODE_IMAGE", image)
+
+    docker_service._ensure_opencode_image(client)
+
+    client.images.get.assert_called_once_with(image)
+    client.images.pull.assert_called_once_with(image)
+
+
+def test_old_runtime_image_is_marked_for_recreation(monkeypatch):
+    monkeypatch.setattr(
+        docker_service,
+        "OPENCODE_IMAGE",
+        "ghcr.io/anomalyco/opencode:latest",
+    )
+    old_container = SimpleNamespace(
+        attrs={"Config": {"Image": "skycloud/opencode-workspace:latest"}}
+    )
+    current_container = SimpleNamespace(
+        attrs={"Config": {"Image": "ghcr.io/anomalyco/opencode:latest"}}
+    )
+
+    assert not docker_service._container_uses_configured_image(old_container)
+    assert docker_service._container_uses_configured_image(current_container)
+
+
+def test_runtime_image_check_detects_a_stale_container(monkeypatch):
+    runtime = SimpleNamespace(id=7, container_id="runtime-container")
+    client = Mock()
+    client.containers.get.return_value = SimpleNamespace(
+        attrs={"Config": {"Image": "skycloud/opencode-workspace:latest"}}
+    )
+    monkeypatch.setattr(
+        docker_service,
+        "OPENCODE_IMAGE",
+        "ghcr.io/anomalyco/opencode:latest",
+    )
+    monkeypatch.setattr(docker_service, "_client", lambda: client)
+
+    assert not docker_service.runtime_uses_configured_image(runtime)
 
 
 def test_opencode_mcp_config_merge_preserves_existing_settings():

@@ -42,16 +42,6 @@ def _permission_ui_enabled() -> bool:
     return value is None or value.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _runtime_base_url(workspace_id: int, user_id: int) -> str:
-    configured = os.getenv("OPENCODE_RUNTIME_BASE_URL") or os.getenv("OPENCODE_SERVER_URL")
-    if configured:
-        try:
-            return configured.format(workspace_id=workspace_id, user_id=user_id)
-        except (KeyError, ValueError):
-            return configured
-    return f"http://skycloud-opencode-w{workspace_id}-u{user_id}:3000"
-
-
 def _text_from_messages(messages: list[dict[str, Any]]) -> tuple[str, str | None, dict[str, Any]]:
     latest_text = ""
     provider_id: str | None = None
@@ -154,11 +144,17 @@ class ExpertEngine:
         if workspace is None:
             raise ServiceOperationError("工作空间不存在")
         runtime = runtime_service.get_or_create_runtime(self.session, workspace_id, user_id)
-        if runtime.status != "running" or not runtime.container_id:
+        started_now = False
+        if (
+            runtime.status != "running"
+            or not runtime.container_id
+            or not docker_service.runtime_uses_configured_image(runtime)
+        ):
             yield workspace, runtime, AssistantEvent(
                 "status", {"content": "正在准备专家工作区", "runtime_status": "starting"}
             )
             docker_service.start(self.session, workspace, user_id)
+            started_now = True
             runtime = runtime_service.get_runtime(self.session, workspace_id, user_id)
             if runtime is None or runtime.status != "running":
                 raise ServiceOperationError(runtime.error_message if runtime else "OpenCode Runtime 启动失败")
@@ -167,9 +163,11 @@ class ExpertEngine:
                 "status", {"content": "正在连接专家工作区", "runtime_status": "running"}
             )
 
-        # Refresh the scoped MCP credential before every expert task.  The
-        # existing Docker setup also rewrites the MCP config atomically.
-        docker_service.setup_mcp(self.session, workspace, user_id, runtime=runtime)
+        # ``start`` has already injected initial config before the Runtime
+        # begins listening. Existing runtimes refresh their scoped credential
+        # through OpenCode's live MCP API before every expert task.
+        if not started_now:
+            docker_service.setup_mcp(self.session, workspace, user_id, runtime=runtime)
         yield workspace, runtime, AssistantEvent(
             "status", {"content": "正在检查 OpenCode 服务", "runtime_status": "running"}
         )
@@ -197,7 +195,7 @@ class ExpertEngine:
 
         assert workspace is not None and runtime is not None
         async with _runtime_lease(int(runtime.id)):
-            base_url = _runtime_base_url(workspace_id, user_id)
+            base_url = docker_service.get_runtime_base_url(workspace, user_id, runtime)
             password = server_password(int(runtime.id), user_id, workspace_id)
             agent = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
             session_id = self.conversation.opencode_session_id

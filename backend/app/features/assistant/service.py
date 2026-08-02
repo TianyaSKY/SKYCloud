@@ -1,6 +1,7 @@
 """Assistant orchestration: ownership, persistence, cancellation, and SSE."""
 
 import asyncio
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
@@ -13,6 +14,7 @@ from app.features.assistant import repository
 from app.features.assistant.engines.fast_engine import FastEngine
 from app.features.assistant.event_protocol import AssistantEvent, heartbeat_event
 from app.features.workspace.permissions import assert_can_write, assert_member
+from app.infra.datetime_utils import beijing_now
 from app.models.assistant import AssistantConversation, AssistantMessage, AssistantRun
 from app.models.workspace import Workspace
 
@@ -86,6 +88,43 @@ class RunRegistry:
 
 
 run_registry = RunRegistry()
+
+
+def _recover_abandoned_run(session: Session, run: AssistantRun) -> bool:
+    """Release a run left active after its SSE worker has disappeared.
+
+    A browser disconnect normally cancels the generator and records a terminal
+    status.  A process restart or an exception before the generator starts can
+    leave a durable ``running`` row behind, which would otherwise permanently
+    block its conversation.  Keep a short grace period so a duplicate submit
+    still receives the normal conflict response.
+    """
+
+    if run_registry.get(int(run.id)) is not None:
+        return False
+    started_at = run.started_at or run.created_at
+    if started_at is None:
+        return False
+    try:
+        grace_seconds = max(int(os.getenv("ASSISTANT_ABANDONED_RUN_GRACE_SECONDS", "45")), 0)
+    except ValueError:
+        grace_seconds = 45
+    if (beijing_now() - started_at).total_seconds() < grace_seconds:
+        return False
+
+    assistant_message = session.get(AssistantMessage, run.assistant_message_id)
+    if assistant_message is not None and assistant_message.status in {"pending", "streaming"}:
+        assistant_message.status = "failed"
+    run.pending_permission_id = None
+    run.permission_response = None
+    repository.update_run_status(
+        run,
+        "failed",
+        error_code="stream_abandoned",
+        error_message="助手请求在服务重启或连接中断后未完成，请重新发送。",
+    )
+    session.commit()
+    return True
 
 
 def _conversation_or_404(
@@ -189,6 +228,8 @@ def prepare_run(
             raise ConflictError("Expert runtime is already busy")
 
     active = repository.active_run_for_conversation(session, int(conversation.id))
+    if active and _recover_abandoned_run(session, active):
+        active = None
     if active:
         raise ConflictError("This assistant conversation already has a running task")
 

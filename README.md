@@ -108,6 +108,16 @@ docker compose down
 
 默认通过环境变量控制渐进式发布：`ASSISTANT_V2_ENABLED`、`ASSISTANT_EXPERT_ENABLED`、`ASSISTANT_PERMISSION_UI_ENABLED`、`ASSISTANT_RUNTIME_LOCK_TTL`。生产部署应设置独立的 `OPENCODE_SERVER_SECRET`，并使用固定版本或 digest 的 `OPENCODE_IMAGE`。
 
+### 本地 API / Worker / MCP + Docker 基础设施
+
+专家模式会按用户和工作空间动态创建 OpenCode Runtime。它不是 `docker-compose.yml` 中的常驻服务，直接使用 OpenCode 官方镜像 `ghcr.io/anomalyco/opencode:latest`；首次创建时后端会自动拉取。若希望预拉取，可执行：
+
+```bash
+docker pull ghcr.io/anomalyco/opencode:latest
+```
+
+当 API、Worker、MCP 在 macOS/Windows 主机上启动，而数据库等基础设施在 Docker 中时，无需额外设置 Runtime 地址：后端会通过 Runtime 的 `127.0.0.1` 映射端口访问它，Runtime 则通过 `host.docker.internal:5001` 访问本地 MCP。若端口或网络拓扑不同，可分别覆盖 `OPENCODE_RUNTIME_BASE_URL` 与 `OPENCODE_MCP_URL`。
+
 ## MCP 接入
 
 MCP Server 独立容器运行，默认端口 **5001**。每个用户自动签发**唯一** MCP Token：登录后点击右上角头像 → **MCP Token**
