@@ -35,8 +35,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         }
       }
       // 默认选第一个
-      if (workspaces.value.length > 0) {
-        switchWorkspace(workspaces.value[0])
+      const firstWorkspace = workspaces.value[0]
+      if (firstWorkspace) {
+        switchWorkspace(firstWorkspace)
       }
     } catch (err) {
       logger.warn('加载工作空间列表失败: {}', err)

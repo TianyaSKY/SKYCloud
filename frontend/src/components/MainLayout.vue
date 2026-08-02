@@ -20,7 +20,7 @@
     </a-layout>
 
     <!-- AI 聊天悬浮球，仅在“全部文件”页面显示 -->
-    <ChatWidget :show="activeMenu === 'all'" />
+    <AssistantWidget :show="activeMenu === 'all'" />
 
     <!-- MCP Token：每用户唯一，可复制 / 刷新 -->
     <a-modal v-model:visible="showMcpTokenModal" title="MCP Token" :footer="false" :width="560" unmount-on-close>
@@ -122,7 +122,7 @@ import 'vue-cropper/dist/index.css'
 import { VueCropper } from 'vue-cropper'
 import SideBar from './SideBar.vue'
 import FileHeader from './FileHeader.vue'
-import ChatWidget from './ChatWidget.vue'
+import AssistantWidget from './assistant/AssistantWidget.vue'
 import { getUserInfo, updatePassword, uploadAvatar } from '@/api/user'
 import { getMcpToken, refreshMcpToken } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'

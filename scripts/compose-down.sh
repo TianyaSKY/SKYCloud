@@ -20,7 +20,12 @@ collect_workspace_ids() {
 }
 
 echo "==> 清理 OpenCode 工作区容器 ..."
-mapfile -t workspace_ids < <(collect_workspace_ids)
+workspace_ids=()
+while IFS= read -r workspace_id; do
+  if [[ -n "$workspace_id" ]]; then
+    workspace_ids[${#workspace_ids[@]}]="$workspace_id"
+  fi
+done < <(collect_workspace_ids)
 
 if [[ ${#workspace_ids[@]} -eq 0 || -z "${workspace_ids[0]:-}" ]]; then
   echo "    无工作区容器"
@@ -35,5 +40,24 @@ fi
 
 echo "==> docker compose down $* ..."
 docker compose down "$@"
+
+compose_network="${COMPOSE_PROJECT_NAME:-skycloud}_skycloud-network"
+if docker network inspect "$compose_network" >/dev/null 2>&1; then
+  attached_containers="$(
+    docker network inspect "$compose_network" \
+      --format '{{range $id, $container := .Containers}}{{$container.Name}}{{"\n"}}{{end}}' 2>/dev/null \
+      | awk 'NF' || true
+  )"
+  if [[ -n "$attached_containers" ]]; then
+    echo "错误：网络 ${compose_network} 仍被以下容器占用：" >&2
+    while IFS= read -r container_name; do
+      if [[ -n "$container_name" ]]; then
+        echo "    ${container_name}" >&2
+      fi
+    done <<< "$attached_containers"
+    echo "如需清理旧的 Compose 服务，请使用 --remove-orphans 参数重试。" >&2
+    exit 1
+  fi
+fi
 
 echo "==> 完成"

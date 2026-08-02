@@ -418,6 +418,28 @@ async def generate_chat_events(user_id: int, workspace_id: int, query: str, hist
             elif kind == "on_retriever_start" or (kind == "on_chain_start" and event["name"] == "custom_db_retriever"):
                 yield f"data: {json.dumps({'type': 'status', 'content': '正在检索相关文件...'})}\n\n"
 
+            elif kind == "on_chain_end" and event["name"] == "custom_db_retriever":
+                # Expose only source metadata, never the complete retrieved
+                # chunks.  The new Assistant adapter persists this for the
+                # source panel while the legacy /api/chat client ignores it.
+                output = event.get("data", {}).get("output") or []
+                sources = []
+                if isinstance(output, list):
+                    for doc in output:
+                        metadata = getattr(doc, "metadata", {}) or {}
+                        if not isinstance(metadata, dict):
+                            continue
+                        source = {
+                            "file_id": metadata.get("id"),
+                            "file_name": metadata.get("name"),
+                            "page_number": metadata.get("page_number"),
+                            "chunk_index": metadata.get("chunk_index"),
+                        }
+                        if source["file_id"] is not None:
+                            sources.append(source)
+                if sources:
+                    yield f"data: {json.dumps({'type': 'sources', 'sources': sources}, ensure_ascii=False)}\n\n"
+
             # 各 chat model 结束事件均可能带 usage_metadata，累加后统一落库
             elif kind == "on_chat_model_end":
                 output = event.get("data", {}).get("output")
@@ -429,6 +451,9 @@ async def generate_chat_events(user_id: int, workspace_id: int, query: str, hist
                 if not model_name_seen:
                     run_meta = event.get("metadata", {}) or {}
                     model_name_seen = run_meta.get("ls_model_name")
+
+        if any(usage_accumulator.values()):
+            yield f"data: {json.dumps({'type': 'usage', **usage_accumulator, 'model_name': model_name_seen})}\n\n"
 
     except Exception as e:
         logger.error(f"Chat error: {e}", exc_info=True)

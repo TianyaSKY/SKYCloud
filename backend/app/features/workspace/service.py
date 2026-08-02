@@ -184,19 +184,26 @@ def remove_member(session: Session, workspace_id: int, actor_id: int, target_use
     member = (
         session.query(WorkspaceMember)
         .filter_by(workspace_id=workspace_id, user_id=target_user_id)
+        .with_for_update()
         .first()
     )
     if not member:
         raise ResourceNotFoundError("该用户不是空间成员")
 
-    session.delete(member)
-
-    # A removed member's OpenCode credential must stop working immediately.
-    from app.mcp import runtime_token_service
+    # A removed member's OpenCode credential must stop working immediately and
+    # the corresponding container must not survive the membership deletion.
     from app.features.workspace.runtime_service import get_runtime
+    from app.features.workspace import docker_service
+
     runtime = get_runtime(session, workspace_id, target_user_id)
     if runtime:
-        runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
+        docker_service.remove_runtime(runtime, session)
+        # Runtime records are owned by the workspace membership.  Once that
+        # membership is gone, keep no dormant container identity or session
+        # binding that could be accidentally reused later.
+        session.delete(runtime)
+
+    session.delete(member)
 
     # 发送通知
     notification = Inbox(
@@ -222,6 +229,7 @@ def update_member_role(session: Session, workspace_id: int, actor_id: int, targe
     member = (
         session.query(WorkspaceMember)
         .filter_by(workspace_id=workspace_id, user_id=target_user_id)
+        .with_for_update()
         .first()
     )
     if not member:

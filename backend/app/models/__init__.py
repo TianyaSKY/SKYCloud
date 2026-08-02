@@ -15,3 +15,4 @@ from .workspace import Workspace, WorkspaceMember
 from .opencode_runtime import OpenCodeRuntime
 from .mcp_runtime_token import McpRuntimeToken
 from .mcp_audit_log import McpAuditLog
+from .assistant import AssistantConversation, AssistantMessage, AssistantRun

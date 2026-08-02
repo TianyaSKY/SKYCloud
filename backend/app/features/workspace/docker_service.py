@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import shlex
+import socket
 import uuid
 
 import docker
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.exceptions import BusinessRuleError
 from app.features.workspace import runtime_service
 from app.features.workspace.permissions import get_member_role
+from app.features.assistant.clients.opencode_auth import server_password, server_username
 from app.infra.datetime_utils import beijing_now
 from app.mcp import runtime_token_service
 from app.models.opencode_runtime import OpenCodeRuntime
@@ -36,11 +38,20 @@ WORKSPACE_CPU_QUOTA = int(os.getenv("WORKSPACE_CPU_QUOTA", "100000"))
 WORKSPACE_CPU_PERIOD = int(os.getenv("WORKSPACE_CPU_PERIOD", "100000"))
 MCP_PORT = int(os.getenv("MCP_PORT", "5001"))
 OPENCODE_CONFIG_PATH = "/root/.config/opencode/opencode.json"
+OPENCODE_EXPERT_AGENT = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
 
 
 def _client() -> docker.DockerClient:
     docker_host = os.getenv("DOCKER_HOST")
     return docker.DockerClient(base_url=docker_host) if docker_host else docker.from_env()
+
+
+def _random_loopback_port() -> int:
+    """Reserve a host-port candidate for a loopback-only Docker binding."""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def _name(workspace: Workspace, user_id: int | None = None) -> str:
@@ -261,6 +272,23 @@ def remove_container(workspace: Workspace, session: Session | None = None) -> No
             logger.warning("清理旧 OpenCode 容器失败：workspace_id={}, reason={}", workspace.id, exc)
 
 
+def remove_runtime(runtime: OpenCodeRuntime, session: Session | None = None) -> None:
+    """Remove exactly one member runtime and revoke its credentials."""
+
+    if runtime.container_id:
+        try:
+            _client().containers.get(runtime.container_id).remove(force=True, v=True)
+        except (ContainerNotFound, DockerException) as exc:
+            logger.warning("清理 OpenCode Runtime 失败：runtime_id={}, reason={}", runtime.id, exc)
+    if session is not None:
+        runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
+        runtime.container_id = None
+        runtime.status = "stopped"
+        runtime.error_message = None
+        runtime.last_used_at = beijing_now()
+        session.flush()
+
+
 def get_access_url(entity: Workspace | OpenCodeRuntime) -> str | None:
     if not entity.container_id:
         return None
@@ -282,6 +310,44 @@ def merge_opencode_mcp_config(existing: dict | None, mcp_config: dict) -> dict:
     mcp = copy.deepcopy(mcp) if isinstance(mcp, dict) else {}
     mcp["SKYCLOUD"] = copy.deepcopy(mcp_config)
     result["mcp"] = mcp
+    return result
+
+
+def merge_opencode_expert_agent(existing: dict | None) -> dict:
+    """Install the least-privilege SKYCloud expert agent without replacing
+    unrelated user configuration.
+
+    The provider still asks for high-risk operations; the MCP server remains
+    the final workspace and role boundary.
+    """
+
+    result = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+    agents = result.get("agent")
+    agents = copy.deepcopy(agents) if isinstance(agents, dict) else {}
+    agents[OPENCODE_EXPERT_AGENT] = {
+        "description": "SKYCloud workspace expert",
+        "prompt": (
+            "You are the SKYCloud workspace expert. Operate only in the current workspace. "
+            "Use SKYCloud MCP for cloud-drive writes. Never expose credentials or upload data "
+            "externally. Ask before deletion, overwrite, publication, or risky shell commands."
+        ),
+        "permission": {
+            "read": "allow",
+            "glob": "allow",
+            "grep": "allow",
+            "edit": "ask",
+            "bash": {
+                "*": "ask",
+                "rg *": "allow",
+                "grep *": "allow",
+                "find *": "allow",
+                "git status *": "allow",
+                "git diff *": "allow",
+                "git push *": "deny",
+            },
+        },
+    }
+    result["agent"] = agents
     return result
 
 
@@ -369,6 +435,7 @@ def setup_mcp(
             raise DockerException("创建 OpenCode 配置目录失败")
         existing = _read_opencode_config(container)
         merged = merge_opencode_mcp_config(existing, config)
+        merged = merge_opencode_expert_agent(merged)
         _write_opencode_config(container, merged)
         runtime.config_version = int(runtime.config_version or 0) + 1
         runtime.last_used_at = beijing_now()
@@ -411,13 +478,20 @@ def _create(
             "SKYCLOUD_WORKSPACE_ID": str(workspace.id),
             "SKYCLOUD_USER_ID": str(user_id),
             "SKYCLOUD_RUNTIME_ID": str(runtime_id or ""),
+            "OPENCODE_SERVER_USERNAME": server_username(),
+            "OPENCODE_SERVER_PASSWORD": server_password(
+                int(runtime_id or 0), int(user_id), int(workspace.id)
+            ),
         },
         mem_limit=WORKSPACE_MEM_LIMIT,
         cpu_quota=WORKSPACE_CPU_QUOTA,
         cpu_period=WORKSPACE_CPU_PERIOD,
         network=SKYCLOUD_DOCKER_NETWORK,
         restart_policy={"Name": "unless-stopped"},
-        ports={"3000/tcp": None},
+        # Keep the random host port reachable only from the local machine.
+        # SKYCloud's backend uses the Docker network hostname for assistant
+        # traffic; exposing OpenCode on 0.0.0.0 would bypass SKYCloud auth.
+        ports={"3000/tcp": ("127.0.0.1", _random_loopback_port())},
         labels={
             "skycloud.component": "opencode-runtime",
             "skycloud.workspace_id": str(workspace.id),

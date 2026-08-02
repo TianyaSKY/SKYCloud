@@ -67,3 +67,8 @@ export const startSkycode = (workspaceId: number) => {
 export const stopSkycode = (workspaceId: number) => {
   return request.post<unknown>(`/workspace/${workspaceId}/opencode/stop`).then(workspaceInfoSchema.parse)
 }
+
+/** 重启协作空间关联的 SKYcode Docker 工作区。 */
+export const restartSkycode = (workspaceId: number) => {
+  return request.post<unknown>(`/workspace/${workspaceId}/opencode/restart`).then(workspaceInfoSchema.parse)
+}

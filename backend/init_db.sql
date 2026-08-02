@@ -250,6 +250,78 @@ CREATE INDEX IF NOT EXISTS idx_mcp_audit_runtime_created
 CREATE INDEX IF NOT EXISTS idx_mcp_audit_user_created
     ON mcp_audit_logs (user_id, created_at);
 
+-- 12.4 Assistant conversations: fast RAG and expert OpenCode sessions are
+-- intentionally separate and the mode is immutable at the application layer.
+CREATE TABLE IF NOT EXISTS assistant_conversations
+(
+    id                    SERIAL PRIMARY KEY,
+    workspace_id          INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    user_id               INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    mode                  VARCHAR(16) NOT NULL DEFAULT 'fast',
+    title                 VARCHAR(255),
+    status                VARCHAR(16) NOT NULL DEFAULT 'active',
+    source_conversation_id INTEGER REFERENCES assistant_conversations (id) ON DELETE SET NULL,
+    opencode_runtime_id   INTEGER REFERENCES opencode_runtimes (id) ON DELETE SET NULL,
+    opencode_session_id   VARCHAR(128),
+    created_at            TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    updated_at            TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    last_message_at       TIMESTAMP,
+    CONSTRAINT ck_assistant_conversation_mode CHECK (mode IN ('fast', 'expert')),
+    CONSTRAINT ck_assistant_conversation_status CHECK (status IN ('active', 'archived'))
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_conversations_owner
+    ON assistant_conversations (workspace_id, user_id, mode);
+CREATE INDEX IF NOT EXISTS idx_assistant_conversations_updated
+    ON assistant_conversations (workspace_id, user_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS assistant_messages
+(
+    id                   SERIAL PRIMARY KEY,
+    conversation_id      INTEGER NOT NULL REFERENCES assistant_conversations (id) ON DELETE CASCADE,
+    role                 VARCHAR(16) NOT NULL,
+    content              TEXT NOT NULL DEFAULT '',
+    status               VARCHAR(16) NOT NULL DEFAULT 'completed',
+    provider_message_id  VARCHAR(128),
+    metadata_json        TEXT,
+    usage_json           TEXT,
+    sequence             INTEGER NOT NULL,
+    created_at           TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    updated_at           TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    CONSTRAINT ck_assistant_message_role CHECK (role IN ('user', 'assistant', 'system')),
+    CONSTRAINT ck_assistant_message_status CHECK (status IN ('pending', 'streaming', 'completed', 'failed', 'cancelled')),
+    CONSTRAINT uq_assistant_message_sequence UNIQUE (conversation_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_messages_conversation
+    ON assistant_messages (conversation_id, sequence);
+
+CREATE TABLE IF NOT EXISTS assistant_runs
+(
+    id                    SERIAL PRIMARY KEY,
+    conversation_id       INTEGER NOT NULL REFERENCES assistant_conversations (id) ON DELETE CASCADE,
+    user_message_id       INTEGER REFERENCES assistant_messages (id) ON DELETE SET NULL,
+    assistant_message_id  INTEGER REFERENCES assistant_messages (id) ON DELETE SET NULL,
+    engine                VARCHAR(16) NOT NULL,
+    status                VARCHAR(24) NOT NULL DEFAULT 'pending',
+    request_id            VARCHAR(128),
+    opencode_session_id   VARCHAR(128),
+    pending_permission_id VARCHAR(128),
+    permission_response   VARCHAR(16),
+    cancel_requested      BOOLEAN NOT NULL DEFAULT FALSE,
+    error_code            VARCHAR(64),
+    error_message         TEXT,
+    metadata_json         TEXT,
+    started_at            TIMESTAMP,
+    completed_at          TIMESTAMP,
+    created_at            TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    CONSTRAINT ck_assistant_run_engine CHECK (engine IN ('fast', 'expert')),
+    CONSTRAINT ck_assistant_run_status CHECK (status IN ('pending', 'running', 'waiting_permission', 'completed', 'failed', 'cancelled')),
+    CONSTRAINT ck_assistant_run_permission_response CHECK (permission_response IS NULL OR permission_response IN ('once', 'reject'))
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_runs_conversation
+    ON assistant_runs (conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_assistant_runs_active
+    ON assistant_runs (status, engine);
+
 -- 13. 创建 Token 使用记录表
 CREATE TABLE IF NOT EXISTS token_usage_logs
 (
