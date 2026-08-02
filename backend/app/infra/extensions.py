@@ -30,7 +30,7 @@ DEFAULT_MODEL_PWD = os.getenv("DEFAULT_MODEL_PWD", "")
 
 # 分片和对象上传前的临时文件目录。Docker 默认挂载到 /data/uploads，
 # 本机开发或测试可通过环境变量覆盖。
-UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "/data/uploads")
+UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "./data/uploads")
 
 # JWT 密钥：生产环境必须通过环境变量设置，未设置时仅开发兜底并告警
 SECRET_KEY = os.getenv("SECRET_KEY")
