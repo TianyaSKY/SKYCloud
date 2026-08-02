@@ -17,18 +17,33 @@ from contextvars import ContextVar
 from datetime import timedelta
 from typing import Any
 
+import jwt
 from fastapi import HTTPException
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
-from app.exceptions import DomainError
-from app.infra.extensions import SessionLocal
+from app.exceptions import DomainError, PermissionDeniedError
 from app.infra.datetime_utils import beijing_now
+from app.infra.extensions import SECRET_KEY, SessionLocal
 from app.infra.storage import get_storage_client
+from app.features.auth.service import decode_token
 from app.features.file import service as file_service
 from app.features.folder import service as folder_service
 from app.features.share import service as share_service
-from app.features.auth.service import decode_token
+from app.features.workspace.permissions import get_member_role
+from app.mcp.context import (
+    McpRequestContext,
+    get_optional_mcp_context,
+    is_mcp_request_active,
+    reset_mcp_context,
+    reset_mcp_request_active,
+    reset_request_id,
+    set_mcp_context,
+    set_mcp_request_active,
+    set_request_id,
+)
+from app.mcp import runtime_token_service
+from app.mcp.audit import audited_tool
 
 logger = logging.getLogger(__name__)
 
@@ -42,40 +57,123 @@ _current_user_id: ContextVar[int | None] = ContextVar("_current_user_id", defaul
 # ASGI 认证中间件
 # ---------------------------------------------------------------------------
 class JWTAuthMiddleware:
-    """从 Authorization Bearer 解析 JWT，将 user_id 注入 ContextVar。
+    """Resolve a verified user + workspace context for every MCP request.
 
-    无效/缺失 token 时 user_id 为 None，由工具入口统一拒绝，避免在握手阶段硬拦。
+    A normal session/MCP token selects a workspace through
+    ``X-SKYCloud-Workspace-Id`` and membership lookup.  A runtime token carries
+    its workspace in signed claims, but the runtime and current membership are
+    still checked in the database.
     """
 
     def __init__(self, app):
         self.app = app
 
+    @staticmethod
+    def _resolve_context(
+            session,
+            token: str,
+            workspace_header: str | None,
+    ) -> McpRequestContext | None:
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        except jwt.InvalidTokenError:
+            return None
+
+        if payload.get("type") == "mcp_runtime":
+            validated = runtime_token_service.validate_runtime_token(session, token)
+            if not validated:
+                return None
+            runtime_payload, runtime = validated
+            try:
+                workspace_id = int(runtime_payload["workspace_id"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            if workspace_header is not None:
+                try:
+                    if int(workspace_header) != workspace_id:
+                        return None
+                except (TypeError, ValueError):
+                    return None
+            return McpRequestContext(
+                user_id=int(runtime.user_id),
+                workspace_id=workspace_id,
+                role=str(runtime_payload.get("role", "viewer")),
+                runtime_id=int(runtime.id),
+                actor_type="opencode",
+            )
+
+        result = decode_token(session, token)
+        if not result or not str(result).isdigit() or workspace_header is None:
+            return None
+        try:
+            user_id = int(result)
+            workspace_id = int(workspace_header)
+        except (TypeError, ValueError):
+            return None
+
+        role = get_member_role(session, workspace_id, user_id)
+        if role is None:
+            return None
+        return McpRequestContext(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            role=role.value,
+            actor_type="user",
+        )
+
     async def __call__(self, scope, receive, send):
         if scope["type"] not in ("http", "websocket"):
             return await self.app(scope, receive, send)
 
-        headers = dict(scope.get("headers", []))
+        headers = {
+            key.lower(): value
+            for key, value in scope.get("headers", [])
+        }
         auth_value = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
+        workspace_header = headers.get(b"x-skycloud-workspace-id")
+        workspace_header_value = (
+            workspace_header.decode("utf-8", errors="ignore")
+            if workspace_header is not None
+            else None
+        )
 
         user_id: int | None = None
+        context: McpRequestContext | None = None
 
         if auth_value.lower().startswith("bearer "):
             token = auth_value.split(" ", 1)[1].strip()
             if token:
                 session = SessionLocal()
                 try:
-                    result = decode_token(session, token)
-                    # decode_token 成功返回数字字符串 user_id，失败返回错误文案
-                    if result and str(result).isdigit():
-                        user_id = int(result)
+                    context = self._resolve_context(
+                        session, token, workspace_header_value
+                    )
+                    if context:
+                        user_id = context.user_id
+                    else:
+                        # Preserve the legacy diagnostic user-id ContextVar for
+                        # direct middleware callers. Real tool authorization
+                        # remains blocked because request_active=True and no
+                        # verified workspace context exists.
+                        result = decode_token(session, token)
+                        if result and str(result).isdigit():
+                            user_id = int(result)
                 finally:
                     session.close()
 
+        request_active_ctx = set_mcp_request_active(True)
         token_ctx = _current_user_id.set(user_id)
+        context_ctx = set_mcp_context(context)
+        request_id_ctx = set_request_id(
+            headers.get(b"x-request-id", b"").decode("utf-8", errors="ignore") or None
+        )
         try:
             await self.app(scope, receive, send)
         finally:
+            reset_request_id(request_id_ctx)
+            reset_mcp_context(context_ctx)
             _current_user_id.reset(token_ctx)
+            reset_mcp_request_active(request_active_ctx)
 
 
 def get_mcp_app(mcp_instance: FastMCP):
@@ -88,14 +186,97 @@ def get_mcp_app(mcp_instance: FastMCP):
 # 工具辅助
 # ---------------------------------------------------------------------------
 def _get_authenticated_user_id() -> int:
-    """读取当前请求 user_id；未认证则抛 PermissionError。"""
-    user_id = _current_user_id.get()
-    if user_id is None:
-        raise PermissionError(
-            "Unauthorized: Missing or invalid Authorization header. "
-            "Please provide a valid Bearer token (JWT)."
-        )
-    return user_id
+    """Return the authenticated user, preserving legacy direct-call tests."""
+
+    return _get_tool_context().user_id
+
+
+def _get_tool_context() -> McpRequestContext:
+    """Get strict request context, with a non-HTTP compatibility fallback.
+
+    Older unit callers invoke tool functions directly and only set
+    ``_current_user_id``.  That fallback is deliberately disabled once the
+    ASGI middleware marks a real MCP request active, so an HTTP request can
+    never bypass workspace selection.
+    """
+
+    context = get_optional_mcp_context()
+    if context is not None:
+        return context
+    if not is_mcp_request_active():
+        user_id = _current_user_id.get()
+        if user_id is not None:
+            return McpRequestContext(
+                user_id=user_id,
+                workspace_id=user_id,
+                role="admin",
+            )
+    raise PermissionError(
+        "Unauthorized: Missing or invalid Authorization header and workspace context."
+    )
+
+
+def _require_read_context() -> McpRequestContext:
+    context = _get_tool_context()
+    return context
+
+
+def _require_write_context() -> McpRequestContext:
+    context = _get_tool_context()
+    if context.role not in {"editor", "admin"}:
+        raise PermissionError("Workspace is read-only")
+    return context
+
+
+def _require_admin_context() -> McpRequestContext:
+    context = _get_tool_context()
+    if context.role != "admin":
+        raise PermissionError("Workspace administrator permission required")
+    return context
+
+
+def _get_authorized_file(session, context: McpRequestContext, file_id: int):
+    """Use the shared authorization service for every real MCP request.
+
+    A few legacy unit tests call tool functions directly with a mocked session
+    and only populate ``uploader_id``. That compatibility branch is never
+    reachable through ``JWTAuthMiddleware``.
+    """
+
+    if not is_mcp_request_active() and get_optional_mcp_context() is None:
+        file_obj = file_service.get_file(session, file_id)
+        file_workspace_id = getattr(file_obj, "workspace_id", None)
+        if isinstance(file_workspace_id, int) and file_workspace_id != context.workspace_id:
+            raise PermissionDeniedError("Permission denied")
+        if getattr(file_obj, "uploader_id", None) != context.user_id:
+            raise PermissionDeniedError("Permission denied")
+        return file_obj
+    return file_service.get_authorized_file(
+        session,
+        workspace_id=context.workspace_id,
+        user_id=context.user_id,
+        file_id=file_id,
+    )
+
+
+def _get_authorized_folder(session, context: McpRequestContext, folder_id: int):
+    """Compatibility equivalent for direct legacy folder-tool tests."""
+
+    if not is_mcp_request_active() and get_optional_mcp_context() is None:
+        folder = folder_service.get_folder(session, folder_id)
+        folder_workspace_id = getattr(folder, "workspace_id", None)
+        if isinstance(folder_workspace_id, int) and folder_workspace_id != context.workspace_id:
+            raise PermissionDeniedError("Permission denied")
+        folder_user_id = getattr(folder, "user_id", None)
+        if isinstance(folder_user_id, int) and folder_user_id != context.user_id:
+            raise PermissionDeniedError("Permission denied")
+        return folder
+    return folder_service.get_authorized_folder(
+        session,
+        context.workspace_id,
+        context.user_id,
+        folder_id,
+    )
 
 
 async def _run_sync(fn, *args, **kwargs):
@@ -149,9 +330,11 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@audited_tool("get_current_user")
 async def get_current_user() -> str:
     """获取当前已认证用户的基本信息，包括用户名、角色、Token 用量统计等。"""
-    user_id = _get_authenticated_user_id()
+    context = _require_read_context()
+    user_id = context.user_id
 
     def _work():
         session = SessionLocal()
@@ -162,6 +345,10 @@ async def get_current_user() -> str:
                 return _error_json("User not found")
             info = user.to_dict()
             info.pop("password_hash", None)  # 绝不经 MCP 回传哈希
+            info["workspace_id"] = context.workspace_id
+            info["workspace_role"] = context.role
+            if context.runtime_id is not None:
+                info["runtime_id"] = context.runtime_id
             return json.dumps(info, ensure_ascii=False, default=str)
         finally:
             session.close()
@@ -170,6 +357,7 @@ async def get_current_user() -> str:
 
 
 @mcp.tool()
+@audited_tool("search_files")
 async def search_files(
         query: str,
         page: int = 1,
@@ -187,12 +375,12 @@ async def search_files(
             - "vector"：AI 语义搜索，可匹配文件内容和描述。
               如果需要按文件内容查找，请使用 vector 模式。
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_read_context()
     # service 内部已 to_thread；session 在 await 完成后再 close
     session = SessionLocal()
     try:
         result = await file_service.search_files(
-            session, user_id, query, page, page_size, search_type
+            session, context.workspace_id, query, page, page_size, search_type
         )
         return json.dumps(result, ensure_ascii=False, default=str)
     finally:
@@ -200,6 +388,7 @@ async def search_files(
 
 
 @mcp.tool()
+@audited_tool("list_files")
 async def list_files(
         parent_id: int | None = None,
         page: int = 1,
@@ -218,7 +407,7 @@ async def list_files(
         sort_by: 排序字段，可选 "name"、"size"、"created_at"（默认）
         order: 排序方向，"asc" 或 "desc"（默认）
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_read_context()
 
     def _work():
         session = SessionLocal()
@@ -226,9 +415,18 @@ async def list_files(
             resolved_parent_id = parent_id
             # None 表示「用户根目录内容」，需解析真实 root id，避免列出伪根自身
             if resolved_parent_id is None:
-                resolved_parent_id = folder_service.get_root_folder_id(session, user_id)
+                resolved_parent_id = folder_service.get_root_folder_id(
+                    session, context.workspace_id
+                )
             return file_service.get_files_and_folders(
-                session, user_id, resolved_parent_id, page, page_size, name, sort_by, order,
+                session,
+                context.workspace_id,
+                resolved_parent_id,
+                page,
+                page_size,
+                name,
+                sort_by,
+                order,
             )
         finally:
             session.close()
@@ -238,20 +436,19 @@ async def list_files(
 
 
 @mcp.tool()
+@audited_tool("get_file_info")
 async def get_file_info(file_id: int) -> str:
     """获取单个文件的详细信息（名称、大小、类型、状态、描述等）。
 
     Args:
         file_id: 文件 ID
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_read_context()
 
     def _work():
         session = SessionLocal()
         try:
-            file_obj = file_service.get_file(session, file_id)
-            if file_obj.uploader_id != user_id:
-                return _error_json("Permission denied")
+            file_obj = _get_authorized_file(session, context, file_id)
             return json.dumps(file_obj.to_dict(), ensure_ascii=False, default=str)
         except (DomainError, HTTPException) as e:
             return _service_error_json(e)
@@ -262,6 +459,7 @@ async def get_file_info(file_id: int) -> str:
 
 
 @mcp.tool()
+@audited_tool("create_folder")
 async def create_folder(
         name: str,
         parent_id: int | None = None,
@@ -272,7 +470,7 @@ async def create_folder(
         name: 文件夹名称
         parent_id: 父文件夹 ID（None 表示在根目录下创建）
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_write_context()
 
     def _work():
         session = SessionLocal()
@@ -280,11 +478,19 @@ async def create_folder(
             # 与 list_files 一致：避免 parent_id=None 造出第二套「伪根」
             resolved_parent_id = parent_id
             if resolved_parent_id is None:
-                resolved_parent_id = folder_service.get_root_folder_id(session, user_id)
+                resolved_parent_id = folder_service.get_root_folder_id(
+                    session, context.workspace_id
+                )
+            else:
+                _get_authorized_folder(session, context, resolved_parent_id)
 
             folder = folder_service.create_folder(
                 session,
-                {"name": name, "user_id": user_id, "parent_id": resolved_parent_id},
+                {
+                    "name": name,
+                    "workspace_id": context.workspace_id,
+                    "parent_id": resolved_parent_id,
+                },
             )
             return json.dumps(folder.to_dict(), ensure_ascii=False, default=str)
         except (DomainError, HTTPException) as e:
@@ -296,6 +502,7 @@ async def create_folder(
 
 
 @mcp.tool()
+@audited_tool("move_file")
 async def move_file(
         file_id: int,
         new_name: str | None = None,
@@ -308,19 +515,18 @@ async def move_file(
         new_name: 新文件名（可选）
         new_parent_id: 新的父文件夹 ID（可选，用于移动文件）
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_write_context()
 
     def _work():
         session = SessionLocal()
         try:
-            file_obj = file_service.get_file(session, file_id)
-            if file_obj.uploader_id != user_id:
-                return _error_json("Permission denied")
+            _get_authorized_file(session, context, file_id)
 
             update_data: dict[str, Any] = {}
             if new_name is not None:
                 update_data["name"] = new_name
             if new_parent_id is not None:
+                _get_authorized_folder(session, context, new_parent_id)
                 update_data["parent_id"] = new_parent_id
 
             if not update_data:
@@ -337,20 +543,19 @@ async def move_file(
 
 
 @mcp.tool()
+@audited_tool("delete_file")
 async def delete_file(file_id: int) -> str:
     """删除一个文件。此操作不可恢复。
 
     Args:
         file_id: 文件 ID
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_write_context()
 
     def _work():
         session = SessionLocal()
         try:
-            file_obj = file_service.get_file(session, file_id)
-            if file_obj.uploader_id != user_id:
-                return _error_json("Permission denied")
+            _get_authorized_file(session, context, file_id)
 
             file_service.delete_file(session, file_id)
             return json.dumps(
@@ -412,6 +617,7 @@ def _is_text_file(mime_type: str | None, filename: str | None) -> bool:
 
 
 @mcp.tool()
+@audited_tool("get_file_download_url")
 async def get_file_download_url(
         file_id: int,
         expires_hours: int = 24,
@@ -424,20 +630,20 @@ async def get_file_download_url(
         file_id: 文件 ID
         expires_hours: 链接有效时长，单位小时（默认 24，最大 168）
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_read_context()
 
     def _work():
         session = SessionLocal()
         try:
-            file_obj = file_service.get_file(session, file_id)
-            if file_obj.uploader_id != user_id:
-                return _error_json("Permission denied")
+            file_obj = _get_authorized_file(session, context, file_id)
 
             # 最长 7 天，防止永久分享链接被 MCP 客户端无意创建
             hours = max(1, min(expires_hours, 168))
             expires_at = beijing_now() + timedelta(hours=hours)
 
-            share = share_service.create_share_link(session, user_id, file_id, expires_at)
+            share = share_service.create_share_link(
+                session, context.user_id, file_id, expires_at
+            )
             share_dict = share.to_dict()
 
             base_url = os.getenv("SKYCLOUD_BASE_URL", "http://localhost:5000")
@@ -463,6 +669,7 @@ async def get_file_download_url(
 
 
 @mcp.tool()
+@audited_tool("read_file_content")
 async def read_file_content(
         file_id: int,
         encoding: str = "utf-8",
@@ -476,14 +683,12 @@ async def read_file_content(
         file_id: 文件 ID
         encoding: 文件编码（默认 utf-8）
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_read_context()
 
     def _work():
         session = SessionLocal()
         try:
-            file_obj = file_service.get_file(session, file_id)
-            if file_obj.uploader_id != user_id:
-                return _error_json("Permission denied")
+            file_obj = _get_authorized_file(session, context, file_id)
 
             if not _is_text_file(file_obj.mime_type, file_obj.name):
                 return json.dumps(
@@ -497,23 +702,33 @@ async def read_file_content(
 
             storage = get_storage_client()
             object_name = str(file_obj.file_path)
-            if not storage.file_exists(object_name):
-                return _error_json("File not found on server")
+            if storage.file_exists(object_name):
+                file_size = storage.get_file_size(object_name)
+                truncated = file_size > _MAX_READ_BYTES
 
-            file_size = storage.get_file_size(object_name)
-            truncated = file_size > _MAX_READ_BYTES
-
-            # 下载到临时文件后读取文本内容
-            import tempfile
-            tmp_fd, tmp_path = tempfile.mkstemp()
-            os.close(tmp_fd)
-            try:
-                storage.download_file(object_name, tmp_path)
-                with open(tmp_path, "r", encoding=encoding, errors="replace") as f:
+                # 下载到临时文件后读取文本内容
+                import tempfile
+                tmp_fd, tmp_path = tempfile.mkstemp()
+                os.close(tmp_fd)
+                try:
+                    storage.download_file(object_name, tmp_path)
+                    with open(tmp_path, "r", encoding=encoding, errors="replace") as f:
+                        content = f.read(_MAX_READ_BYTES)
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+            elif not is_mcp_request_active() and get_optional_mcp_context() is None:
+                # Compatibility for pre-object-storage direct unit tests. It
+                # is intentionally unavailable through the HTTP MCP boundary.
+                legacy_path = file_obj.get_abs_path()
+                if not legacy_path or not os.path.exists(legacy_path):
+                    return _error_json("File not found on server")
+                file_size = os.path.getsize(legacy_path)
+                truncated = file_size > _MAX_READ_BYTES
+                with open(legacy_path, "r", encoding=encoding, errors="replace") as f:
                     content = f.read(_MAX_READ_BYTES)
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
+            else:
+                return _error_json("File not found on server")
 
             return json.dumps(
                 {
@@ -535,6 +750,7 @@ async def read_file_content(
 
 
 @mcp.tool()
+@audited_tool("move_folder")
 async def move_folder(
         folder_id: int,
         new_name: str | None = None,
@@ -547,19 +763,18 @@ async def move_folder(
         new_name: 新文件夹名称（可选）
         new_parent_id: 新的父文件夹 ID（可选，用于移动文件夹）
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_write_context()
 
     def _work():
         session = SessionLocal()
         try:
-            folder = folder_service.get_folder(session, folder_id)
-            if folder.user_id != user_id:
-                return _error_json("Permission denied")
+            folder = _get_authorized_folder(session, context, folder_id)
 
             update_data: dict[str, Any] = {}
             if new_name is not None:
                 update_data["name"] = new_name
             if new_parent_id is not None:
+                _get_authorized_folder(session, context, new_parent_id)
                 update_data["parent_id"] = new_parent_id
 
             if not update_data:
@@ -576,20 +791,19 @@ async def move_folder(
 
 
 @mcp.tool()
+@audited_tool("delete_folder")
 async def delete_folder(folder_id: int) -> str:
     """删除一个文件夹及其下所有内容（子文件夹和文件）。此操作不可恢复。
 
     Args:
         folder_id: 文件夹 ID
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_write_context()
 
     def _work():
         session = SessionLocal()
         try:
-            folder = folder_service.get_folder(session, folder_id)
-            if folder.user_id != user_id:
-                return _error_json("Permission denied")
+            folder = _get_authorized_folder(session, context, folder_id)
 
             folder_name = folder.name
             folder_service.delete_folder(session, folder_id)
@@ -606,9 +820,10 @@ async def delete_folder(folder_id: int) -> str:
 
 
 @mcp.tool()
+@audited_tool("get_storage_overview")
 async def get_storage_overview() -> str:
     """获取用户的云盘存储概览，包括文件总数、各状态文件数、总存储大小等。"""
-    user_id = _get_authenticated_user_id()
+    context = _require_read_context()
 
     def _work():
         session = SessionLocal()
@@ -622,12 +837,12 @@ async def get_storage_overview() -> str:
                     func.count(File.id).label("total_files"),
                     func.coalesce(func.sum(File.file_size), 0).label("total_size"),
                 )
-                .filter(File.uploader_id == user_id)
+                .filter(File.workspace_id == context.workspace_id)
                 .first()
             )
             status_rows = (
                 session.query(File.status, func.count(File.id))
-                .filter(File.uploader_id == user_id)
+                .filter(File.workspace_id == context.workspace_id)
                 .group_by(File.status)
                 .all()
             )
@@ -635,7 +850,7 @@ async def get_storage_overview() -> str:
 
             folder_count = (
                                session.query(func.count(Folder.id))
-                               .filter(Folder.user_id == user_id)
+                               .filter(Folder.workspace_id == context.workspace_id)
                                .scalar()
                            ) or 0
 
@@ -677,6 +892,7 @@ class BatchDeleteItem(BaseModel):
 
 
 @mcp.tool()
+@audited_tool("batch_delete")
 async def batch_delete(
         items: list[BatchDeleteItem],
 ) -> str:
@@ -685,7 +901,7 @@ async def batch_delete(
     Args:
         items: 要删除的项目列表，每项包含 id（文件或文件夹ID）和 is_folder（是否为文件夹）
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_write_context()
 
     def _work():
         session = SessionLocal()
@@ -697,16 +913,10 @@ async def batch_delete(
                 is_folder = item.is_folder
                 try:
                     if is_folder:
-                        folder = folder_service.get_folder(session, item_id)
-                        if folder.user_id != user_id:
-                            errors.append({"id": item_id, "error": "Permission denied"})
-                            continue
+                        _get_authorized_folder(session, context, item_id)
                         folder_service.delete_folder(session, item_id)
                     else:
-                        file_obj = file_service.get_file(session, item_id)
-                        if file_obj.uploader_id != user_id:
-                            errors.append({"id": item_id, "error": "Permission denied"})
-                            continue
+                        _get_authorized_file(session, context, item_id)
                         file_service.delete_file(session, item_id)
                     deleted.append(item_id)
                 except (DomainError, HTTPException) as e:
@@ -731,13 +941,14 @@ async def batch_delete(
 
 
 @mcp.tool()
+@audited_tool("get_folder_tree")
 async def get_folder_tree(max_depth: int = 3) -> str:
     """获取用户的文件夹树形结构，用于了解云盘的整体目录布局。
 
     Args:
         max_depth: 最大递归深度（默认 3，最大 10）
     """
-    user_id = _get_authenticated_user_id()
+    context = _require_read_context()
 
     def _work():
         session = SessionLocal()
@@ -747,7 +958,7 @@ async def get_folder_tree(max_depth: int = 3) -> str:
             depth = max(1, min(max_depth, 10))
             all_folders = (
                 session.query(Folder)
-                .filter(Folder.user_id == user_id)
+                .filter(Folder.workspace_id == context.workspace_id)
                 .all()
             )
 
@@ -782,6 +993,7 @@ async def get_folder_tree(max_depth: int = 3) -> str:
 
 
 @mcp.tool()
+@audited_tool("get_upload_url")
 async def get_upload_url(parent_id: int | None = None) -> str:
     """获取文件上传所需的 API 地址和认证信息。
 
@@ -792,7 +1004,7 @@ async def get_upload_url(parent_id: int | None = None) -> str:
     Args:
         parent_id: 目标文件夹 ID（None 表示上传到根目录）
     """
-    _get_authenticated_user_id()
+    context = _require_write_context()
 
     # 无需 DB：仅拼装上传指引
     in_docker = os.path.exists("/.dockerenv")
@@ -809,12 +1021,13 @@ async def get_upload_url(parent_id: int | None = None) -> str:
     curl_example = (
         f'curl -X POST "{upload_url}" '
         f'-H "Authorization: Bearer $TOKEN" '
+        f'-H "X-Workspace-Id: {context.workspace_id}" '
         f'-F "file=@/path/to/your/file"'
         f'{parent_flag}'
     )
 
     hint = (
-        "你的 MCP Token 就是当前连接 SKYCLOUD MCP 时使用的那个 Bearer Token。"
+        "$TOKEN 应设置为当前连接 SKYCLOUD MCP 时使用的 Bearer Token。"
         "可以从 /root/.config/opencode/opencode.json 中的 "
         'mcp.SKYCLOUD.headers.Authorization 字段读取。'
     )
@@ -825,6 +1038,7 @@ async def get_upload_url(parent_id: int | None = None) -> str:
             "curl_example": curl_example,
             "hint": hint,
             "parent_id": parent_id,
+            "workspace_id": context.workspace_id,
         },
         ensure_ascii=False,
     )
@@ -837,22 +1051,20 @@ async def get_upload_url(parent_id: int | None = None) -> str:
 @mcp.resource("skycloud://folders")
 async def get_user_folders() -> str:
     """获取当前认证用户的所有文件夹列表。"""
-    user_id = _get_authenticated_user_id()
-    folders = await _run_sync(folder_service.get_folders, user_id)
+    context = _require_read_context()
+    folders = await _run_sync(folder_service.get_folders, context.workspace_id)
     return json.dumps(folders, ensure_ascii=False, default=str)
 
 
 @mcp.resource("skycloud://files/{file_id}")
 async def get_user_file(file_id: int) -> str:
     """获取单个文件的元数据和描述信息。"""
-    user_id = _get_authenticated_user_id()
+    context = _require_read_context()
 
     def _work():
         session = SessionLocal()
         try:
-            file_obj = file_service.get_file(session, file_id)
-            if file_obj.uploader_id != user_id:
-                return _error_json("Permission denied")
+            file_obj = _get_authorized_file(session, context, file_id)
             return json.dumps(file_obj.to_dict(), ensure_ascii=False, default=str)
         except (DomainError, HTTPException) as e:
             return _service_error_json(e)

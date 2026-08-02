@@ -38,6 +38,7 @@ from app.models.file import File
 from app.models.folder import Folder
 from app.features.folder import change_log as change_log_service
 from app.infra.llm.config import get_embedding_model_config
+from app.features.workspace.permissions import assert_member
 
 logger = logging.getLogger(__name__)
 
@@ -234,12 +235,13 @@ def preflight_file_upload(session: Session, workspace_id: int, uploader_id: int,
     if not source_file:
         return {"instant_upload": False, "exists": False}
 
-    new_file = _clone_existing_file(session, 
+    parent_id = _resolve_upload_parent_id(session, workspace_id, data.get("parent_id"))
+    new_file = _clone_existing_file(session,
         source_file,
         filename=filename,
         workspace_id=workspace_id,
         uploader_id=uploader_id,
-        parent_id=data.get("parent_id"),
+        parent_id=parent_id,
         mime_type=data.get("mime_type"),
         content_hash=content_hash,
     )
@@ -255,6 +257,22 @@ def _push_processing_queue(file_ids: list[int], workspace_id: int | None) -> Non
             _clear_search_cache(workspace_id)
     except Exception as e:
         logger.exception(f"Error publishing to RabbitMQ queue: {e}")
+
+
+def _resolve_upload_parent_id(
+        session: Session, workspace_id: int, parent_id: int | None
+) -> int | None:
+    """Resolve the root and reject parent folders from another workspace."""
+
+    if parent_id is None:
+        from app.features.folder import service as folder_service
+
+        return folder_service.get_root_folder_id(session, workspace_id)
+
+    parent = session.get(Folder, parent_id)
+    if not parent or parent.workspace_id != workspace_id:
+        raise PermissionDeniedError("Parent folder belongs to another workspace")
+    return parent_id
 
 
 def _multipart_upload_dir(workspace_id: int, upload_id: str) -> str:
@@ -364,14 +382,17 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
     return new_file
 
 
-def create_uploaded_file(session: Session, workspace_id: int, uploader_id: int, upload: Any, parent_id: int | None = None) -> File:
+def create_uploaded_file(
+        session: Session,
+        workspace_id: int,
+        uploader_id: int,
+        upload: Any,
+        parent_id: int | None = None,
+) -> File:
     """单文件上传：默认挂到工作空间根目录，并校验文件名非空。"""
     if not getattr(upload, "filename", None):
         raise BusinessRuleError("No selected file")
-    if parent_id is None:
-        from app.features.folder import service as folder_service
-
-        parent_id = folder_service.get_root_folder_id(session, workspace_id)
+    parent_id = _resolve_upload_parent_id(session, workspace_id, parent_id)
     return create_file(session, upload, {"workspace_id": workspace_id, "uploader_id": uploader_id, "parent_id": parent_id})
 
 
@@ -468,10 +489,7 @@ def create_uploaded_files(
     valid_uploads = [upload for upload in uploads if getattr(upload, "filename", None)]
     if not valid_uploads:
         raise BusinessRuleError("No selected files")
-    if parent_id is None:
-        from app.features.folder import service as folder_service
-
-        parent_id = folder_service.get_root_folder_id(session, workspace_id)
+    parent_id = _resolve_upload_parent_id(session, workspace_id, parent_id)
     return batch_create_files(
         session, valid_uploads, {"workspace_id": workspace_id, "uploader_id": uploader_id, "parent_id": parent_id}
     )
@@ -498,7 +516,7 @@ def init_multipart_upload(session: Session, workspace_id: int, uploader_id: int,
     if total_chunks <= 0 or total_chunks > MAX_TOTAL_CHUNKS:
         raise BusinessRuleError("total_chunks exceeds server limit")
 
-    parent_id = data.get("parent_id")
+    parent_id = _resolve_upload_parent_id(session, workspace_id, data.get("parent_id"))
     mime_type = data.get("mime_type")
     content_hash = _normalize_content_hash(data.get("content_hash"))
 
@@ -641,7 +659,7 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
     total_chunks = int(meta["total_chunks"])
     total_size = int(meta["total_size"])
     filename = meta["filename"]
-    parent_id = meta.get("parent_id")
+    parent_id = _resolve_upload_parent_id(session, workspace_id, meta.get("parent_id"))
     mime_type = meta.get("mime_type")
     content_hash = _normalize_content_hash(meta.get("content_hash"))
 
@@ -739,7 +757,12 @@ def get_file(session: Session, id: int) -> File:
 
 
 def get_authorized_file(session: Session, workspace_id: int, user_id: int, file_id: int) -> File:
-    """校验用户为文件所属工作空间的成员。"""
+    """校验用户为成员且文件属于当前工作空间.
+
+    ``user_id`` is intentionally used for membership, never as a workspace ID
+    and never as an uploader-ownership check.
+    """
+    assert_member(session, workspace_id, user_id)
     file_obj = get_file(session, file_id)
     # 校验文件属于当前工作空间
     if file_obj.workspace_id != workspace_id:
@@ -830,6 +853,11 @@ def update_file(session: Session, id: int, data: dict[str, Any]) -> File:
 
     old_name = file_obj.name
     old_parent_id = file_obj.parent_id
+
+    if "parent_id" in data and data["parent_id"] is not None:
+        target_folder = session.get(Folder, data["parent_id"])
+        if not target_folder or target_folder.workspace_id != file_obj.workspace_id:
+            raise PermissionDeniedError("Parent folder belongs to another workspace")
 
     file_obj.name = data.get("name", file_obj.name)
     file_obj.status = data.get("status", file_obj.status)

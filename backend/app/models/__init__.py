@@ -12,3 +12,6 @@ from .sys_dict import SysDict
 from .token_usage_log import TokenUsageLog
 from .user import User
 from .workspace import Workspace, WorkspaceMember
+from .opencode_runtime import OpenCodeRuntime
+from .mcp_runtime_token import McpRuntimeToken
+from .mcp_audit_log import McpAuditLog

@@ -54,7 +54,7 @@ async def list_workspaces(
     workspaces = workspace_service.get_user_workspaces(session, current_user.id)
     for workspace in workspaces:
         entity = workspace_service.get_workspace(session, workspace["id"])
-        workspace.update(docker_service.summary(session, entity))
+        workspace.update(docker_service.summary(session, entity, current_user.id))
     return {"workspaces": workspaces, "code": 200}
 
 
@@ -68,7 +68,13 @@ async def get_workspace(
     # 校验成员身份
     assert_member(session, workspace_id, current_user.id)
     detail = workspace_service.get_workspace_detail(session, workspace_id, current_user.id)
-    detail.update(docker_service.summary(session, workspace_service.get_workspace(session, workspace_id)))
+    detail.update(
+        docker_service.summary(
+            session,
+            workspace_service.get_workspace(session, workspace_id),
+            current_user.id,
+        )
+    )
     return detail
 
 
@@ -77,9 +83,12 @@ async def get_workspace(
 # ---------------------------------------------------------------------------
 
 
-def _docker_response(session: Session, workspace_id: int) -> dict:
+def _docker_response(session: Session, workspace_id: int, user_id: int | None = None) -> dict:
     workspace = workspace_service.get_workspace(session, workspace_id)
-    return {**workspace.to_dict(), **docker_service.summary(session, workspace)}
+    return {
+        **workspace.to_dict(),
+        **docker_service.summary(session, workspace, user_id),
+    }
 
 
 @router.post("/workspace/{workspace_id}/opencode/start")
@@ -92,7 +101,7 @@ async def start_opencode_workspace(
     assert_can_write(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
     docker_service.start(session, workspace, current_user.id)
-    return _docker_response(session, workspace_id)
+    return _docker_response(session, workspace_id, current_user.id)
 
 
 @router.post("/workspace/{workspace_id}/opencode/stop")
@@ -104,8 +113,8 @@ async def stop_opencode_workspace(
     """停止当前协作空间的 OpenCode 容器。"""
     assert_can_write(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
-    docker_service.stop(session, workspace)
-    return _docker_response(session, workspace_id)
+    docker_service.stop(session, workspace, current_user.id)
+    return _docker_response(session, workspace_id, current_user.id)
 
 
 @router.post("/workspace/{workspace_id}/opencode/restart")
@@ -118,7 +127,7 @@ async def restart_opencode_workspace(
     assert_can_write(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
     docker_service.restart(session, workspace, current_user.id)
-    return _docker_response(session, workspace_id)
+    return _docker_response(session, workspace_id, current_user.id)
 
 
 @router.post("/workspace/{workspace_id}/opencode/setup-mcp")
@@ -131,7 +140,60 @@ async def setup_opencode_mcp(
     assert_can_write(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
     docker_service.setup_mcp(session, workspace, current_user.id)
-    return {"success": True, **_docker_response(session, workspace_id)}
+    return {"success": True, **_docker_response(session, workspace_id, current_user.id)}
+
+
+# ---------------------------------------------------------------------------
+# Per-user OpenCode Runtime API
+# ---------------------------------------------------------------------------
+
+
+@router.get("/workspace/{workspace_id}/opencode/runtime")
+async def get_opencode_runtime(
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
+    """Return only the current member's OpenCode Runtime status."""
+    assert_member(session, workspace_id, current_user.id)
+    workspace = workspace_service.get_workspace(session, workspace_id)
+    return _docker_response(session, workspace_id, current_user.id)
+
+
+@router.post("/workspace/{workspace_id}/opencode/runtime/start")
+async def start_opencode_runtime(
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
+    assert_can_write(session, workspace_id, current_user.id)
+    workspace = workspace_service.get_workspace(session, workspace_id)
+    docker_service.start(session, workspace, current_user.id)
+    return _docker_response(session, workspace_id, current_user.id)
+
+
+@router.post("/workspace/{workspace_id}/opencode/runtime/stop")
+async def stop_opencode_runtime(
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
+    assert_can_write(session, workspace_id, current_user.id)
+    workspace = workspace_service.get_workspace(session, workspace_id)
+    docker_service.stop(session, workspace, current_user.id)
+    return _docker_response(session, workspace_id, current_user.id)
+
+
+@router.post("/workspace/{workspace_id}/opencode/runtime/restart")
+async def restart_opencode_runtime(
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
+    assert_can_write(session, workspace_id, current_user.id)
+    workspace = workspace_service.get_workspace(session, workspace_id)
+    docker_service.restart(session, workspace, current_user.id)
+    return _docker_response(session, workspace_id, current_user.id)
 
 
 @router.put("/workspace/{workspace_id}")

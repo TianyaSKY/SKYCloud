@@ -126,7 +126,7 @@ def delete_workspace(session: Session, workspace_id: int, user_id: int) -> None:
 
     # 容器不受数据库外键约束，删除协作空间前需显式释放 Docker 资源。
     from app.features.workspace import docker_service
-    docker_service.remove_container(workspace)
+    docker_service.remove_container(workspace, session)
     session.delete(workspace)
     session.commit()
     logger.info("删除工作空间：ws_id={}, user={}", workspace_id, user_id)
@@ -191,6 +191,13 @@ def remove_member(session: Session, workspace_id: int, actor_id: int, target_use
 
     session.delete(member)
 
+    # A removed member's OpenCode credential must stop working immediately.
+    from app.mcp import runtime_token_service
+    from app.features.workspace.runtime_service import get_runtime
+    runtime = get_runtime(session, workspace_id, target_user_id)
+    if runtime:
+        runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
+
     # 发送通知
     notification = Inbox(
         user_id=target_user_id,
@@ -223,6 +230,34 @@ def update_member_role(session: Session, workspace_id: int, actor_id: int, targe
     old_role = member.role
     member.role = new_role
     session.commit()
+    # Revoke the old role-bound runtime credential before provisioning a new
+    # one.  A running OpenCode runtime is refreshed in place so a role change
+    # takes effect without requiring the user to restart the container.  If
+    # Docker/configuration is unavailable, the token remains revoked and the
+    # runtime can be repaired through the explicit setup/restart endpoint.
+    from app.mcp import runtime_token_service
+    from app.features.workspace.runtime_service import get_runtime
+    runtime = get_runtime(session, workspace_id, target_user_id)
+    if runtime:
+        runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
+        session.commit()
+        if runtime.status == "running" and runtime.container_id:
+            try:
+                from app.features.workspace import docker_service
+
+                docker_service.setup_mcp(
+                    session,
+                    workspace,
+                    target_user_id,
+                    runtime=runtime,
+                )
+            except Exception:
+                logger.exception(
+                    "角色变更后刷新 OpenCode MCP 配置失败：ws_id={}, user={}, runtime_id={}",
+                    workspace_id,
+                    target_user_id,
+                    runtime.id,
+                )
     logger.info("变更成员角色：ws_id={}, user={}, {} -> {}", workspace_id, target_user_id, old_role, new_role)
     return member
 

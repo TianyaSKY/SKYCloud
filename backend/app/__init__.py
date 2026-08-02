@@ -128,6 +128,10 @@ def initialize_application():
         OrganizeCheckpoint,
         TokenUsageLog,
         Workspace,
+        WorkspaceMember,
+        OpenCodeRuntime,
+        McpRuntimeToken,
+        McpAuditLog,
     )
 
     # 确保上传目录存在
