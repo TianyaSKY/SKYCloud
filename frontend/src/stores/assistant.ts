@@ -5,14 +5,19 @@ import { Message } from '@arco-design/web-vue'
 import {
   cancelAssistantRun,
   createAssistantConversation,
+  deleteAssistantConversation,
+  getActiveAssistantRun,
+  getActiveExpertRun,
   getAssistantMessages,
   handoffAssistantConversation,
   listAssistantConversations,
   respondAssistantPermission,
+  updateAssistantConversation,
   type AssistantConversation,
   type AssistantEvent,
   type AssistantMessageRecord,
   type AssistantMode,
+  type AssistantRunRecord,
 } from '@/api/assistant'
 import { sseRequest } from '@/utils/sseRequest'
 import { BizError } from '@/api/request'
@@ -59,6 +64,9 @@ export const useAssistantStore = defineStore('assistant', () => {
   let localMessageSequence = -1
 
   const currentConversationId = computed(() => conversationIds.value[currentMode.value])
+  const currentConversation = computed(() =>
+    conversations.value.find((conversation) => conversation.id === currentConversationId.value) || null,
+  )
   const messages = computed(() => {
     const id = currentConversationId.value
     return id ? messagesByConversation.value[id] || [] : []
@@ -90,12 +98,36 @@ export const useAssistantStore = defineStore('assistant', () => {
     else conversations.value[index] = conversation
   }
 
+  function applyActiveRun(run: AssistantRunRecord | null) {
+    if (!run || ['completed', 'failed', 'cancelled'].includes(run.status)) {
+      activeRun.value = null
+      return
+    }
+    activeRun.value = {
+      id: run.id,
+      messageId: run.assistant_message_id || 0,
+      permissionId: run.pending_permission_id || undefined,
+    }
+  }
+
+  function clearActiveRunForMessage(messageId: number) {
+    const run = activeRun.value
+    if (run && run.messageId === messageId) activeRun.value = null
+  }
+
+  async function refreshActiveRun(mode: AssistantMode, conversationId: number) {
+    const run = mode === 'expert'
+      ? await getActiveExpertRun()
+      : await getActiveAssistantRun(conversationId)
+    applyActiveRun(run)
+  }
+
   async function loadMode(mode: AssistantMode, createIfMissing = true) {
     if (!workspaceId.value) return
     try {
       const result = await listAssistantConversations(mode)
       result.conversations.forEach(mergeConversation)
-      let conversation = result.conversations[0]
+      let conversation = result.conversations.find((item) => item.status === 'active')
       if (!conversation && createIfMissing) {
         conversation = await createAssistantConversation(mode, mode === 'fast' ? '快速问答' : '专家任务')
         mergeConversation(conversation)
@@ -104,6 +136,10 @@ export const useAssistantStore = defineStore('assistant', () => {
         conversationIds.value[mode] = conversation.id
         const history = await getAssistantMessages(conversation.id)
         messagesByConversation.value[conversation.id] = history.messages.map(mapMessage)
+        await refreshActiveRun(mode, conversation.id)
+      } else if (mode === currentMode.value) {
+        conversationIds.value[mode] = null
+        activeRun.value = null
       }
       if (mode === 'expert') expertAvailable.value = true
     } catch (error) {
@@ -138,6 +174,8 @@ export const useAssistantStore = defineStore('assistant', () => {
     if (mode === 'expert' && (!expertAvailable.value || !workspace.canWrite)) return
     currentMode.value = mode
     if (!conversationIds.value[mode]) await loadMode(mode)
+    const conversationId = conversationIds.value[mode]
+    if (conversationId) await refreshActiveRun(mode, conversationId)
   }
 
   async function selectConversation(id: number) {
@@ -150,6 +188,7 @@ export const useAssistantStore = defineStore('assistant', () => {
       const history = await getAssistantMessages(id)
       messagesByConversation.value[id] = history.messages.map(mapMessage)
     }
+    await refreshActiveRun(conversation.mode, id)
   }
 
   async function newConversation() {
@@ -164,6 +203,43 @@ export const useAssistantStore = defineStore('assistant', () => {
     mergeConversation(conversation)
     conversationIds.value[currentMode.value] = conversation.id
     messagesByConversation.value[conversation.id] = []
+    await refreshActiveRun(currentMode.value, conversation.id)
+  }
+
+  async function renameConversation(id: number, title: string) {
+    const conversation = await updateAssistantConversation(id, { title })
+    mergeConversation(conversation)
+  }
+
+  async function archiveConversation(id: number) {
+    const conversation = await updateAssistantConversation(id, { status: 'archived' })
+    mergeConversation(conversation)
+    if (conversationIds.value[conversation.mode] === id) {
+      conversationIds.value[conversation.mode] = null
+      messagesByConversation.value[id] = []
+      await loadMode(conversation.mode)
+    }
+  }
+
+  async function restoreConversation(id: number) {
+    const conversation = await updateAssistantConversation(id, { status: 'active' })
+    mergeConversation(conversation)
+    conversationIds.value[conversation.mode] = id
+    const history = await getAssistantMessages(id)
+    messagesByConversation.value[id] = history.messages.map(mapMessage)
+    currentMode.value = conversation.mode
+    await refreshActiveRun(conversation.mode, id)
+  }
+
+  async function removeConversation(id: number) {
+    const conversation = conversations.value.find((item) => item.id === id)
+    await deleteAssistantConversation(id)
+    conversations.value = conversations.value.filter((item) => item.id !== id)
+    delete messagesByConversation.value[id]
+    if (conversation && conversationIds.value[conversation.mode] === id) {
+      conversationIds.value[conversation.mode] = null
+      await loadMode(conversation.mode)
+    }
   }
 
   function appendTool(message: AssistantMessage, payload: Record<string, unknown>, type: string) {
@@ -232,7 +308,7 @@ export const useAssistantStore = defineStore('assistant', () => {
   }
 
   async function send(query: string) {
-    if (!query.trim() || loading.value || !workspaceId.value) return
+    if (!query.trim() || loading.value || activeRun.value || !workspaceId.value) return
     if (!conversationIds.value[currentMode.value]) await loadMode(currentMode.value)
     const conversationId = conversationIds.value[currentMode.value]
     if (!conversationId) return
@@ -280,7 +356,7 @@ export const useAssistantStore = defineStore('assistant', () => {
     } finally {
       loading.value = false
       controller = null
-      if (activeRun.value?.messageId === streamMessageId) activeRun.value = null
+      clearActiveRunForMessage(streamMessageId)
       const message = list.find((item) => item.id === streamMessageId)
       if (message && message.status === 'pending') message.status = 'completed'
     }
@@ -329,6 +405,7 @@ export const useAssistantStore = defineStore('assistant', () => {
     conversations,
     currentConversations,
     currentConversationId,
+    currentConversation,
     messages,
     activeRun,
     loading,
@@ -337,6 +414,10 @@ export const useAssistantStore = defineStore('assistant', () => {
     selectMode,
     selectConversation,
     newConversation,
+    renameConversation,
+    archiveConversation,
+    restoreConversation,
+    removeConversation,
     send,
     cancel,
     respondPermission,

@@ -80,12 +80,14 @@ def list_conversations(
     workspace_id: int,
     user_id: int,
     mode: str | None = None,
+    include_archived: bool = False,
 ) -> list[AssistantConversation]:
     query = session.query(AssistantConversation).filter(
         AssistantConversation.workspace_id == workspace_id,
         AssistantConversation.user_id == user_id,
-        AssistantConversation.status == "active",
     )
+    if not include_archived:
+        query = query.filter(AssistantConversation.status == "active")
     if mode:
         query = query.filter(AssistantConversation.mode == mode)
     return query.order_by(

@@ -132,6 +132,45 @@ def test_opencode_mcp_config_merge_preserves_existing_settings():
     assert merged["mcp"]["SKYCLOUD"]["url"] == "http://mcp/mcp"
 
 
+def test_opencode_chat_provider_uses_existing_chat_api_config():
+    existing = {
+        "provider": {"other": {"npm": "other-provider"}},
+        "model": "other/model",
+    }
+    chat_config = {
+        "base_url": "https://chat.example/v1",
+        "model": "openai/tool-model",
+        "api_key": "test-key",
+    }
+
+    merged = docker_service.merge_opencode_chat_provider(existing, chat_config)
+
+    assert merged["provider"]["other"] == existing["provider"]["other"]
+    provider = merged["provider"][docker_service.OPENCODE_CHAT_PROVIDER_ID]
+    assert provider["npm"] == "@ai-sdk/openai-compatible"
+    assert provider["options"] == {
+        "baseURL": "https://chat.example/v1",
+        "apiKey": "test-key",
+    }
+    assert provider["models"]["openai/tool-model"]["name"] == "openai/tool-model"
+    assert merged["model"] == "skycloud-chat/openai/tool-model"
+
+
+def test_chat_provider_change_requires_runtime_reload():
+    chat_config = {
+        "base_url": "https://chat.example/v1",
+        "model": "tool-model",
+        "api_key": "test-key",
+    }
+    configured = docker_service.merge_opencode_chat_provider({}, chat_config)
+
+    assert docker_service._opencode_chat_provider_needs_reload({}, chat_config)
+    assert not docker_service._opencode_chat_provider_needs_reload(
+        configured,
+        chat_config,
+    )
+
+
 def test_runtime_token_is_bound_to_runtime_and_revocable(
         session, test_user, test_workspace
 ):

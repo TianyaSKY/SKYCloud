@@ -9,7 +9,12 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.exceptions import ConflictError, PermissionDeniedError, ResourceNotFoundError
+from app.exceptions import (
+    BusinessRuleError,
+    ConflictError,
+    PermissionDeniedError,
+    ResourceNotFoundError,
+)
 from app.features.assistant import repository
 from app.features.assistant.engines.fast_engine import FastEngine
 from app.features.assistant.event_protocol import AssistantEvent, heartbeat_event
@@ -162,6 +167,7 @@ def list_user_conversations(
     workspace: Workspace,
     user_id: int,
     mode: str | None = None,
+    include_archived: bool = False,
 ) -> list[AssistantConversation]:
     role = assert_member(session, int(workspace.id), int(user_id))
     if mode == "expert":
@@ -170,7 +176,38 @@ def list_user_conversations(
         # Do not leak expert session/runtime metadata through the unfiltered
         # list endpoint.  Editors/admins may intentionally list both modes.
         mode = "fast"
-    return repository.list_conversations(session, int(workspace.id), int(user_id), mode)
+    return repository.list_conversations(
+        session,
+        int(workspace.id),
+        int(user_id),
+        mode,
+        include_archived=include_archived,
+    )
+
+
+def get_active_run_for_conversation(
+    session: Session,
+    workspace: Workspace,
+    user_id: int,
+    conversation_id: int,
+) -> AssistantRun | None:
+    conversation = get_user_conversation(session, workspace, user_id, conversation_id)
+    run = repository.active_run_for_conversation(session, int(conversation.id))
+    if run and _recover_abandoned_run(session, run):
+        return None
+    return run
+
+
+def get_active_expert_run_for_member(
+    session: Session,
+    workspace: Workspace,
+    user_id: int,
+) -> AssistantRun | None:
+    assert_can_write(session, int(workspace.id), int(user_id))
+    run = repository.active_expert_run_for_member(session, int(workspace.id), int(user_id))
+    if run and _recover_abandoned_run(session, run):
+        return None
+    return run
 
 
 def get_user_conversation(
@@ -195,6 +232,68 @@ def get_conversation_messages(
     return repository.get_messages(session, int(conversation.id))
 
 
+def update_conversation(
+    session: Session,
+    workspace: Workspace,
+    user_id: int,
+    conversation_id: int,
+    *,
+    title: str | None = None,
+    status: str | None = None,
+) -> AssistantConversation:
+    get_user_conversation(session, workspace, user_id, conversation_id)
+    conversation = repository.lock_conversation(
+        session,
+        conversation_id,
+        int(workspace.id),
+        int(user_id),
+    )
+    if conversation is None:
+        raise ResourceNotFoundError("Assistant conversation not found")
+    if title is not None:
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise BusinessRuleError("会话标题不能为空")
+        conversation.title = normalized_title
+
+    if status is not None:
+        if status not in {"active", "archived"}:
+            raise BusinessRuleError("会话状态无效")
+        active_run = repository.active_run_for_conversation(session, int(conversation.id))
+        if active_run and _recover_abandoned_run(session, active_run):
+            active_run = None
+        if active_run and status == "archived":
+            raise ConflictError("当前会话仍有任务运行，请先停止任务")
+        conversation.status = status
+
+    session.commit()
+    return conversation
+
+
+def delete_conversation(
+    session: Session,
+    workspace: Workspace,
+    user_id: int,
+    conversation_id: int,
+) -> None:
+    get_user_conversation(session, workspace, user_id, conversation_id)
+    conversation = repository.lock_conversation(
+        session,
+        conversation_id,
+        int(workspace.id),
+        int(user_id),
+    )
+    if conversation is None:
+        raise ResourceNotFoundError("Assistant conversation not found")
+    active_run = repository.active_run_for_conversation(session, int(conversation.id))
+    if active_run and _recover_abandoned_run(session, active_run):
+        active_run = None
+    if active_run:
+        raise ConflictError("当前会话仍有任务运行，请先停止任务")
+    session.delete(conversation)
+    session.commit()
+
+
 def prepare_run(
     session: Session,
     workspace: Workspace,
@@ -215,6 +314,8 @@ def prepare_run(
     if locked_conversation is None:
         raise ResourceNotFoundError("Assistant conversation not found")
     conversation = locked_conversation
+    if conversation.status != "active":
+        raise ConflictError("会话已归档，请先恢复后再发送")
     if conversation.mode == "expert":
         if repository.lock_workspace_member(session, int(workspace.id), int(user_id)) is None:
             raise PermissionDeniedError("您不是该工作空间的成员")
@@ -224,6 +325,8 @@ def prepare_run(
         active_member_run = repository.active_expert_run_for_member(
             session, int(workspace.id), int(user_id)
         )
+        if active_member_run and _recover_abandoned_run(session, active_member_run):
+            active_member_run = None
         if active_member_run:
             raise ConflictError("Expert runtime is already busy")
 

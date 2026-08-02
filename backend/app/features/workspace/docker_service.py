@@ -19,6 +19,7 @@ from app.features.workspace import runtime_service
 from app.features.workspace.permissions import get_member_role
 from app.features.assistant.clients.opencode_auth import server_password, server_username
 from app.infra.datetime_utils import beijing_now
+from app.infra.llm.config import get_chat_model_config
 from app.mcp import runtime_token_service
 from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.workspace import Workspace
@@ -44,6 +45,7 @@ WORKSPACE_CPU_PERIOD = int(os.getenv("WORKSPACE_CPU_PERIOD", "100000"))
 MCP_PORT = int(os.getenv("MCP_PORT", "5001"))
 OPENCODE_CONFIG_PATH = "/root/.config/opencode/opencode.json"
 OPENCODE_EXPERT_AGENT = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
+OPENCODE_CHAT_PROVIDER_ID = os.getenv("OPENCODE_CHAT_PROVIDER_ID", "skycloud-chat")
 
 
 def _client() -> docker.DockerClient:
@@ -496,6 +498,64 @@ def merge_opencode_mcp_config(existing: dict | None, mcp_config: dict) -> dict:
     return result
 
 
+def _chat_api_runtime_config() -> dict[str, str]:
+    """Read the same Chat provider settings used by SKYCloud's fast mode."""
+
+    configured = get_chat_model_config()
+    return {
+        "base_url": configured["api"].rstrip("/"),
+        "model": configured["model"].strip(),
+        "api_key": configured["key"].strip(),
+    }
+
+
+def _build_opencode_chat_provider(chat_config: dict[str, str]) -> dict:
+    options = {"baseURL": chat_config["base_url"]}
+    if chat_config["api_key"]:
+        # The key is intentionally kept in the Runtime config, where
+        # OpenCode needs it to call the user's configured OpenAI-compatible
+        # endpoint. It is never logged or returned through the API.
+        options["apiKey"] = chat_config["api_key"]
+    return {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "SKYCloud Chat API",
+        "options": options,
+        "models": {
+            chat_config["model"]: {"name": chat_config["model"]},
+        },
+    }
+
+
+def merge_opencode_chat_provider(
+    existing: dict | None,
+    chat_config: dict[str, str] | None = None,
+) -> dict:
+    """Configure OpenCode to use SKYCloud's existing Chat API provider."""
+
+    result = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+    provider = result.get("provider")
+    provider = copy.deepcopy(provider) if isinstance(provider, dict) else {}
+    chat_config = chat_config or _chat_api_runtime_config()
+    provider[OPENCODE_CHAT_PROVIDER_ID] = _build_opencode_chat_provider(chat_config)
+    result["provider"] = provider
+    result["model"] = f"{OPENCODE_CHAT_PROVIDER_ID}/{chat_config['model']}"
+    return result
+
+
+def _opencode_chat_provider_needs_reload(
+    existing: dict,
+    chat_config: dict[str, str],
+) -> bool:
+    expected = merge_opencode_chat_provider({}, chat_config)
+    current_provider = existing.get("provider")
+    current_provider = current_provider if isinstance(current_provider, dict) else {}
+    return (
+        current_provider.get(OPENCODE_CHAT_PROVIDER_ID)
+        != expected["provider"][OPENCODE_CHAT_PROVIDER_ID]
+        or existing.get("model") != expected["model"]
+    )
+
+
 def merge_opencode_expert_agent(existing: dict | None) -> dict:
     """Install the least-privilege SKYCloud expert agent without replacing
     unrelated user configuration.
@@ -624,10 +684,16 @@ def setup_mcp(
         if _exec_exit_code(mkdir_result) != 0:
             raise DockerException("创建 OpenCode 配置目录失败")
         existing = _read_opencode_config(container)
+        chat_config = _chat_api_runtime_config()
+        provider_reload_needed = _opencode_chat_provider_needs_reload(
+            existing,
+            chat_config,
+        )
         merged = merge_opencode_mcp_config(existing, config)
+        merged = merge_opencode_chat_provider(merged, chat_config)
         merged = merge_opencode_expert_agent(merged)
         _write_opencode_config(container, merged)
-        if reload_runtime_config:
+        if reload_runtime_config or provider_reload_needed:
             container.restart(timeout=3)
         _sync_mcp_via_runtime_api(workspace, user_id, runtime, config)
         runtime.config_version = int(runtime.config_version or 0) + 1

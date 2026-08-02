@@ -11,6 +11,7 @@ from app.features.assistant import service
 from app.features.assistant.event_protocol import encode_sse
 from app.features.assistant.schemas import (
     AssistantConversationCreate,
+    AssistantConversationUpdate,
     AssistantHandoffRequest,
     AssistantMessageRequest,
     AssistantPermissionResponse,
@@ -67,6 +68,7 @@ async def create_assistant_conversation(
 @router.get("/assistant/conversations")
 async def list_assistant_conversations(
     mode: str | None = None,
+    include_archived: bool = False,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
     session: Session = Depends(get_db),
@@ -78,8 +80,46 @@ async def list_assistant_conversations(
         _require_expert()
     elif mode is None and not _enabled("ASSISTANT_EXPERT_ENABLED", True):
         mode = "fast"
-    conversations = service.list_user_conversations(session, workspace, current_user.id, mode)
+    conversations = service.list_user_conversations(
+        session,
+        workspace,
+        current_user.id,
+        mode,
+        include_archived=include_archived,
+    )
     return {"conversations": [conversation.to_dict() for conversation in conversations]}
+
+
+@router.patch("/assistant/conversations/{conversation_id}")
+async def update_assistant_conversation(
+    conversation_id: int,
+    payload: AssistantConversationUpdate,
+    current_user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    session: Session = Depends(get_db),
+):
+    _require_v2()
+    conversation = service.update_conversation(
+        session,
+        workspace,
+        current_user.id,
+        conversation_id,
+        title=payload.title,
+        status=payload.status,
+    )
+    return conversation.to_dict()
+
+
+@router.delete("/assistant/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_assistant_conversation(
+    conversation_id: int,
+    current_user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    session: Session = Depends(get_db),
+):
+    _require_v2()
+    service.delete_conversation(session, workspace, current_user.id, conversation_id)
+    return None
 
 
 @router.get("/assistant/conversations/{conversation_id}/messages")
@@ -98,6 +138,23 @@ async def list_assistant_messages(
         "conversation": conversation.to_dict(),
         "messages": [message.to_dict() for message in messages],
     }
+
+
+@router.get("/assistant/conversations/{conversation_id}/active-run")
+async def get_active_assistant_run_for_conversation(
+    conversation_id: int,
+    current_user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    session: Session = Depends(get_db),
+):
+    _require_v2()
+    run = service.get_active_run_for_conversation(
+        session,
+        workspace,
+        current_user.id,
+        conversation_id,
+    )
+    return run.to_dict() if run else None
 
 
 @router.post("/assistant/conversations/{conversation_id}/messages/stream")
@@ -180,6 +237,17 @@ async def cancel_assistant_run(
     run = service.request_cancel(session, workspace, current_user.id, run_id)
     await service.run_registry.request_cancel(run_id)
     return run.to_dict()
+
+
+@router.get("/assistant/runs/active")
+async def get_active_assistant_run_for_member(
+    current_user: User = Depends(get_current_user),
+    workspace: Workspace = Depends(get_current_workspace),
+    session: Session = Depends(get_db),
+):
+    _require_v2()
+    run = service.get_active_expert_run_for_member(session, workspace, current_user.id)
+    return run.to_dict() if run else None
 
 
 @router.get("/assistant/runs/{run_id}")

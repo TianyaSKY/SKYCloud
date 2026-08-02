@@ -64,9 +64,14 @@ export interface AssistantMessageResponse {
   messages: AssistantMessageRecord[]
 }
 
-export const listAssistantConversations = (mode?: AssistantMode) =>
+export interface AssistantConversationUpdate {
+  title?: string
+  status?: 'active' | 'archived'
+}
+
+export const listAssistantConversations = (mode?: AssistantMode, includeArchived = true) =>
   request.get<{ conversations: AssistantConversation[] }>('/assistant/conversations', {
-    params: mode ? { mode } : undefined,
+    params: { ...(mode ? { mode } : {}), include_archived: includeArchived },
   })
 
 export const createAssistantConversation = (mode: AssistantMode, title?: string) =>
@@ -77,6 +82,20 @@ export const createAssistantConversation = (mode: AssistantMode, title?: string)
 
 export const getAssistantMessages = (conversationId: number) =>
   request.get<AssistantMessageResponse>(`/assistant/conversations/${conversationId}/messages`)
+
+export const updateAssistantConversation = (
+  conversationId: number,
+  payload: AssistantConversationUpdate,
+) => request.patch<AssistantConversation>(`/assistant/conversations/${conversationId}`, payload)
+
+export const deleteAssistantConversation = (conversationId: number) =>
+  request.delete<void>(`/assistant/conversations/${conversationId}`)
+
+export const getActiveAssistantRun = (conversationId: number) =>
+  request.get<AssistantRunRecord | null>(`/assistant/conversations/${conversationId}/active-run`)
+
+export const getActiveExpertRun = () =>
+  request.get<AssistantRunRecord | null>('/assistant/runs/active')
 
 export const cancelAssistantRun = (runId: number) =>
   request.post<AssistantRunRecord>(`/assistant/runs/${runId}/cancel`)

@@ -118,6 +118,23 @@ docker pull ghcr.io/anomalyco/opencode:latest
 
 当 API、Worker、MCP 在 macOS/Windows 主机上启动，而数据库等基础设施在 Docker 中时，无需额外设置 Runtime 地址：后端会通过 Runtime 的 `127.0.0.1` 映射端口访问它，Runtime 则通过 `host.docker.internal:5001` 访问本地 MCP。若端口或网络拓扑不同，可分别覆盖 `OPENCODE_RUNTIME_BASE_URL` 与 `OPENCODE_MCP_URL`。
 
+专家模式复用 `.env` 中的 `CHAT_API_URL`、`CHAT_API_KEY`、`CHAT_API_MODEL`，并在每个 Runtime 内生成 OpenAI-compatible provider 配置；无需单独执行 OpenCode 登录。API Key 只注入对应 Runtime，不会通过浏览器接口返回。
+
+可选的专家模式真实集成测试位于 `backend/tests/integration/test_expert_opencode_e2e.py`。普通测试不会启动容器或调用模型；需要验证官方镜像和真实模型时执行：
+
+```bash
+cd backend
+RUN_OPENCODE_E2E=1 /opt/miniconda3/envs/skyoj/bin/python -m pytest -q tests/integration/test_expert_opencode_e2e.py
+RUN_OPENCODE_E2E=1 RUN_OPENCODE_MODEL_E2E=1 \
+OPENCODE_E2E_CHAT_API_URL=https://your-openai-compatible-endpoint/v1 \
+OPENCODE_E2E_CHAT_API_KEY=your-key \
+OPENCODE_E2E_CHAT_API_MODEL=your-model \
+/opt/miniconda3/envs/skyoj/bin/python -m pytest -q tests/integration/test_expert_opencode_e2e.py
+```
+
+模型地址必须能从 Docker 容器访问；测试会在结束时删除临时 OpenCode 容器。
+若要同时验证 MCP 注册和状态检查，再追加 `OPENCODE_E2E_MCP_URL`（以及需要时的 `OPENCODE_E2E_MCP_TOKEN`）。
+
 ## MCP 接入
 
 MCP Server 独立容器运行，默认端口 **5001**。每个用户自动签发**唯一** MCP Token：登录后点击右上角头像 → **MCP Token**

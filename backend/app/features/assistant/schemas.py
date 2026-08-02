@@ -13,6 +13,11 @@ class AssistantConversationCreate(BaseModel):
     title: str | None = Field(default=None, max_length=255)
 
 
+class AssistantConversationUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    status: Literal["active", "archived"] | None = None
+
+
 class AssistantConversationListResponse(BaseModel):
     conversations: list[dict[str, Any]]
 
@@ -29,4 +34,3 @@ class AssistantPermissionResponse(BaseModel):
 class AssistantHandoffRequest(BaseModel):
     target_mode: Literal["expert"] = "expert"
     message_id: int | None = None
-

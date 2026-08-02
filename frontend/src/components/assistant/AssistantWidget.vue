@@ -32,6 +32,10 @@
           :conversations="assistant.currentConversations"
           :current-id="assistant.currentConversationId"
           @select="assistant.selectConversation"
+          @rename="renameConversation"
+          @archive="archiveConversation"
+          @restore="restoreConversation"
+          @delete="deleteConversation"
         />
         <AssistantMessageList
           :messages="assistant.messages"
@@ -44,8 +48,11 @@
         />
         <AssistantComposer
           :mode="assistant.currentMode"
-          :loading="assistant.loading"
-          :disabled="assistant.currentMode === 'expert' && !assistant.expertAvailable"
+          :loading="assistant.loading || Boolean(assistant.activeRun)"
+          :disabled="
+            (assistant.currentMode === 'expert' && !assistant.expertAvailable)
+              || assistant.currentConversation?.status === 'archived'
+          "
           @send="assistant.send"
           @cancel="assistant.cancel"
         />
@@ -56,7 +63,7 @@
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
-import { Message } from '@arco-design/web-vue'
+import { Message, Modal } from '@arco-design/web-vue'
 import { IconClose } from '@arco-design/web-vue/es/icon'
 
 import AssistantHeader from './AssistantHeader.vue'
@@ -65,6 +72,7 @@ import AssistantMessageList from './AssistantMessageList.vue'
 import AssistantComposer from './AssistantComposer.vue'
 import { useAssistantStore } from '@/stores/assistant'
 import { useWorkspaceStore } from '@/stores/workspace'
+import type { AssistantConversation } from '@/api/assistant'
 
 defineProps<{ show: boolean }>()
 
@@ -127,6 +135,59 @@ async function handoff(messageId: number) {
   } catch (error) {
     Message.error((error as Error).message || '转交专家失败')
   }
+}
+
+async function renameConversation(conversation: AssistantConversation) {
+  const title = window.prompt('重命名会话', conversation.title || '')
+  if (title === null || !title.trim()) return
+  try {
+    await assistant.renameConversation(conversation.id, title.trim())
+    Message.success('会话已重命名')
+  } catch (error) {
+    Message.error((error as Error).message || '重命名失败')
+  }
+}
+
+function archiveConversation(id: number) {
+  Modal.confirm({
+    title: '归档会话',
+    content: '归档后仍可在会话列表中恢复。',
+    okText: '归档',
+    onOk: async () => {
+      try {
+        await assistant.archiveConversation(id)
+        Message.success('会话已归档')
+      } catch (error) {
+        Message.error((error as Error).message || '归档失败')
+      }
+    },
+  })
+}
+
+async function restoreConversation(id: number) {
+  try {
+    await assistant.restoreConversation(id)
+    Message.success('会话已恢复')
+  } catch (error) {
+    Message.error((error as Error).message || '恢复失败')
+  }
+}
+
+function deleteConversation(id: number) {
+  Modal.confirm({
+    title: '删除会话',
+    content: '删除后消息和运行记录不可恢复，确定继续？',
+    okText: '删除',
+    okButtonProps: { status: 'danger' },
+    onOk: async () => {
+      try {
+        await assistant.removeConversation(id)
+        Message.success('会话已删除')
+      } catch (error) {
+        Message.error((error as Error).message || '删除失败')
+      }
+    },
+  })
 }
 
 function handleResize() {
@@ -225,4 +286,3 @@ onUnmounted(() => {
   }
 }
 </style>
-
