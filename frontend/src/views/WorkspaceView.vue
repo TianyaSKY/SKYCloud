@@ -173,10 +173,10 @@ import MainLayout from '../components/MainLayout.vue'
 import {
   listWorkspaces as apiList,
   createWorkspace as apiCreate,
-  startWorkspace as apiStart,
-  stopWorkspace as apiStop,
+  startSkycode as apiStart,
+  stopSkycode as apiStop,
   deleteWorkspace as apiDelete,
-  restartWorkspace as apiRestart,
+  restartSkycode as apiRestart,
   type WorkspaceInfo,
 } from '@/api/workspace'
 import { useAuthStore } from '@/stores/auth'
@@ -322,7 +322,7 @@ const openWorkspace = (ws: WorkspaceInfo) => {
   }
 }
 
-const statusColor = (s: string) => {
+const statusColor = (s?: string) => {
   switch (s) {
     case 'running':
       return 'green'
@@ -337,7 +337,7 @@ const statusColor = (s: string) => {
   }
 }
 
-const statusLabel = (s: string) => {
+const statusLabel = (s?: string) => {
   switch (s) {
     case 'running':
       return '运行中'
@@ -348,7 +348,7 @@ const statusLabel = (s: string) => {
     case 'error':
       return '异常'
     default:
-      return s
+      return s ?? '未知'
   }
 }
 
