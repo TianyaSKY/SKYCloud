@@ -323,28 +323,6 @@ class TestFileServiceSearch:
             result = embedding_desc("test", {"api": "x", "key": "y", "model": "z"})
         assert result == []
 
-    def test_batch_embedding_desc(self):
-        from app.features.file.service import batch_embedding_desc
-        with patch("app.infra.llm.client._get_client") as mock_gc:
-            mock_client = MagicMock()
-            mock_resp = MagicMock()
-            mock_resp.data = [MagicMock(embedding=[0.1], index=0), MagicMock(embedding=[0.2], index=1)]
-            mock_resp.usage = None
-            mock_client.embeddings.create.return_value = mock_resp
-            mock_gc.return_value = mock_client
-            result = batch_embedding_desc(["a", "b"], {"api": "x", "key": "y", "model": "z"})
-        assert len(result) == 2
-
-    def test_batch_embedding_desc_empty(self):
-        from app.features.file.service import batch_embedding_desc
-        assert batch_embedding_desc([], {}) == []
-
-    def test_batch_embedding_desc_error(self):
-        from app.features.file.service import batch_embedding_desc
-        with patch("app.infra.llm.client._get_client", side_effect=Exception("fail")):
-            result = batch_embedding_desc(["a", "b"], {"api": "x", "key": "y", "model": "z"})
-        assert result == [[], []]
-
     def test_retry_embedding(self, session, test_workspace, tmp_path):
         from app.features.file.service import retry_embedding, create_file
         upload = MagicMock()

@@ -99,7 +99,7 @@ def publish_messages(queue_name: str, messages: Iterable[str | int]) -> None:
 
 
 def publish_file_tasks(file_ids: Iterable[int]) -> None:
-    """将文件 ID 发布到索引队列（每 ID 一条消息，便于 worker 批合并）。"""
+    """将文件 ID 发布到索引队列（每 ID 一条消息，worker 逐条独立处理）。"""
     publish_messages(FILE_PROCESS_QUEUE, file_ids)
 
 

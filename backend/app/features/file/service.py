@@ -1105,23 +1105,6 @@ async def embedding_desc(desc: str, config: dict[str, str], user_id: int = 0) ->
         return []
 
 
-async def batch_embedding_desc(texts: list[str], config: dict[str, str], user_id: int = 0) -> list[list[float]]:
-    """批量 embedding；失败时按输入长度返回空向量占位，保持对齐。"""
-    if not texts:
-        return []
-    try:
-        from app.infra.llm.client import embed_texts
-        return await embed_texts(
-            texts=texts,
-            config=config,
-            user_id=user_id,
-            query_summary=f"batch({len(texts)} texts)",
-        )
-    except Exception as e:
-        logger.exception(f"Batch embedding failed: {e}")
-        return [[] for _ in texts]
-
-
 def retry_embedding(session: Session, file_id: int) -> None:
     file_obj = session.get(File, file_id)
     if not file_obj:

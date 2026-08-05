@@ -6,7 +6,7 @@
 
 from typing import Any
 
-__all__ = ["handle_batch_indexing", "handle_file_indexing", "handle_file_process"]
+__all__ = ["handle_file_indexing", "handle_file_process"]
 
 
 def __getattr__(name: str) -> Any:

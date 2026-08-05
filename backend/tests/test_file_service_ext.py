@@ -11,7 +11,6 @@ from app.models.file import File
 from app.models.folder import Folder
 from app.features.file.service import (
     embedding_desc,
-    batch_embedding_desc,
     retry_embedding,
     rebuild_failed_indexes,
     cleanup_expired_uploads,
@@ -42,18 +41,6 @@ class TestEmbeddingDesc:
                    side_effect=Exception("api err")):
             result = asyncio.run(embedding_desc("hello", {"api": "a", "key": "k", "model": "m"}))
         assert result == []
-
-
-class TestBatchEmbeddingDesc:
-    def test_empty_texts(self):
-        result = asyncio.run(batch_embedding_desc([], {"api": "a", "key": "k", "model": "m"}))
-        assert result == []
-
-    def test_exception_returns_placeholders(self):
-        with patch("app.infra.llm.client.embed_texts", new_callable=AsyncMock,
-                   side_effect=Exception("err")):
-            result = asyncio.run(batch_embedding_desc(["a", "b"], {"api": "a", "key": "k", "model": "m"}))
-        assert result == [[], []]
 
 
 # ---------------------------------------------------------------------------

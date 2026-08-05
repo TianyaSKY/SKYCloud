@@ -316,7 +316,6 @@ class TestEmbedTexts:
 
 from app.infra.indexing.handler import (
     handle_file_indexing,
-    handle_batch_indexing,
     _mark_file_failed,
     handle_file_process,
 )
@@ -381,36 +380,6 @@ class TestHandleFileIndexing:
             handle_file_indexing(1)
 
         assert mock_session_get.status == "fail"
-
-
-class TestHandleBatchIndexing:
-    def test_empty_ids(self):
-        handle_batch_indexing([])  # 不应报错
-
-    def test_batch_success(self):
-        mock_session = MagicMock()
-        mock_file = MagicMock()
-        mock_file.id = 1
-        mock_file.name = "test.txt"
-        mock_file.uploader_id = 1
-        mock_file.file_path = "test.txt"
-        mock_file.workspace_id = 1
-        mock_storage = MagicMock()
-        mock_storage.download_to_temp.return_value = "/tmp/test.txt"
-
-        with patch("app.infra.indexing.handler.SessionLocal", return_value=mock_session), \
-             patch("app.infra.indexing.handler.file_service.get_file", return_value=mock_file), \
-             patch("app.infra.indexing.handler.get_vl_model_config", return_value={}), \
-             patch("app.infra.indexing.handler.get_chat_model_config", return_value={}), \
-              patch("app.infra.indexing.handler.get_embedding_model_config", return_value={}), \
-              patch("app.infra.indexing.handler.generate_file_description", return_value="desc"), \
-              patch("app.infra.indexing.handler.file_service.batch_embedding_desc", return_value=[[0.1] * 1024]), \
-              patch("app.infra.indexing.handler.get_storage_client", return_value=mock_storage), \
-              patch("app.infra.indexing.handler._replace_file_chunks", return_value=1):
-            handle_batch_indexing([1])
-
-        assert mock_file.status == "success"
-        mock_session.close.assert_called_once()
 
 
 class TestMarkFileFailed:

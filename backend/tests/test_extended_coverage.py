@@ -190,25 +190,6 @@ class TestFileServiceEmbedding:
             result = embedding_desc("test", {"model": "test"})
         assert result == []
 
-    def test_batch_embedding_desc_empty(self):
-        from app.features.file.service import batch_embedding_desc
-        assert batch_embedding_desc([], {}) == []
-
-    def test_batch_embedding_desc_success(self):
-        from app.features.file.service import batch_embedding_desc
-
-        with patch("app.infra.llm.client.embed_texts", return_value=[[0.1], [0.2]]):
-            result = batch_embedding_desc(["a", "b"], {})
-        assert len(result) == 2
-
-    def test_batch_embedding_desc_failure(self):
-        from app.features.file.service import batch_embedding_desc
-
-        with patch("app.infra.llm.client.embed_texts", side_effect=Exception("API error")):
-            result = batch_embedding_desc(["a", "b"], {})
-        assert result == [[], []]
-
-
 class TestFileServiceCleanup:
     """清理函数测试。"""
 

@@ -66,13 +66,6 @@ class FileIndexResult:
     chunks: list[ChunkIndexResult]
 
 
-@dataclass(frozen=True)
-class PreparedFile:
-    context: FileIndexContext
-    local_path: str
-    description: str
-
-
 def load_file_context(file_id: int) -> FileIndexContext | None:
     """Load metadata and mark the file processing in a short transaction."""
     session = SessionLocal()
@@ -243,17 +236,13 @@ def _build_index_result(
     local_path: str,
     description: str,
     emb_config: dict[str, str],
-    *,
-    description_vector: list[float] | None = None,
 ) -> FileIndexResult:
     """Build all CPU/network indexing output without an ORM session."""
-    file_vector = description_vector
-    if file_vector is None:
-        file_vector = _embed_text(
-            f"文件名: {context.name}\n{description}",
-            emb_config,
-            user_id=context.uploader_id,
-        )
+    file_vector = _embed_text(
+        f"文件名: {context.name}\n{description}",
+        emb_config,
+        user_id=context.uploader_id,
+    )
 
     return FileIndexResult(
         file_id=context.file_id,
@@ -390,92 +379,6 @@ def handle_file_indexing(file_id: int) -> None:
     finally:
         if local_path and os.path.exists(local_path):
             os.remove(local_path)
-
-
-def handle_batch_indexing(file_ids: list[int]) -> None:
-    """Index a batch synchronously, batching only the description embeddings."""
-    if not file_ids:
-        return
-
-    vl_config = get_vl_model_config()
-    chat_config = get_chat_model_config()
-    emb_config = get_embedding_model_config()
-    prepared: list[PreparedFile] = []
-
-    try:
-        for file_id in file_ids:
-            context: FileIndexContext | None = None
-            local_path: str | None = None
-            try:
-                context = load_file_context(file_id)
-                if context is None:
-                    continue
-
-                local_path = _download_file(context)
-                description = generate_file_description(
-                    local_path,
-                    vl_config,
-                    chat_config,
-                    user_id=context.uploader_id,
-                )
-                _save_file_description(context.file_id, description)
-                prepared.append(PreparedFile(context, local_path, description))
-                logger.info("[Batch] Description generated for file ID %s", file_id)
-            except Exception as exc:
-                logger.exception(
-                    "[Batch] Error generating description for file %s: %s",
-                    file_id,
-                    exc,
-                )
-                mark_file_failed(file_id, exc)
-                if local_path and os.path.exists(local_path):
-                    os.remove(local_path)
-
-        if not prepared:
-            logger.info("[Batch] No files with descriptions to embed.")
-            return
-
-        description_texts = [
-            f"文件名: {item.context.name}\n{item.description}" for item in prepared
-        ]
-        batch_user_id = prepared[0].context.uploader_id
-        description_vectors = _embed_texts(
-            description_texts,
-            emb_config,
-            user_id=batch_user_id,
-        )
-        if len(description_vectors) != len(prepared):
-            description_vectors = (
-                description_vectors[: len(prepared)]
-                + [[] for _ in range(len(prepared) - len(description_vectors))]
-            )
-
-        for item, description_vector in zip(prepared, description_vectors):
-            try:
-                result = _build_index_result(
-                    item.context,
-                    item.local_path,
-                    item.description,
-                    emb_config,
-                    description_vector=description_vector,
-                )
-                _save_index_result(result)
-                logger.info(
-                    "[Batch] Finished indexing file ID %s successfully with %s chunks.",
-                    item.context.file_id,
-                    len(result.chunks),
-                )
-            except Exception as exc:
-                logger.exception(
-                    "[Batch] Error saving vector for file %s: %s",
-                    item.context.file_id,
-                    exc,
-                )
-                mark_file_failed(item.context.file_id, exc)
-    finally:
-        for item in prepared:
-            if os.path.exists(item.local_path):
-                os.remove(item.local_path)
 
 
 # Compatibility import name used by the worker entry point and older callers.

@@ -17,7 +17,6 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from app.features.file.service import cleanup_expired_uploads
 from app.features.folder import service as folder_service
 from app.features.folder.organize.handler import handle_organize_process
-from app.infra.indexing.handler import handle_batch_indexing
 from app.infra.indexing.handler import handle_file_indexing as handle_file_process
 from app.infra.llm.sync_client import close_sync_clients
 from app.infra.task_queue import (
@@ -29,7 +28,6 @@ from app.infra.task_queue import (
 
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = max(1, int(os.getenv("WORKER_BATCH_SIZE", "10")))
 ORGANIZE_WORKERS = max(1, int(os.getenv("WORKER_ORGANIZE_THREADS", "1")))
 
 
@@ -47,23 +45,6 @@ def run_scheduler() -> None:
 def process_task(file_id: int) -> None:
     """Process one file; executor capacity is owned by :class:`WorkerRuntime`."""
     handle_file_process(file_id)
-
-
-def drain_file_queue(consumer: RabbitMQTaskConsumer, max_batch: int) -> list[int]:
-    """Drain up to ``max_batch`` additional file IDs without blocking."""
-    if max_batch <= 0:
-        return []
-    return [
-        int(message.body)
-        for message in consumer.drain_messages(FILE_PROCESS_QUEUE, max_batch)
-    ]
-
-
-def process_batch_task(file_ids: list[int]) -> None:
-    """Process a group of file tasks synchronously."""
-    logger.info("[Batch] Processing batch of %s files: %s", len(file_ids), file_ids)
-    handle_batch_indexing(file_ids)
-    logger.info("[Batch] Batch processing completed for %s files.", len(file_ids))
 
 
 def process_organize_task(
@@ -167,19 +148,12 @@ def parse_organize_message(data: str) -> tuple[int, int, str | None]:
 
 def dispatch_message(
     runtime: WorkerRuntime,
-    consumer: RabbitMQTaskConsumer,
     message: QueueMessage,
 ) -> None:
     """Decode one queue message and submit it to its dedicated executor."""
     if message.queue_name == FILE_PROCESS_QUEUE:
         runtime.wait_for_capacity("index")
-        first_id = int(message.body)
-        extra_ids = drain_file_queue(consumer, BATCH_SIZE - 1)
-        all_ids = [first_id, *extra_ids]
-        if len(all_ids) > 1:
-            runtime.submit_index(process_batch_task, all_ids)
-        else:
-            runtime.submit_index(process_task, first_id)
+        runtime.submit_index(process_task, int(message.body))
         return
 
     if message.queue_name == ORGANIZE_FILE_QUEUE:
@@ -202,10 +176,9 @@ def run_worker(max_workers: int | None = None) -> None:
         1, int(os.getenv("WORKER_MAX_THREADS", "5"))
     )
     logger.info(
-        "Worker started with index_workers=%s, organize_workers=%s, batch_size=%s",
+        "Worker started with index_workers=%s, organize_workers=%s",
         index_workers,
         ORGANIZE_WORKERS,
-        BATCH_SIZE,
     )
 
     consumer = RabbitMQTaskConsumer()
@@ -215,7 +188,7 @@ def run_worker(max_workers: int | None = None) -> None:
             runtime.reap_completed()
             message = consumer.get_next_message()
             try:
-                dispatch_message(runtime, consumer, message)
+                dispatch_message(runtime, message)
             except (TypeError, ValueError, json.JSONDecodeError):
                 logger.exception(
                     "Invalid data received from queue %s: %s",
