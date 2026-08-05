@@ -149,8 +149,8 @@ Event range: ({checkpoint_event_id}, {target_event_id}]
 """
 
 
-async def organize_files(workspace_id: int):
-    """ReAct 整理主流程：增量优先，溢出/无 checkpoint 则全量；校验通过才推进 checkpoint。"""
+def organize_files(workspace_id: int):
+    """Run the ReAct organization flow synchronously in the worker thread."""
     url, key, model = get_llm_config()
     llm = ChatOpenAI(
         api_key=key,
@@ -247,7 +247,7 @@ async def organize_files(workspace_id: int):
         }
 
         try:
-            async for chunk in agent_executor.astream({"messages": current_messages}, config):
+            for chunk in agent_executor.stream({"messages": current_messages}, config):
                 if "agent" in chunk:
                     message = chunk["agent"]["messages"][0]
                     results.append(f"Agent: {message.tool_calls}")
@@ -319,12 +319,12 @@ async def organize_files(workspace_id: int):
     return total_usage, "\n\t".join(results)
 
 
-async def handle_organize_process(workspace_id: int, user_id: int):
+def handle_organize_process(workspace_id: int, user_id: int):
     """整理入口：计时、记 Token、无论成败都写收件箱（锁释放在 tasks 层）。"""
     time_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     timestamp_start = time.time()
     try:
-        token_usage, results = await organize_files(workspace_id)
+        token_usage, results = organize_files(workspace_id)
         content = (
             f"用时 {time.time() - timestamp_start:.2f} 秒\n"
             "Token 计费详情：\n"
@@ -338,7 +338,7 @@ async def handle_organize_process(workspace_id: int, user_id: int):
 
         if token_usage.get("total_tokens", 0) > 0:
             try:
-                from app.infra.llm.client import record_llm_usage
+                from app.infra.llm.sync_client import record_llm_usage
                 from app.infra.llm.config import get_chat_model_config
                 chat_config = get_chat_model_config()
                 record_llm_usage(

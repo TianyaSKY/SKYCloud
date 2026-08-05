@@ -112,7 +112,7 @@ services:
       - MINIO_BUCKET=${MINIO_BUCKET:-skycloud}
       - MINIO_SECURE=${MINIO_SECURE:-false}
       - UPLOAD_FOLDER=/data/uploads
-      - OPENCODE_IMAGE=${OPENCODE_IMAGE:-skycloud/opencode-workspace:latest}
+      - OPENCODE_IMAGE=${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode:latest}
       - SKYCLOUD_DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-skycloud}_skycloud-network
     depends_on:
       db:

@@ -187,6 +187,141 @@ CREATE TABLE IF NOT EXISTS mcp_tokens
 CREATE INDEX IF NOT EXISTS idx_mcp_tokens_user_id ON mcp_tokens (user_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_tokens_token_hash ON mcp_tokens (token_hash);
 
+-- 12.1 OpenCode Runtime：每个用户在每个工作空间独立一个容器
+CREATE TABLE IF NOT EXISTS opencode_runtimes
+(
+    id              SERIAL PRIMARY KEY,
+    workspace_id    INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    user_id         INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    container_id    VARCHAR(64),
+    status          VARCHAR(20) NOT NULL DEFAULT 'stopped',
+    error_message   TEXT,
+    config_version  INTEGER NOT NULL DEFAULT 0,
+    last_started_at TIMESTAMP,
+    last_used_at    TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()),
+    updated_at      TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()),
+    CONSTRAINT uq_opencode_runtime_workspace_user UNIQUE (workspace_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_opencode_runtime_workspace ON opencode_runtimes (workspace_id);
+CREATE INDEX IF NOT EXISTS idx_opencode_runtime_user ON opencode_runtimes (user_id);
+
+-- 12.2 Runtime Token：短期、可撤销并绑定 user + workspace + runtime
+CREATE TABLE IF NOT EXISTS mcp_runtime_tokens
+(
+    id            SERIAL PRIMARY KEY,
+    runtime_id    INTEGER NOT NULL REFERENCES opencode_runtimes (id) ON DELETE CASCADE,
+    user_id       INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    workspace_id  INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    jti           VARCHAR(64) UNIQUE NOT NULL,
+    token_hash    VARCHAR(64) UNIQUE NOT NULL,
+    token_preview VARCHAR(32) NOT NULL,
+    created_at    TIMESTAMP DEFAULT timezone('Asia/Shanghai', now()),
+    expires_at    TIMESTAMP NOT NULL,
+    last_used_at  TIMESTAMP,
+    revoked_at    TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_runtime_tokens_runtime ON mcp_runtime_tokens (runtime_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_runtime_tokens_user_workspace
+    ON mcp_runtime_tokens (user_id, workspace_id);
+
+-- 12.3 MCP 调用审计（不保存原始 Token 或文件正文）
+CREATE TABLE IF NOT EXISTS mcp_audit_logs
+(
+    id                  SERIAL PRIMARY KEY,
+    request_id          VARCHAR(64) NOT NULL,
+    runtime_id          INTEGER REFERENCES opencode_runtimes (id) ON DELETE SET NULL,
+    workspace_id        INTEGER REFERENCES workspaces (id) ON DELETE SET NULL,
+    user_id             INTEGER REFERENCES users (id) ON DELETE SET NULL,
+    role                VARCHAR(20),
+    actor_type          VARCHAR(20) NOT NULL DEFAULT 'user',
+    tool_name           VARCHAR(100) NOT NULL,
+    arguments_summary   TEXT,
+    entity_id           INTEGER,
+    success             BOOLEAN NOT NULL DEFAULT FALSE,
+    error_type          VARCHAR(100),
+    duration_ms         INTEGER,
+    created_at          TIMESTAMP DEFAULT timezone('Asia/Shanghai', now())
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_workspace_created
+    ON mcp_audit_logs (workspace_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_runtime_created
+    ON mcp_audit_logs (runtime_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_user_created
+    ON mcp_audit_logs (user_id, created_at);
+
+-- 12.4 Assistant conversations: fast RAG and expert OpenCode sessions are
+-- intentionally separate and the mode is immutable at the application layer.
+CREATE TABLE IF NOT EXISTS assistant_conversations
+(
+    id                    SERIAL PRIMARY KEY,
+    workspace_id          INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    user_id               INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    mode                  VARCHAR(16) NOT NULL DEFAULT 'fast',
+    title                 VARCHAR(255),
+    status                VARCHAR(16) NOT NULL DEFAULT 'active',
+    source_conversation_id INTEGER REFERENCES assistant_conversations (id) ON DELETE SET NULL,
+    opencode_runtime_id   INTEGER REFERENCES opencode_runtimes (id) ON DELETE SET NULL,
+    opencode_session_id   VARCHAR(128),
+    created_at            TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    updated_at            TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    last_message_at       TIMESTAMP,
+    CONSTRAINT ck_assistant_conversation_mode CHECK (mode IN ('fast', 'expert')),
+    CONSTRAINT ck_assistant_conversation_status CHECK (status IN ('active', 'archived'))
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_conversations_owner
+    ON assistant_conversations (workspace_id, user_id, mode);
+CREATE INDEX IF NOT EXISTS idx_assistant_conversations_updated
+    ON assistant_conversations (workspace_id, user_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS assistant_messages
+(
+    id                   SERIAL PRIMARY KEY,
+    conversation_id      INTEGER NOT NULL REFERENCES assistant_conversations (id) ON DELETE CASCADE,
+    role                 VARCHAR(16) NOT NULL,
+    content              TEXT NOT NULL DEFAULT '',
+    status               VARCHAR(16) NOT NULL DEFAULT 'completed',
+    provider_message_id  VARCHAR(128),
+    metadata_json        TEXT,
+    usage_json           TEXT,
+    sequence             INTEGER NOT NULL,
+    created_at           TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    updated_at           TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    CONSTRAINT ck_assistant_message_role CHECK (role IN ('user', 'assistant', 'system')),
+    CONSTRAINT ck_assistant_message_status CHECK (status IN ('pending', 'streaming', 'completed', 'failed', 'cancelled')),
+    CONSTRAINT uq_assistant_message_sequence UNIQUE (conversation_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_messages_conversation
+    ON assistant_messages (conversation_id, sequence);
+
+CREATE TABLE IF NOT EXISTS assistant_runs
+(
+    id                    SERIAL PRIMARY KEY,
+    conversation_id       INTEGER NOT NULL REFERENCES assistant_conversations (id) ON DELETE CASCADE,
+    user_message_id       INTEGER REFERENCES assistant_messages (id) ON DELETE SET NULL,
+    assistant_message_id  INTEGER REFERENCES assistant_messages (id) ON DELETE SET NULL,
+    engine                VARCHAR(16) NOT NULL,
+    status                VARCHAR(24) NOT NULL DEFAULT 'pending',
+    request_id            VARCHAR(128),
+    opencode_session_id   VARCHAR(128),
+    pending_permission_id VARCHAR(128),
+    permission_response   VARCHAR(16),
+    cancel_requested      BOOLEAN NOT NULL DEFAULT FALSE,
+    error_code            VARCHAR(64),
+    error_message         TEXT,
+    metadata_json         TEXT,
+    started_at            TIMESTAMP,
+    completed_at          TIMESTAMP,
+    created_at            TIMESTAMP NOT NULL DEFAULT timezone('Asia/Shanghai', now()),
+    CONSTRAINT ck_assistant_run_engine CHECK (engine IN ('fast', 'expert')),
+    CONSTRAINT ck_assistant_run_status CHECK (status IN ('pending', 'running', 'waiting_permission', 'completed', 'failed', 'cancelled')),
+    CONSTRAINT ck_assistant_run_permission_response CHECK (permission_response IS NULL OR permission_response IN ('once', 'reject'))
+);
+CREATE INDEX IF NOT EXISTS idx_assistant_runs_conversation
+    ON assistant_runs (conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_assistant_runs_active
+    ON assistant_runs (status, engine);
+
 -- 13. 创建 Token 使用记录表
 CREATE TABLE IF NOT EXISTS token_usage_logs
 (

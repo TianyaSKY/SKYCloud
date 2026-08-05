@@ -51,6 +51,14 @@ async def get_current_user(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="MCP token is revoked or expired!",
                 )
+        elif payload.get("type") == "mcp_runtime":
+            # Runtime credentials are intentionally accepted only by the
+            # dedicated MCP ASGI middleware.  They must not be able to call
+            # ordinary REST endpoints such as profile or MCP-token APIs.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Runtime token is only valid for the scoped MCP endpoint",
+            )
         user_id = int(user_id)
         current_user = await user_service.get_user(session, user_id)
         if not current_user:
@@ -119,6 +127,29 @@ async def get_current_workspace(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid X-Workspace-Id header",
         )
+
+    # Runtime tokens are cryptographically bound to one workspace. A caller
+    # may not reuse the token with a different HTTP workspace header.
+    raw_token = request.headers.get("Authorization", "")
+    if raw_token.lower().startswith("bearer "):
+        raw_token = raw_token.split(" ", 1)[1].strip()
+    else:
+        raw_token = request.query_params.get("token") or ""
+    if raw_token:
+        try:
+            payload = jwt.decode(raw_token, SECRET_KEY, algorithms=["HS256"])
+            if payload.get("type") == "mcp_runtime":
+                if int(payload.get("workspace_id", -1)) != workspace_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Runtime token is bound to another workspace",
+                    )
+        except HTTPException:
+            raise
+        except (jwt.InvalidTokenError, TypeError, ValueError):
+            # get_current_user is responsible for the canonical 401 response
+            # for invalid credentials; do not mask it here.
+            pass
 
     workspace = session.get(Workspace, workspace_id)
     if not workspace:

@@ -100,6 +100,7 @@ import {
 } from '@arco-design/web-vue/es/icon'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useWorkspaceStore } from '@/stores/workspace'
 import { logger } from '@/utils/logger'
 
 defineProps<{
@@ -112,6 +113,7 @@ const loading = ref(false)
 const messages = ref<ChatMessage[]>([])
 const messageContainer = ref<HTMLElement | null>(null)
 const auth = useAuthStore()
+const workspace = useWorkspaceStore()
 // SSE 流的取消控制器：发起新请求或卸载组件时 abort，避免对已卸载组件写状态
 let abortController: AbortController | null = null
 
@@ -227,6 +229,7 @@ const handleSend = async () => {
       headers: {
         'Content-Type': 'application/json',
         Authorization: auth.token ? `Bearer ${auth.token}` : '',
+        'X-Workspace-Id': workspace.currentWorkspace ? String(workspace.currentWorkspace.id) : '',
       },
       body: JSON.stringify({ query, history }),
       signal: abortController.signal,

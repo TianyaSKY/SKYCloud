@@ -20,9 +20,10 @@ SKYCloud 是一个 AI 增强的云文件管理系统，提供从文件存储、�
 
 - **文件管理** — 上传（分片 / 秒传）、下载、预览、批量操作、文件夹树、格式转换
 - **AI 对话（RAG）** — 多维关键词改写 → Multi-Query 向量召回 → RRF 融合 → 可选 Rerank → SSE 流式输出，支持图片引用
+- **双模式 AI 助手** — 快速模式与专家模式使用独立会话；专家模式通过受控 OpenCode Runtime 支持工具调用、权限确认、取消与 Diff
 - **AI 文件整理** — LangGraph ReAct Agent 自动分类，增量 / 全量模式，整理后收件箱通知
 - **全能工作区** — 独立 Docker 沙箱 + MCP 协议，AI Agent 可读写云盘、运行代码、自动化任务（Manus 风格）
-- **MCP 服务** — 17 个工具 / 4 个 Prompt / 2 个 Resource，Claude Desktop、Cursor 等客户端直接接入
+- **MCP 服务** — 16 个工具 / 4 个 Prompt / 2 个 Resource，Claude Desktop、Cursor 等客户端直接接入；支持不依赖 curl 的 `upload_file` 直传
 - **分享 & 收件箱** — 带过期时间的分享链接、系统通知推送
 - **Token 用量追踪** — 对话 / 索引 / 整理的消耗统计，含管理员汇总视图
 - **性能优化** — Bloom Filter 权限前置、Redis 缓存、RabbitMQ 异步索引、并行 Embedding
@@ -95,6 +96,44 @@ docker compose down
 **离线**：文件上传 → RabbitMQ → Worker 生成描述 + 1024 维 Embedding → pgvector
 
 **在线**：6 维关键词改写 → 多查询生成 → 并行向量召回 → RRF 融合 → Rerank → SSE 流式输出
+
+## 双模式 AI 助手
+
+助手入口提供两套互不污染的会话引擎：
+
+- **快速模式**：只读当前工作空间资料，复用 RAG 检索链，不启动 Runtime，适合查找、总结和文档问答。
+- **专家模式**：仅向 `editor` / `admin` 开放，按用户和工作空间启动独立 OpenCode Runtime，支持多步骤工具调用、命令权限确认、取消、文件 Diff 和会话恢复。
+
+后端统一入口为 `/api/assistant`，会话、消息和 Run 持久化在 `assistant_conversations`、`assistant_messages`、`assistant_runs` 三张表中。专家 Runtime 使用短期、可撤销的 MCP Token 和 OpenCode Basic Auth；普通 REST 依赖拒绝 Runtime Token，Runtime 凭证只可访问专用 MCP 服务。
+
+默认通过环境变量控制渐进式发布：`ASSISTANT_V2_ENABLED`、`ASSISTANT_EXPERT_ENABLED`、`ASSISTANT_PERMISSION_UI_ENABLED`、`ASSISTANT_RUNTIME_LOCK_TTL`。生产部署应设置独立的 `OPENCODE_SERVER_SECRET`，并使用固定版本或 digest 的 `OPENCODE_IMAGE`。
+
+### 本地 API / Worker / MCP + Docker 基础设施
+
+专家模式会按用户和工作空间动态创建 OpenCode Runtime。它不是 `docker-compose.yml` 中的常驻服务，直接使用 OpenCode 官方镜像 `ghcr.io/anomalyco/opencode:latest`；首次创建时后端会自动拉取。若希望预拉取，可执行：
+
+```bash
+docker pull ghcr.io/anomalyco/opencode:latest
+```
+
+当 API、Worker、MCP 在 macOS/Windows 主机上启动，而数据库等基础设施在 Docker 中时，无需额外设置 Runtime 地址：后端会通过 Runtime 的 `127.0.0.1` 映射端口访问它，Runtime 则通过 `host.docker.internal:5001` 访问本地 MCP。若端口或网络拓扑不同，可分别覆盖 `OPENCODE_RUNTIME_BASE_URL` 与 `OPENCODE_MCP_URL`。
+
+专家模式复用 `.env` 中的 `CHAT_API_URL`、`CHAT_API_KEY`、`CHAT_API_MODEL`，并在每个 Runtime 内生成 OpenAI-compatible provider 配置；无需单独执行 OpenCode 登录。API Key 只注入对应 Runtime，不会通过浏览器接口返回。
+
+可选的专家模式真实集成测试位于 `backend/tests/integration/test_expert_opencode_e2e.py`。普通测试不会启动容器或调用模型；需要验证官方镜像和真实模型时执行：
+
+```bash
+cd backend
+RUN_OPENCODE_E2E=1 /opt/miniconda3/envs/skyoj/bin/python -m pytest -q tests/integration/test_expert_opencode_e2e.py
+RUN_OPENCODE_E2E=1 RUN_OPENCODE_MODEL_E2E=1 \
+OPENCODE_E2E_CHAT_API_URL=https://your-openai-compatible-endpoint/v1 \
+OPENCODE_E2E_CHAT_API_KEY=your-key \
+OPENCODE_E2E_CHAT_API_MODEL=your-model \
+/opt/miniconda3/envs/skyoj/bin/python -m pytest -q tests/integration/test_expert_opencode_e2e.py
+```
+
+模型地址必须能从 Docker 容器访问；测试会在结束时删除临时 OpenCode 容器。
+若要同时验证 MCP 注册和状态检查，再追加 `OPENCODE_E2E_MCP_URL`（以及需要时的 `OPENCODE_E2E_MCP_TOKEN`）。
 
 ## MCP 接入
 

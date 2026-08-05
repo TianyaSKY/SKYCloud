@@ -65,6 +65,14 @@ def decode_token(session: Session, token):
 
             if not mcp_token_service.get_active_mcp_token(session, token):
                 return "MCP token revoked or expired. Please create a new token."
+        elif payload.get("type") == "mcp_runtime":
+            from app.mcp import runtime_token_service
+
+            if not runtime_token_service.validate_runtime_token(session, token):
+                return (
+                    "MCP runtime token revoked, expired, stopped, or unbound. "
+                    "Please restart the runtime."
+                )
         return payload["sub"]
     except jwt.ExpiredSignatureError:
         return "Token expired. Please log in again."

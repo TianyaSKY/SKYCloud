@@ -52,7 +52,7 @@ def refresh_mcp_token(
     current_user=Depends(get_current_user),
     session: Session = Depends(get_db),
 ):
-    """刷新 MCP Token：旧 Token 立即失效，并同步到已运行工作区配置。"""
+    """刷新外部 MCP Token；OpenCode Runtime 使用独立短期 Token。"""
     return auth_service.refresh_mcp_token(session, current_user.id)
 
 

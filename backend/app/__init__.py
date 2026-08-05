@@ -112,6 +112,21 @@ def _ensure_workspace_docker_columns() -> None:
         logger.warning(f"Warning: Could not ensure OpenCode workspace columns: {e}")
 
 
+def _ensure_assistant_columns() -> None:
+    """Add small assistant columns to already-created deployments."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE assistant_runs "
+                    "ADD COLUMN IF NOT EXISTS permission_response VARCHAR(16)"
+                )
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Warning: Could not ensure assistant columns: {e}")
+
+
 def initialize_application():
     """初始化应用：建上传目录、连通数据库、建表并对齐必要列/索引。"""
     # 导入模型以注册到 Base.metadata
@@ -128,6 +143,13 @@ def initialize_application():
         OrganizeCheckpoint,
         TokenUsageLog,
         Workspace,
+        WorkspaceMember,
+        OpenCodeRuntime,
+        McpRuntimeToken,
+        McpAuditLog,
+        AssistantConversation,
+        AssistantMessage,
+        AssistantRun,
     )
 
     # 确保上传目录存在
@@ -171,6 +193,7 @@ def initialize_application():
     _ensure_file_content_hash_column()
     _ensure_mcp_token_value_column()
     _ensure_workspace_docker_columns()
+    _ensure_assistant_columns()
 
     # 向量索引与检索距离度量保持一致
     _ensure_file_vector_index()

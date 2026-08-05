@@ -77,6 +77,14 @@ def delete_user(session: Session, id):
     user = session.get(User, id)
     if not user:
         raise ResourceNotFoundError("User not found")
+    # Database cascades cannot remove Docker containers, so clean every
+    # runtime owned by the user before deleting the account.
+    from app.features.workspace import docker_service
+    from app.models.opencode_runtime import OpenCodeRuntime
+
+    runtimes = session.query(OpenCodeRuntime).filter_by(user_id=id).all()
+    for runtime in runtimes:
+        docker_service.remove_runtime(runtime, session)
     session.delete(user)
     session.commit()
 

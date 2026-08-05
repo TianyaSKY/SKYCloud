@@ -1,4 +1,4 @@
-"""AI/LLM 基础能力：模型配置、统一调用入口、远程 embedding。"""
+"""AI/LLM 基础能力：模型配置与 API 侧异步调用入口。"""
 
 from app.infra.llm.config import (
     get_chat_model_config,

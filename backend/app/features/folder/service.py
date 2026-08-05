@@ -13,6 +13,7 @@ from app.models.file import File
 from app.models.folder import Folder
 from app.features.folder import change_log as change_log_service
 from app.features.file.service import delete_file, _clear_search_cache
+from app.features.workspace.permissions import assert_member
 
 ORGANIZE_TASK_LOCK_PREFIX = "organize:task:lock"
 ORGANIZE_TASK_LOCK_TTL_SECONDS = 6 * 60 * 60
@@ -36,10 +37,18 @@ def _invalidate_folder_caches(workspace_id: int) -> None:
 
 def create_folder(session: Session, data):
     try:
+        workspace_id = data.get("workspace_id")
+        if workspace_id is None:
+            raise PermissionDeniedError("workspace_id is required")
+        parent_id = data.get("parent_id")
+        if parent_id is not None:
+            parent = get_folder(session, parent_id)
+            if parent.workspace_id != workspace_id:
+                raise PermissionDeniedError("Parent folder belongs to another workspace")
         new_folder = Folder(
             name=data["name"],
-            workspace_id=data.get("workspace_id"),
-            parent_id=data.get("parent_id"),
+            workspace_id=workspace_id,
+            parent_id=parent_id,
         )
         session.add(new_folder)
         session.commit()
@@ -61,7 +70,8 @@ def get_folder(session: Session, id):
 
 
 def get_authorized_folder(session: Session, workspace_id: int, user_id: int, folder_id: int) -> Folder:
-    """校验文件夹属于当前工作空间。"""
+    """校验用户是成员且文件夹属于当前工作空间。"""
+    assert_member(session, workspace_id, user_id)
     folder = get_folder(session, folder_id)
     if folder.workspace_id != workspace_id:
         raise PermissionDeniedError("Permission denied")
@@ -75,6 +85,11 @@ def update_folder(session: Session, id, data):
     try:
         old_name = folder.name
         old_parent_id = folder.parent_id
+
+        if "parent_id" in data and data["parent_id"] is not None:
+            parent = get_folder(session, data["parent_id"])
+            if parent.workspace_id != folder.workspace_id:
+                raise PermissionDeniedError("Parent folder belongs to another workspace")
 
         folder.name = data.get("name", folder.name)
         folder.parent_id = data.get("parent_id", folder.parent_id)

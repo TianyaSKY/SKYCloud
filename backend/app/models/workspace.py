@@ -36,6 +36,9 @@ class Workspace(Base):
     # 关系
     owner = relationship("User", foreign_keys=[owner_id], backref="owned_workspaces")
     members = relationship("WorkspaceMember", back_populates="workspace", cascade="all, delete-orphan")
+    opencode_runtimes = relationship(
+        "OpenCodeRuntime", back_populates="workspace", cascade="all, delete-orphan"
+    )
 
     def __repr__(self):
         return f"<Workspace {self.id} name={self.name} owner={self.owner_id}>"
