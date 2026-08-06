@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import time
 from dataclasses import dataclass
@@ -17,7 +16,7 @@ import pika
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.exceptions import AMQPError
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 FILE_PROCESS_QUEUE = "file_process_queue"
 ORGANIZE_FILE_QUEUE = "organize_file_queue"

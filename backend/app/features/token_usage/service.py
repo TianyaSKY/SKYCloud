@@ -1,6 +1,5 @@
 """Token 用量记录与查询：明细落库，并原子累加 users 表统计。"""
 
-import logging
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, text
@@ -11,7 +10,7 @@ from app.infra.datetime_utils import beijing_now, local_isoformat
 from app.models.token_usage_log import TokenUsageLog
 from app.models.user import User
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 def record_usage(
@@ -68,7 +67,7 @@ def record_usage(
         session.commit()
     except Exception:
         session.rollback()
-        logger.exception("Failed to record token usage for user %s", user_id)
+        logger.exception("Failed to record token usage for user {}", user_id)
     finally:
         session.close()
 

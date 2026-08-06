@@ -15,4 +15,4 @@ app = create_fastapi_app()
 if __name__ == "__main__":
     # 默认端口 5000，可用 BACKEND_API_PORT 覆盖
     port = int(os.environ.get("BACKEND_API_PORT", 5000))
-    uvicorn.run("entry.api:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("entry.api:app", host="0.0.0.0", port=port, reload=True, log_config=None)

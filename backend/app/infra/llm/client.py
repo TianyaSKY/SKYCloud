@@ -4,7 +4,6 @@ LangChain 等无法替换底层调用的场景，用 record_llm_usage() 手动�
 """
 
 import asyncio
-import logging
 from typing import Any
 
 from langchain_openai import OpenAIEmbeddings
@@ -12,7 +11,7 @@ from openai import AsyncOpenAI
 
 from app.infra.llm.usage import safe_record as _safe_record
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # ---------------------------------------------------------------------------
 # 连接池

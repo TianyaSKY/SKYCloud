@@ -5,11 +5,12 @@
 Docker：command: python -m entry.mcp_run
 """
 
-import logging
 import os
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from loguru import logger
+from app.infra.logging_setup import setup_logging
+
+setup_logging()
 
 from app import initialize_application  # noqa: E402
 from app.mcp.server import mcp, get_mcp_app  # noqa: E402
@@ -26,4 +27,4 @@ if __name__ == "__main__":
 
     # 获取带 JWT 认证中间件的 ASGI 应用
     app = get_mcp_app(mcp)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port, log_config=None)

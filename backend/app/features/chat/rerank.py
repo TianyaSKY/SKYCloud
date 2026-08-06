@@ -1,6 +1,5 @@
 """文档重排序：调用外部 Rerank API；未配置或失败时回退向量排序结果。"""
 
-import logging
 from typing import Any
 
 import httpx
@@ -8,7 +7,7 @@ from langchain_core.documents import Document
 
 from app.infra.llm.config import get_rerank_model_config, get_rerank_top_k
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # 模块级复用 HTTP 客户端，避免每次 rerank 都建新连接
 _rerank_client: httpx.AsyncClient | None = None

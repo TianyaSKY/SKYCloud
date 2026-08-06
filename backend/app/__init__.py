@@ -1,16 +1,16 @@
 """应用包初始化：启动时建表、轻量 schema 对齐与向量索引校验。"""
 
-import logging
 import os
 import time
 
 from sqlalchemy import text
 
-from app.infra.extensions import engine, Base, UPLOAD_FOLDER, DEFAULT_MODEL_PWD
+from loguru import logger
+from app.infra.logging_setup import setup_logging
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+setup_logging()
+
+from app.infra.extensions import engine, Base, UPLOAD_FOLDER, DEFAULT_MODEL_PWD
 
 
 def _ensure_file_vector_index() -> None:

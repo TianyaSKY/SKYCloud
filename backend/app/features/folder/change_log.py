@@ -1,7 +1,6 @@
 """文件/文件夹变更事件流水与整理检查点：为增量整理提供上下文。"""
 
 import json
-import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -14,7 +13,7 @@ from app.models.folder import Folder
 from app.models.organize_checkpoint import OrganizeCheckpoint
 from app.features.folder.change_log_summary import summarize_events
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 DEFAULT_MAX_INCREMENTAL_EVENTS = 200
 

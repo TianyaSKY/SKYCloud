@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import logging
 import os
 from collections import defaultdict
 from functools import lru_cache
@@ -30,7 +29,7 @@ from app.features.chat.query_rewrite import (
 )
 from app.features.chat.rerank import rerank_documents
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 def _env_int(name: str, default: int) -> int:
@@ -456,7 +455,7 @@ async def generate_chat_events(user_id: int, workspace_id: int, query: str, hist
             yield f"data: {json.dumps({'type': 'usage', **usage_accumulator, 'model_name': model_name_seen})}\n\n"
 
     except Exception as e:
-        logger.error(f"Chat error: {e}", exc_info=True)
+        logger.exception(f"Chat error: {e}")
         yield f"data: {json.dumps({'type': 'status', 'content': f'出错了: {str(e)}'})}\n\n"
     finally:
         # 成功或异常都记用量，避免漏计费

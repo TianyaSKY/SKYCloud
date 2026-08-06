@@ -4,14 +4,13 @@
 """
 
 import locale
-import logging
 import os
 import subprocess
 
 import cv2
 import fitz
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 def get_libreoffice_command():

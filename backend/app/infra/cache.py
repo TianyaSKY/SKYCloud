@@ -12,12 +12,11 @@
 import asyncio
 import functools
 import json
-import logging
 from typing import Any, Callable, Optional
 
 from app.infra.extensions import redis_client
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 # ---------------------------------------------------------------------------

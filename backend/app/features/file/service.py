@@ -7,7 +7,6 @@
 import asyncio
 import hashlib
 import json
-import logging
 import math
 import mimetypes
 import os
@@ -40,7 +39,7 @@ from app.features.folder import change_log as change_log_service
 from app.infra.llm.config import get_embedding_model_config
 from app.features.workspace.permissions import assert_member
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 CACHE_EXPIRATION = 3600
 SEARCH_CACHE_PREFIX = "search:fuzzy"

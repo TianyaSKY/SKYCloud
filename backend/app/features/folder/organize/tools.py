@@ -4,8 +4,6 @@
 会话使用独立 session 并在 finally 关闭，避免与 Agent 多步并发串 session。
 """
 
-import logging
-
 from langchain.tools import tool
 from sqlalchemy import func
 
@@ -13,7 +11,7 @@ from app.infra.extensions import SessionLocal, redis_client
 from app.models.file import File
 from app.models.folder import Folder
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 def get_session():

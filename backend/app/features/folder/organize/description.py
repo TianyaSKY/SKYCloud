@@ -5,7 +5,6 @@ Worker LLM 调用统一走同步 sync_client.chat_completion，便于记 Token�
 """
 
 import base64
-import logging
 import mimetypes
 import os
 import tempfile
@@ -25,8 +24,7 @@ from .converter import (
     extract_video_frames,
 )
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+from loguru import logger
 
 # 走纯文本 Chat 路径的扩展名（比 VL 更便宜）
 TEXT_EXTENSIONS = {
@@ -267,7 +265,7 @@ def _extract_text_content(local_path: str) -> str:
             finally:
                 document.close()
         except Exception:
-            logger.exception("PDF 文本提取失败 path=%s", local_path)
+            logger.exception("PDF 文本提取失败 path={}", local_path)
             return ""
 
     if ext in {".csv", ".xlsx", ".xls"}:
@@ -281,7 +279,7 @@ def _extract_text_content(local_path: str) -> str:
                 for name, frame in sheets.items()
             )
         except Exception:
-            logger.exception("表格文本提取失败 path=%s", local_path)
+            logger.exception("表格文本提取失败 path={}", local_path)
             return ""
 
     if ext in TEXT_EXTENSIONS or not ext:
@@ -308,7 +306,7 @@ def extract_file_sections(local_path: str) -> list[TextSection]:
             finally:
                 document.close()
         except Exception:
-            logger.exception("PDF 分页文本提取失败 path=%s", local_path)
+            logger.exception("PDF 分页文本提取失败 path={}", local_path)
     text = _extract_text_content(local_path)
     return [TextSection(text)] if text.strip() else []
 

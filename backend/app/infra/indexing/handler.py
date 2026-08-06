@@ -10,7 +10,6 @@ session is held while a file is downloaded or an LLM is running.
 from __future__ import annotations
 
 import datetime
-import logging
 import os
 from dataclasses import dataclass
 
@@ -33,7 +32,7 @@ from app.features.folder.organize.description import (
 )
 from app.infra.indexing.chunking import TextSection, build_text_chunks
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 @dataclass(frozen=True)
@@ -73,7 +72,7 @@ def load_file_context(file_id: int) -> FileIndexContext | None:
         try:
             file: File = file_service.get_file(session, file_id)
         except ResourceNotFoundError:
-            logger.error("File ID %s not found.", file_id)
+            logger.error("File ID {} not found.", file_id)
             return None
 
         file.status = "processing"
@@ -130,7 +129,7 @@ def _mark_file_failed(session, file_id: int, error: Exception) -> None:
                 },
             )
     except Exception as inner_error:
-        logger.error("Failed to mark file %s as failed: %s", file_id, inner_error)
+        logger.error("Failed to mark file {} as failed: {}", file_id, inner_error)
         session.rollback()
 
 
@@ -141,7 +140,7 @@ def mark_file_failed(file_id: int, error: Exception) -> None:
         session = SessionLocal()
         _mark_file_failed(session, file_id, error)
     except Exception as exc:
-        logger.error("Could not persist failure status for file %s: %s", file_id, exc)
+        logger.error("Could not persist failure status for file {}: {}", file_id, exc)
     finally:
         if session is not None:
             session.close()
@@ -163,7 +162,7 @@ def _embed_text(
         )
         return vectors[0] if vectors else []
     except Exception as exc:
-        logger.exception("Embedding failed: %s", exc)
+        logger.exception("Embedding failed: {}", exc)
         return []
 
 
@@ -184,7 +183,7 @@ def _embed_texts(
             query_summary=f"batch({len(texts)} texts)",
         )
     except Exception as exc:
-        logger.exception("Batch embedding failed: %s", exc)
+        logger.exception("Batch embedding failed: {}", exc)
         return [[] for _ in texts]
 
 
@@ -370,12 +369,12 @@ def handle_file_indexing(file_id: int) -> None:
             len(result.chunks),
         )
     except Exception as exc:
-        logger.exception("Error indexing file %s: %s", file_id, exc)
+        logger.exception("Error indexing file {}: {}", file_id, exc)
         if context is not None:
             try:
                 mark_file_failed(file_id, exc)
             except Exception:
-                logger.exception("Could not persist failure status for file %s", file_id)
+                logger.exception("Could not persist failure status for file {}", file_id)
     finally:
         if local_path and os.path.exists(local_path):
             os.remove(local_path)

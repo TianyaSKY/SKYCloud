@@ -7,7 +7,6 @@ are synchronous and do not have an event-loop lifetime to manage.
 
 from __future__ import annotations
 
-import logging
 import threading
 from typing import Any
 
@@ -15,7 +14,7 @@ from openai import OpenAI
 
 from app.infra.llm.usage import safe_record as _safe_record
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 _client_cache: dict[tuple[str, str], OpenAI] = {}
 _client_lock = threading.Lock()
@@ -42,7 +41,7 @@ def close_sync_clients() -> None:
         try:
             client.close()
         except Exception as exc:
-            logger.warning("Failed to close sync LLM client: %s", exc)
+            logger.warning("Failed to close sync LLM client: {}", exc)
 
 
 def chat_completion(

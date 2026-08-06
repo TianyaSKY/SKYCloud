@@ -4,7 +4,6 @@
 """
 
 import hashlib
-import logging
 import os
 import time
 import uuid
@@ -13,7 +12,7 @@ from typing import Iterable
 from app.infra.extensions import SessionLocal, redis_client
 from app.models.file import File
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 BLOOM_BITS_PER_ITEM = max(8, int(os.getenv("FILE_ACCESS_BLOOM_BITS_PER_ITEM", "12")))
 BLOOM_HASH_COUNT = max(2, int(os.getenv("FILE_ACCESS_BLOOM_HASH_COUNT", "7")))
@@ -102,14 +101,14 @@ def _build_filter(user_id: int | None) -> bool:
         pipe.execute()
         return True
     except Exception as exc:
-        logger.warning("Failed to build file access bloom for %s: %s", scope, exc)
+        logger.warning("Failed to build file access bloom for {}: {}", scope, exc)
         return False
     finally:
         try:
             if redis_client.get(lock_key) == token:
                 redis_client.delete(lock_key)
         except Exception:
-            logger.debug("Failed to release bloom build lock for %s", scope)
+            logger.debug("Failed to release bloom build lock for {}", scope)
 
 
 def _ensure_filter_ready(user_id: int | None) -> bool:
@@ -119,7 +118,7 @@ def _ensure_filter_ready(user_id: int | None) -> bool:
             return True
         return _build_filter(user_id)
     except Exception as exc:
-        logger.warning("Failed to prepare bloom filter for %s: %s", _scope_name(user_id), exc)
+        logger.warning("Failed to prepare bloom filter for {}: {}", _scope_name(user_id), exc)
         return False
 
 
@@ -143,7 +142,7 @@ def _maybe_contains(user_id: int | None, file_id: int) -> bool:
         bits = pipe.execute()
         return all(bit == 1 for bit in bits)
     except Exception as exc:
-        logger.warning("Failed bloom membership check for %s: %s", _scope_name(user_id), exc)
+        logger.warning("Failed bloom membership check for {}: {}", _scope_name(user_id), exc)
         return True
 
 

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import logging
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 def safe_record(
@@ -30,4 +28,4 @@ def safe_record(
             query_summary=query_summary,
         )
     except Exception as exc:
-        logger.warning("Failed to record token usage (%s): %s", action, exc)
+        logger.warning("Failed to record token usage ({}): {}", action, exc)

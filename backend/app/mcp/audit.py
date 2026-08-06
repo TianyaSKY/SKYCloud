@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import logging
 import time
 from functools import wraps
 from typing import Any, Callable
@@ -15,7 +14,7 @@ from app.mcp.context import (
 )
 from app.models.mcp_audit_log import McpAuditLog
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 def _safe_value(value: Any) -> Any:
@@ -101,7 +100,7 @@ def record_mcp_call(
         session.commit()
     except Exception:
         session.rollback()
-        logger.exception("MCP audit log failed: tool=%s", tool_name)
+        logger.exception("MCP audit log failed: tool={}", tool_name)
     finally:
         session.close()
 

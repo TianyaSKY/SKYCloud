@@ -5,7 +5,6 @@
 """
 
 import datetime
-import logging
 import time
 
 from langchain_openai import ChatOpenAI
@@ -31,7 +30,7 @@ from .tools import (
     rename_folder,
 )
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 MAX_INCREMENTAL_EVENTS = 200
 MAX_VALIDATION_RETRIES = 2

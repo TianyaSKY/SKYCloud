@@ -9,7 +9,6 @@ RabbitMQ.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -26,7 +25,7 @@ from app.infra.task_queue import (
     RabbitMQTaskConsumer,
 )
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 ORGANIZE_WORKERS = max(1, int(os.getenv("WORKER_ORGANIZE_THREADS", "1")))
 
@@ -56,11 +55,11 @@ def process_organize_task(
     token = lock_token or f"legacy-{workspace_id}"
     try:
         folder_service.mark_organize_task_running(workspace_id, token)
-        logger.info("Starting organize_files for workspace %s", workspace_id)
+        logger.info("Starting organize_files for workspace {}", workspace_id)
         result = handle_organize_process(workspace_id, user_id)
-        logger.info("Finished organize_files for workspace %s: %s", workspace_id, result)
+        logger.info("Finished organize_files for workspace {}: {}", workspace_id, result)
     except Exception:
-        logger.exception("Error organizing files for workspace %s", workspace_id)
+        logger.exception("Error organizing files for workspace {}", workspace_id)
     finally:
         folder_service.release_organize_task_lock(workspace_id, token)
 
@@ -92,7 +91,7 @@ class WorkerRuntime:
             try:
                 future.result()
             except Exception:
-                logger.exception("Worker task failed in %s executor", queue_name)
+                logger.exception("Worker task failed in {} executor", queue_name)
 
     def reap_completed(self) -> None:
         self._reap("index")
@@ -109,7 +108,7 @@ class WorkerRuntime:
                 try:
                     future.result()
                 except Exception:
-                    logger.exception("Worker task failed in %s executor", queue_name)
+                    logger.exception("Worker task failed in {} executor", queue_name)
 
     def submit_index(self, func, *args: object) -> Future[object]:
         self.wait_for_capacity("index")

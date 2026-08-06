@@ -13,7 +13,6 @@ import asyncio
 import base64
 import binascii
 import json
-import logging
 import mimetypes
 import os
 from contextvars import ContextVar
@@ -49,7 +48,7 @@ from app.mcp.context import (
 from app.mcp import runtime_token_service
 from app.mcp.audit import audited_tool
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 MCP_INLINE_UPLOAD_MAX_BYTES = 8 * 1024 * 1024
 
