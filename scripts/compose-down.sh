@@ -14,8 +14,11 @@ collect_workspace_ids() {
   {
     # 优先按 label（新创建的工作区）
     docker ps -aq --filter "label=skycloud.component=workspace" 2>/dev/null || true
+    # OpenCode 运行时容器同样挂载在 compose 网络上
+    docker ps -aq --filter "label=skycloud.component=opencode-runtime" 2>/dev/null || true
     # 兼容旧容器（仅有命名约定、无 label）
     docker ps -aq --filter "name=skycloud-workspace-" 2>/dev/null || true
+    docker ps -aq --filter "name=skycloud-opencode-" 2>/dev/null || true
   } | awk 'NF' | sort -u
 }
 

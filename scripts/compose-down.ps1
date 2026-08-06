@@ -17,8 +17,16 @@ function Get-WorkspaceContainerIds {
         if ($_ -and $_.Trim()) { [void]$ids.Add($_.Trim()) }
     }
 
+    # OpenCode 运行时容器同样挂载在 compose 网络上
+    docker ps -aq --filter "label=skycloud.component=opencode-runtime" 2>$null | ForEach-Object {
+        if ($_ -and $_.Trim()) { [void]$ids.Add($_.Trim()) }
+    }
+
     # 兼容旧容器（仅有命名约定、无 label）
     docker ps -aq --filter "name=skycloud-workspace-" 2>$null | ForEach-Object {
+        if ($_ -and $_.Trim()) { [void]$ids.Add($_.Trim()) }
+    }
+    docker ps -aq --filter "name=skycloud-opencode-" 2>$null | ForEach-Object {
         if ($_ -and $_.Trim()) { [void]$ids.Add($_.Trim()) }
     }
 
