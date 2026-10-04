@@ -268,6 +268,16 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
             time.sleep(.2)
         else:
             raise AssertionError("Sandbox not reachable through Controller")
+        ui = client.get(base.replace("/http", "/ui") + "/")
+        assert ui.status_code == 200, (ui.status_code, ui.text[:200])
+        assert "text/html" in ui.headers.get("content-type", ""), ui.headers
+        Path("/private/tmp/skycloud-runtime-ui-root.html").write_text(ui.text)
+        import re
+        script = re.search(r'<script[^>]+src="([^"]+)', ui.text).group(1)
+        asset = client.get(base.replace("/http", "/ui") + script)
+        assert asset.status_code == 200
+        assert "javascript" in asset.headers.get("content-type", "")
+        Path("/private/tmp/skycloud-runtime-ui-main.js").write_text(asset.text)
         config = service.merge_opencode_chat_provider({}, {"base_url": "http://gateway:5002/v1", "model": "test-model", "api_key": "scoped-token"})
         service._write_opencode_config(container, config)
         assert service._read_opencode_config(container) == config
@@ -309,3 +319,30 @@ def test_runtime_network_cannot_contact_controller_rpc_listener(infrastructure, 
     script = "try { await fetch(process.argv[1], {headers:{'X-Runtime-Controller-Token':process.argv[2]}, signal:AbortSignal.timeout(1500)}); process.exit(1); } catch { process.exit(0); }"
     docker("run", "--rm", "--network", infrastructure["runtime"], "node:20", "node", "--input-type=module", "-e", script,
            "http://" + address + ":5003/health", controller["token"])
+
+
+def test_real_redis_ui_ticket_is_atomic_and_expires(infrastructure, monkeypatch):
+    from app.features.workspace import ui_tickets
+    client = infrastructure["redis"]
+    monkeypatch.setattr(ui_tickets, "redis_client", client)
+    raw = ui_tickets._store("ticket", {"runtime_id": 42}, 30)
+    key = ui_tickets._key("ticket", raw)
+    assert raw not in key and 0 < client.ttl(key) <= 30
+    def redeem(_):
+        try:
+            return ui_tickets._load("ticket", raw, consume=True)
+        except HTTPException as exc:
+            assert exc.status_code == 401
+            return None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as workers:
+        result = list(workers.map(redeem, range(32)))
+    assert result.count({"runtime_id": 42}) == 1
+    assert result.count(None) == 31
+    raw = ui_tickets._store("session", {"runtime_id": 42}, 600)
+    key = ui_tickets._key("session", raw)
+    assert 0 < client.ttl(key) <= 600
+    client.expire(key, 1)
+    time.sleep(1.1)
+    with pytest.raises(HTTPException) as exc:
+        ui_tickets._load("session", raw)
+    assert exc.value.status_code == 401

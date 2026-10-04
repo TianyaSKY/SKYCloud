@@ -140,7 +140,7 @@ async def get_current_workspace(
     if raw_token.lower().startswith("bearer "):
         raw_token = raw_token.split(" ", 1)[1].strip()
     else:
-        raw_token = request.query_params.get("token") or ""
+        raw_token = ""
     if raw_token:
         try:
             payload = jwt.decode(raw_token, SECRET_KEY, algorithms=["HS256"])

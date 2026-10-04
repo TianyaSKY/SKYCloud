@@ -130,11 +130,13 @@ def create_app(settings=None, engine=None):
         engine.write_config(ref, payload)
         return {"success": True}
 
-    @app.api_route("/runtimes/{ref}/http/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+    @app.api_route("/runtimes/{ref}/ui/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"])
+    @app.api_route("/runtimes/{ref}/http/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"])
     async def relay(ref: str, path: str, request: Request):
-        if (not path or path.startswith("/") or "\\" in path or ":" in path
+        is_ui = request.url.path.startswith("/runtimes/" + ref + "/ui/")
+        if (path.startswith("/") or "\\" in path or ":" in path
                 or any(part in {".", ".."} for part in path.split("/"))
-                or path.split("/", 1)[0] not in RELAY_ROOTS):
+                or (not is_ui and (not path or path.split("/", 1)[0] not in RELAY_ROOTS))):
             raise HTTPException(403, "Unsupported runtime HTTP path")
         target, auth = await run_in_threadpool(engine.target, ref)
         # Cold-start health requests must return promptly; leaving failed

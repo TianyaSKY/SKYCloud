@@ -72,3 +72,10 @@ export const stopSkycode = (workspaceId: number) => {
 export const restartSkycode = (workspaceId: number) => {
   return request.post<unknown>(`/workspace/${workspaceId}/opencode/restart`).then(workspaceInfoSchema.parse)
 }
+
+/** Exchange the current session for a one-use runtime UI launch URL. */
+export const issueRuntimeUiTicket = (workspaceId: number) => {
+  return request.post<{ launch_url: string; expires_in: number }>(
+    `/workspace/${workspaceId}/opencode/ui-ticket`,
+  )
+}

@@ -89,6 +89,18 @@ def _docker_response(session: Session, workspace_id: int, user_id: int | None = 
     }
 
 
+@router.post("/workspace/{workspace_id}/opencode/ui-ticket")
+def issue_ui_ticket(
+        workspace_id: int,
+        current_user: User = Depends(get_current_user),
+        session: Session = Depends(get_db),
+):
+    """Issue a single-use UI launch credential for the caller's running runtime."""
+    from app.features.workspace.ui_tickets import issue
+    return JSONResponse(issue(session, current_user.id, workspace_id),
+                        headers={"Cache-Control": "no-store"})
+
+
 @router.post("/workspace/{workspace_id}/opencode/start")
 async def start_opencode_workspace(
         workspace_id: int,

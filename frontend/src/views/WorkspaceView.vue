@@ -129,6 +129,8 @@
           v-if="activeWorkspace"
           :src="iframeSrc"
           class="workspace-iframe"
+          sandbox="allow-scripts allow-same-origin allow-downloads allow-forms"
+          referrerpolicy="no-referrer"
           allow="clipboard-write; clipboard-read"
         />
       </a-modal>
@@ -153,7 +155,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { Message } from '@arco-design/web-vue'
 import {
   IconPlus,
@@ -179,7 +181,7 @@ import {
   restartSkycode as apiRestart,
   type WorkspaceInfo,
 } from '@/api/workspace'
-import { useAuthStore } from '@/stores/auth'
+import { runtimeUiLaunchUrl } from '@/utils/runtimeUi'
 import { createWorkspaceSchema } from '@/schemas/workspace'
 import { formatDate } from '@/utils/format'
 import { logger } from '@/utils/logger'
@@ -291,34 +293,31 @@ const handleDelete = async (ws: WorkspaceInfo) => {
   }
 }
 
-const auth = useAuthStore()
 
-// 工作区直连地址 origin 白名单：仅允许与当前页面同主机（任意端口/协议），
-// 避免后端返回的 access_url 被劫持后跳转到任意外部站点
-const isAllowedWsOrigin = (url: string): boolean => {
-  try {
-    return new URL(url).hostname === window.location.hostname
-  } catch {
-    return false
+let uiGeneration = 0
+let uiOpening = false
+watch(iframeVisible, (visible) => {
+  if (!visible) {
+    uiGeneration += 1
+    iframeSrc.value = ''
+    activeWorkspace.value = null
   }
-}
+})
 
-const openWorkspace = (ws: WorkspaceInfo) => {
-  if (ws.access_url) {
-    if (!isAllowedWsOrigin(ws.access_url)) {
-      Message.error('工作区地址不在允许范围内，已阻止打开')
-      return
-    }
-    // 在新标签页打开直连地址，获得完整 WebSocket 与原生 SKYcode UI 体验
-    window.open(ws.access_url, `workspace-${ws.id}`)
-  } else {
-    // 兜底：通过反向代理在模态 iframe 中打开
+const openWorkspace = async (ws: WorkspaceInfo) => {
+  if (uiOpening) return
+  uiOpening = true
+  const current = ++uiGeneration
+  try {
+    const url = await runtimeUiLaunchUrl(ws.id)
+    if (current !== uiGeneration) return
     activeWorkspace.value = ws
-    // 安全说明：iframe 无法附加 header，临时通过 query 传 token；
-    // 后端 workspace proxy 接受 ?token= 并会下发 cookie，后续请求改走 cookie 鉴权。
-    const token = auth.token || ''
-    iframeSrc.value = `/api/workspace/${ws.id}/proxy/?token=${encodeURIComponent(token)}`
+    iframeSrc.value = url
     iframeVisible.value = true
+  } catch (error) {
+    logger.warn('工作区入口加载失败', error)
+  } finally {
+    uiOpening = false
   }
 }
 
@@ -371,6 +370,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  uiGeneration += 1
+  iframeSrc.value = ''
   if (refreshTimer) clearInterval(refreshTimer)
   document.removeEventListener('visibilitychange', onVisibilityChange)
 })

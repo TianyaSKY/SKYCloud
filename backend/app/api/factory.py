@@ -16,6 +16,7 @@ from app.features.share.router import router as share_router
 from app.features.sys_dict.router import router as sys_dict_router
 from app.features.token_usage.router import router as token_usage_router
 from app.features.workspace.router import router as workspace_router
+from app.features.workspace.ui_gateway import router as ui_gateway_router
 from app.features.assistant.router import router as assistant_router
 
 
@@ -52,6 +53,7 @@ def create_fastapi_app() -> FastAPI:
     app.include_router(chat_router, prefix="/api")
     app.include_router(token_usage_router, prefix="/api")
     app.include_router(workspace_router, prefix="/api")
+    app.include_router(ui_gateway_router)
     app.include_router(assistant_router, prefix="/api")
 
     @app.get("/api/health")

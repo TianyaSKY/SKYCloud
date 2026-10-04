@@ -81,8 +81,12 @@
       "requirement": "Remove URL JWT; authenticated downloads and scoped short lived iframe tickets",
       "status": "in_progress",
       "evidence": [
-        "REST accepts only Authorization Bearer; signed query JWT and generic cookies are rejected. Downloads and protected Markdown/raw HTML images use authenticated Blob requests; historical URLs are normalized and object URLs released. HTTP and frontend behavior regressions passed, including actual PostgreSQL/MinIO download.",
-        "SSE already uses Authorization headers. Scoped iframe tickets and a functioning isolated UI proxy remain pending; existing iframe fallback still needs replacement."
+        "REST credentials and workspace context read only Authorization Bearer. Signed query JWT and generic cookies are rejected. Downloads and protected Markdown/raw HTML images use authenticated Blob requests; historical URLs are normalized and object URLs released. SSE already uses Authorization headers.",
+        "Workspace iframe now requests a one-use 30-second opaque ticket, never a Web JWT URL. Redis stores only hash-derived credential keys. Redemption creates a host-only HttpOnly Strict session capped at ten minutes; HTTPS uses a Secure __Host- cookie. Each runtime has a distinct hostname, separate from the parent origin and other runtimes.",
+        "Current scalar database checks bind user, password version, editor membership, workspace, runtime and container. Host/origin checks isolate sibling runtimes; expiry, password changes, demotion/removal, stopped or recreated containers reject sessions. Mutations revalidate after bounded request reads. Streams recheck in independent sessions every 15 seconds, close at expiry/revocation and release upstream resources.",
+        "Dedicated frontend 8081 listener serves only /runtime-ui gateway; parent frontend rejects this namespace. Server injects Controller authentication; caller cookies/Authorization and upstream cookies are not forwarded. Real official OpenCode root HTML and JavaScript loaded via Controller; real Redis proves exactly one winner among 32 simultaneous ticket redemptions and actual expiry.",
+        "Default local parent app.skycloud.localhost and per-runtime r{id}.skycloud.localhost share a site while isolating origins. Actual in-app browser sandboxed iframe cookie probe visibly returned COOKIE_OK after Strict HttpOnly cookie redemption. Production requires same-site wildcard DNS/TLS and configured parent origin.",
+        "WebSocket terminal relay, full browser/OpenCode behavior and session renewal still need implementation/verification before the complete iframe requirement is achieved."
       ]
     },
     {
@@ -206,7 +210,8 @@
       "requirement": "Behavior tests for auth, route guards, requests, uploads, workspace permissions and assistant",
       "status": "in_progress",
       "evidence": [
-        "Seven test files / 16 tests passed: MCP credential lifecycle, authenticated downloads, protected Markdown/raw HTML image loading, URL normalization, cancelled stale requests and object URL release. Remaining auth/guards/uploads/permissions/assistant behavior coverage pending."
+        "Seven test files / 16 tests passed: MCP credential lifecycle, authenticated downloads, protected Markdown/raw HTML image loading, URL normalization, cancelled stale requests and object URL release. Remaining auth/guards/uploads/permissions/assistant behavior coverage pending.",
+        "Eight test files / 24 tests now pass, including opaque UI ticket URL validation, same-origin/credential-bearing URL rejection and prior download/Markdown/MCP behaviors. Remaining complete auth/route/upload/assistant behavior coverage is still pending."
       ]
     },
     {
@@ -216,7 +221,8 @@
       "evidence": [
         "14 real isolated PostgreSQL migration/schema/transaction/credential/quota scenarios passed; 5 real PostgreSQL/MinIO upload scenarios passed including SQL failure, storage denial and process crash reconciliation.",
         "Prior isolated Redis quota and Docker runtime/network/controller checks passed. RabbitMQ integration, full vector query behavior and remaining service workflows still require real infrastructure coverage.",
-        "Three real PostgreSQL workspace-list cases now verify constant SQL counts and concurrent recreation preservation; real Docker lifecycle/snapshot owner filtering passed on the rebuilt Controller."
+        "Three real PostgreSQL workspace-list cases now verify constant SQL counts and concurrent recreation preservation; real Docker lifecycle/snapshot owner filtering passed on the rebuilt Controller.",
+        "Real OpenCode HTML/JavaScript relay and Redis one-use/TTL scenarios passed; default Strict iframe cookie behavior was checked in the actual in-app browser. Full UI browser flows and WebSocket terminal remain pending."
       ]
     },
     {
@@ -253,14 +259,14 @@
   "validation": {
     "runtime": "/private/tmp/skycloud-fix-venv/bin/python",
     "targeted": "169 passed: security regressions, auth, workspace, router integration, exception/folder/MCP",
-    "unit_suite": "1245 passed, 0 failed, 31 opt-in skips; /private/tmp/skycloud-workspace-list-final-suite.log",
+    "unit_suite": "1258 passed, 0 failed, 32 opt-in skips; /private/tmp/skycloud-runtime-ui-current-suite.log",
     "baseline_log": "/private/tmp/skycloud-baseline-tests.log",
     "baseline": "Original b37e070: 1088 passed, identical 32 failing test names, 2 skipped. Failures predate this repair.",
     "latest_targeted": "147 passed: workspace HTTP list, routers, Controller, workspace service and security regressions; /private/tmp/skycloud-workspace-list-final-targeted.log",
     "docker_security": "6 passed with RUN_RUNTIME_SECURITY_TESTS=1: real Redis quotas, network boundaries, Compose, Controller lifecycle/config/OpenCode session/SSE; additional real PostgreSQL bootstrap test passed separately",
     "opencode_smoke": "1 passed with RUN_OPENCODE_E2E=1: official health/MCP/session operations without a provider key",
-    "frontend": "Type-check and production build passed; 7 test files / 16 tests passed; /private/tmp/skycloud-header-download-final-frontend-tests.log",
-    "nginx": "Actual skycloud-frontend nginx -t passed with REST/MCP finite body limits, API connection limits and streaming request forwarding.",
+    "frontend": "Type-check and production build passed; 8 files / 24 tests passed; /private/tmp/skycloud-runtime-ui-current-frontend-tests.log; /private/tmp/skycloud-runtime-ui-current-frontend-build.log",
+    "nginx": "Actual container nginx -t passed with isolated runtime UI ingress and parent namespace rejection; /private/tmp/skycloud-runtime-ui-current-nginx.log. Existing REST/MCP finite body limits and streaming forwarding retained.",
     "postgres_bootstrap": "Real PostgreSQL initialized without seeded users; concurrent bootstrap from two separate transactions produces exactly one administrator, with complete personal workspace/membership/root",
     "async_io": "Slow accounting and cache read/write/evict/put behavior tests passed; Redis-outage root-file DB fallback test passed",
     "postgres_migrations": "14 passed with RUN_MIGRATION_TESTS=1; /private/tmp/skycloud-upload-final-postgres.log; includes shared user/workspace/daily quota admission races and atomic completion rollback.",
@@ -270,10 +276,11 @@
     "upload_quota": "16 quota behavior cases, 17 streaming/request-bound cases and 3 process-lease staging cases passed in the full suite. Capacity includes uncertain unreferenced objects until deletion is confirmed.",
     "upload_storage": "5 isolated real PostgreSQL/MinIO scenarios passed; /private/tmp/skycloud-upload-storage-crash-final-real.log: authenticated HTTP upload/download and multipart ownership/limits, duplicate completion, real SQL constraint failure, real S3 denial/recovery, and actual process crash after PUT before metadata commit.",
     "header_download": "154 targeted backend cases passed; one isolated real PostgreSQL/MinIO HTTP upload/download/multipart scenario rerun passed, including rejection of query JWT. /private/tmp/skycloud-header-download-real-storage.log",
-    "workspace_list": "3 real PostgreSQL cases passed; /private/tmp/skycloud-workspace-list-real-postgres.log. 1 real Docker/OpenCode lifecycle and owner-scoped snapshot passed; /private/tmp/skycloud-workspace-snapshot-real.log. Disposable test containers removed."
+    "workspace_list": "3 real PostgreSQL cases passed; /private/tmp/skycloud-workspace-list-real-postgres.log. 1 real Docker/OpenCode lifecycle and owner-scoped snapshot passed; /private/tmp/skycloud-workspace-snapshot-real.log. Disposable test containers removed.",
+    "runtime_ui": "HTTP scoping, cookies, one-use ticket, expiry/revocation, caller-header stripping, origin/host/body limits, periodic stream checks and mutation revalidation passed in the full unit suite. Real OpenCode root/script + Redis scenarios: 2 passed, /private/tmp/skycloud-runtime-ui-final-real.log. Final Redis expiry rerun passed, /private/tmp/skycloud-runtime-ui-final-redis-expiry.log. Actual in-app browser Strict iframe cookie probe returned COOKIE_OK; temporary server/tab closed."
   },
   "next_work": [
-    "Replace iframe URL JWT with scoped short-lived tickets and functioning isolated UI proxy; implement memory tokens and refresh cookies",
+    "Complete isolated runtime UI WebSocket terminal relay, full browser flow and credential renewal; implement frontend memory tokens and refresh cookies",
     "Exercise complete OpenCode -> gateway -> mock-provider flow with isolated PostgreSQL and Redis",
     "Complete service/repository/API contracts, remaining frontend and real integration tests, CI, dependency locks and UTC"
   ]
