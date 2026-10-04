@@ -34,6 +34,7 @@ from app.infra.cache import cacheable, evict_cache_pattern
 from app.infra.task_queue import publish_file_tasks
 from app.infra.storage import get_storage_client
 from app.infra.upload_adapter import save_bounded
+from app.infra.upload_staging import StagedUpload, cleanup_staging
 from app.infra.upload_limits import FILE_LIMIT, AVATAR_LIMIT, copy_bounded, positive_limit
 from app.models.file import File
 from app.models.folder import Folder
@@ -334,6 +335,22 @@ def _write_multipart_meta(meta_path: str, meta: dict[str, Any]) -> None:
         json.dump(meta, f, ensure_ascii=False)
 
 
+
+def _release_failed_upload(session, workspace_id, uploader_id, reservation_id, object_name, storage):
+    if reservation_id is None:
+        return
+    deleted = False
+    if storage is not None:
+        try:
+            # A failed PUT response may still have created the object. Delete the
+            # reserved unique key even when upload_file never reported success.
+            storage.delete_file(object_name)
+            deleted = True
+        except Exception:
+            logger.warning("Object deletion deferred for upload {}", reservation_id)
+    upload_quota.cancel(session, workspace_id, uploader_id, reservation_id,
+                        missing_ok=True, object_deleted=deleted)
+
 def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
     storage = get_storage_client()
     # 分片临时目录仍用本地
@@ -341,19 +358,19 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
 
     original_filename = file_obj.filename or "unknown"
     unique_filename = _generate_unique_filename(original_filename)
-    local_tmp_path = os.path.join(UPLOAD_FOLDER, unique_filename)
+    staging = StagedUpload(UPLOAD_FOLDER, original_filename)
+    local_tmp_path = staging.path
 
-    uploaded_object = False
     reservation_id = None
     try:
         save_bounded(file_obj, local_tmp_path, data.get("max_bytes", MAX_UPLOAD_SIZE))
         file_size = os.path.getsize(local_tmp_path)
         mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
         content_hash = _calculate_file_hash(local_tmp_path)
-        reservation_id = upload_quota.reserve(session, data["workspace_id"], data["uploader_id"], file_size).id
+        reservation_id = upload_quota.reserve(session, data["workspace_id"], data["uploader_id"], file_size,
+            reservation_id=staging.directory.name, details={"object_name": unique_filename, "stage_id": staging.directory.name}).id
         # 上传到 MinIO 对象存储
         storage.upload_file(local_tmp_path, unique_filename)
-        uploaded_object = True
 
         upload_quota.consume(session, data["workspace_id"], data["uploader_id"], reservation_id, file_size)
         new_file = _persist_file_record(session, 
@@ -368,21 +385,14 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
         )
     except Exception as e:
         session.rollback()
-        if uploaded_object:
-            try:
-                storage.delete_file(unique_filename)
-            except Exception as cleanup_exc:
-                logger.error("删除未入库的 MinIO 对象失败 {}: {}", unique_filename, cleanup_exc)
-        if reservation_id is not None:
-            upload_quota.cancel(session, data["workspace_id"], data["uploader_id"], reservation_id, missing_ok=True)
+        _release_failed_upload(session, data["workspace_id"], data["uploader_id"], reservation_id, unique_filename, storage)
         logger.exception(f"Failed to save uploaded file metadata: {e}")
         if isinstance(e, DomainError):
             raise
         raise ServiceOperationError("Failed to save file metadata")
     finally:
         # 清理本地临时文件
-        if os.path.exists(local_tmp_path):
-            os.remove(local_tmp_path)
+        staging.close()
 
     _log_file_created(new_file)
     _push_processing_queue(
@@ -417,7 +427,7 @@ def batch_create_files(
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
     new_files = []
-    uploaded_objects: list[str] = []
+    object_keys: list[str] = []
     reservations = []
     workspace_id = data.get("workspace_id")
     uploader_id = data.get("uploader_id")
@@ -426,7 +436,8 @@ def batch_create_files(
 
         original_filename = file_obj.filename
         unique_filename = _generate_unique_filename(original_filename)
-        local_tmp_path = os.path.join(UPLOAD_FOLDER, unique_filename)
+        staging = StagedUpload(UPLOAD_FOLDER, original_filename)
+        local_tmp_path = staging.path
 
         try:
             save_bounded(file_obj, local_tmp_path, MAX_UPLOAD_SIZE)
@@ -434,25 +445,20 @@ def batch_create_files(
             mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
             content_hash = _calculate_file_hash(local_tmp_path)
 
-            reservation = upload_quota.reserve(session, workspace_id, uploader_id, file_size)
+            reservation = upload_quota.reserve(session, workspace_id, uploader_id, file_size,
+                reservation_id=staging.directory.name, details={"object_name": unique_filename, "stage_id": staging.directory.name})
             reservations.append(reservation.id)
+            object_keys.append(unique_filename)
             storage.upload_file(local_tmp_path, unique_filename)
-            uploaded_objects.append(unique_filename)
         except Exception as exc:
             session.rollback()
-            for reservation_id in reservations:
-                upload_quota.cancel(session, workspace_id, uploader_id, reservation_id, missing_ok=True)
-            for object_name in uploaded_objects:
-                try:
-                    storage.delete_file(object_name)
-                except Exception as cleanup_exc:
-                    logger.error("删除未入库的 MinIO 对象失败 {}: {}", object_name, cleanup_exc)
+            for reservation_id, object_name in zip(reservations, object_keys):
+                _release_failed_upload(session, workspace_id, uploader_id, reservation_id, object_name, storage)
             if isinstance(exc, DomainError):
                 raise
             raise ServiceOperationError("Failed to upload file") from exc
         finally:
-            if os.path.exists(local_tmp_path):
-                os.remove(local_tmp_path)
+            staging.close()
 
         new_file = File(
             name=original_filename,
@@ -473,13 +479,8 @@ def batch_create_files(
         session.commit()
     except Exception as exc:
         session.rollback()
-        for reservation_id in reservations:
-            upload_quota.cancel(session, workspace_id, uploader_id, reservation_id, missing_ok=True)
-        for object_name in uploaded_objects:
-            try:
-                storage.delete_file(object_name)
-            except Exception as cleanup_exc:
-                logger.error("删除未入库的 MinIO 对象失败 {}: {}", object_name, cleanup_exc)
+        for reservation_id, object_name in zip(reservations, object_keys):
+            _release_failed_upload(session, workspace_id, uploader_id, reservation_id, object_name, storage)
         raise ServiceOperationError("Failed to save uploaded file metadata") from exc
 
     if uploader_id:
@@ -575,6 +576,8 @@ def init_multipart_upload(session: Session, workspace_id: int, uploader_id: int,
         "filename": filename, "total_size": total_size, "chunk_size": chunk_size,
         "total_chunks": total_chunks, "parent_id": parent_id, "mime_type": mime_type,
         "content_hash": content_hash,
+        "object_name": existing.details.get("object_name") if existing else _generate_unique_filename(filename),
+        "stage_id": existing.details.get("stage_id") if existing else uuid.uuid4().hex,
     }
     if existing is not None:
         reservation = upload_quota.owned(session, workspace_id, uploader_id, upload_id)
@@ -679,6 +682,8 @@ def save_multipart_chunk(
 def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: int, upload_id: str) -> File:
     safe_upload_id = _safe_upload_id(upload_id)
     meta = upload_quota.owned(session, workspace_id, uploader_id, safe_upload_id).details
+    if not meta.get("object_name") or not meta.get("stage_id"):
+        raise ConflictError("Upload session must be reinitialized after upgrade")
 
     total_chunks = int(meta["total_chunks"])
     total_size = int(meta["total_size"])
@@ -699,14 +704,14 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
         raise BusinessRuleError(f"Missing chunks: {preview}")
 
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    unique_filename = _generate_unique_filename(filename)
-    final_path = os.path.join(UPLOAD_FOLDER, unique_filename)
+    unique_filename = meta["object_name"]
+    staging = StagedUpload(UPLOAD_FOLDER, filename, stage_id=meta["stage_id"])
+    final_path = staging.path
     tmp_final_path = f"{final_path}.assembling"
 
     if os.path.exists(tmp_final_path):
         os.remove(tmp_final_path)
 
-    uploaded_object = False
     try:
         with open(tmp_final_path, "wb") as target:
             for idx in range(total_chunks):
@@ -724,15 +729,14 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
             )
         os.replace(tmp_final_path, final_path)
     except DomainError:
-        if os.path.exists(tmp_final_path):
-            os.remove(tmp_final_path)
+        staging.close()
         raise
     except Exception as e:
-        if os.path.exists(tmp_final_path):
-            os.remove(tmp_final_path)
+        staging.close()
         logger.exception(f"Failed to merge chunks: {e}")
         raise ServiceOperationError("Failed to merge chunks")
 
+    storage = None
     try:
         # 上传合并后的文件到 MinIO
         actual_hash = _calculate_file_hash(final_path)
@@ -740,7 +744,6 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
             raise BusinessRuleError("Uploaded content does not match its hash")
         storage = get_storage_client()
         storage.upload_file(final_path, unique_filename)
-        uploaded_object = True
 
         resolved_mime = _resolve_mime_type(final_path, mime_type)
         new_file = File(
@@ -758,20 +761,14 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
         session.commit()
     except Exception as e:
         session.rollback()
-        if uploaded_object:
-            try:
-                storage.delete_file(unique_filename)
-            except Exception as cleanup_exc:
-                logger.error("删除未入库的 MinIO 对象失败 {}: {}", unique_filename, cleanup_exc)
-        upload_quota.cancel(session, workspace_id, uploader_id, safe_upload_id, missing_ok=True)
+        _release_failed_upload(session, workspace_id, uploader_id, safe_upload_id, unique_filename, storage)
         logger.exception(f"Failed to persist merged file: {e}")
         if isinstance(e, DomainError):
             raise
         raise ServiceOperationError("Failed to save file metadata")
     finally:
         # 清理本地合并文件与分片目录
-        if os.path.exists(final_path):
-            os.remove(final_path)
+        staging.close()
         shutil.rmtree(upload_dir, ignore_errors=True)
 
     _log_file_created(new_file)
@@ -1202,7 +1199,8 @@ def cleanup_expired_uploads(max_age_hours: int = 24, *, session: Session | None 
     """清理超时未完成的分片上传临时目录，回收磁盘。"""
     import time
 
-    count = upload_quota.cleanup(session, MULTIPART_ROOT) if session is not None else 0
+    count = cleanup_staging(UPLOAD_FOLDER, upload_quota.TTL_SECONDS)
+    count += upload_quota.cleanup(session, MULTIPART_ROOT, upload_root=UPLOAD_FOLDER, storage_factory=get_storage_client) if session is not None else 0
     if not os.path.exists(MULTIPART_ROOT):
         return count
     active_ids = set()

@@ -89,3 +89,55 @@ class UploadBodyLimitMiddleware:
             await self.app(scope, bounded_receive, bounded_send)
         finally:
             self.active_requests -= 1
+
+
+class BufferedJsonBodyLimitMiddleware:
+    """Bound JSON RPC before decoding; multipart uploads keep the streaming guard."""
+    def __init__(self, app, max_bytes, max_concurrent=4):
+        self.app = app
+        self.max_bytes = max_bytes
+        self.max_concurrent = max_concurrent
+        self.active_requests = 0
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http' or scope.get('method') != 'POST':
+            return await self.app(scope, receive, send)
+        headers = dict(scope.get('headers', []))
+        try:
+            length = int(headers.get(b'content-length', b'0'))
+        except ValueError:
+            length = -1
+        async def reject(code, message):
+            await JSONResponse({'message': message, 'detail': message}, status_code=code)(scope, receive, send)
+        if length < 0:
+            return await reject(400, 'Invalid Content-Length')
+        if length > self.max_bytes:
+            return await reject(413, 'Request body too large')
+        if self.active_requests >= self.max_concurrent:
+            return await reject(429, 'Too many active requests')
+        self.active_requests += 1
+        try:
+            buffered = bytearray()
+            received = 0
+            while True:
+                message = await receive()
+                if message['type'] == 'http.disconnect':
+                    return
+                received += len(message.get('body', b''))
+                if received > self.max_bytes:
+                    return await reject(413, 'Request body too large')
+                buffered.extend(message.get("body", b""))
+                if not message.get('more_body', False):
+                    break
+            body = bytes(buffered)
+            del buffered
+            delivered = False
+            async def replay():
+                nonlocal delivered
+                if not delivered:
+                    delivered = True
+                    return {'type': 'http.request', 'body': body, 'more_body': False}
+                return await receive()
+            await self.app(scope, replay, send)
+        finally:
+            self.active_requests -= 1

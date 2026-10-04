@@ -259,7 +259,7 @@ def test_wrong_version_blocks_startup_and_baseline_downgrade_is_rejected(postgre
     check_schema(postgres)
 
 
-@pytest.mark.parametrize('shared', ['user', 'workspace'])
+@pytest.mark.parametrize('shared', ['user', 'workspace', 'daily'])
 def test_upload_quota_concurrent_admission_cannot_overbook(postgres, monkeypatch, shared):
     from sqlalchemy.orm import Session
     from app.features.file import upload_quota as quota
@@ -270,17 +270,22 @@ def test_upload_quota_concurrent_admission_cannot_overbook(postgres, monkeypatch
         conn.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'quota-one',1),(2,'quota-two',1)"))
     monkeypatch.setattr(quota, 'USER_CAPACITY', 10 if shared == 'user' else 100)
     monkeypatch.setattr(quota, 'WORKSPACE_CAPACITY', 10 if shared == 'workspace' else 100)
+    monkeypatch.setattr(quota, 'DAILY_ATTEMPTS', 1 if shared == 'daily' else 200)
+    errors = []
     def admission(index):
-        uid, wid = (1, index + 1) if shared == 'user' else (index + 1, 1)
+        uid, wid = (1, index + 1) if shared != 'workspace' else (index + 1, 1)
         with Session(postgres) as session:
             try:
                 return quota.reserve(session, wid, uid, 6).id
-            except BusinessRuleError:
+            except BusinessRuleError as exc:
+                errors.append(str(exc))
                 session.rollback()
                 return None
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
         results = list(workers.map(admission, range(2)))
     assert sum(result is not None for result in results) == 1
+    if shared == 'daily':
+        assert errors == ['Daily upload allowance exceeded']
     with postgres.connect() as conn:
         assert conn.scalar(text("SELECT sum(size) FROM upload_reservations WHERE status='active'")) == 6
         assert conn.scalar(text("SELECT sum(attempts) FROM upload_daily_usage")) == 1

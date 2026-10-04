@@ -7,7 +7,7 @@ All deadlines and day boundaries are UTC, stored as UTC naive timestamps.
 from datetime import datetime, timedelta, timezone
 import uuid
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from app.exceptions import BusinessRuleError, ConflictError, PermissionDeniedError, ResourceNotFoundError
 from app.infra.upload_limits import positive_limit
 from app.models.file import File
@@ -61,13 +61,18 @@ def reserve(session, workspace_id, user_id, size, *, kind='file', reservation_id
         raise ConflictError('Upload session already exists')
     now = utc_now()
     active = [UploadReservation.status == 'active', UploadReservation.expires_at > now]
+    pending_bytes = or_(and_(*active), and_(
+        UploadReservation.kind != 'instant', UploadReservation.status != 'completed',
+        UploadReservation.cleaned_at.is_(None),
+        UploadReservation.details['object_name'].as_string().is_not(None)))
     for column, owner, capacity, concurrency, file_column in [
         (UploadReservation.user_id, user_id, USER_CAPACITY, USER_CONCURRENCY, File.uploader_id),
         (UploadReservation.workspace_id, workspace_id, WORKSPACE_CAPACITY, WORKSPACE_CONCURRENCY, File.workspace_id),
     ]:
         stored = session.scalar(select(func.coalesce(func.sum(File.file_size), 0)).where(file_column == owner))
-        pending, count = session.execute(select(func.coalesce(func.sum(UploadReservation.size), 0), func.count())
-                                         .where(column == owner, *active)).one()
+        pending = session.scalar(select(func.coalesce(func.sum(UploadReservation.size), 0))
+                                 .where(column == owner, pending_bytes))
+        count = session.scalar(select(func.count()).select_from(UploadReservation).where(column == owner, *active))
         if stored + pending + size > capacity:
             raise BusinessRuleError('Upload storage capacity exceeded')
         if count >= concurrency:
@@ -97,7 +102,7 @@ def consume(session, workspace_id, user_id, reservation_id, size):
     return row
 
 
-def cancel(session, workspace_id, user_id, reservation_id, *, missing_ok=False):
+def cancel(session, workspace_id, user_id, reservation_id, *, missing_ok=False, object_deleted=False):
     if missing_ok and session.get(UploadReservation, reservation_id) is None:
         session.rollback()
         return
@@ -108,10 +113,12 @@ def cancel(session, workspace_id, user_id, reservation_id, *, missing_ok=False):
         raise PermissionDeniedError('Upload session belongs to another user or workspace')
     if row.status == 'active':
         row.status = 'cancelled'
+    if object_deleted and row.status != 'completed':
+        row.details = {**row.details, 'object_name': None}
     session.commit()
 
 
-def cleanup(session, multipart_root):
+def cleanup(session, multipart_root, *, upload_root=None, storage_factory=None):
     """Reclaim expired/closed sessions under the same locks as writers."""
     import os
     import re
@@ -129,16 +136,39 @@ def cleanup(session, multipart_root):
         if row is None or row.cleaned_at is not None or (row.status == 'active' and row.expires_at > now):
             session.rollback()
             continue
-        if row.status == 'active':
-            row.status = 'expired'
-        # Database identity cannot supply path components outside the upload root.
-        if workspace_id > 0 and re.fullmatch(r'[A-Za-z0-9_-]{8,128}', reservation_id):
-            path = os.path.join(multipart_root, str(workspace_id), reservation_id)
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-                removed += 1
-        row.cleaned_at = now
-        session.commit()
+        from app.infra.upload_staging import staging_guard
+        from contextlib import nullcontext
+        guard = staging_guard(upload_root, row.details.get('stage_id')) if upload_root else nullcontext(True)
+        with guard as acquired:
+            if not acquired:
+                session.rollback()
+                continue
+            if row.status == 'active':
+                row.status = 'expired'
+            object_name = row.details.get('object_name')
+            if object_name:
+                referenced = session.scalar(select(File.id).where(File.file_path == object_name).limit(1))
+                if referenced is None:
+                    if storage_factory is None:
+                        session.rollback()
+                        continue
+                    # Do not acknowledge cleanup until deletion succeeds. A storage
+                    # outage keeps this journal eligible for the next Worker retry.
+                    try:
+                        storage_factory().delete_file(object_name)
+                    except Exception:
+                        session.rollback()
+                        from loguru import logger
+                        logger.warning('Upload object cleanup deferred for reservation {}', reservation_id)
+                        continue
+            # Database identity cannot supply paths outside the upload root.
+            if workspace_id > 0 and re.fullmatch(r'[A-Za-z0-9_-]{8,128}', reservation_id):
+                path = os.path.join(multipart_root, str(workspace_id), reservation_id)
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                    removed += 1
+            row.cleaned_at = now
+            session.commit()
     # Retain recent closed-session responses; admission charges outlive the session.
     session.execute(delete(UploadReservation).where(UploadReservation.cleaned_at.is_not(None),
                     UploadReservation.expires_at < now - timedelta(days=7)))

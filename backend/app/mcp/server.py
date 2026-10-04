@@ -29,6 +29,7 @@ from app.infra.datetime_utils import beijing_now
 from app.infra.extensions import SECRET_KEY, SessionLocal
 from app.infra.storage import get_storage_client
 from app.infra.upload_adapter import Base64UploadAdapter
+from app.infra.upload_limits import BufferedJsonBodyLimitMiddleware, positive_limit
 from app.features.auth.service import decode_token
 from app.features.file import service as file_service
 from app.features.folder import service as folder_service
@@ -184,7 +185,9 @@ class JWTAuthMiddleware:
 def get_mcp_app(mcp_instance: FastMCP):
     """包装 streamable HTTP ASGI 应用，挂上 JWT 中间件。"""
     raw_app = mcp_instance.streamable_http_app()
-    return JWTAuthMiddleware(raw_app)
+    return JWTAuthMiddleware(BufferedJsonBodyLimitMiddleware(raw_app,
+        positive_limit("MCP_MAX_REQUEST_SIZE", 32 * 1024 * 1024),
+        positive_limit("MCP_REQUEST_CONCURRENCY", 4)))
 
 
 # ---------------------------------------------------------------------------
@@ -1062,8 +1065,15 @@ def _inline_upload_adapter(
         raise ValueError("filename is too long")
 
     encoding = (content_encoding or "utf-8").strip().lower().replace("_", "-")
+    encoded_limit = 4 * ((MCP_INLINE_UPLOAD_MAX_BYTES + 2) // 3)
+    if len(content) > encoded_limit + 1024:
+        raise ValueError("inline upload exceeds server limit")
     if encoding in {"utf-8", "utf8", "text", "plain"}:
+        if len(content) > MCP_INLINE_UPLOAD_MAX_BYTES:
+            raise ValueError("inline upload exceeds server limit")
         raw = content.encode("utf-8")
+        if len(raw) > MCP_INLINE_UPLOAD_MAX_BYTES:
+            raise ValueError("inline upload exceeds server limit")
         effective_mime = mime_type or mimetypes.guess_type(normalized_filename)[0] or "text/plain"
         encoded = base64.b64encode(raw).decode("ascii")
     elif encoding == "base64":
@@ -1076,10 +1086,14 @@ def _inline_upload_adapter(
             data_mime = header[5:].split(";", 1)[0].strip()
         else:
             data_mime = None
+        if len(compact) > encoded_limit:
+            raise ValueError("inline upload exceeds server limit")
         try:
             raw = base64.b64decode(compact, validate=True)
         except (binascii.Error, ValueError) as exc:
             raise ValueError("content must be valid Base64") from exc
+        if len(raw) > MCP_INLINE_UPLOAD_MAX_BYTES:
+            raise ValueError("inline upload exceeds server limit")
         effective_mime = mime_type or data_mime or mimetypes.guess_type(normalized_filename)[0]
         effective_mime = effective_mime or "application/octet-stream"
         encoded = base64.b64encode(raw).decode("ascii")

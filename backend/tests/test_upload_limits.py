@@ -170,3 +170,54 @@ def test_upload_request_concurrency_is_bounded_and_released(monkeypatch):
         await middleware(scope, receive, send)
         assert middleware.active_requests == 0
     asyncio.run(run())
+
+
+def test_json_rpc_body_is_bounded_before_application_decodes_it():
+    from app.infra.upload_limits import BufferedJsonBodyLimitMiddleware
+    calls = []
+    async def application(scope, receive, send):
+        calls.append(True)
+    async def run():
+        middleware = BufferedJsonBodyLimitMiddleware(application, max_bytes=5)
+        messages = iter([{'type': 'http.request', 'body': b'123', 'more_body': True},
+                         {'type': 'http.request', 'body': b'456', 'more_body': True}])
+        async def receive():
+            return next(messages)
+        responses = []
+        async def send(message):
+            responses.append(message)
+        await middleware({'type': 'http', 'method': 'POST', 'headers': []}, receive, send)
+        assert responses[0]['status'] == 413
+        assert middleware.active_requests == 0
+    asyncio.run(run())
+    assert calls == []
+
+
+def test_inline_mcp_upload_rejects_encoded_excess_before_decoding(monkeypatch):
+    from app.mcp import server
+    monkeypatch.setattr(server, 'MCP_INLINE_UPLOAD_MAX_BYTES', 3)
+    decoder = MagicMock(side_effect=AssertionError('Oversized input was decoded'))
+    monkeypatch.setattr(server.base64, 'b64decode', decoder)
+    with pytest.raises(ValueError, match='exceeds'):
+        server._inline_upload_adapter('x', 'eHh4eHh4', 'base64', None)
+    decoder.assert_not_called()
+    with pytest.raises(ValueError, match='exceeds'):
+        server._inline_upload_adapter('x', '你好', 'utf-8', None)
+
+
+def test_bounded_json_rpc_replays_exact_bytes_at_limit():
+    from app.infra.upload_limits import BufferedJsonBodyLimitMiddleware
+    async def run():
+        async def application(scope, receive, send):
+            message = await receive()
+            assert message == {'type': 'http.request', 'body': b'12345', 'more_body': False}
+        middleware = BufferedJsonBodyLimitMiddleware(application, max_bytes=5)
+        messages = iter([{'type': 'http.request', 'body': b'12', 'more_body': True},
+                         {'type': 'http.request', 'body': b'345', 'more_body': False}])
+        async def receive():
+            return next(messages)
+        async def send(message):
+            pytest.fail('Accepted request was rejected')
+        await middleware({'type': 'http', 'method': 'POST', 'headers': []}, receive, send)
+        assert middleware.active_requests == 0
+    asyncio.run(run())

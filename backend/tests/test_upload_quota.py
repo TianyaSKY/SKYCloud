@@ -167,3 +167,93 @@ def test_daily_allowance_rolls_at_utc_midnight(session, test_workspace, test_use
     quota.reserve(session, wid, uid, 5)
     assert session.query(UploadDailyUsage).count() == 2
     assert sum(row.attempts for row in session.query(UploadDailyUsage).all()) == 2
+
+
+def test_object_cleanup_is_retryable_and_preserves_referenced_files(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage):
+    uid, wid = test_user.id, test_workspace.id
+    mock_object_storage.objects['orphan-object'] = b'orphan'
+    row = quota.reserve(session, wid, uid, 6, details={'object_name': 'orphan-object'})
+    rid = row.id
+    quota.cancel(session, wid, uid, rid)
+    broken = MagicMock()
+    broken.delete_file.side_effect = RuntimeError('storage unavailable')
+    quota.cleanup(session, str(tmp_path), storage_factory=lambda: broken)
+    assert session.get(UploadReservation, rid).cleaned_at is None
+    assert mock_object_storage.file_exists('orphan-object')
+    quota.cleanup(session, str(tmp_path), storage_factory=lambda: mock_object_storage)
+    assert not mock_object_storage.file_exists('orphan-object')
+    assert session.get(UploadReservation, rid).cleaned_at is not None
+    mock_object_storage.objects['referenced-object'] = b'keep'
+    rid = quota.reserve(session, wid, uid, 4, details={'object_name': 'referenced-object'}).id
+    quota.consume(session, wid, uid, rid, 4)
+    session.add(File(name='keep', file_path='referenced-object', file_size=4, workspace_id=wid, uploader_id=uid))
+    session.commit()
+    quota.cleanup(session, str(tmp_path), storage_factory=lambda: mock_object_storage)
+    assert mock_object_storage.file_exists('referenced-object')
+
+
+def test_expired_reservation_of_live_object_writer_is_not_cleaned(session, test_workspace, test_user, tmp_path, mock_object_storage):
+    from app.infra.upload_staging import StagedUpload
+    uid, wid = test_user.id, test_workspace.id
+    stage = StagedUpload(tmp_path)
+    rid = quota.reserve(session, wid, uid, 5, details={'object_name': 'in-flight', 'stage_id': stage.directory.name}).id
+    row = session.get(UploadReservation, rid)
+    row.expires_at = quota.utc_now() - timedelta(seconds=1)
+    session.commit()
+    quota.cleanup(session, str(tmp_path / 'parts'), upload_root=str(tmp_path), storage_factory=lambda: mock_object_storage)
+    assert session.get(UploadReservation, rid).cleaned_at is None
+    mock_object_storage.objects['in-flight'] = b'orphan'
+    stage.handle.close()  # Emulate process death after remote upload.
+    quota.cleanup(session, str(tmp_path / 'parts'), upload_root=str(tmp_path), storage_factory=lambda: mock_object_storage)
+    assert not mock_object_storage.file_exists('in-flight')
+    assert session.get(UploadReservation, rid).cleaned_at is not None
+
+
+def test_uncertain_objects_keep_capacity_reserved_until_cleanup_succeeds(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage):
+    uid, wid = test_user.id, test_workspace.id
+    monkeypatch.setattr(quota, 'USER_CAPACITY', 10)
+    rid = quota.reserve(session, wid, uid, 10, details={'object_name': 'uncertain'}).id
+    quota.cancel(session, wid, uid, rid)
+    with pytest.raises(BusinessRuleError, match='capacity'):
+        quota.reserve(session, wid, uid, 1)
+    quota.cleanup(session, str(tmp_path), storage_factory=lambda: mock_object_storage)
+    assert quota.reserve(session, wid, uid, 10).size == 10
+
+
+def test_lost_upload_success_response_still_deletes_object(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage):
+    from app.exceptions import ServiceOperationError
+    uid, wid = test_user.id, test_workspace.id
+    monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path))
+    original_upload = mock_object_storage.upload_file
+    def lost_response(path, name):
+        original_upload(path, name)
+        assert mock_object_storage.file_exists(name)
+        raise RuntimeError('PUT response lost')
+    monkeypatch.setattr(mock_object_storage, 'upload_file', lost_response)
+    with pytest.raises(ServiceOperationError):
+        service.create_file(session, adapter(b'12345'), {'workspace_id': wid, 'uploader_id': uid})
+    assert mock_object_storage.objects == {}
+    assert session.query(File).count() == 0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_legacy_upload_session_returns_reinitialization_error(session, test_workspace, test_user, tmp_path, monkeypatch):
+    uid, wid = test_user.id, test_workspace.id
+    monkeypatch.setattr(service, 'MULTIPART_ROOT', str(tmp_path))
+    rid = service.init_multipart_upload(session, wid, uid, {'filename': 'legacy', 'total_size': 5})['upload_id']
+    row = session.get(UploadReservation, rid)
+    row.details = {key: value for key, value in row.details.items() if key not in {'object_name', 'stage_id'}}
+    session.commit()
+    with pytest.raises(ConflictError, match='reinitialized'):
+        service.complete_multipart_upload(session, wid, uid, rid)
+
+
+def test_workspace_concurrency_applies_across_users(session, test_workspace, test_user, monkeypatch):
+    uid, wid = test_user.id, test_workspace.id
+    monkeypatch.setattr(quota, 'WORKSPACE_CONCURRENCY', 1)
+    other = User(username='concurrent-member', password_hash='x')
+    session.add(other)
+    session.commit()
+    quota.reserve(session, wid, uid, 1)
+    with pytest.raises(ConflictError, match='active'):
+        quota.reserve(session, wid, other.id, 1)

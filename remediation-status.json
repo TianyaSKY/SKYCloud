@@ -67,12 +67,13 @@
     {
       "id": "upload_limits",
       "requirement": "Streaming file limits, user/workspace capacity, daily rate, multipart reservations and concurrency",
-      "status": "in_progress",
+      "status": "verified",
       "evidence": [
         "Positive finite defaults: file 256 MiB, avatar 5 MiB, request 512 MiB, part 64 MiB. Nginx body limit is finite; actual container nginx -t passed. Invalid/zero/negative upload configurations fail closed.",
         "ASGI middleware counts actual request bytes before multipart parsing, handles missing Content-Length, returns 413 and closes already-open multipart spools. HTTP, Base64, and Werkzeug adapters bound writes; Base64 encoded size is checked before decoding. Single/batch/part/assembly paths preserve 413 and clean incomplete temporary files.",
         "Unique temporary names prevent concurrent part writes sharing one temp file; oversized replacement preserves existing part. Preflight and legacy multipart completion obey finite file limits; assembly checks each stored part while copying. New upload behavior tests and full backend unit regression passed.",
-        "Migration 0005 adds durable reservations and UTC daily admission usage. User/workspace capacity counts logical files plus active reservations; direct/batch/instant/multipart paths charge quotas. Fixed user-then-workspace locks serialize admission/consumption; file creation and reservation consumption commit together. Session ownership enforced on resume/status/part/completion/abort; hash mismatch rejected. One-hour expiry and minute Worker cleanup reclaim session disk under writer locks. API process upload concurrency and Nginx connection limits bound simultaneous body reception. 10 quota behaviors and 3 real PostgreSQL race/rollback scenarios passed. Remaining: reclaim staging files after process crashes and verify full HTTP/MinIO failure lifecycle."
+        "Durable user/workspace reservations and UTC daily admissions apply to direct/batch/instant/multipart uploads; fixed row lock order serializes user, workspace and daily races. File insertion and reservation consumption commit together; only session creator can resume/read/write/complete/abort. One-hour expiry and minute Worker cleanup hold writer locks. Quotas retain uncertain orphan-object capacity until confirmed deletion. Staging process leases preserve live writers and reclaim actual crashed-process files; object keys are journaled before PUT, referenced objects preserved, failed deletions retried. 16 quota cases, 17 streaming/body cases, 3 staging cases, 14 PostgreSQL scenarios and 5 real PostgreSQL/MinIO HTTP/failure/crash scenarios passed.",
+        "MCP inline inputs are rejected before oversized Base64 decode/encode; JSON RPC is bounded before parsing at 32 MiB / 4 concurrent POSTs. REST ingress limits and API process upload concurrency are also bounded. Old unfinished sessions receive explicit reinitialization conflict rather than internal errors."
       ]
     },
     {
@@ -203,8 +204,11 @@
     {
       "id": "integration_tests",
       "requirement": "Real PostgreSQL/vector/transaction/migration and Redis/MQ/MinIO integration coverage",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "14 real isolated PostgreSQL migration/schema/transaction/credential/quota scenarios passed; 5 real PostgreSQL/MinIO upload scenarios passed including SQL failure, storage denial and process crash reconciliation.",
+        "Prior isolated Redis quota and Docker runtime/network/controller checks passed. RabbitMQ integration, full vector query behavior and remaining service workflows still require real infrastructure coverage."
+      ]
     },
     {
       "id": "ci",
@@ -240,24 +244,25 @@
   "validation": {
     "runtime": "/private/tmp/skycloud-fix-venv/bin/python",
     "targeted": "169 passed: security regressions, auth, workspace, router integration, exception/folder/MCP",
-    "unit_suite": "1223 passed, 0 failed, 22 opt-in skips; /private/tmp/skycloud-quota-final-suite.log",
+    "unit_suite": "1235 passed, 0 failed, 28 opt-in skips; /private/tmp/skycloud-uploads-final-complete-suite.log",
     "baseline_log": "/private/tmp/skycloud-baseline-tests.log",
     "baseline": "Original b37e070: 1088 passed, identical 32 failing test names, 2 skipped. Failures predate this repair.",
     "latest_targeted": "77 passed: deployment credentials, security regressions, Controller, assistant, runtime LLM, MCP token refresh",
     "docker_security": "6 passed with RUN_RUNTIME_SECURITY_TESTS=1: real Redis quotas, network boundaries, Compose, Controller lifecycle/config/OpenCode session/SSE; additional real PostgreSQL bootstrap test passed separately",
     "opencode_smoke": "1 passed with RUN_OPENCODE_E2E=1: official health/MCP/session operations without a provider key",
     "frontend": "Type-check passed; 4 test files / 9 tests passed including credential lifecycle; production build passed; /private/tmp/skycloud-hash-mcp-frontend-tests.log",
-    "nginx": "Actual skycloud-frontend nginx -t passed with finite body/connection limits and request streaming",
+    "nginx": "Actual skycloud-frontend nginx -t passed with REST/MCP finite body limits, API connection limits and streaming request forwarding.",
     "postgres_bootstrap": "Real PostgreSQL initialized without seeded users; concurrent bootstrap from two separate transactions produces exactly one administrator, with complete personal workspace/membership/root",
     "async_io": "Slow accounting and cache read/write/evict/put behavior tests passed; Redis-outage root-file DB fallback test passed",
-    "postgres_migrations": "13 passed with RUN_MIGRATION_TESTS=1; /private/tmp/skycloud-quota-postgres.log; fresh/legacy/parallel upgrades, credential recovery, quota overbooking and atomic consumption/concurrent completion.",
+    "postgres_migrations": "14 passed with RUN_MIGRATION_TESTS=1; /private/tmp/skycloud-upload-final-postgres.log; includes shared user/workspace/daily quota admission races and atomic completion rollback.",
     "jwt_revocation": "HTTP/auth/runtime final targeted tests passed; /private/tmp/skycloud-revocation-final-targeted.log. Real PostgreSQL bootstrap test with upgraded schema passed separately.",
-    "real_auth": "67 passed with isolated Redis and SQLite: /private/tmp/skycloud-hash-mcp-real-auth.log",
+    "real_auth": "67 passed after transaction-fixture and upload/MCP changes, using isolated Redis and SQLite; /private/tmp/skycloud-upload-final-real-auth.log",
     "upload_streaming": "13 behavior cases passed: exact bounds, early stream stop, encoded uploads, Content-Length/missing header, partial spool cleanup, part replacement and tampered assembly; /private/tmp/skycloud-stream-upload-final-targeted.log",
-    "upload_quota": "10 quota behavior cases plus 14 streaming/request-limit cases passed in full suite; real PostgreSQL admission races for shared user/workspace, failed commit rollback and exactly-once completion passed."
+    "upload_quota": "16 quota behavior cases, 17 streaming/request-bound cases and 3 process-lease staging cases passed in the full suite. Capacity includes uncertain unreferenced objects until deletion is confirmed.",
+    "upload_storage": "5 isolated real PostgreSQL/MinIO scenarios passed; /private/tmp/skycloud-upload-storage-crash-final-real.log: authenticated HTTP upload/download and multipart ownership/limits, duplicate completion, real SQL constraint failure, real S3 denial/recovery, and actual process crash after PUT before metadata commit."
   },
   "next_work": [
-    "Finish crash-safe staging cleanup and real HTTP/MinIO upload lifecycle verification; then remove query JWT and implement frontend session cookies",
+    "Remove query JWT from downloads/SSE and replace iframe auth with scoped short-lived tickets; implement frontend memory tokens and refresh cookies",
     "Exercise complete OpenCode -> gateway -> mock-provider flow with isolated PostgreSQL and Redis",
     "Complete streaming upload limits and quotas, query-token removal and frontend auth, service/repository/API contracts, remaining real integration tests, CI, dependency locks and UTC"
   ]
