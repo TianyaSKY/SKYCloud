@@ -132,14 +132,20 @@ def get_active_runtime_token(session: Session, token: str) -> McpRuntimeToken | 
 def validate_runtime_token(
     session: Session, token: str
 ) -> tuple[dict[str, Any], OpenCodeRuntime] | None:
-    """Verify signature, database revocation, runtime binding, and membership."""
+    """Verify MCP credentials; model credentials cannot be used for tools."""
+    return validate_bound_token(session, token, expected_type="mcp_runtime")
 
+
+def validate_bound_token(
+    session: Session, token: str, *, expected_type: str
+) -> tuple[dict[str, Any], OpenCodeRuntime] | None:
+    """Shared signature, database revocation, binding and membership checks."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
     except jwt.InvalidTokenError:
         return None
 
-    if payload.get("type") != "mcp_runtime":
+    if payload.get("type") != expected_type:
         return None
 
     try:

@@ -60,13 +60,13 @@ async def get_user(session: Session, id: int) -> User:
 
 
 def update_user(session: Session, id, data):
+    if set(data) - {"username", "avatar"}:
+        raise BusinessRuleError("Only username and avatar can be updated")
     user = session.get(User, id)
     if not user:
         raise ResourceNotFoundError("User not found")
     user.username = data.get("username", user.username)
     user.avatar = data.get("avatar", user.avatar)
-    if "password" in data:
-        user.set_password(data["password"])
     session.commit()
 
     evict_cache(USER_CACHE_PREFIX, id)
@@ -102,12 +102,22 @@ def change_password(
     """本人或 admin 可改密；非 admin 必须校验旧密码。"""
     if actor_id != user_id and actor_role != "admin":
         raise PermissionDeniedError("Permission denied")
-    user = session.get(User, user_id)
+    user = session.query(User).filter_by(id=user_id).with_for_update().populate_existing().one_or_none()
     if not user:
         raise ResourceNotFoundError("User not found")
     if actor_role != "admin" and not user.check_password(old_password):
         raise BusinessRuleError("Old password is incorrect")
-    update_user(session, user_id, {"password": new_password})
+    user.set_password(new_password)
+    user.auth_version += 1
+    from app.mcp.token_service import _revoke_all_active
+    from app.models.mcp_runtime_token import McpRuntimeToken
+    from app.infra.datetime_utils import beijing_now
+    _revoke_all_active(session, user_id)
+    session.query(McpRuntimeToken).filter_by(user_id=user_id).filter(McpRuntimeToken.revoked_at.is_(None)).update(
+        {McpRuntimeToken.revoked_at: beijing_now()}, synchronize_session=False
+    )
+    session.commit()
+    evict_cache(USER_CACHE_PREFIX, user_id)
 
 
 def ensure_user_access(actor_id: int, actor_role: str, user_id: int) -> None:

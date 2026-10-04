@@ -1,15 +1,9 @@
 """OpenCode Docker lifecycle and per-runtime MCP configuration."""
 
-import base64
 import copy
-import json
 import os
-import shlex
-import socket
 import time
-import uuid
 
-import docker
 import httpx
 from loguru import logger
 from sqlalchemy.orm import Session
@@ -20,40 +14,33 @@ from app.features.workspace.permissions import get_member_role
 from app.features.assistant.clients.opencode_auth import server_password, server_username
 from app.infra.datetime_utils import beijing_now
 from app.infra.llm.config import get_chat_model_config
+from app.features.runtime_llm import tokens as runtime_llm_tokens
 from app.mcp import runtime_token_service
 from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.workspace import Workspace
 
 
-def _docker_exception_type(name: str) -> type[Exception]:
-    """测试环境可能以轻量 mock 替代 docker 模块，避免导入子模块失败。"""
-    candidate = getattr(getattr(docker, "errors", None), name, None)
-    return candidate if isinstance(candidate, type) and issubclass(candidate, Exception) else Exception
+from runtime_controller.client import (
+    ControllerClient, ControllerError as DockerException,
+    ControllerNotFound as ContainerNotFound, ControllerNotFound as ImageNotFound,
+    auth_headers as controller_auth_headers, runtime_url,
+)
+from runtime_controller.policy import POLICY_VERSION
 
-
-DockerException = _docker_exception_type("DockerException")
-ContainerNotFound = _docker_exception_type("NotFound")
-ImageNotFound = _docker_exception_type("ImageNotFound")
 
 # Use the upstream image directly. The lifecycle code pulls it on demand, so
 # local development does not require a separate project-owned image build.
-OPENCODE_IMAGE = os.getenv("OPENCODE_IMAGE", "ghcr.io/anomalyco/opencode:latest")
-SKYCLOUD_DOCKER_NETWORK = os.getenv("SKYCLOUD_DOCKER_NETWORK", "skycloud_skycloud-network")
-WORKSPACE_MEM_LIMIT = os.getenv("WORKSPACE_MEM_LIMIT", "1g")
-WORKSPACE_CPU_QUOTA = int(os.getenv("WORKSPACE_CPU_QUOTA", "100000"))
-WORKSPACE_CPU_PERIOD = int(os.getenv("WORKSPACE_CPU_PERIOD", "100000"))
+OPENCODE_IMAGE = os.getenv("OPENCODE_IMAGE", "ghcr.io/anomalyco/opencode@sha256:2eb8006dc63d702c038e0b16836b8692ca7c65b3fbcda8c0a6b976e17350006f")
 MCP_PORT = int(os.getenv("MCP_PORT", "5001"))
-OPENCODE_CONFIG_PATH = "/root/.config/opencode/opencode.json"
 OPENCODE_EXPERT_AGENT = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
 OPENCODE_CHAT_PROVIDER_ID = os.getenv("OPENCODE_CHAT_PROVIDER_ID", "skycloud-chat")
 
 
-def _client() -> docker.DockerClient:
-    docker_host = os.getenv("DOCKER_HOST")
-    return docker.DockerClient(base_url=docker_host) if docker_host else docker.from_env()
+def _client() -> ControllerClient:
+    return ControllerClient()
 
 
-def _ensure_opencode_image(client: docker.DockerClient) -> None:
+def _ensure_opencode_image(client: ControllerClient) -> None:
     """Ensure the configured upstream Runtime image is available locally."""
 
     try:
@@ -76,6 +63,9 @@ def _container_uses_configured_image(container) -> bool:
     except (AttributeError, TypeError):
         # Lightweight Docker fakes used by callers/tests may not expose attrs.
         return True
+    labels = container.attrs.get("Config", {}).get("Labels")
+    if isinstance(labels, dict) and labels.get("skycloud.runtime_policy") != POLICY_VERSION:
+        return False
     return not image_ref or image_ref == OPENCODE_IMAGE
 
 
@@ -104,17 +94,6 @@ def runtime_uses_configured_image(runtime: OpenCodeRuntime) -> bool:
     return _container_uses_configured_image(container)
 
 
-def _api_runs_in_docker() -> bool:
-    """Whether this API process can address runtime containers by Docker DNS."""
-
-    configured = os.getenv("SKYCLOUD_RUNTIME_NETWORK_MODE", "").strip().lower()
-    if configured in {"docker", "container"}:
-        return True
-    if configured in {"host", "local"}:
-        return False
-    return os.path.exists("/.dockerenv")
-
-
 def get_runtime_base_url(
     workspace: Workspace,
     user_id: int,
@@ -122,9 +101,8 @@ def get_runtime_base_url(
 ) -> str:
     """Return a Runtime URL that works for Docker and hybrid local setups.
 
-    A Dockerized API reaches a Runtime by its Docker-network hostname.  When
-    the API is launched directly on the host (the common macOS development
-    setup), it must use the Runtime's loopback-only published port instead.
+    Both containerized and local API processes use the authenticated
+    Controller relay. They never need a runtime network interface or port.
     """
 
     configured = os.getenv("OPENCODE_RUNTIME_BASE_URL") or os.getenv("OPENCODE_SERVER_URL")
@@ -138,22 +116,16 @@ def get_runtime_base_url(
         except (KeyError, ValueError):
             return configured.rstrip("/")
 
-    if not _api_runs_in_docker() and runtime is not None:
-        access_url = get_access_url(runtime)
-        if access_url:
-            return access_url
-    return f"http://{_name(workspace, user_id)}:3000"
+    if runtime is not None and runtime.container_id:
+        return runtime_url(runtime.container_id)
+    raise BusinessRuleError("Runtime has not been created")
 
 
 def _mcp_endpoint() -> str:
     configured = os.getenv("OPENCODE_MCP_URL")
     if configured:
         return configured.rstrip("/")
-    if _api_runs_in_docker():
-        return f"http://skycloud-backend-mcp:{MCP_PORT}/mcp"
-    # Docker Desktop for macOS/Windows resolves this host name to the host
-    # system, so a Runtime can reach an MCP server started directly by Python.
-    return f"http://host.docker.internal:{MCP_PORT}/mcp"
+    return f"http://skycloud-backend-mcp:{MCP_PORT}/mcp"
 
 
 def _startup_timeout_seconds() -> float:
@@ -168,6 +140,8 @@ def _sync_mcp_via_runtime_api(
     user_id: int,
     runtime: OpenCodeRuntime,
     config: dict,
+    *,
+    reload_config: bool = False,
 ) -> None:
     """Apply fresh MCP credentials to the live Runtime without a restart."""
 
@@ -178,7 +152,7 @@ def _sync_mcp_via_runtime_api(
     )
     deadline = time.monotonic() + _startup_timeout_seconds()
     last_error: str | None = None
-    with httpx.Client(base_url=base_url, auth=auth, timeout=3.0) as client:
+    with httpx.Client(base_url=base_url, auth=auth, headers=controller_auth_headers(base_url), timeout=3.0, trust_env=False) as client:
         while time.monotonic() < deadline:
             try:
                 response = client.get("/global/health")
@@ -195,18 +169,18 @@ def _sync_mcp_via_runtime_api(
             raise DockerException(f"OpenCode Runtime 未在启动超时内就绪{detail}")
 
         try:
+            if reload_config:
+                # Reload the instance without restarting the container: tmpfs
+                # configuration must remain mounted, and no active run exists
+                # during provisioning.
+                response = client.post("/instance/dispose")
+                response.raise_for_status()
             response = client.post("/mcp", json={"name": "SKYCLOUD", "config": config})
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise DockerException("向 OpenCode Runtime 注入 MCP 配置失败") from exc
 
 
-def _random_loopback_port() -> int:
-    """Reserve a host-port candidate for a loopback-only Docker binding."""
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def _name(workspace: Workspace, user_id: int | None = None) -> str:
@@ -280,7 +254,7 @@ def _runtime_error_message(exc: Exception) -> str:
             f"无法获取 OpenCode 官方镜像（{OPENCODE_IMAGE}）。"
             f"请检查 Docker Desktop 是否能访问 ghcr.io，或手动执行：docker pull {OPENCODE_IMAGE}"
         )
-    return message[:500]
+    return "Runtime 操作失败，请检查服务器日志"
 
 
 def summary(
@@ -381,7 +355,7 @@ def stop(
             workspace.status = "stopped"
         except DockerException as exc:
             workspace.status = "error"
-            workspace.error_message = str(exc)[:500]
+            workspace.error_message = _runtime_error_message(exc)
             logger.exception("停止 OpenCode 容器失败：workspace_id={}, reason={}", workspace.id, exc)
         session.commit()
         return workspace
@@ -400,7 +374,7 @@ def stop(
         runtime.status = "stopped"
     except DockerException as exc:
         runtime.status = "error"
-        runtime.error_message = str(exc)[:500]
+        runtime.error_message = _runtime_error_message(exc)
         logger.exception("停止 OpenCode Runtime 失败：workspace_id={}, user_id={}, reason={}", workspace.id, user_id, exc)
     runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
     session.commit()
@@ -427,7 +401,7 @@ def restart(session: Session, workspace: Workspace, user_id: int) -> Workspace:
         return start(session, workspace, user_id)
     except DockerException as exc:
         runtime.status = "error"
-        runtime.error_message = str(exc)[:500]
+        runtime.error_message = _runtime_error_message(exc)
         session.commit()
         logger.exception("重启 OpenCode Runtime 失败：workspace_id={}, user_id={}, reason={}", workspace.id, user_id, exc)
     return workspace
@@ -498,23 +472,24 @@ def merge_opencode_mcp_config(existing: dict | None, mcp_config: dict) -> dict:
     return result
 
 
-def _chat_api_runtime_config() -> dict[str, str]:
-    """Read the same Chat provider settings used by SKYCloud's fast mode."""
-
+def _chat_api_runtime_config(runtime_token: str) -> dict[str, str]:
+    """Expose only the gateway and scoped credential to untrusted code."""
     configured = get_chat_model_config()
+    base_url = os.getenv("OPENCODE_LLM_GATEWAY_URL")
+    if not base_url:
+        base_url = "http://skycloud-llm-gateway:5002/v1"
     return {
-        "base_url": configured["api"].rstrip("/"),
+        "base_url": base_url.rstrip("/"),
         "model": configured["model"].strip(),
-        "api_key": configured["key"].strip(),
+        "api_key": runtime_token,
     }
 
 
 def _build_opencode_chat_provider(chat_config: dict[str, str]) -> dict:
     options = {"baseURL": chat_config["base_url"]}
     if chat_config["api_key"]:
-        # The key is intentionally kept in the Runtime config, where
-        # OpenCode needs it to call the user's configured OpenAI-compatible
-        # endpoint. It is never logged or returned through the API.
+        # This is a revocable model-only Runtime credential, never the
+        # provider key used by the gateway.
         options["apiKey"] = chat_config["api_key"]
     return {
         "npm": "@ai-sdk/openai-compatible",
@@ -535,7 +510,8 @@ def merge_opencode_chat_provider(
     result = copy.deepcopy(existing) if isinstance(existing, dict) else {}
     provider = result.get("provider")
     provider = copy.deepcopy(provider) if isinstance(provider, dict) else {}
-    chat_config = chat_config or _chat_api_runtime_config()
+    if chat_config is None:
+        raise ValueError("A scoped Runtime model configuration is required")
     provider[OPENCODE_CHAT_PROVIDER_ID] = _build_opencode_chat_provider(chat_config)
     result["provider"] = provider
     result["model"] = f"{OPENCODE_CHAT_PROVIDER_ID}/{chat_config['model']}"
@@ -595,46 +571,12 @@ def merge_opencode_expert_agent(existing: dict | None) -> dict:
     return result
 
 
-def _exec_exit_code(result) -> int:
-    code = getattr(result, "exit_code", 0)
-    return code if isinstance(code, int) else 0
-
-
-def _exec_output(result) -> bytes:
-    output = getattr(result, "output", b"")
-    if output is None:
-        return b""
-    if isinstance(output, bytes):
-        return output
-    if isinstance(output, str):
-        return output.encode()
-    return bytes(output) if isinstance(output, bytearray) else b""
-
-
 def _read_opencode_config(container) -> dict:
-    try:
-        result = container.exec_run(["cat", OPENCODE_CONFIG_PATH], user="root")
-        if _exec_exit_code(result) != 0:
-            return {}
-        raw = _exec_output(result).decode("utf-8", errors="replace").strip()
-        parsed = json.loads(raw) if raw else {}
-        return parsed if isinstance(parsed, dict) else {}
-    except (DockerException, json.JSONDecodeError, TypeError, ValueError):
-        return {}
+    return container.read_config()
 
 
 def _write_opencode_config(container, config: dict) -> None:
-    encoded = base64.b64encode(
-        json.dumps(config, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
-    temp_path = f"{OPENCODE_CONFIG_PATH}.tmp.{uuid.uuid4().hex}"
-    command = (
-        f"printf %s {shlex.quote(encoded)} | base64 -d > {shlex.quote(temp_path)} "
-        f"&& mv {shlex.quote(temp_path)} {shlex.quote(OPENCODE_CONFIG_PATH)}"
-    )
-    result = container.exec_run(["sh", "-c", command], user="root")
-    if _exec_exit_code(result) != 0:
-        raise DockerException("写入 OpenCode MCP 配置失败")
+    container.write_config(config)
 
 
 def setup_mcp(
@@ -647,10 +589,8 @@ def setup_mcp(
 ) -> None:
     """Issue a scoped runtime token and atomically merge its MCP config.
 
-    The official image reads the agent config only when the server starts.
-    Newly created Runtimes therefore restart once after the initial write;
-    later token refreshes are applied through the live MCP API without a
-    disruptive restart.
+    Configuration is reloaded through the instance API, preserving bounded
+    tmpfs storage and keeping all provisioning commands under the runtime UID.
     """
 
     if runtime is None:
@@ -679,13 +619,9 @@ def setup_mcp(
     }
     try:
         container = _client().containers.get(runtime.container_id)
-        mkdir_result = container.exec_run(
-            ["mkdir", "-p", "/root/.config/opencode"], user="root"
-        )
-        if _exec_exit_code(mkdir_result) != 0:
-            raise DockerException("创建 OpenCode 配置目录失败")
         existing = _read_opencode_config(container)
-        chat_config = _chat_api_runtime_config()
+        llm_token = runtime_llm_tokens.issue_token(session, runtime)
+        chat_config = _chat_api_runtime_config(llm_token)
         provider_reload_needed = _opencode_chat_provider_needs_reload(
             existing,
             chat_config,
@@ -694,9 +630,10 @@ def setup_mcp(
         merged = merge_opencode_chat_provider(merged, chat_config)
         merged = merge_opencode_expert_agent(merged)
         _write_opencode_config(container, merged)
-        if reload_runtime_config or provider_reload_needed:
-            container.restart(timeout=3)
-        _sync_mcp_via_runtime_api(workspace, user_id, runtime, config)
+        _sync_mcp_via_runtime_api(
+            workspace, user_id, runtime, config,
+            reload_config=reload_runtime_config or provider_reload_needed,
+        )
         runtime.config_version = int(runtime.config_version or 0) + 1
         runtime.last_used_at = beijing_now()
         session.commit()
@@ -720,53 +657,10 @@ def setup_mcp(
         raise
 
 
-def _create(
-        workspace: Workspace,
-        user_id: int,
-        runtime_id: int | None = None,
-):
-    client = _client()
-    _ensure_opencode_image(client)
-    try:
-        client.containers.get(_name(workspace, user_id)).remove(force=True)
-    except (ContainerNotFound, DockerException):
-        pass
-    container = client.containers.run(
-        image=OPENCODE_IMAGE,
-        name=_name(workspace, user_id),
-        detach=True,
-        # The upstream image's ENTRYPOINT is ``opencode``.
-        command=["serve", "--hostname", "0.0.0.0", "--port", "3000"],
-        environment={
-            "SKYCLOUD_WORKSPACE_ID": str(workspace.id),
-            "SKYCLOUD_USER_ID": str(user_id),
-            "SKYCLOUD_RUNTIME_ID": str(runtime_id or ""),
-            "OPENCODE_SERVER_USERNAME": server_username(),
-            "OPENCODE_SERVER_PASSWORD": server_password(
-                int(runtime_id or 0), int(user_id), int(workspace.id)
-            ),
-        },
-        mem_limit=WORKSPACE_MEM_LIMIT,
-        cpu_quota=WORKSPACE_CPU_QUOTA,
-        cpu_period=WORKSPACE_CPU_PERIOD,
-        network=SKYCLOUD_DOCKER_NETWORK,
-        restart_policy={"Name": "unless-stopped"},
-        # Keep the random host port reachable only from the local machine.
-        # SKYCloud's backend uses the Docker network hostname for assistant
-        # traffic; exposing OpenCode on 0.0.0.0 would bypass SKYCloud auth.
-        ports={"3000/tcp": ("127.0.0.1", _random_loopback_port())},
-        labels={
-            "skycloud.component": "opencode-runtime",
-            "skycloud.workspace_id": str(workspace.id),
-            "skycloud.user_id": str(user_id),
-            "skycloud.runtime_id": str(runtime_id or ""),
-        },
-    )
-    logger.info(
-        "OpenCode Runtime 已启动：workspace_id={}, user_id={}, runtime_id={}, container={}",
-        workspace.id,
-        user_id,
-        runtime_id,
-        container.short_id,
-    )
+def _create(workspace: Workspace, user_id: int, runtime_id: int | None = None):
+    if not runtime_id:
+        raise BusinessRuleError("Runtime identity is required")
+    # Policy and Docker access exist only in the restricted controller.
+    container = _client().create(int(workspace.id), int(user_id), int(runtime_id))
+    logger.info("Runtime Controller 已创建容器：runtime_id={}, container={}", runtime_id, container.short_id)
     return container

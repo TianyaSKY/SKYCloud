@@ -51,7 +51,7 @@ async def get_current_user(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="MCP token is revoked or expired!",
                 )
-        elif payload.get("type") == "mcp_runtime":
+        elif payload.get("type") in {"mcp_runtime", "runtime_llm"}:
             # Runtime credentials are intentionally accepted only by the
             # dedicated MCP ASGI middleware.  They must not be able to call
             # ordinary REST endpoints such as profile or MCP-token APIs.
@@ -59,6 +59,12 @@ async def get_current_user(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Runtime token is only valid for the scoped MCP endpoint",
             )
+        elif payload.get("type") is None:
+            from app.features.auth.sessions import valid_session
+            if not valid_session(session, payload):
+                raise HTTPException(status_code=401, detail="Session revoked. Please log in again.")
+        else:
+            raise HTTPException(status_code=403, detail="Invalid token scope")
         user_id = int(user_id)
         current_user = await user_service.get_user(session, user_id)
         if not current_user:

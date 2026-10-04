@@ -456,10 +456,11 @@ async def generate_chat_events(user_id: int, workspace_id: int, query: str, hist
 
     except Exception as e:
         logger.exception(f"Chat error: {e}")
-        yield f"data: {json.dumps({'type': 'status', 'content': f'出错了: {str(e)}'})}\n\n"
+        yield f"data: {json.dumps({'type': 'status', 'content': '对话请求失败，请稍后重试。'})}\n\n"
     finally:
         # 成功或异常都记用量，避免漏计费
-        record_llm_usage(
+        await asyncio.to_thread(
+            record_llm_usage,
             user_id=user_id,
             action="chat",
             model_name=model_name_seen,

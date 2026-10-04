@@ -31,7 +31,6 @@ from app.features.file.schemas import (
     MultipartInitRequest,
     RetryEmbeddingRequest,
 )
-from app.exceptions import DomainError
 from app.infra.extensions import get_db
 from app.infra.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
 from app.infra.storage import get_storage_client
@@ -49,19 +48,12 @@ def create_file(
         session: Session = Depends(get_db),
 ):
     """单文件上传；未指定 parent_id 时落到工作空间根目录。"""
-    try:
-        new_file = file_service.create_uploaded_file(
-            session, workspace.id, current_user.id, FastAPIUploadAdapter(file), parent_id
-        )
-        return JSONResponse(
-            status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
-        )
-    except (HTTPException, DomainError):
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
-        ) from exc
+    new_file = file_service.create_uploaded_file(
+        session, workspace.id, current_user.id, FastAPIUploadAdapter(file), parent_id
+    )
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
+    )
 
 
 @router.post("/files/batch")
@@ -74,20 +66,13 @@ def batch_upload_files(
 ):
     """批量上传；未指定 parent_id 时落到工作空间根目录。"""
     adapters = [FastAPIUploadAdapter(file) for file in (files or []) if file]
-    try:
-        new_files = file_service.create_uploaded_files(
-            session, workspace.id, current_user.id, adapters, parent_id
-        )
-        return JSONResponse(
-            status_code=status.HTTP_201_CREATED,
-            content=[f.to_dict() for f in new_files],
-        )
-    except (HTTPException, DomainError):
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
-        ) from exc
+    new_files = file_service.create_uploaded_files(
+        session, workspace.id, current_user.id, adapters, parent_id
+    )
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content=[f.to_dict() for f in new_files],
+    )
 
 
 @router.post("/files/preflight")
@@ -98,16 +83,9 @@ def preflight_file_upload(
         session: Session = Depends(get_db),
 ):
     """上传前校验（哈希秒传、配额等），避免无效分片开销。"""
-    try:
-        return file_service.preflight_file_upload(
-            session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
-        )
-    except (HTTPException, DomainError):
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
-        ) from exc
+    return file_service.preflight_file_upload(
+        session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
+    )
 
 
 @router.post("/files/multipart/init")
@@ -118,16 +96,9 @@ def init_multipart_upload(
         session: Session = Depends(get_db),
 ):
     """初始化分片上传会话。"""
-    try:
-        return file_service.init_multipart_upload(
-            session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
-        )
-    except (HTTPException, DomainError):
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
-        ) from exc
+    return file_service.init_multipart_upload(
+        session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
+    )
 
 
 @router.post("/files/multipart/chunk")
@@ -137,6 +108,7 @@ def upload_multipart_chunk(
         chunk: UploadFile = FastAPIFile(...),
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
+        session: Session = Depends(get_db),
 ):
     """写入单个分片。"""
     if not chunk.filename:
@@ -144,19 +116,14 @@ def upload_multipart_chunk(
             status_code=status.HTTP_400_BAD_REQUEST, detail="No chunk provided"
         )
 
-    try:
-        return file_service.save_multipart_chunk(
-            workspace.id,
-            upload_id,
-            chunk_index,
-            FastAPIUploadAdapter(chunk),
-        )
-    except (HTTPException, DomainError):
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
-        ) from exc
+    return file_service.save_multipart_chunk(
+        session,
+        current_user.id,
+        workspace.id,
+        upload_id,
+        chunk_index,
+        FastAPIUploadAdapter(chunk),
+    )
 
 
 @router.post("/files/multipart/complete")
@@ -167,19 +134,12 @@ def complete_multipart_upload(
         session: Session = Depends(get_db),
 ):
     """合并分片并落库，触发后续索引任务。"""
-    try:
-        new_file = file_service.complete_multipart_upload(
-            session, workspace.id, current_user.id, payload.upload_id
-        )
-        return JSONResponse(
-            status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
-        )
-    except (HTTPException, DomainError):
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
-        ) from exc
+    new_file = file_service.complete_multipart_upload(
+        session, workspace.id, current_user.id, payload.upload_id
+    )
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
+    )
 
 
 @router.get("/files/multipart/{upload_id}")
@@ -187,9 +147,10 @@ def get_multipart_upload_status(
         upload_id: str,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(get_current_workspace),
+        session: Session = Depends(get_db),
 ):
     """查询分片上传进度（已收分片等）。"""
-    return file_service.get_multipart_upload_status(workspace.id, upload_id)
+    return file_service.get_multipart_upload_status(session, workspace.id, current_user.id, upload_id)
 
 
 @router.delete("/files/multipart/{upload_id}")
@@ -197,9 +158,10 @@ def abort_multipart_upload(
         upload_id: str,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
+        session: Session = Depends(get_db),
 ):
     """中止并清理未完成的分片会话。"""
-    file_service.abort_multipart_upload(workspace.id, upload_id)
+    file_service.abort_multipart_upload(session, workspace.id, current_user.id, upload_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

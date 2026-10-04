@@ -1,7 +1,7 @@
 """工作空间业务逻辑：空间 CRUD、成员管理、通知。"""
 
 from loguru import logger
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
@@ -37,30 +37,26 @@ def create_workspace(session: Session, owner_id: int, name: str, description: st
 
 def get_user_workspaces(session: Session, user_id: int) -> list[dict]:
     """列出用户拥有的和加入的工作空间。"""
-    workspaces = (
-        session.query(Workspace)
+    counts = (
+        session.query(
+            WorkspaceMember.workspace_id,
+            func.count(WorkspaceMember.id).label("member_count"),
+        )
+        .group_by(WorkspaceMember.workspace_id)
+        .subquery()
+    )
+    rows = (
+        session.query(Workspace, WorkspaceMember.role, counts.c.member_count)
         .join(WorkspaceMember, Workspace.id == WorkspaceMember.workspace_id)
+        .join(counts, Workspace.id == counts.c.workspace_id)
         .filter(WorkspaceMember.user_id == user_id)
         .order_by(Workspace.created_at.desc())
         .all()
     )
-    result = []
-    for ws in workspaces:
-        ws_dict = ws.to_dict()
-        # 查询用户在该空间的角色
-        member = (
-            session.query(WorkspaceMember)
-            .filter_by(workspace_id=ws.id, user_id=user_id)
-            .first()
-        )
-        ws_dict["my_role"] = member.role if member else None
-        ws_dict["member_count"] = (
-            session.query(WorkspaceMember)
-            .filter_by(workspace_id=ws.id)
-            .count()
-        )
-        result.append(ws_dict)
-    return result
+    return [
+        {**workspace.to_dict(), "my_role": role, "member_count": member_count}
+        for workspace, role, member_count in rows
+    ]
 
 
 def get_workspace(session: Session, workspace_id: int) -> Workspace:

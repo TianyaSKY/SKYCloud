@@ -277,7 +277,6 @@ class TestMcpTokenService:
             name="Test",
             token_hash="hash123",
             token_preview="abc...xyz",
-            token_value="jwt-value",
             expires_at=beijing_now() + timedelta(days=30),
         )
         session.add(token)
@@ -297,7 +296,6 @@ class TestMcpTokenService:
                 name=f"T{i}",
                 token_hash=f"hash{i}",
                 token_preview=f"p{i}",
-                token_value=f"v{i}",
                 expires_at=beijing_now() + timedelta(days=30),
             )
             session.add(t)
@@ -325,7 +323,7 @@ class TestMcpTokenService:
         record1, raw1 = ensure_user_mcp_token(session, test_user.id)
         record2, raw2 = ensure_user_mcp_token(session, test_user.id)
         assert record1.id == record2.id
-        assert raw1 == raw2
+        assert raw1 and raw2 is None
 
     def test_refresh_user_mcp_token(self, session, test_user):
         from app.mcp.token_service import ensure_user_mcp_token, refresh_user_mcp_token
@@ -342,7 +340,7 @@ class TestMcpTokenService:
         from app.mcp.token_service import get_user_mcp_token_payload
 
         payload = get_user_mcp_token_payload(session, test_user.id)
-        assert "mcp_token" in payload
+        assert "mcp_token" not in payload
         assert "token" in payload
         assert payload["user_id"] == test_user.id
         assert payload["expires_in_days"] == 365

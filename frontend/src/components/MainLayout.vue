@@ -26,7 +26,7 @@
     <a-modal v-model:visible="showMcpTokenModal" title="MCP Token" :footer="false" :width="560" unmount-on-close>
       <a-spin :loading="mcpLoading" style="width: 100%">
         <p class="mcp-hint">
-          每个账号自动配置唯一 Token，用于 AI 客户端与工作区连接云盘。工作区启动时会自动注入，无需手动配置。
+          完整 Token 仅在生成时显示，请立即复制到外部 AI 客户端。关闭此窗口后无法再次查看。工作区使用独立短期凭据。
         </p>
         <div class="mcp-endpoint">
           <span class="mcp-label">服务地址</span>
@@ -34,17 +34,17 @@
         </div>
         <div class="mcp-token-box">
           <span class="mcp-label">Token</span>
-          <code class="mcp-token-value">{{ mcpToken || '加载中…' }}</code>
+          <code class="mcp-token-value">{{ mcpToken || mcpMetadata?.token_preview || (mcpLoading ? '加载中…' : '尚未生成 Token') }}</code>
         </div>
         <div v-if="mcpExpiresAt" class="mcp-meta">过期时间：{{ formatDate(mcpExpiresAt) }}</div>
         <div class="mcp-actions">
           <a-button type="primary" :disabled="!mcpToken" @click="handleCopyMcpToken"> 复制 Token </a-button>
           <a-button type="outline" status="warning" :loading="mcpRefreshing" @click="handleRefreshMcpToken">
-            刷新 Token
+            {{ mcpMetadata ? '重新生成 Token' : '生成 Token' }}
           </a-button>
         </div>
         <a-alert type="warning" style="margin-top: 16px">
-          刷新后旧 Token 立即失效；运行中的工作区会自动同步新 Token。请勿泄露给他人。
+          重新生成后旧 Token 立即失效，外部客户端需要重新配置。完整凭据只显示一次；工作区的独立凭据不受影响。
         </a-alert>
       </a-spin>
     </a-modal>
@@ -124,7 +124,7 @@ import SideBar from './SideBar.vue'
 import FileHeader from './FileHeader.vue'
 import AssistantWidget from './assistant/AssistantWidget.vue'
 import { getUserInfo, updatePassword, uploadAvatar } from '@/api/user'
-import { getMcpToken, refreshMcpToken } from '@/api/auth'
+import { useMcpCredentials } from '@/composables/useMcpCredentials'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { logger } from '@/utils/logger'
@@ -156,28 +156,18 @@ const passwordForm = reactive({
   confirmPassword: '',
 })
 
-// MCP Token 每用户唯一，刷新会使旧凭证立即失效
-const showMcpTokenModal = ref(false)
-const mcpLoading = ref(false)
-const mcpRefreshing = ref(false)
-const mcpToken = ref('')
-const mcpExpiresAt = ref<string | null>(null)
-const mcpEndpoint = computed(() => {
-  const { hostname, protocol } = window.location
-  return `${protocol}//${hostname}:5001/mcp`
-})
+const {
+  visible: showMcpTokenModal, loading: mcpLoading, refreshing: mcpRefreshing,
+  rawToken: mcpToken, metadata: mcpMetadata, open: loadMcpMetadata, issue: issueMcpCredential,
+} = useMcpCredentials()
+const mcpExpiresAt = computed(() => mcpMetadata.value?.expires_at ?? null)
+const mcpEndpoint = computed(() => `${window.location.origin}/mcp`)
 
 const openMcpTokenModal = async () => {
-  showMcpTokenModal.value = true
-  mcpLoading.value = true
   try {
-    const res = await getMcpToken()
-    mcpToken.value = res.mcp_token
-    mcpExpiresAt.value = res.token?.expires_at ?? null
+    await loadMcpMetadata()
   } catch (error) {
-    logger.warn('加载 MCP Token 失败', error)
-  } finally {
-    mcpLoading.value = false
+    logger.warn('加载 MCP Token 元数据失败', error)
   }
 }
 
@@ -193,21 +183,15 @@ const handleCopyMcpToken = async () => {
 
 const handleRefreshMcpToken = () => {
   Modal.confirm({
-    title: '刷新 MCP Token',
-    content: '刷新后旧 Token 将立即失效，使用旧 Token 的外部客户端需重新配置。运行中的工作区会自动同步。',
+    title: mcpMetadata.value ? '重新生成 MCP Token' : '生成 MCP Token',
+    content: '重新生成后旧 Token 将立即失效，外部客户端需重新配置。新凭据只显示一次，请立即复制。',
     okText: '刷新',
     okButtonProps: { status: 'warning' },
     onOk: async () => {
-      mcpRefreshing.value = true
       try {
-        const res = await refreshMcpToken()
-        mcpToken.value = res.mcp_token
-        mcpExpiresAt.value = res.token?.expires_at ?? null
-        Message.success('MCP Token 已刷新')
+        if (await issueMcpCredential()) Message.success('MCP Token 已生成，请立即复制')
       } catch (error) {
         logger.warn('刷新 MCP Token 失败', error)
-      } finally {
-        mcpRefreshing.value = false
       }
     },
   })

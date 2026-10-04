@@ -6,14 +6,11 @@ services:
     command: [ "postgres", "-c", "timezone=Asia/Shanghai" ]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Generate .env with scripts/generate-env.py}
       POSTGRES_DB: ${POSTGRES_DB}
       TZ: Asia/Shanghai
-    ports:
-      - "${POSTGRES_PORT}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
       interval: 10s
@@ -26,8 +23,6 @@ services:
     image: redis:7-alpine
     container_name: skycloud-redis
     restart: always
-    ports:
-      - "${REDIS_PORT}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -44,11 +39,8 @@ services:
     restart: always
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-skycloud}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-skycloud}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Generate .env with scripts/generate-env.py}
       RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
-    ports:
-      - "${RABBITMQ_PORT:-5672}:5672"
-      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -65,11 +57,8 @@ services:
     restart: always
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
-    ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?Generate .env with scripts/generate-env.py}
     volumes:
       - minio_data:/data
     healthcheck:
@@ -80,6 +69,20 @@ services:
     networks:
       - skycloud-network
 
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python -m entry.migrate
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD:?Generate .env with scripts/generate-env.py}@db:5432/${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - skycloud-network
+
   backend-api:
     build:
       context: ./backend
@@ -87,15 +90,12 @@ services:
     container_name: skycloud-backend-api
     restart: always
     command: python -m entry.api
-    ports:
-      - "${BACKEND_API_PORT}:5000"
     volumes:
       - ${UPLOAD_HOST_PATH}:/data/uploads
-      - /var/run/docker.sock:/var/run/docker.sock
     env_file:
-      - .env
+      - ${SKYCLOUD_ENV_FILE:-.env}
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD:?Generate .env with scripts/generate-env.py}@db:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_HOST=db
       - DATABASE_PORT=5432
@@ -104,17 +104,23 @@ services:
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_PORT=5672
       - RABBITMQ_USER=${RABBITMQ_USER:-skycloud}
-      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-skycloud}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:?Generate .env with scripts/generate-env.py}
       - RABBITMQ_VHOST=${RABBITMQ_VHOST:-/}
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?Generate .env with scripts/generate-env.py}
       - MINIO_BUCKET=${MINIO_BUCKET:-skycloud}
       - MINIO_SECURE=${MINIO_SECURE:-false}
       - UPLOAD_FOLDER=/data/uploads
-      - OPENCODE_IMAGE=${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode:latest}
-      - SKYCLOUD_DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-skycloud}_skycloud-network
+      - OPENCODE_IMAGE=${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode@sha256:2eb8006dc63d702c038e0b16836b8692ca7c65b3fbcda8c0a6b976e17350006f}
+      - SKYCLOUD_DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-skycloud}_runtime-network
+      - RUNTIME_CONTROLLER_URL=http://runtime-controller-control:5003
+      - OPENCODE_LLM_GATEWAY_URL=http://skycloud-llm-gateway:5002/v1
     depends_on:
+      migrate:
+        condition: service_completed_successfully
+      runtime-controller:
+        condition: service_healthy
       db:
         condition: service_healthy
       redis:
@@ -125,6 +131,7 @@ services:
         condition: service_healthy
     networks:
       - skycloud-network
+      - control-network
 
   backend-worker:
     build:
@@ -136,9 +143,9 @@ services:
     volumes:
       - ${UPLOAD_HOST_PATH}:/data/uploads
     env_file:
-      - .env
+      - ${SKYCLOUD_ENV_FILE:-.env}
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD:?Generate .env with scripts/generate-env.py}@db:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_HOST=db
       - DATABASE_PORT=5432
@@ -147,15 +154,17 @@ services:
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_PORT=5672
       - RABBITMQ_USER=${RABBITMQ_USER:-skycloud}
-      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-skycloud}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:?Generate .env with scripts/generate-env.py}
       - RABBITMQ_VHOST=${RABBITMQ_VHOST:-/}
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?Generate .env with scripts/generate-env.py}
       - MINIO_BUCKET=${MINIO_BUCKET:-skycloud}
       - MINIO_SECURE=${MINIO_SECURE:-false}
       - UPLOAD_FOLDER=/data/uploads
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
       redis:
@@ -174,14 +183,12 @@ services:
     container_name: skycloud-backend-mcp
     restart: always
     command: python -m entry.mcp_run
-    ports:
-      - "${MCP_PORT:-5001}:5001"
     volumes:
       - ${UPLOAD_HOST_PATH}:/data/uploads
     env_file:
-      - .env
+      - ${SKYCLOUD_ENV_FILE:-.env}
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD:?Generate .env with scripts/generate-env.py}@db:5432/${POSTGRES_DB}
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_HOST=db
       - DATABASE_PORT=5432
@@ -190,16 +197,18 @@ services:
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_PORT=5672
       - RABBITMQ_USER=${RABBITMQ_USER:-skycloud}
-      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-skycloud}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:?Generate .env with scripts/generate-env.py}
       - RABBITMQ_VHOST=${RABBITMQ_VHOST:-/}
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?Generate .env with scripts/generate-env.py}
       - MINIO_BUCKET=${MINIO_BUCKET:-skycloud}
       - MINIO_SECURE=${MINIO_SECURE:-false}
       - UPLOAD_FOLDER=/data/uploads
       - MCP_PORT=5001
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       db:
         condition: service_healthy
       redis:
@@ -210,6 +219,69 @@ services:
         condition: service_healthy
     networks:
       - skycloud-network
+      - runtime-network
+
+  runtime-controller:
+    build:
+      context: ./backend
+      dockerfile: runtime_controller/Dockerfile
+    container_name: skycloud-runtime-controller
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      RUNTIME_CONTROLLER_TOKEN: ${RUNTIME_CONTROLLER_TOKEN:?Generate .env with scripts/generate-env.py}
+      OPENCODE_SERVER_SECRET: ${OPENCODE_SERVER_SECRET:?Generate .env with scripts/generate-env.py}
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-skycloud}
+      OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode@sha256:2eb8006dc63d702c038e0b16836b8692ca7c65b3fbcda8c0a6b976e17350006f}
+      SKYCLOUD_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-skycloud}_runtime-network
+      WORKSPACE_MEM_LIMIT: ${WORKSPACE_MEM_LIMIT:-1g}
+      WORKSPACE_CPU_QUOTA: ${WORKSPACE_CPU_QUOTA:-100000}
+      RUNTIME_CONTROLLER_BIND_HOST: runtime-controller-control
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,socket,urllib.request; host=socket.gethostbyname('runtime-controller-control'); request=urllib.request.Request('http://'+host+':5003/health',headers={'X-Runtime-Controller-Token':os.environ['RUNTIME_CONTROLLER_TOKEN']}); urllib.request.urlopen(request,timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      control-network:
+        aliases:
+          - runtime-controller-control
+      runtime-network: {}
+
+  llm-gateway:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: skycloud-llm-gateway
+    restart: always
+    command: python -m entry.llm_gateway
+    env_file:
+      - ${SKYCLOUD_ENV_FILE:-.env}
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD:?Generate .env with scripts/generate-env.py}@db:5432/${POSTGRES_DB}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - skycloud-network
+      - runtime-network
 
   frontend:
     build:
@@ -225,8 +297,14 @@ services:
       - skycloud-network
 
 networks:
+  control-network:
+    driver: bridge
   skycloud-network:
     driver: bridge
+  runtime-network:
+    name: ${COMPOSE_PROJECT_NAME:-skycloud}_runtime-network
+    driver: bridge
+    internal: true
 
 volumes:
   postgres_data:

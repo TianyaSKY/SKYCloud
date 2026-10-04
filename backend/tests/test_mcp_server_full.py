@@ -57,7 +57,7 @@ class TestMCPHelpers:
     def test_service_error_json_generic(self):
         from app.mcp.server import _service_error_json
         result = json.loads(_service_error_json(ValueError("generic")))
-        assert result["error"] == "generic"
+        assert result["error"] == "Service temporarily unavailable"
 
     def test_is_text_file_mime_text(self):
         from app.mcp.server import _is_text_file
@@ -453,6 +453,19 @@ class TestMCPTools:
             result = asyncio.run(batch_delete(items))
         data = json.loads(result)
         assert data["deleted_count"] == 2
+
+    def test_batch_delete_sanitizes_server_errors(self, mcp_user_ctx):
+        from fastapi import HTTPException
+        from app.mcp.server import batch_delete, BatchDeleteItem
+        private = "private-storage-password"
+        with patch("app.mcp.server.SessionLocal", return_value=MagicMock()), \
+             patch("app.mcp.server._get_authorized_file"), \
+             patch("app.mcp.server.file_service.delete_file", side_effect=HTTPException(status_code=503, detail=private)):
+            result = asyncio.run(batch_delete([BatchDeleteItem(id=1, is_folder=False)]))
+        data = json.loads(result)
+        assert data["deleted_count"] == 0
+        assert data["errors"] == [{"id": 1, "error": "Service temporarily unavailable"}]
+        assert private not in result
 
     def test_get_folder_tree_tool(self, session, test_workspace, test_user, mcp_user_ctx):
         from app.mcp.server import get_folder_tree as mcp_get_folder_tree

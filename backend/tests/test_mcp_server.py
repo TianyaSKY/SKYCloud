@@ -54,7 +54,8 @@ class TestServiceErrorJson:
         exc = ValueError("bad value")
         result = _service_error_json(exc)
         parsed = json.loads(result)
-        assert "bad value" in parsed["error"]
+        assert parsed["error"] == "Service temporarily unavailable"
+        assert "bad value" not in parsed["error"]
 
 
 class TestGetAuthenticatedUserId:

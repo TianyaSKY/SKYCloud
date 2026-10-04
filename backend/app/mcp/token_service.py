@@ -37,7 +37,6 @@ def _create_token_record(
         name=(name or "MCP Token").strip() or "MCP Token",
         token_hash=McpToken.hash_token(token),
         token_preview=McpToken.preview_token(token),
-        token_value=token,
         expires_at=expires_at,
     )
     session.add(record)
@@ -68,21 +67,22 @@ def get_active_record(session: Session, user_id: int) -> McpToken | None:
     return active
 
 
-def ensure_user_mcp_token(session: Session, user_id: int) -> tuple[McpToken, str]:
-    """确保用户有且只有一个有效 MCP Token，返回 (record, raw_jwt)。
-
-    若已有有效记录且 token_value 可用则复用；否则签发新 Token。
-    """
+def ensure_user_mcp_token(session: Session, user_id: int) -> tuple[McpToken, str | None]:
+    """Compatibility issuance helper; existing credentials cannot be recovered."""
     active = get_active_record(session, user_id)
-    if active and active.token_value:
-        return active, active.token_value
+    if active:
+        return active, None
 
-    # 无有效 Token，或历史数据缺少 token_value → 重新签发
+    # First explicit issuance only; existing credentials cannot be revealed again.
     return refresh_user_mcp_token(session, user_id)
 
 
 def refresh_user_mcp_token(session: Session, user_id: int) -> tuple[McpToken, str]:
     """撤销旧 Token 并签发唯一新 Token。"""
+    from app.models.user import User
+    from app.exceptions import ResourceNotFoundError
+    if session.query(User.id).filter(User.id == user_id).with_for_update().one_or_none() is None:
+        raise ResourceNotFoundError("User not found")
     jwt_expires = datetime.now(timezone.utc) + timedelta(days=365)
     db_expires = beijing_now() + timedelta(days=365)
     token = _issue_jwt(user_id, jwt_expires)
@@ -94,11 +94,10 @@ def refresh_user_mcp_token(session: Session, user_id: int) -> tuple[McpToken, st
 
 
 def get_user_mcp_token_payload(session: Session, user_id: int) -> dict[str, Any]:
-    """组装 API 响应：完整 Token + 元数据。"""
-    record, raw = ensure_user_mcp_token(session, user_id)
+    """Read metadata without issuing, rotating or revealing credentials."""
+    record = get_active_record(session, user_id)
     return {
-        "mcp_token": raw,
-        "token": record.to_dict(),
+        "token": record.to_dict() if record else None,
         "user_id": user_id,
         "expires_in_days": 365,
         "usage": "Set as Authorization header: Bearer <mcp_token>",

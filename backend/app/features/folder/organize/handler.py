@@ -191,7 +191,7 @@ def organize_files(workspace_id: int):
             incremental_context = {
                 "has_changes": True,
                 "overflow": True,
-                "summary_text": f"incremental_context_error: {exc}",
+                "summary_text": "Incremental context unavailable; full scan required",
                 "target_event_id": 0,
             }
 
@@ -355,7 +355,7 @@ def handle_organize_process(workspace_id: int, user_id: int):
     except Exception as exc:
         logger.exception("文件整理失败")
         token_usage = {}
-        content = f"文件整理任务执行失败: {str(exc)}"
+        content = "文件整理任务执行失败，请稍后重试或联系管理员。"
 
     from app.features.inbox import service as inbox_service
 

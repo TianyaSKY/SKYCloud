@@ -31,7 +31,7 @@ class TestGetCurrentUser:
         assert exc_info.value.status_code == 401
 
     async def test_valid_token(self, session, test_user):
-        token = jwt.encode({"sub": str(test_user.id)}, SECRET_KEY, algorithm="HS256")
+        token = jwt.encode({"sub": str(test_user.id), "ver": test_user.auth_version}, SECRET_KEY, algorithm="HS256")
         user = await get_current_user(credentials=None, token=token, session=session)
         assert user.id == test_user.id
 
@@ -71,7 +71,7 @@ class TestGetCurrentUser:
         assert user.id == test_user.id
 
     async def test_bearer_credentials(self, session, test_user):
-        token = jwt.encode({"sub": str(test_user.id)}, SECRET_KEY, algorithm="HS256")
+        token = jwt.encode({"sub": str(test_user.id), "ver": test_user.auth_version}, SECRET_KEY, algorithm="HS256")
         creds = MagicMock()
         creds.scheme = "Bearer"
         creds.credentials = token

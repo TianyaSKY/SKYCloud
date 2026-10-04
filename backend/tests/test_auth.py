@@ -61,12 +61,12 @@ class TestGenerateMcpToken:
 
 
 class TestDecodeToken:
-    def test_decode_valid_token(self, session):
+    def test_decode_valid_token(self, session, test_user):
         from app.features.auth.service import generate_token, decode_token
 
-        token = generate_token(99)
+        token = generate_token(test_user.id)
         result = decode_token(session, token)
-        assert result == "99"
+        assert result == str(test_user.id)
 
     def test_decode_expired_token(self, session):
         from app.features.auth.service import decode_token

@@ -7,20 +7,21 @@ import jwt
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from app.exceptions import AuthenticationError, BusinessRuleError
+from app.exceptions import AuthenticationError, BusinessRuleError, ServiceOperationError
 from app.infra.extensions import SECRET_KEY
 from app.models.user import User
 from app.mcp import token_service as mcp_token_service
 from app.features.auth.user_service import create_user
 
 
-def generate_token(user_id):
+def generate_token(user_id, auth_version: int = 0):
     """签发短期会话 JWT（1 天），供 Web 登录使用。"""
     try:
         payload = {
             "exp": _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=1),
             "iat": _dt.datetime.now(_dt.timezone.utc),
             "sub": str(user_id),
+            "ver": auth_version,
         }
         return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
@@ -73,6 +74,12 @@ def decode_token(session: Session, token):
                     "MCP runtime token revoked, expired, stopped, or unbound. "
                     "Please restart the runtime."
                 )
+        if payload.get("type") not in {None, "mcp", "mcp_runtime"}:
+            return "Invalid token scope. Please log in again."
+        if payload.get("type") is None:
+            from app.features.auth.sessions import valid_session
+            if not valid_session(session, payload):
+                return "Session revoked. Please log in again."
         return payload["sub"]
     except jwt.ExpiredSignatureError:
         return "Token expired. Please log in again."
@@ -83,28 +90,26 @@ def decode_token(session: Session, token):
 def authenticate_user(session: Session, username, password):
     """校验用户名密码；成功返回 (token, role, user_id)，失败返回 (None, "common", None)。"""
     user = session.query(User).filter_by(username=username).first()
+    from app.features.auth.legacy_admin import LEGACY_ADMIN_HASH
+    if user and user.role == "admin" and user.password_hash == LEGACY_ADMIN_HASH:
+        return None, "common", None
     if user and user.check_password(password):
-        return generate_token(user.id), user.role, user.id
+        return generate_token(user.id, user.auth_version), user.role, user.id
     return None, "common", None
 
 
 def login(session: Session, username: str, password: str) -> dict:
-    """验证凭据并组装登录响应；登录成功后懒初始化唯一 MCP Token（失败不影响登录）。"""
+    """验证凭据并组装登录响应，不自动签发外部 MCP 凭据。"""
     if not username or not password:
         raise BusinessRuleError("Missing username or password")
     token, role, user_id = authenticate_user(session, username, password)
     if not token:
         raise AuthenticationError("Invalid username or password")
-    # 登录时懒初始化唯一 MCP Token（不影响登录结果）
-    try:
-        mcp_token_service.ensure_user_mcp_token(session, user_id)
-    except Exception:
-        logger.exception("登录后初始化 MCP Token 失败：user_id={}", user_id)
     return {"token": token, "role": role, "user_id": user_id}
 
 
 def register_user(session: Session, username: str, password: str, avatar: str | None = None) -> User:
-    """注册用户；成功后自动配置唯一 MCP Token（初始化失败不阻断注册）。"""
+    """注册用户；外部 MCP 凭据由显式签发接口创建。"""
     if not username or not password:
         raise BusinessRuleError("Missing username or password")
     existing = session.query(User).filter_by(username=username).first()
@@ -112,20 +117,15 @@ def register_user(session: Session, username: str, password: str, avatar: str | 
         raise BusinessRuleError(f"Username '{username}' already exists")
     try:
         user = create_user(session, {"username": username, "password": password, "avatar": avatar})
-        # 注册即自动配置唯一 MCP Token
-        try:
-            mcp_token_service.ensure_user_mcp_token(session, user.id)
-        except Exception:
-            logger.exception("注册后初始化 MCP Token 失败：user_id={}", user.id)
         return user
     except Exception as exc:
         session.rollback()
         logger.exception("用户注册失败：{}", exc)
-        raise BusinessRuleError(str(exc)) from exc
+        raise ServiceOperationError("User registration failed") from exc
 
 
 def get_mcp_token(session: Session, user_id: int) -> dict:
-    """获取用户唯一 MCP Token（不存在则自动签发）。"""
+    """获取用户 MCP Token 元数据；不签发或返回原始凭据。"""
     return mcp_token_service.get_user_mcp_token_payload(session, user_id)
 
 

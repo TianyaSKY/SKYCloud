@@ -92,14 +92,21 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(DomainError)
     async def handle_domain_error(_: Request, exc: DomainError):
+        message = str(exc)
+        if exc.status_code >= 500:
+            logger.error("服务器领域错误：{}", exc)
+            message = "Internal server error"
         return JSONResponse(
             status_code=exc.status_code,
-            content={"message": str(exc), "detail": str(exc)},
+            content={"message": message, "detail": message},
         )
 
     @app.exception_handler(FastAPIHTTPException)
     async def handle_fastapi_http_exception(_: Request, exc: FastAPIHTTPException):
         detail = exc.detail if isinstance(exc.detail, str) else "Request failed"
+        if exc.status_code >= 500:
+            logger.error("服务器 HTTP 错误：{}", exc.detail)
+            detail = "Internal server error"
         return JSONResponse(status_code=exc.status_code, content={"message": detail, "detail": detail})
 
     @app.exception_handler(RequestValidationError)

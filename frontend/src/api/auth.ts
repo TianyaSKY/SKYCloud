@@ -24,13 +24,17 @@ export interface McpTokenMeta {
   is_expired?: boolean
 }
 
-/** 后端契约：每用户唯一 MCP Token；mcp_token 为完整凭证，可随时复制 */
+/** GET returns metadata; issuance reveals the raw credential once. */
 export interface McpTokenResult {
-  mcp_token: string
-  token: McpTokenMeta
+  token: McpTokenMeta | null
   user_id: number
   expires_in_days?: number
   usage?: string
+}
+
+export interface McpTokenIssuedResult extends McpTokenResult {
+  mcp_token: string
+  token: McpTokenMeta
 }
 
 export const login = (data: LoginInput) => {
@@ -50,5 +54,5 @@ export const getMcpToken = () => {
 
 /** 刷新唯一 MCP Token（旧 Token 立即失效，并同步运行中工作区） */
 export const refreshMcpToken = () => {
-  return request.post<McpTokenResult>('/auth/mcp-token/refresh')
+  return request.post<McpTokenIssuedResult>('/auth/mcp-token/refresh')
 }

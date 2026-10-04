@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, require_admin
 from app.features.auth.schemas import (
     LoginRequest,
     RegisterRequest,
@@ -40,19 +40,23 @@ def register(payload: RegisterRequest, session: Session = Depends(get_db)):
 
 @router.get("/auth/mcp-token")
 def get_mcp_token(
+    response: Response,
     current_user=Depends(get_current_user),
     session: Session = Depends(get_db),
 ):
-    """获取当前用户唯一 MCP Token（无则自动签发，便于客户端复制配置）。"""
+    """获取当前用户的 MCP Token 元数据，不返回完整凭据。"""
+    response.headers["Cache-Control"] = "no-store"
     return auth_service.get_mcp_token(session, current_user.id)
 
 
 @router.post("/auth/mcp-token/refresh")
 def refresh_mcp_token(
+    response: Response,
     current_user=Depends(get_current_user),
     session: Session = Depends(get_db),
 ):
     """刷新外部 MCP Token；OpenCode Runtime 使用独立短期 Token。"""
+    response.headers["Cache-Control"] = "no-store"
     return auth_service.refresh_mcp_token(session, current_user.id)
 
 
@@ -62,7 +66,11 @@ def refresh_mcp_token(
 
 
 @router.post("/users")
-def create_user(payload: UserCreateRequest, session: Session = Depends(get_db)):
+def create_user(
+    payload: UserCreateRequest,
+    current_user=Depends(require_admin),
+    session: Session = Depends(get_db),
+):
     """创建用户（公开注册入口之外的管理向创建）。"""
     user = user_service.create_user(session, payload.model_dump())
     return JSONResponse(status_code=status.HTTP_201_CREATED, content=user.to_dict())

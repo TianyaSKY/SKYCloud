@@ -1,3 +1,4 @@
+-- Legacy unversioned SQL fixture; production deployment uses entry.migrate.
 -- SKYCloud 数据库初始化 SQL 文件（工作空间机制）
 -- 注意：此脚本仅用于初始化空数据库，若表已存在可能会报错或跳过。
 -- 建议在执行前清空数据库或确保无冲突。
@@ -344,42 +345,7 @@ CREATE INDEX IF NOT EXISTS idx_token_usage_logs_created_at ON token_usage_logs (
 -- 初始化数据
 -- ==========================================
 
--- 1. 初始化管理员用户 (密码为 'admin123' 的 hash 值)
-INSERT INTO users (id, username, password_hash, role)
-VALUES (
-           1,
-           'admin',
-           'scrypt:32768:8:1$ULeZhKdUrZi46VVx$30e562fbf0a745b562fd7b2e037ba1e634cb13f82cd6f9d27763863136b16dc20e21802e44af40eaa5cee287c6bbd9e474d211b157b85dba3bb85bde49e4b2f1',
-           'admin'
-       )
-ON CONFLICT (id) DO NOTHING;
-
--- 2. 初始化系统配置
+-- Administrator accounts are created explicitly using entry.bootstrap_admin.
 INSERT INTO sys_dict (key, value, des)
 VALUES ('site_name', 'SKYCloud', '站点名称（显示在网页标题与 Logo 旁）')
-       ON CONFLICT (key) DO NOTHING;
-
--- 3. 初始化管理员的私人工作空间 (固定 id=1)
-INSERT INTO workspaces (id, name, description, owner_id)
-VALUES (1, 'admin的空间', '管理员默认工作空间', 1)
-ON CONFLICT (id) DO NOTHING;
-
--- 4. 初始化管理员为工作空间成员 (admin 角色)
-INSERT INTO workspace_members (workspace_id, user_id, role)
-VALUES (1, 1, 'admin')
-ON CONFLICT (workspace_id, user_id) DO NOTHING;
-
--- 5. 初始化根目录（固定 id=1，属于 admin 的工作空间 id=1）
-INSERT INTO folder (id, name, workspace_id, parent_id)
-VALUES (1, '/', 1, NULL)
-ON CONFLICT (id) DO NOTHING;
-
--- 6. 初始化头像文件夹（固定 id=2，根目录固定 parent_id=1）
-INSERT INTO folder (id, name, workspace_id, parent_id)
-VALUES (2, '所有用户头像', 1, 1)
-ON CONFLICT (id) DO NOTHING;
-
--- 7. 修正序列，避免后续自增主键冲突
-SELECT setval(pg_get_serial_sequence('users', 'id'), COALESCE((SELECT MAX(id) FROM users), 1), true);
-SELECT setval(pg_get_serial_sequence('workspaces', 'id'), COALESCE((SELECT MAX(id) FROM workspaces), 1), true);
-SELECT setval(pg_get_serial_sequence('folder', 'id'), COALESCE((SELECT MAX(id) FROM folder), 1), true);
+ON CONFLICT (key) DO NOTHING;

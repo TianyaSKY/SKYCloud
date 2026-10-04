@@ -8,7 +8,14 @@ from app.infra.llm.config import (
     get_vl_model_config,
     is_model_config_sys_dict_key,
 )
-from app.infra.llm.client import chat_completion, embed_texts, record_llm_usage
+def __getattr__(name):
+    # Reading configuration must not initialize SDKs or pull in LangChain;
+    # the model gateway and Docker controller use only settings.
+    if name in {"chat_completion", "embed_texts", "record_llm_usage"}:
+        from app.infra.llm import client
+        return getattr(client, name)
+    raise AttributeError(name)
+
 
 __all__ = [
     "get_chat_model_config",

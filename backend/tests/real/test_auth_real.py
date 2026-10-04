@@ -238,12 +238,11 @@ class TestLogin:
         with pytest.raises(AuthenticationError):
             login(session, "testuser", "wrongpass")
 
-    def test_login_creates_mcp_token(self, session, test_user):
-        """登录成功后自动创建 MCP Token。"""
+    def test_login_does_not_issue_mcp_token(self, session, test_user):
+        """登录不自动签发或旋转外部 MCP Token。"""
         login(session, "testuser", "password123")
         record = get_active_record(session, test_user.id)
-        assert record is not None
-        assert record.token_value is not None
+        assert record is None
 
 
 # ===========================================================================
@@ -252,7 +251,7 @@ class TestLogin:
 
 
 class TestRegisterUser:
-    """register_user：注册并自动配置 MCP Token。"""
+    """register_user：注册账户，不自动签发外部 MCP Token。"""
 
     def test_register_success(self, session):
         """正常注册返回 User 对象。"""
@@ -275,11 +274,11 @@ class TestRegisterUser:
         assert member is not None
         assert member.role == "admin"
 
-    def test_register_creates_mcp_token(self, session):
-        """注册自动配置 MCP Token。"""
+    def test_register_does_not_issue_mcp_token(self, session):
+        """注册不自动签发外部 MCP Token。"""
         user = register_user(session, "mcpuser", "pass123")
         record = get_active_record(session, user.id)
-        assert record is not None
+        assert record is None
 
     def test_register_empty_username(self, session):
         """空用户名抛 BusinessRuleError。"""
@@ -310,22 +309,25 @@ class TestRegisterUser:
 class TestMcpTokenEndpoints:
     """MCP Token 获取/刷新/兼容接口。"""
 
-    def test_get_mcp_token_creates_if_absent(self, session, test_user):
-        """获取时不存在则自动签发。"""
+    def test_get_mcp_token_does_not_create_if_absent(self, session, test_user):
+        """获取只返回元数据，不生成凭据。"""
         result = get_mcp_token(session, test_user.id)
-        assert "mcp_token" in result
+        assert "mcp_token" not in result
+        assert result["token"] is None
         assert result["user_id"] == test_user.id
         assert result["expires_in_days"] == 365
 
     def test_get_mcp_token_returns_existing(self, session, test_user):
-        """已有时复用现有 Token。"""
+        issued = refresh_mcp_token(session, test_user.id)
         r1 = get_mcp_token(session, test_user.id)
         r2 = get_mcp_token(session, test_user.id)
-        assert r1["mcp_token"] == r2["mcp_token"]
+        assert r1["token"]["id"] == r2["token"]["id"]
+        assert issued["mcp_token"] not in str(r1)
+        assert "mcp_token" not in r1
 
     def test_refresh_mcp_token(self, session, test_user):
         """刷新后旧 Token 失效，新 Token 有效。"""
-        r1 = get_mcp_token(session, test_user.id)
+        r1 = refresh_mcp_token(session, test_user.id)
         old_token = r1["mcp_token"]
         r2 = refresh_mcp_token(session, test_user.id)
         new_token = r2["mcp_token"]
@@ -415,7 +417,7 @@ class TestUserCRUD:
 
     def test_update_user_password(self, session, test_user):
         """更新密码。"""
-        update_user(session, test_user.id, {"password": "newpass"})
+        change_password(session, test_user.id, "common", test_user.id, "password123", "newpass")
         user = session.get(User, test_user.id)
         assert user.check_password("newpass")
 
@@ -508,23 +510,22 @@ class TestMcpTokenService:
         assert record.id is not None
         assert record.user_id == test_user.id
         assert raw is not None
-        assert record.token_value == raw
+        assert record.token_hash == McpToken.hash_token(raw)
 
     def test_ensure_reuses_existing(self, session, test_user):
         """已有有效 Token 时复用。"""
         r1, raw1 = ensure_user_mcp_token(session, test_user.id)
         r2, raw2 = ensure_user_mcp_token(session, test_user.id)
         assert r1.id == r2.id
-        assert raw1 == raw2
+        assert raw1 and raw2 is None
 
-    def test_ensure_refreshes_if_no_token_value(self, session, test_user):
-        """历史记录缺少 token_value 时重新签发。"""
-        record, _ = ensure_user_mcp_token(session, test_user.id)
-        record.token_value = None
-        session.commit()
-        r2, raw2 = ensure_user_mcp_token(session, test_user.id)
-        assert raw2 is not None
-        assert r2.token_value == raw2
+    def test_stored_token_cannot_be_recovered(self, session, test_user):
+        record, original = ensure_user_mcp_token(session, test_user.id)
+        same, recovered = ensure_user_mcp_token(session, test_user.id)
+        assert same.id == record.id
+        assert recovered is None
+        assert get_active_mcp_token(session, original)
+        assert "token_value" not in McpToken.__table__.columns
 
     def test_refresh_revokes_old(self, session, test_user):
         """刷新后旧记录被撤销。"""
@@ -546,13 +547,11 @@ class TestMcpTokenService:
         exp = now + timedelta(days=365)
         t1 = McpToken(
             user_id=test_user.id, name="T1",
-            token_hash="hash1", token_preview="p1",
-            token_value="val1", expires_at=exp,
+            token_hash="hash1", token_preview="p1", expires_at=exp,
         )
         t2 = McpToken(
             user_id=test_user.id, name="T2",
-            token_hash="hash2", token_preview="p2",
-            token_value="val2", expires_at=exp,
+            token_hash="hash2", token_preview="p2", expires_at=exp,
         )
         session.add_all([t1, t2])
         session.commit()
@@ -589,7 +588,7 @@ class TestMcpTokenService:
     def test_get_user_mcp_token_payload(self, session, test_user):
         """API 响应格式正确。"""
         payload = get_user_mcp_token_payload(session, test_user.id)
-        assert "mcp_token" in payload
+        assert "mcp_token" not in payload
         assert "token" in payload
         assert payload["user_id"] == test_user.id
         assert payload["expires_in_days"] == 365
@@ -600,7 +599,7 @@ class TestMcpTokenService:
         exp = beijing_now() + timedelta(days=30)
         record = create_mcp_token(session, test_user.id, "raw_jwt", exp, "My Token")
         assert record.name == "My Token"
-        assert record.token_value == "raw_jwt"
+        assert record.token_hash == McpToken.hash_token("raw_jwt")
         # 之前的 Token 被撤销
         r2 = create_mcp_token(session, test_user.id, "raw_jwt_2", exp, None)
         assert r2.name == "MCP Token"  # None 回退默认名
@@ -632,7 +631,7 @@ class TestRegisterOuterException:
     def test_register_user_flush_integrity_error(self, session):
         """注册时 flush 触发唯一约束冲突，进入外层 except（L115-118）。"""
         from app.models.user import User
-        from app.exceptions import BusinessRuleError
+        from app.exceptions import ServiceOperationError
         from app.features.auth.service import register_user
 
         # 添加 pending User（不 flush），autoflush=False 下查询不会自动刷入
@@ -642,5 +641,5 @@ class TestRegisterOuterException:
 
         # register_user 的 pre-check 查询看不到 pending 对象（autoflush=False）
         # 进入 create_user → flush 时两个 'ghost_user' 同时 INSERT → UNIQUE 冲突
-        with pytest.raises(BusinessRuleError):
+        with pytest.raises(ServiceOperationError, match="User registration failed"):
             register_user(session, "ghost_user", "password123")

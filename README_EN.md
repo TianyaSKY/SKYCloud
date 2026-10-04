@@ -58,15 +58,47 @@ intelligent retrieval to autonomous execution.
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
-cp .env.example .env
+python3 scripts/generate-env.py
 # Edit .env and at least configure API_URL / API_KEY / MODEL for the Chat and Embedding models
-docker-compose up -d --build
+docker compose up -d --build
+docker compose exec backend-api python -m entry.bootstrap_admin --username admin
 ```
 
-After startup, visit `http://localhost` (default port 80). The default administrator account is `admin / admin123`.
+Visit `http://localhost` (default port 80) and sign in using the administrator you explicitly created. The command prompts for a password in the terminal. No administrator is automatically seeded; missing, short or placeholder signing secrets prevent startup.
 
-> For non-demo environments, change the password immediately after the first login. If `SECRET_KEY` is not configured,
-> an insecure default value is used. Always configure it in production.
+The generator creates independent secrets, writes with mode 0600 and refuses to overwrite existing configuration. Startup requires independent master secrets and explicit infrastructure passwords of at least 12 characters, without defaults. Changing `.env` does not rotate passwords stored in existing PostgreSQL/RabbitMQ volumes: use trusted infrastructure administration tools to rotate those passwords, then update configuration.
+
+The historical seeded administrator blocks startup and cannot log in. Back up the database, run migrations, then reset its password interactively from the deployment terminal:
+
+```bash
+docker compose run --rm --no-deps backend-api python -m entry.reset_admin --username admin
+docker compose up -d
+```
+
+This command resets an existing administrator without creating accounts or elevating ordinary users. It preserves data and revokes prior sessions and tokens. Passwords are never passed as command-line arguments.
+
+### Database upgrades
+
+API, Worker, MCP and model gateway startup only reads the Alembic revision. Compose starts them after the `migrate` service succeeds. Missing or mismatched versions prevent startup.
+
+Back up existing databases, then run:
+
+```bash
+docker compose build
+docker compose run --rm migrate
+docker compose up -d
+```
+
+For host development, set `DATABASE_URL` and run `python -m entry.migrate` from `backend`. Upgrades adopt unversioned databases, preserve account and file data, repair known missing columns and vector indexes, and roll back on failure. Do not manually stamp revisions. The baseline rejects destructive downgrades; verify backup restoration before rolling back a deployment.
+
+Real migration tests create and clean up isolated PostgreSQL containers:
+
+```bash
+cd backend
+RUN_MIGRATION_TESTS=1 python -m pytest tests/integration/test_migrations.py
+```
+
+Password changes, including administrator resets, atomically advance the target account's session version and revoke its previous Web sessions, external MCP tokens and Runtime credentials. The frontend signs out after a password change; other browsers receive 401 on their next request. Reissue and configure external MCP tokens, and restart Runtimes to obtain new credentials. Upgrading the session-version migration invalidates historical Web tokens and requires a new login.
 
 ### Stopping services (including SKYcode workspaces)
 
@@ -106,11 +138,28 @@ docker compose down
 **Online**: 6-dimensional keyword rewriting -> multi-query generation -> parallel vector recall -> RRF fusion ->
 reranking -> SSE streaming output
 
+## Runtime Isolation
+
+Runtime containers run as UID 10001 with a read-only root filesystem, all capabilities dropped, no privilege escalation, CPU/memory/PID limits, and bounded temporary storage (512 MiB workspace, 256 MiB home, 64 MiB `/tmp`). Stopping the container clears temporary data; upload files to cloud storage to retain them.
+
+The dedicated internal runtime network cannot reach PostgreSQL, Redis, RabbitMQ or MinIO, and has no direct Internet egress. The model gateway retains provider keys on the server. Runtimes receive revocable model-only credentials bound to their user, workspace, runtime and allowed model, valid for at most one hour. Atomic user/workspace/runtime quotas survive credential refresh and runtime recreation; failed or disconnected requests remain charged against conservative reservations.
+
+Production publishes only the frontend port. Use `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build` to expose development services on loopback. The API has neither Docker Socket access nor a runtime network interface. A separate non-root `runtime-controller` accepts only managed-container lifecycle and fixed configuration operations, enforces the pinned image and sandbox policy, and exposes no arbitrary Docker flags or exec interface. Its RPC listener binds only the private control interface and requires a separate random `RUNTIME_CONTROLLER_TOKEN`; it receives no provider or database credentials.
+
+For hybrid development, API/Worker can run on the host and reach the Controller at the development loopback endpoint `http://127.0.0.1:5003`. Keep MCP, the model gateway and the Controller in Compose. Runtime HTTP/session/SSE requests use the relay; runtimes publish no host port. Linux hosts must set `DOCKER_SOCKET_GID` to the socket's actual group. Generate distinct Controller and OpenCode server secrets of at least 32 characters; placeholder credentials are rejected.
+
+Run isolated real security tests without a provider key:
+
+```bash
+cd backend
+RUN_RUNTIME_SECURITY_TESTS=1 python -m pytest tests/integration/test_runtime_security.py
+```
+
+Optional model E2E tests use `OPENCODE_E2E_GATEWAY_URL`, `OPENCODE_E2E_RUNTIME_LLM_TOKEN` and `OPENCODE_E2E_MODEL`. Never provide a provider key to a Runtime.
+
 ## MCP Access
 
-The MCP Server runs in a standalone container on the default port **5001**. Each user is auto-provisioned with a *
-*single** MCP token: open the avatar menu → **MCP Token** to copy or refresh. Workspaces inject this token automatically
-on create/start/restart — no manual "Connect MCP" step.
+The MCP Server runs in a standalone container. Production exposes it through the frontend at **`/mcp`**; the development override publishes loopback port **5001**. Open the avatar menu → **MCP Token** to explicitly issue a credential for external clients. The full token is displayed only after issuance and is cleared when the dialog closes; it cannot be recovered. The backend stores only its SHA-256 hash and fingerprint, and GET returns metadata. The hash-storage migration revokes historical external tokens; issue and configure new credentials after upgrading. Workspaces use separate short-lived Runtime credentials, provisioned automatically on create/start/restart.
 
 | Workspace / MCP        | Token Usage                            |
 |------------------------|----------------------------------------|
@@ -168,3 +217,7 @@ SKYCloud/
 ## License
 
 MIT
+
+Upload size limits default to 256 MiB per file, 5 MiB per avatar, 512 MiB per request and 64 MiB per part. The backend counts actual request and file bytes, including bodies without Content-Length, returns 413 on overflow and removes partial temporary files. Configure positive `UPLOAD_*` values in `.env.example`; increasing the request limit also requires updating `client_max_body_size` in `frontend/nginx.conf`.
+
+Upload quotas default to 10 GiB per user and 50 GiB per workspace, counting logical files (including instant-upload copies) plus unexpired reservations. Daily UTC admission allows 200 attempts and 5 GiB, charged when reservation succeeds; cancellation and failures do not refund the daily allowance. A user may hold 8 active uploads and a workspace 32. Reservations expire after one hour; the Worker cleans them every minute. File insertion and reservation consumption commit together. Multipart sessions are accessible only to their creator. Migration `0005_upload_quotas` requires reinitializing historical unfinished multipart sessions; existing files count toward capacity without retroactive daily charges. Each API process accepts up to 8 upload requests concurrently; Nginx bounds API connections to 8 per client IP and streams request bodies. Positive configuration values are listed in `.env.example`.

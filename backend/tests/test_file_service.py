@@ -17,6 +17,7 @@ from app.exceptions import (
 )
 from app.models.file import File
 from app.models.folder import Folder
+from app.infra.upload_limits import positive_limit
 from app.features.file.service import (
     _generate_unique_filename,
     _resolve_mime_type,
@@ -24,7 +25,6 @@ from app.features.file.service import (
     _normalize_content_hash,
     _safe_upload_id,
     _list_uploaded_chunks,
-    _env_int,
     get_file,
     get_authorized_file,
     get_files_and_folders,
@@ -117,10 +117,10 @@ class TestUtilFunctions:
         result = _list_uploaded_chunks(str(chunks_dir))
         assert result == [0, 1, 2]
 
-    def test_env_int(self, monkeypatch):
+    def test_positive_upload_limit(self, monkeypatch):
         monkeypatch.setenv("TEST_INT_VAR", "42")
-        assert _env_int("TEST_INT_VAR", 0) == 42
-        assert _env_int("NONEXIST_VAR", 99) == 99
+        assert positive_limit("TEST_INT_VAR", 0) == 42
+        assert positive_limit("NONEXIST_VAR", 99) == 99
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +359,7 @@ class TestMultipartUpload:
             assert result["instant_upload"] is False
 
             # 查询状态
-            status = get_multipart_upload_status(test_workspace.id, result["upload_id"])
+            status = get_multipart_upload_status(session, test_workspace.id, 1, result["upload_id"])
             assert status["total_chunks"] == 2
             assert status["uploaded_chunks"] == []
 
@@ -368,10 +368,10 @@ class TestMultipartUpload:
             result = init_multipart_upload(session, test_workspace.id, test_user.id, {
                 "filename": "abort.bin", "total_size": 100, "chunk_size": 100
             })
-            abort_multipart_upload(test_workspace.id, result["upload_id"])
+            abort_multipart_upload(session, test_workspace.id, 1, result["upload_id"])
             # 中止后查询应报错
-            with pytest.raises(ResourceNotFoundError):
-                get_multipart_upload_status(test_workspace.id, result["upload_id"])
+            with pytest.raises(ConflictError):
+                get_multipart_upload_status(session, test_workspace.id, 1, result["upload_id"])
 
 
 # ---------------------------------------------------------------------------

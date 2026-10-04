@@ -331,12 +331,11 @@ class TestMcpTokenModel:
     def test_preview_token_long(self):
         token = "a" * 50
         preview = McpToken.preview_token(token)
-        assert preview.startswith("aaaaaaaa...")
-        assert preview.endswith("...aaaaaaaa")
+        assert preview == "sha256:" + McpToken.hash_token(token)[:12]
 
     def test_preview_token_short(self):
         token = "short"
-        assert McpToken.preview_token(token) == "short"
+        assert McpToken.preview_token(token) == "sha256:" + McpToken.hash_token(token)[:12]
 
     def test_is_revoked(self):
         t = McpToken(revoked_at=None)
@@ -363,7 +362,6 @@ class TestMcpTokenModel:
             user_id=1,
             name="My Token",
             token_preview="abc...xyz",
-            token_value="full-jwt-value",
             created_at=datetime(2025, 1, 1),
             expires_at=datetime(2026, 1, 1),
             last_used_at=None,
@@ -374,8 +372,7 @@ class TestMcpTokenModel:
         assert d["is_revoked"] is False
         assert "mcp_token" not in d  # 默认不包含
 
-        d_with_token = t.to_dict(include_token=True)
-        assert d_with_token["mcp_token"] == "full-jwt-value"
+        assert "token_value" not in McpToken.__table__.columns
 
 
 # ---------------------------------------------------------------------------

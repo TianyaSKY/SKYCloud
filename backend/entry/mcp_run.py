@@ -15,7 +15,7 @@ setup_logging()
 from app import initialize_application  # noqa: E402
 from app.mcp.server import mcp, get_mcp_app  # noqa: E402
 
-# 初始化数据库连接、表结构等（与 backend-api lifespan 中相同）
+# Read-only database version check; schema upgrades run separately.
 initialize_application()
 logger.info("MCP Server: Application initialized successfully.")
 

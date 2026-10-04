@@ -1,0 +1,12 @@
+.env
+.env.*
+.venv
+__pycache__
+**/__pycache__
+.pytest_cache
+.coverage
+*.log
+data
+.test-tmp
+E:
+tests

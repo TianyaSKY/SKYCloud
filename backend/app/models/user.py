@@ -15,6 +15,7 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     username = Column(String(80), unique=True, nullable=False)
     password_hash = Column(String(1024), nullable=False)
+    auth_version = Column(Integer, nullable=False, default=0, server_default="0")
     role = Column(Enum("admin", "common", name="user_roles"), default="common")
     avatar = Column(String(255), default=None)  # 头像 URL，可为空
     created_at = Column(DateTime, default=beijing_now)

@@ -94,24 +94,12 @@ class TestFileServiceMultipart:
         with pytest.raises(BusinessRuleError, match="total_size"):
             init_multipart_upload(session, test_workspace.id, test_user.id, {"filename": "test.txt", "total_size": 0})
 
-    def test_abort_multipart_upload(self, tmp_path):
-        from app.features.file.service import abort_multipart_upload
-        import app.features.file.service as fs
-
-        original_root = fs.MULTIPART_ROOT
-        fs.MULTIPART_ROOT = str(tmp_path)
-        try:
-            upload_dir = tmp_path / "1" / "test12345678"  # 至少8字符
-            upload_dir.mkdir(parents=True)
-            (upload_dir / "meta.json").write_text("{}")
-            abort_multipart_upload(1, "test12345678")
-            assert not upload_dir.exists()
-        finally:
-            fs.MULTIPART_ROOT = original_root
-
-
-class TestFileServiceSearch:
-    """搜索相关函数测试。"""
+    def test_abort_multipart_upload(self, session, test_workspace, test_user, tmp_path):
+        from app.features.file.service import abort_multipart_upload, init_multipart_upload
+        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path)):
+            result = init_multipart_upload(session, test_workspace.id, test_user.id, {"filename": "x", "total_size": 5})
+            abort_multipart_upload(session, test_workspace.id, test_user.id, result["upload_id"])
+            assert not (tmp_path / str(test_workspace.id) / result["upload_id"]).exists()
 
     def test_search_files_fuzzy_no_match(self, session, test_user, test_workspace):
         from app.features.file.service import _search_files_fuzzy
@@ -119,11 +107,11 @@ class TestFileServiceSearch:
         result = _search_files_fuzzy(session, test_workspace.id, "nonexistent", 1, 10)
         assert result["total"] == 0
 
-    def test_search_files_vector_error(self, session, test_user, test_workspace):
-        from app.features.file.service import _search_files_vector
+    async def test_search_files_vector_error(self, session, test_user, test_workspace):
+        from app.features.file.service import search_files
 
         with patch("app.features.file.service.get_embedding_model_config", side_effect=Exception("No config")):
-            result = _search_files_vector(session, test_workspace.id, "test", 1, 10)
+            result = await search_files(session, test_workspace.id, "test", 1, 10, "vector")
         assert "error" in result
 
     def test_search_files_async(self, session, test_user, test_workspace):
@@ -176,18 +164,18 @@ class TestFileServiceBatch:
 class TestFileServiceEmbedding:
     """Embedding 相关测试。"""
 
-    def test_embedding_desc_success(self):
+    async def test_embedding_desc_success(self):
         from app.features.file.service import embedding_desc
 
         with patch("app.infra.llm.client.embed_texts", return_value=[[0.1, 0.2, 0.3]]):
-            result = embedding_desc("test", {"model": "test"})
+            result = await embedding_desc("test", {"model": "test"})
         assert result == [0.1, 0.2, 0.3]
 
-    def test_embedding_desc_failure(self):
+    async def test_embedding_desc_failure(self):
         from app.features.file.service import embedding_desc
 
         with patch("app.infra.llm.client.embed_texts", side_effect=Exception("API error")):
-            result = embedding_desc("test", {"model": "test"})
+            result = await embedding_desc("test", {"model": "test"})
         assert result == []
 
 class TestFileServiceCleanup:
@@ -557,7 +545,7 @@ class TestChatServiceAsync:
         from app.features.chat.service import embed_original_question
 
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.return_value = [0.1] * 2000
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 2000)
 
         with patch("app.features.chat.service.get_embeddings_model", return_value=mock_embeddings):
             result = await embed_original_question({"question": "test"})

@@ -107,7 +107,7 @@ def check_mixed_folders_internal(workspace_id: int) -> tuple[bool, str]:
         lines = [f"ID: {f['id']}, Name: {f['name']}" for f in mixed_folders]
         return False, "以下文件夹既包含文件又包含子文件夹（违反单一内容原则）：\n" + "\n".join(lines)
     except Exception as e:
-        return False, f"检查失败: {str(e)}"
+        return False, f"检查失败: 请稍后重试"
     finally:
         session.close()
 
@@ -122,7 +122,7 @@ def check_empty_folders_internal(workspace_id: int) -> tuple[bool, str]:
         lines = [f"ID: {f['id']}, Name: {f['name']}" for f in empty_folders]
         return False, "以下文件夹是空的，请删除它们：\n" + "\n".join(lines)
     except Exception as e:
-        return False, f"检查失败: {str(e)}"
+        return False, f"检查失败: 请稍后重试"
     finally:
         session.close()
 
@@ -141,7 +141,7 @@ def get_all_files(workspace_id: int) -> str:
             file_list.append(f"ID: {f.id}, Name: {f.name}, Parent Folder ID: {f.parent_id}")
         return "\n".join(file_list)
     except Exception as e:
-        return f"获取文件列表失败: {str(e)}"
+        return f"获取文件列表失败: 请稍后重试"
     finally:
         session.close()
 
@@ -157,7 +157,7 @@ def get_folder_tree(workspace_id: int) -> str:
             paths.append(f"ID: {folder.id}, Name: {folder.name}, Parent ID: {folder.parent_id}")
         return "\n".join(paths)
     except Exception as e:
-        return f"获取文件夹结构失败: {str(e)}"
+        return f"获取文件夹结构失败: 请稍后重试"
     finally:
         session.close()
 
@@ -186,7 +186,7 @@ def create_folder(name: str, parent_id: int, workspace_id: int) -> str:
         return f"已创建文件夹 '{name}' (ID: {folder_id})"
     except Exception as e:
         session.rollback()
-        return f"创建文件夹失败: {str(e)}"
+        return f"创建文件夹失败: 请稍后重试"
     finally:
         session.close()
 
@@ -218,7 +218,7 @@ def rename_folder(folder_id: int, new_name: str, workspace_id: int) -> str:
         return f"已将文件夹 {folder_id} 重命名为 '{new_name}'"
     except Exception as e:
         session.rollback()
-        return f"重命名失败: {str(e)}"
+        return f"重命名失败: 请稍后重试"
     finally:
         session.close()
 
@@ -250,7 +250,7 @@ def move_file(file_id: int, target_folder_id: int, workspace_id: int) -> str:
         return f"已将文件 {file_id} 移动到文件夹 {target_folder_id}"
     except Exception as e:
         session.rollback()
-        return f"移动文件失败: {str(e)}"
+        return f"移动文件失败: 请稍后重试"
     finally:
         session.close()
 
@@ -278,7 +278,7 @@ def get_file_information(file_id: int) -> str:
         }
         return str(info)
     except Exception as e:
-        return f"获取文件信息失败: {str(e)}"
+        return f"获取文件信息失败: 请稍后重试"
     finally:
         session.close()
 
@@ -309,7 +309,7 @@ def delete_folder(folder_id: int, workspace_id: int) -> str:
         return f"已删除文件夹 {folder_id}"
     except Exception as e:
         session.rollback()
-        return f"删除失败：{str(e)}"
+        return f"删除失败：请稍后重试"
     finally:
         session.close()
 
@@ -369,7 +369,7 @@ def merge_folders(source_folder_id: int, target_folder_id: int, workspace_id: in
         return f"已将文件夹 {source_folder_id} 合并到 {target_folder_id}"
     except Exception as e:
         session.rollback()
-        return f"合并失败: {str(e)}"
+        return f"合并失败: 请稍后重试"
     finally:
         session.close()
 
@@ -416,7 +416,7 @@ def find_duplicate_folders(workspace_id: int) -> str:
 
         return "发现以下重复文件夹：\n" + "\n".join(duplicates)
     except Exception as e:
-        return f"查找重复文件夹失败: {str(e)}"
+        return f"查找重复文件夹失败: 请稍后重试"
     finally:
         session.close()
 
@@ -464,7 +464,7 @@ def move_folder(folder_id: int, target_folder_id: int, workspace_id: int) -> str
         return f"已将文件夹 {folder_id} 移动到 {target.name} (ID: {target.id})"
     except Exception as e:
         session.rollback()
-        return f"移动失败: {str(e)}"
+        return f"移动失败: 请稍后重试"
     finally:
         session.close()
 

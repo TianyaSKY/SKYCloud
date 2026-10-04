@@ -33,11 +33,15 @@ from app.infra.extensions import UPLOAD_FOLDER, redis_client
 from app.infra.cache import cacheable, evict_cache_pattern
 from app.infra.task_queue import publish_file_tasks
 from app.infra.storage import get_storage_client
+from app.infra.upload_adapter import save_bounded
+from app.infra.upload_limits import FILE_LIMIT, AVATAR_LIMIT, copy_bounded, positive_limit
 from app.models.file import File
 from app.models.folder import Folder
 from app.features.folder import change_log as change_log_service
 from app.infra.llm.config import get_embedding_model_config
 from app.features.workspace.permissions import assert_member
+from app.features.file import upload_quota
+from app.models.upload_reservation import UploadReservation
 
 from loguru import logger
 
@@ -48,23 +52,17 @@ COPY_BUFFER_SIZE = 1024 * 1024
 
 DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024
 MAX_CHUNK_SIZE = 64 * 1024 * 1024
-MAX_UPLOAD_SIZE = 0
+MAX_UPLOAD_SIZE = FILE_LIMIT
 MAX_TOTAL_CHUNKS = 10000
 UPLOAD_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 MULTIPART_ROOT = os.path.join(UPLOAD_FOLDER, ".multipart")
 
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
 
-
-DEFAULT_CHUNK_SIZE = _env_int("UPLOAD_CHUNK_SIZE", DEFAULT_CHUNK_SIZE)
-MAX_CHUNK_SIZE = _env_int("UPLOAD_MAX_CHUNK_SIZE", MAX_CHUNK_SIZE)
-MAX_UPLOAD_SIZE = _env_int("UPLOAD_MAX_FILE_SIZE", MAX_UPLOAD_SIZE)
-MAX_TOTAL_CHUNKS = _env_int("UPLOAD_MAX_TOTAL_CHUNKS", MAX_TOTAL_CHUNKS)
+DEFAULT_CHUNK_SIZE = positive_limit("UPLOAD_CHUNK_SIZE", DEFAULT_CHUNK_SIZE)
+MAX_CHUNK_SIZE = positive_limit("UPLOAD_MAX_CHUNK_SIZE", MAX_CHUNK_SIZE)
+MAX_UPLOAD_SIZE = positive_limit("UPLOAD_MAX_FILE_SIZE", MAX_UPLOAD_SIZE)
+MAX_TOTAL_CHUNKS = positive_limit("UPLOAD_MAX_TOTAL_CHUNKS", MAX_TOTAL_CHUNKS)
 
 
 def _generate_unique_filename(original_filename: str) -> str:
@@ -189,7 +187,10 @@ def _clone_existing_file(
     )
     vector_info = source_file.vector_info if status == "success" else None
 
+    reservation = upload_quota.reserve(session, workspace_id, uploader_id, int(source_file.file_size or 0), kind="instant")
+    reservation_id = reservation.id
     try:
+        upload_quota.consume(session, workspace_id, uploader_id, reservation_id, int(source_file.file_size or 0))
         new_file = _persist_file_record(session, 
             name=filename,
             file_path=cast(str, source_file.file_path),
@@ -205,6 +206,7 @@ def _clone_existing_file(
         )
     except Exception as e:
         session.rollback()
+        upload_quota.cancel(session, workspace_id, uploader_id, reservation_id, missing_ok=True)
         logger.exception(f"Failed to create instant upload record: {e}")
         raise ServiceOperationError("Failed to save file metadata")
 
@@ -226,6 +228,8 @@ def preflight_file_upload(session: Session, workspace_id: int, uploader_id: int,
     if total_size <= 0:
         raise BusinessRuleError("total_size must be positive")
 
+    if total_size > MAX_UPLOAD_SIZE:
+        raise PayloadTooLargeError("File too large")
     content_hash = _normalize_content_hash(data.get("content_hash"))
     if not content_hash:
         raise BusinessRuleError("content_hash is required")
@@ -339,17 +343,19 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
     unique_filename = _generate_unique_filename(original_filename)
     local_tmp_path = os.path.join(UPLOAD_FOLDER, unique_filename)
 
-    file_obj.save(local_tmp_path)
-    file_size = os.path.getsize(local_tmp_path)
-    mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
-
     uploaded_object = False
+    reservation_id = None
     try:
+        save_bounded(file_obj, local_tmp_path, data.get("max_bytes", MAX_UPLOAD_SIZE))
+        file_size = os.path.getsize(local_tmp_path)
+        mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
         content_hash = _calculate_file_hash(local_tmp_path)
+        reservation_id = upload_quota.reserve(session, data["workspace_id"], data["uploader_id"], file_size).id
         # 上传到 MinIO 对象存储
         storage.upload_file(local_tmp_path, unique_filename)
         uploaded_object = True
 
+        upload_quota.consume(session, data["workspace_id"], data["uploader_id"], reservation_id, file_size)
         new_file = _persist_file_record(session, 
             name=original_filename,
             file_path=unique_filename,
@@ -367,7 +373,11 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
                 storage.delete_file(unique_filename)
             except Exception as cleanup_exc:
                 logger.error("删除未入库的 MinIO 对象失败 {}: {}", unique_filename, cleanup_exc)
+        if reservation_id is not None:
+            upload_quota.cancel(session, data["workspace_id"], data["uploader_id"], reservation_id, missing_ok=True)
         logger.exception(f"Failed to save uploaded file metadata: {e}")
+        if isinstance(e, DomainError):
+            raise
         raise ServiceOperationError("Failed to save file metadata")
     finally:
         # 清理本地临时文件
@@ -408,6 +418,7 @@ def batch_create_files(
 
     new_files = []
     uploaded_objects: list[str] = []
+    reservations = []
     workspace_id = data.get("workspace_id")
     uploader_id = data.get("uploader_id")
 
@@ -418,19 +429,26 @@ def batch_create_files(
         local_tmp_path = os.path.join(UPLOAD_FOLDER, unique_filename)
 
         try:
-            file_obj.save(local_tmp_path)
+            save_bounded(file_obj, local_tmp_path, MAX_UPLOAD_SIZE)
             file_size = os.path.getsize(local_tmp_path)
             mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
             content_hash = _calculate_file_hash(local_tmp_path)
 
+            reservation = upload_quota.reserve(session, workspace_id, uploader_id, file_size)
+            reservations.append(reservation.id)
             storage.upload_file(local_tmp_path, unique_filename)
             uploaded_objects.append(unique_filename)
         except Exception as exc:
+            session.rollback()
+            for reservation_id in reservations:
+                upload_quota.cancel(session, workspace_id, uploader_id, reservation_id, missing_ok=True)
             for object_name in uploaded_objects:
                 try:
                     storage.delete_file(object_name)
                 except Exception as cleanup_exc:
                     logger.error("删除未入库的 MinIO 对象失败 {}: {}", object_name, cleanup_exc)
+            if isinstance(exc, DomainError):
+                raise
             raise ServiceOperationError("Failed to upload file") from exc
         finally:
             if os.path.exists(local_tmp_path):
@@ -449,10 +467,14 @@ def batch_create_files(
         new_files.append(new_file)
 
     try:
+        for reservation_id, file_obj in zip(reservations, new_files):
+            upload_quota.consume(session, workspace_id, uploader_id, reservation_id, file_obj.file_size)
         session.add_all(new_files)
         session.commit()
     except Exception as exc:
         session.rollback()
+        for reservation_id in reservations:
+            upload_quota.cancel(session, workspace_id, uploader_id, reservation_id, missing_ok=True)
         for object_name in uploaded_objects:
             try:
                 storage.delete_file(object_name)
@@ -547,33 +569,30 @@ def init_multipart_upload(session: Session, workspace_id: int, uploader_id: int,
     chunks_dir = _multipart_chunks_dir(upload_dir)
     meta_path = _multipart_meta_path(upload_dir)
 
-    os.makedirs(chunks_dir, exist_ok=True)
-
-    if os.path.exists(meta_path):
-        meta = _load_multipart_meta(workspace_id, upload_id)
-        expected = (
-            meta.get("filename"),
-            int(meta.get("total_size", 0)),
-            int(meta.get("chunk_size", 0)),
-            meta.get("parent_id"),
-        )
-        current = (filename, total_size, chunk_size, parent_id)
-        if expected != current:
+    existing = session.get(UploadReservation, upload_id)
+    metadata = {
+        "upload_id": upload_id, "workspace_id": workspace_id, "uploader_id": uploader_id,
+        "filename": filename, "total_size": total_size, "chunk_size": chunk_size,
+        "total_chunks": total_chunks, "parent_id": parent_id, "mime_type": mime_type,
+        "content_hash": content_hash,
+    }
+    if existing is not None:
+        reservation = upload_quota.owned(session, workspace_id, uploader_id, upload_id)
+        if reservation.kind != "multipart" or reservation.details != metadata:
             raise ConflictError("upload_id already exists with different file metadata")
+        meta = reservation.details
+        session.commit()
     else:
-        meta = {
-            "upload_id": upload_id,
-            "workspace_id": workspace_id,
-            "uploader_id": uploader_id,
-            "filename": filename,
-            "total_size": total_size,
-            "chunk_size": chunk_size,
-            "total_chunks": total_chunks,
-            "parent_id": parent_id,
-            "mime_type": mime_type,
-            "content_hash": content_hash,
-        }
-        _write_multipart_meta(meta_path, meta)
+        reservation = upload_quota.reserve(session, workspace_id, uploader_id, total_size,
+                                          kind="multipart", reservation_id=upload_id, details=metadata)
+        meta = metadata
+        try:
+            os.makedirs(chunks_dir, exist_ok=True)
+            _write_multipart_meta(meta_path, meta)
+        except Exception:
+            upload_quota.cancel(session, workspace_id, uploader_id, upload_id)
+            shutil.rmtree(upload_dir, ignore_errors=True)
+            raise ServiceOperationError("Failed to initialize upload")
 
     return {
         "upload_id": upload_id,
@@ -584,8 +603,9 @@ def init_multipart_upload(session: Session, workspace_id: int, uploader_id: int,
     }
 
 
-def get_multipart_upload_status(workspace_id: int, upload_id: str) -> dict[str, Any]:
-    meta = _load_multipart_meta(workspace_id, upload_id)
+def get_multipart_upload_status(session: Session, workspace_id: int, uploader_id: int, upload_id: str) -> dict[str, Any]:
+    meta = upload_quota.owned(session, workspace_id, uploader_id, upload_id).details
+    session.commit()
     upload_dir = _multipart_upload_dir(workspace_id, _safe_upload_id(upload_id))
     chunks_dir = _multipart_chunks_dir(upload_dir)
     return {
@@ -597,13 +617,15 @@ def get_multipart_upload_status(workspace_id: int, upload_id: str) -> dict[str, 
 
 
 def save_multipart_chunk(
+        session: Session,
+        uploader_id: int,
         workspace_id: int,
         upload_id: str,
         chunk_index: int,
         chunk_obj: Any,
 ) -> dict[str, Any]:
     safe_upload_id = _safe_upload_id(upload_id)
-    meta = _load_multipart_meta(workspace_id, safe_upload_id)
+    meta = upload_quota.owned(session, workspace_id, uploader_id, safe_upload_id).details
 
     try:
         idx = int(chunk_index)
@@ -622,19 +644,21 @@ def save_multipart_chunk(
     os.makedirs(chunks_dir, exist_ok=True)
 
     part_path = os.path.join(chunks_dir, f"{idx}.part")
-    tmp_part_path = f"{part_path}.tmp"
-
-    if os.path.exists(tmp_part_path):
-        os.remove(tmp_part_path)
-
-    chunk_obj.save(tmp_part_path)
-    actual_size = os.path.getsize(tmp_part_path)
+    tmp_part_path = f"{part_path}.{uuid.uuid4().hex}.tmp"
 
     expected_size = chunk_size
     if idx == total_chunks - 1:
         expected_size = total_size - (idx * chunk_size)
         if expected_size <= 0:
             expected_size = chunk_size
+
+    try:
+        save_bounded(chunk_obj, tmp_part_path, min(expected_size, MAX_CHUNK_SIZE))
+        actual_size = os.path.getsize(tmp_part_path)
+    except BaseException:
+        if os.path.exists(tmp_part_path):
+            os.remove(tmp_part_path)
+        raise
 
     if actual_size != expected_size:
         os.remove(tmp_part_path)
@@ -643,6 +667,7 @@ def save_multipart_chunk(
         )
 
     os.replace(tmp_part_path, part_path)
+    session.commit()
 
     return {
         "upload_id": safe_upload_id,
@@ -653,10 +678,12 @@ def save_multipart_chunk(
 
 def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: int, upload_id: str) -> File:
     safe_upload_id = _safe_upload_id(upload_id)
-    meta = _load_multipart_meta(workspace_id, safe_upload_id)
+    meta = upload_quota.owned(session, workspace_id, uploader_id, safe_upload_id).details
 
     total_chunks = int(meta["total_chunks"])
     total_size = int(meta["total_size"])
+    if total_size <= 0 or total_size > MAX_UPLOAD_SIZE:
+        raise PayloadTooLargeError("File too large")
     filename = meta["filename"]
     parent_id = _resolve_upload_parent_id(session, workspace_id, meta.get("parent_id"))
     mime_type = meta.get("mime_type")
@@ -685,7 +712,9 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
             for idx in range(total_chunks):
                 part_path = os.path.join(chunks_dir, f"{idx}.part")
                 with open(part_path, "rb") as source:
-                    shutil.copyfileobj(source, target, length=COPY_BUFFER_SIZE)
+                    expected = min(int(meta["chunk_size"]), total_size - idx * int(meta["chunk_size"]))
+                    if copy_bounded(source, target, expected) != expected:
+                        raise BusinessRuleError("Invalid stored chunk size")
 
         assembled_size = os.path.getsize(tmp_final_path)
         if assembled_size != total_size:
@@ -695,6 +724,8 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
             )
         os.replace(tmp_final_path, final_path)
     except DomainError:
+        if os.path.exists(tmp_final_path):
+            os.remove(tmp_final_path)
         raise
     except Exception as e:
         if os.path.exists(tmp_final_path):
@@ -704,6 +735,9 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
 
     try:
         # 上传合并后的文件到 MinIO
+        actual_hash = _calculate_file_hash(final_path)
+        if content_hash and actual_hash != content_hash:
+            raise BusinessRuleError("Uploaded content does not match its hash")
         storage = get_storage_client()
         storage.upload_file(final_path, unique_filename)
         uploaded_object = True
@@ -714,11 +748,12 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
             file_path=unique_filename,
             file_size=total_size,
             mime_type=resolved_mime,
-            content_hash=content_hash or _calculate_file_hash(final_path),
+            content_hash=actual_hash,
             workspace_id=workspace_id,
             uploader_id=uploader_id,
             parent_id=parent_id,
         )
+        upload_quota.consume(session, workspace_id, uploader_id, safe_upload_id, total_size)
         session.add(new_file)
         session.commit()
     except Exception as e:
@@ -728,7 +763,10 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
                 storage.delete_file(unique_filename)
             except Exception as cleanup_exc:
                 logger.error("删除未入库的 MinIO 对象失败 {}: {}", unique_filename, cleanup_exc)
+        upload_quota.cancel(session, workspace_id, uploader_id, safe_upload_id, missing_ok=True)
         logger.exception(f"Failed to persist merged file: {e}")
+        if isinstance(e, DomainError):
+            raise
         raise ServiceOperationError("Failed to save file metadata")
     finally:
         # 清理本地合并文件与分片目录
@@ -742,8 +780,9 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
     return new_file
 
 
-def abort_multipart_upload(workspace_id: int, upload_id: str) -> None:
+def abort_multipart_upload(session: Session, workspace_id: int, uploader_id: int, upload_id: str) -> None:
     safe_upload_id = _safe_upload_id(upload_id)
+    upload_quota.cancel(session, workspace_id, uploader_id, safe_upload_id)
     upload_dir = _multipart_upload_dir(workspace_id, safe_upload_id)
     shutil.rmtree(upload_dir, ignore_errors=True)
 
@@ -956,7 +995,7 @@ async def search_files(
         logger.exception(f"Vector search error: {e}")
         return {
             "items": [], "total": 0, "page": page, "page_size": page_size,
-            "error": str(e),
+            "error": "Vector search is temporarily unavailable",
         }
 
 
@@ -1024,13 +1063,19 @@ def _clear_search_cache(workspace_id: int | None) -> None:
 
 def get_root_file_id(session: Session, workspace_id: int) -> int | None:
     cache_key = f"workspace:root:file:{workspace_id}"
-    cached_id = redis_client.get(cache_key)
-    if cached_id:
-        return int(cached_id)
+    try:
+        cached_id = redis_client.get(cache_key)
+        if cached_id:
+            return int(cached_id)
+    except Exception:
+        logger.warning("Root-file cache unavailable for workspace {}", workspace_id)
 
     root_file = session.query(File).filter_by(workspace_id=workspace_id, parent_id=None).first()
     if root_file:
-        redis_client.set(cache_key, root_file.id)
+        try:
+            redis_client.set(cache_key, root_file.id, ex=CACHE_EXPIRATION)
+        except Exception:
+            logger.warning("Root-file cache write failed for workspace {}", workspace_id)
         return root_file.id
     return None
 
@@ -1040,23 +1085,17 @@ def upload_avatar(session: Session, img_file: Any, user_id: int) -> dict[str, An
     from app.features.share import service as share_service
     from app.features.auth import user_service
 
-    # 头像存储在 workspace_id=1 的公共空间中
-    root_folder = session.query(Folder).filter_by(workspace_id=1, parent_id=None).first()
+    from app.models.workspace import Workspace
+    workspace = session.query(Workspace).filter_by(owner_id=user_id).order_by(Workspace.id).first()
+    if workspace is None:
+        raise ResourceNotFoundError("Personal workspace not found")
+    root_folder = session.query(Folder).filter_by(workspace_id=workspace.id, parent_id=None).first()
     root_folder_id = root_folder.id if root_folder else None
-
-    folder = session.query(Folder).filter_by(
-        workspace_id=1, parent_id=root_folder_id, name="所有用户头像"
-    ).first()
-    if folder:
-        folder_id = folder.id
-    else:
-        folder = folder_service.create_folder(
-            session, {"name": "所有用户头像", "parent_id": root_folder_id, "workspace_id": 1}
-        )
-        folder_id = folder.id
-
-    avatar = create_file(session, img_file, {"workspace_id": 1, "uploader_id": 1, "parent_id": folder_id})
-    share = share_service.create_share_link(session, 1, avatar.id)
+    folder = session.query(Folder).filter_by(workspace_id=workspace.id, parent_id=root_folder_id, name="所有用户头像").first()
+    if folder is None:
+        folder = folder_service.create_folder(session, {"name": "所有用户头像", "parent_id": root_folder_id, "workspace_id": workspace.id})
+    avatar = create_file(session, img_file, {"workspace_id": workspace.id, "uploader_id": user_id, "parent_id": folder.id, "max_bytes": AVATAR_LIMIT})
+    share = share_service.create_share_link(session, user_id, avatar.id)
     avatar_url = f"/api/share/{share.token}"
     user_service.update_user(session, user_id, {"avatar": avatar_url})
 
@@ -1159,14 +1198,17 @@ async def process_status(session: Session, workspace_id: int) -> dict[str, int]:
     }
 
 
-def cleanup_expired_uploads(max_age_hours: int = 24) -> int:
+def cleanup_expired_uploads(max_age_hours: int = 24, *, session: Session | None = None) -> int:
     """清理超时未完成的分片上传临时目录，回收磁盘。"""
     import time
 
+    count = upload_quota.cleanup(session, MULTIPART_ROOT) if session is not None else 0
     if not os.path.exists(MULTIPART_ROOT):
-        return 0
-
-    count = 0
+        return count
+    active_ids = set()
+    if session is not None:
+        active_ids = {(str(row.workspace_id), row.id) for row in session.query(UploadReservation).filter(
+            UploadReservation.status == "active", UploadReservation.expires_at > upload_quota.utc_now()).all()}
     now = time.time()
     expiration = max_age_hours * 3600
 
@@ -1177,6 +1219,8 @@ def cleanup_expired_uploads(max_age_hours: int = 24) -> int:
                 continue
 
             for upload_id in os.listdir(ws_dir):
+                if (ws_id_str, upload_id) in active_ids:
+                    continue
                 upload_dir = os.path.join(ws_dir, upload_id)
                 if not os.path.isdir(upload_dir):
                     continue

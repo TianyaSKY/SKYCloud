@@ -209,7 +209,7 @@ class TestGenerateTextDescription:
         mock_resp.choices = [MagicMock()]
         mock_resp.choices[0].message.content = "这是一个测试文件"
 
-        with patch("app.infra.llm.client.chat_completion", return_value=mock_resp):
+        with patch("app.infra.llm.sync_client.chat_completion", return_value=mock_resp):
             result = _generate_text_description(str(f), {"api": "a", "key": "k", "model": "m"})
         assert result == "这是一个测试文件"
 
@@ -223,7 +223,7 @@ class TestGenerateFileDescription:
         mock_resp.choices = [MagicMock()]
         mock_resp.choices[0].message.content = "Python代码文件"
 
-        with patch("app.infra.llm.client.chat_completion", return_value=mock_resp):
+        with patch("app.infra.llm.sync_client.chat_completion", return_value=mock_resp):
             result = generate_file_description(str(f), {"api": "a", "key": "k", "model": "m"})
         assert result == "Python代码文件"
 

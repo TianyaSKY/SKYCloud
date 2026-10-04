@@ -1,6 +1,6 @@
 import hashlib
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
 from app.infra.extensions import Base
@@ -10,8 +10,8 @@ from app.infra.datetime_utils import beijing_now, local_isoformat, to_beijing_na
 class McpToken(Base):
     """MCP 长效 Token 表：每用户至多一条有效记录（revoked_at IS NULL）。
 
-    token_value 保存完整 JWT，供前端复制与工作区注入 opencode MCP 配置；
-    token_hash 用于鉴权查找。
+    Only the SHA-256 hash and fingerprint are persisted. Raw credentials are
+    returned once by the explicit issuance operation.
     """
 
     __tablename__ = "mcp_tokens"
@@ -21,8 +21,6 @@ class McpToken(Base):
     name = Column(String(80), nullable=False, default="MCP Token")
     token_hash = Column(String(64), unique=True, nullable=False, index=True)
     token_preview = Column(String(32), nullable=False)
-    # 完整 JWT，服务端复用；历史行可能为 NULL，需 refresh 补齐
-    token_value = Column(Text, nullable=True)
     created_at = Column(DateTime, default=beijing_now)
     expires_at = Column(DateTime, nullable=False)
     last_used_at = Column(DateTime, nullable=True)
@@ -36,9 +34,7 @@ class McpToken(Base):
 
     @staticmethod
     def preview_token(token: str) -> str:
-        if len(token) <= 16:
-            return token
-        return f"{token[:8]}...{token[-8:]}"
+        return f"sha256:{McpToken.hash_token(token)[:12]}"
 
     @property
     def is_revoked(self) -> bool:
@@ -53,7 +49,7 @@ class McpToken(Base):
     def is_active(self) -> bool:
         return not self.is_revoked and not self.is_expired
 
-    def to_dict(self, include_token: bool = False):
+    def to_dict(self):
         data = {
             "id": self.id,
             "user_id": self.user_id,
@@ -66,6 +62,4 @@ class McpToken(Base):
             "is_revoked": self.is_revoked,
             "is_expired": self.is_expired,
         }
-        if include_token and self.token_value:
-            data["mcp_token"] = self.token_value
         return data

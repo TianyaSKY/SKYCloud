@@ -3,8 +3,8 @@
 These tests deliberately use the Docker CLI instead of the mocked ``docker``
 module installed by the unit-test conftest.  They are skipped by default and
 require ``RUN_OPENCODE_E2E=1``.  The model test additionally requires
-``RUN_OPENCODE_MODEL_E2E=1`` and an OpenAI-compatible endpoint reachable from
-inside Docker.
+``RUN_OPENCODE_MODEL_E2E=1`` and the model gateway with a scoped runtime_llm
+credential reachable from inside Docker.
 """
 
 import asyncio
@@ -36,7 +36,7 @@ pytestmark = pytest.mark.skipif(
     reason="设置 RUN_OPENCODE_E2E=1 且安装 Docker CLI 后启用",
 )
 
-IMAGE = os.getenv("OPENCODE_E2E_IMAGE", "ghcr.io/anomalyco/opencode:latest")
+IMAGE = os.getenv("OPENCODE_E2E_IMAGE", docker_service.OPENCODE_IMAGE)
 USERNAME = os.getenv("OPENCODE_SERVER_USERNAME", "skycloud")
 STARTUP_TIMEOUT = max(float(os.getenv("OPENCODE_E2E_STARTUP_TIMEOUT", "60")), 10.0)
 MODEL_TIMEOUT = max(float(os.getenv("OPENCODE_E2E_MODEL_TIMEOUT", "180")), 30.0)
@@ -58,9 +58,9 @@ def _docker(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 def _chat_config() -> dict[str, str]:
     values = {
-        "base_url": os.getenv("OPENCODE_E2E_CHAT_API_URL", "").strip().rstrip("/"),
-        "api_key": os.getenv("OPENCODE_E2E_CHAT_API_KEY", "").strip(),
-        "model": os.getenv("OPENCODE_E2E_CHAT_API_MODEL", "").strip(),
+        "base_url": os.getenv("OPENCODE_E2E_GATEWAY_URL", "").strip().rstrip("/"),
+        "api_key": os.getenv("OPENCODE_E2E_RUNTIME_LLM_TOKEN", "").strip(),
+        "model": os.getenv("OPENCODE_E2E_MODEL", "").strip(),
     }
     missing = [name for name, value in values.items() if not value]
     if missing:
@@ -68,13 +68,19 @@ def _chat_config() -> dict[str, str]:
             "专家模型 E2E 需要设置 "
             + ", ".join(
                 {
-                    "base_url": "OPENCODE_E2E_CHAT_API_URL",
-                    "api_key": "OPENCODE_E2E_CHAT_API_KEY",
-                    "model": "OPENCODE_E2E_CHAT_API_MODEL",
+                    "base_url": "OPENCODE_E2E_GATEWAY_URL",
+                    "api_key": "OPENCODE_E2E_RUNTIME_LLM_TOKEN",
+                    "model": "OPENCODE_E2E_MODEL",
                 }[name]
                 for name in missing
             )
         )
+    import jwt
+    try:
+        claims = jwt.decode(values["api_key"], options={"verify_signature": False})
+    except jwt.InvalidTokenError as exc:
+        raise AssertionError("Model E2E requires a scoped runtime_llm credential") from exc
+    assert claims.get("type") == "runtime_llm", "Never put provider keys in an E2E Runtime"
     return values
 
 
@@ -132,6 +138,7 @@ class _OpenCodeRuntime:
                 "--publish",
                 "127.0.0.1::3000",
                 IMAGE,
+                "--pure",
                 "serve",
                 "--hostname",
                 "0.0.0.0",
@@ -207,7 +214,7 @@ class _OpenCodeRuntime:
 def test_official_opencode_runtime_health_mcp_and_session() -> None:
     """The official image accepts auth, MCP config, and session operations."""
 
-    with _OpenCodeRuntime(chat=_chat_config()) as runtime:
+    with _OpenCodeRuntime(chat=None) as runtime:
         assert runtime.base_url is not None
         mcp_url = os.getenv("OPENCODE_E2E_MCP_URL", "").strip()
 

@@ -306,13 +306,14 @@ def _error_json(msg: str) -> str:
 
 
 def _service_error_json(exc: Exception) -> str:
-    """将 service 层 DomainError / HTTPException 转为 MCP 错误 JSON。"""
-    if isinstance(exc, DomainError):
+    """Expose only client-facing domain errors; retain internal diagnostics in logs."""
+    if isinstance(exc, DomainError) and exc.status_code < 500:
         return _error_json(str(exc))
-    if isinstance(exc, HTTPException):
-        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    if isinstance(exc, HTTPException) and exc.status_code < 500:
+        detail = exc.detail if isinstance(exc.detail, str) else "Request failed"
         return _error_json(detail)
-    return _error_json(str(exc))
+    logger.error("MCP service operation failed: {}", type(exc).__name__)
+    return _error_json("Service temporarily unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -926,11 +927,7 @@ async def batch_delete(
                         file_service.delete_file(session, item_id)
                     deleted.append(item_id)
                 except (DomainError, HTTPException) as e:
-                    if isinstance(e, DomainError):
-                        errors.append({"id": item_id, "error": str(e)})
-                    else:
-                        detail = e.detail if isinstance(e.detail, str) else str(e.detail)
-                        errors.append({"id": item_id, "error": detail})
+                    errors.append({"id": item_id, "error": json.loads(_service_error_json(e))["error"]})
 
             return json.dumps(
                 {

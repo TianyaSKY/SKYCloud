@@ -17,8 +17,8 @@ from minio.error import S3Error
 # 配置读取
 # ---------------------------------------------------------------------------
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "skycloud")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() in ("true", "1", "yes")
 
@@ -34,6 +34,10 @@ class MinIOStorageClient:
         bucket: str = MINIO_BUCKET,
         secure: bool = MINIO_SECURE,
     ):
+        from app.infra.secrets import configured_password
+        configured_password("MINIO_SECRET_KEY", secret_key)
+        if not access_key:
+            raise RuntimeError("MINIO_ACCESS_KEY must be explicitly configured")
         self._client = Minio(
             endpoint,
             access_key=access_key,
@@ -181,4 +185,3 @@ def get_storage_client() -> MinIOStorageClient:
         _storage_client = MinIOStorageClient()
         logger.info("MinIO 存储客户端已初始化: endpoint={}, bucket={}", MINIO_ENDPOINT, MINIO_BUCKET)
     return _storage_client
-

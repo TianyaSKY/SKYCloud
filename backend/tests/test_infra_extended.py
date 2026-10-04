@@ -2,7 +2,7 @@
 
 import json
 import pytest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock, AsyncMock, call
 
 from app.infra.task_queue import (
     QueueMessage,
@@ -42,7 +42,7 @@ class TestRabbitmqPort:
 
 class TestConnectionParameters:
     def test_url_based(self, monkeypatch):
-        monkeypatch.setenv("RABBITMQ_URL", "amqp://user:pass@host:5672/vh")
+        monkeypatch.setenv("RABBITMQ_URL", "amqp://user:explicit-test-queue-password@host:5672/vh")
         params = _connection_parameters()
         assert params is not None
 
@@ -50,7 +50,7 @@ class TestConnectionParameters:
         monkeypatch.delenv("RABBITMQ_URL", raising=False)
         monkeypatch.setenv("RABBITMQ_HOST", "myhost")
         monkeypatch.setenv("RABBITMQ_USER", "admin")
-        monkeypatch.setenv("RABBITMQ_PASSWORD", "secret")
+        monkeypatch.setenv("RABBITMQ_PASSWORD", "explicit-test-queue-password")
         params = _connection_parameters()
         assert params is not None
 
@@ -205,7 +205,8 @@ from app.infra.llm.client import (
 
 class TestGetClient:
     def test_caching(self):
-        with patch("app.infra.llm.client.OpenAI") as MockOpenAI:
+        from app.infra.llm import client
+        with patch.dict(client._client_cache, {}, clear=True), patch("app.infra.llm.client.AsyncOpenAI") as MockOpenAI:
             MockOpenAI.return_value = MagicMock()
             c1 = _get_client("http://api", "key1")
             c2 = _get_client("http://api", "key1")
@@ -237,17 +238,17 @@ class TestRecordLlmUsage:
 
 
 class TestChatCompletion:
-    def test_success(self):
+    async def test_success(self):
         mock_client = MagicMock()
         mock_resp = MagicMock()
         mock_resp.usage.prompt_tokens = 10
         mock_resp.usage.completion_tokens = 20
         mock_resp.usage.total_tokens = 30
-        mock_client.chat.completions.create.return_value = mock_resp
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_resp)
 
         with patch("app.infra.llm.client._get_client", return_value=mock_client), \
              patch("app.infra.llm.client._safe_record") as mock_record:
-            result = chat_completion(
+            result = await chat_completion(
                 messages=[{"role": "user", "content": "hi"}],
                 config={"api": "http://api", "key": "k", "model": "m"},
                 user_id=1,
@@ -255,15 +256,15 @@ class TestChatCompletion:
         assert result == mock_resp
         mock_record.assert_called_once()
 
-    def test_no_usage(self):
+    async def test_no_usage(self):
         mock_client = MagicMock()
         mock_resp = MagicMock()
         mock_resp.usage = None
-        mock_client.chat.completions.create.return_value = mock_resp
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_resp)
 
         with patch("app.infra.llm.client._get_client", return_value=mock_client), \
              patch("app.infra.llm.client._safe_record") as mock_record:
-            result = chat_completion(
+            result = await chat_completion(
                 messages=[{"role": "user", "content": "hi"}],
                 config={"api": "http://api", "key": "k", "model": "m"},
             )
@@ -271,11 +272,11 @@ class TestChatCompletion:
 
 
 class TestEmbedTexts:
-    def test_empty_texts(self):
-        result = embed_texts(texts=[], config={"api": "http://a", "key": "k", "model": "m"})
+    async def test_empty_texts(self):
+        result = await embed_texts(texts=[], config={"api": "http://a", "key": "k", "model": "m"})
         assert result == []
 
-    def test_string_input(self):
+    async def test_string_input(self):
         mock_client = MagicMock()
         mock_resp = MagicMock()
         mock_item = MagicMock()
@@ -284,15 +285,15 @@ class TestEmbedTexts:
         mock_resp.data = [mock_item]
         mock_resp.usage.total_tokens = 10
         mock_resp.usage.prompt_tokens = 10
-        mock_client.embeddings.create.return_value = mock_resp
+        mock_client.embeddings.create = AsyncMock(return_value=mock_resp)
 
         with patch("app.infra.llm.client._get_client", return_value=mock_client), \
              patch("app.infra.llm.client._safe_record"):
-            result = embed_texts(texts="hello", config={"api": "http://a", "key": "k", "model": "m"})
+            result = await embed_texts(texts="hello", config={"api": "http://a", "key": "k", "model": "m"})
         assert len(result) == 1
         assert len(result[0]) == 1024
 
-    def test_multiple_texts(self):
+    async def test_multiple_texts(self):
         mock_client = MagicMock()
         mock_resp = MagicMock()
         items = []
@@ -303,10 +304,10 @@ class TestEmbedTexts:
             items.append(item)
         mock_resp.data = items
         mock_resp.usage = None
-        mock_client.embeddings.create.return_value = mock_resp
+        mock_client.embeddings.create = AsyncMock(return_value=mock_resp)
 
         with patch("app.infra.llm.client._get_client", return_value=mock_client):
-            result = embed_texts(texts=["a", "b", "c"], config={"api": "http://a", "key": "k", "model": "m"})
+            result = await embed_texts(texts=["a", "b", "c"], config={"api": "http://a", "key": "k", "model": "m"})
         assert len(result) == 3
 
 
@@ -330,30 +331,35 @@ class TestHandleFileIndexing:
             handle_file_indexing(999)
         mock_session.close.assert_called_once()
 
-    def test_success_flow(self):
-        mock_session = MagicMock()
-        mock_file = MagicMock()
-        mock_file.id = 1
-        mock_file.name = "test.txt"
-        mock_file.uploader_id = 1
-        mock_file.file_path = "test.txt"
-        mock_file.workspace_id = 1
-        mock_storage = MagicMock()
-        mock_storage.download_to_temp.return_value = "/tmp/test.txt"
+    def test_success_flow(self, session, test_workspace, test_user, tmp_path):
+        from sqlalchemy.orm import Session
+        from app.models.file import File
+        from app.models.file_chunk import FileChunk
 
-        with patch("app.infra.indexing.handler.SessionLocal", return_value=mock_session), \
-             patch("app.infra.indexing.handler.file_service.get_file", return_value=mock_file), \
-             patch("app.infra.indexing.handler.get_vl_model_config", return_value={}), \
-             patch("app.infra.indexing.handler.get_chat_model_config", return_value={}), \
-              patch("app.infra.indexing.handler.get_embedding_model_config", return_value={}), \
-              patch("app.infra.indexing.handler.generate_file_description", return_value="desc"), \
-              patch("app.infra.indexing.handler.file_service.embedding_desc", return_value=[0.1] * 1024), \
-              patch("app.infra.indexing.handler.get_storage_client", return_value=mock_storage), \
-              patch("app.infra.indexing.handler._replace_file_chunks", return_value=1):
-            handle_file_indexing(1)
-
-        assert mock_file.status == "success"
-        mock_session.close.assert_called_once()
+        source = tmp_path / "test.txt"
+        source.write_text("Indexable text about file indexing.")
+        file = File(name="test.txt", file_path="objects/test.txt",
+                    workspace_id=test_workspace.id, uploader_id=test_user.id,
+                    status="pending", file_size=source.stat().st_size)
+        session.add(file)
+        session.commit()
+        file_id = file.id
+        # Separate sessions match the worker's bounded transactions.
+        with patch("app.infra.indexing.handler.SessionLocal", side_effect=lambda: Session(session.get_bind())), \
+             patch("app.infra.indexing.handler._download_file", return_value=str(source)), \
+             patch("app.infra.indexing.handler.generate_file_description", return_value="desc"), \
+             patch("app.infra.indexing.handler._embed_text", return_value=[0.1] * 1024), \
+             patch("app.infra.indexing.handler._embed_texts", side_effect=lambda texts, *args, **kwargs: [[0.2] * 1024 for _ in texts]):
+            handle_file_indexing(file_id)
+        session.expire_all()
+        saved = session.get(File, file_id)
+        assert saved.status == "success"
+        assert saved.description == "desc"
+        assert len(saved.vector_info) == 1024
+        chunks = session.query(FileChunk).filter_by(file_id=file_id).all()
+        assert len(chunks) == 1
+        assert "Indexable text" in chunks[0].content
+        assert len(chunks[0].vector_info) == 1024
 
     def test_exception_marks_fail(self):
         mock_session = MagicMock()

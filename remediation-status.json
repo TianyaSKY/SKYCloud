@@ -1,0 +1,264 @@
+{
+  "baseline": "b37e070",
+  "scope": "Fix every finding in the referenced project review; completion requires current evidence for each item",
+  "items": [
+    {
+      "id": "runtime_llm_proxy",
+      "requirement": "Keep provider secrets in backend; scoped expiring runtime LLM tokens, allowed model and quotas",
+      "status": "in_progress",
+      "evidence": [
+        "Runtime receives only a model-only JWT; provider key stays in independent llm-gateway process. Hash persistence reuses revocable runtime records.",
+        "JWT binds user/workspace/runtime/model and maximum one-hour expiry; gateway checks current runtime state and editor membership, rejects REST/MCP credentials and alternate models.",
+        "Body/output/stream caps and atomic shared user/workspace/runtime Redis reservations; text/tool inputs only; no upstream redirect or caller headers.",
+        "HTTP forwarding, SSE, errors, expiration/revocation/demotion, cross-endpoint rejection and real Redis concurrency/recreation checks passed.",
+        "Complete OpenCode -> gateway -> mock-provider flow using PostgreSQL remains to be exercised alongside controller relay."
+      ]
+    },
+    {
+      "id": "runtime_network",
+      "requirement": "Separate runtimes from database, cache, queue and object storage; restrict egress",
+      "status": "verified",
+      "evidence": [
+        "Dedicated internal runtime network; API and DB/Redis/MQ/MinIO never join it. Controller relays application traffic from separate control network.",
+        "Real tests prove Runtime cannot reach infrastructure by DNS/direct IP, bridge can, and Controller management socket is unreachable from Runtime network even with correct credentials.",
+        "No Runtime host port or host volume; production Compose publishes only frontend."
+      ]
+    },
+    {
+      "id": "runtime_controller",
+      "requirement": "Remove Docker socket from API; authenticated restricted controller",
+      "status": "verified",
+      "evidence": [
+        "Standalone authenticated Controller is the sole Docker socket owner. Only fixed pinned image, positive identities, managed labeled containers, internal network and sandbox options are accepted; no caller-selected Docker options or arbitrary exec API.",
+        "API uses scoped RPC and bounded authenticated HTTP/SSE relay, leaves runtime network. Controller binds only its separate control-network interface; Runtime cannot reach management API even with its token.",
+        "27 targeted Controller/MCP tests and six real Docker/Redis security checks passed. Actual create/start/stop/remove, configuration reload, OpenCode health/session/SSE and unauthorized caller rejection verified."
+      ]
+    },
+    {
+      "id": "profile_password",
+      "requirement": "Reject passwords in profile update; require dedicated password change",
+      "status": "verified",
+      "evidence": [
+        "Profile schema forbids extra fields; service permits only username/avatar; dedicated password service retains old-password checks",
+        "HTTP regression tests reject password profile mutation and preserve stored credentials"
+      ]
+    },
+    {
+      "id": "deployment_credentials",
+      "requirement": "Fail closed on default secrets; explicit administrator bootstrap",
+      "status": "verified",
+      "evidence": [
+        "Removed fixed JWT signing-key fallback; missing/short/placeholder secrets fail closed. OpenCode server derivation requires independent configured secret.",
+        "Private exclusive env generator creates six independent random secrets, mode 0600; Compose rejects missing infrastructure/Controller credentials.",
+        "Removed known-password administrator and fixed-ID personal workspace seeds. Interactive first-admin command creates account/workspace/membership/root in one transaction; PostgreSQL advisory lock prevents concurrent initial administrators.",
+        "Startup validates independent signing/controller keys and explicit database, queue and storage passwords (at least 12 characters); adapters reject missing, placeholder and URL-encoded defaults before contacting infrastructure. Known historical seeded administrator is blocked at startup and login; terminal-only reset preserves existing workspace data and atomically revokes sessions/tokens. Deployment regression tests and 10 real PostgreSQL scenarios passed."
+      ]
+    },
+    {
+      "id": "infrastructure_ports",
+      "requirement": "Production infrastructure internal; development overrides",
+      "status": "verified",
+      "evidence": [
+        "Production compose publishes frontend only. Explicit development override binds all administrative service ports to 127.0.0.1.",
+        "MCP accessed via frontend /mcp; frontend endpoint changed to same origin and nginx streaming proxy added.",
+        "Production/development compose config checks and actual nginx -t passed; frontend type-check, unit tests and build passed."
+      ]
+    },
+    {
+      "id": "upload_limits",
+      "requirement": "Streaming file limits, user/workspace capacity, daily rate, multipart reservations and concurrency",
+      "status": "in_progress",
+      "evidence": [
+        "Positive finite defaults: file 256 MiB, avatar 5 MiB, request 512 MiB, part 64 MiB. Nginx body limit is finite; actual container nginx -t passed. Invalid/zero/negative upload configurations fail closed.",
+        "ASGI middleware counts actual request bytes before multipart parsing, handles missing Content-Length, returns 413 and closes already-open multipart spools. HTTP, Base64, and Werkzeug adapters bound writes; Base64 encoded size is checked before decoding. Single/batch/part/assembly paths preserve 413 and clean incomplete temporary files.",
+        "Unique temporary names prevent concurrent part writes sharing one temp file; oversized replacement preserves existing part. Preflight and legacy multipart completion obey finite file limits; assembly checks each stored part while copying. New upload behavior tests and full backend unit regression passed.",
+        "Migration 0005 adds durable reservations and UTC daily admission usage. User/workspace capacity counts logical files plus active reservations; direct/batch/instant/multipart paths charge quotas. Fixed user-then-workspace locks serialize admission/consumption; file creation and reservation consumption commit together. Session ownership enforced on resume/status/part/completion/abort; hash mismatch rejected. One-hour expiry and minute Worker cleanup reclaim session disk under writer locks. API process upload concurrency and Nginx connection limits bound simultaneous body reception. 10 quota behaviors and 3 real PostgreSQL race/rollback scenarios passed. Remaining: reclaim staging files after process crashes and verify full HTTP/MinIO failure lifecycle."
+      ]
+    },
+    {
+      "id": "query_jwt",
+      "requirement": "Remove URL JWT; authenticated downloads and scoped short lived iframe tickets",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "migrations",
+      "requirement": "Alembic versioned schema upgrades; startup version check without DDL",
+      "status": "verified",
+      "evidence": [
+        "Alembic baseline uses immutable schema SQL snapshot, adopts unversioned databases, repairs known legacy columns; second revision repairs file/chunk cosine vector indexes. No live ORM create_all in migration revisions.",
+        "Explicit entry.migrate / standard Alembic upgrade supported. PostgreSQL advisory transaction lock serializes concurrent migration processes, lock timeout bounds waits, all DDL/revision updates roll back atomically on failure. Destructive baseline downgrade is rejected.",
+        "Application initialization has no DDL. API, Worker, MCP and model gateway check exact Alembic head before startup; missing/old/future/branched versions rejected. Real application startup passes with read-only database role permitted only SELECT on alembic_version.",
+        "Compose removes init SQL mount, adds dedicated migrate service, and starts all four application services only after successful completion. README documents backup, explicit upgrade and recovery requirements.",
+        "Seven isolated real PostgreSQL tests passed: fresh model-column/vector compatibility and repeat upgrade; legacy missing-column/wrong-index repair preserving data; failed upgrade rollback; concurrent processes; standard Alembic CLI; read-only startup; version mismatch/destructive downgrade checks. /private/tmp/skycloud-final-real-migrations.log",
+        "Revision 0003 adds auth_version; current startup gate matches this head. Updated real migrations suite: 8 passed including concurrent password reset and transaction rollback.",
+        "Revision 0004 removes external MCP plaintext credentials and enforces at most one unrevoked token per user; current startup gate is 0004_hash_only_mcp. Nine real PostgreSQL migration scenarios passed.",
+        "Head 0005_upload_quotas adds reservation/daily admission tables; fresh model compatibility and all 13 real PostgreSQL migration/transaction scenarios passed."
+      ]
+    },
+    {
+      "id": "blocking_io",
+      "requirement": "Remove synchronous IO from event loop paths",
+      "status": "in_progress",
+      "evidence": [
+        "Async LLM chat/embedding accounting executes database writes in threads; chat stream usage recording also offloaded.",
+        "Async Redis cacheable/cache_evict/cache_put read/write/evict moved to threads. Behavior tests hold slow accounting/Redis operations and prove event loop stays available.",
+        "Complete router/service event-loop and Session ownership audit remains pending."
+      ]
+    },
+    {
+      "id": "exception_handling",
+      "requirement": "Sanitized errors and stable domain exception handling",
+      "status": "in_progress",
+      "evidence": [
+        "Removed six raw exception responses in upload routes; global 5xx domain/HTTP errors sanitized",
+        "HTTP regressions verify no internal detail in unexpected/domain/HTTP server errors; additional service exception review remains",
+        "Registration infrastructure failures return sanitized 500; runtime operation errors no longer expose Docker exception text. Further MCP/organize exception review remains.",
+        "Vector search, MCP service/5xx HTTP errors, organization context/task/tool failures, indexing failure notifications and chat stream errors no longer reveal raw infrastructure exception text.",
+        "Regression tests cover sensitive strings in MCP unexpected/domain/HTTP errors and vector-search failures; batch MCP 5xx errors use same sanitizer. Further API contract/error-path audit pending."
+      ]
+    },
+    {
+      "id": "admin_user_creation",
+      "requirement": "Restrict management user creation to administrators",
+      "status": "verified",
+      "evidence": [
+        "POST /users requires require_admin",
+        "HTTP regressions: anonymous 401, common user 403, administrator 201"
+      ]
+    },
+    {
+      "id": "jwt_revocation",
+      "requirement": "Invalidate previous web sessions on password change",
+      "status": "verified",
+      "evidence": [
+        "Added users.auth_version via versioned migration 0003_auth_version. Login signs version into Web JWT; REST and MCP Web-session validation check authoritative scalar database version, bypassing profile caches and ORM identity state. Missing/noninteger/negative/mismatched versions rejected, unknown scopes denied.",
+        "Password changes lock and refresh the account row, validate old password for nonadmins, increment version and revoke external MCP and all Runtime credentials in the same transaction. Administrator reset affects target only.",
+        "HTTP regressions prove old sessions rejected after own/admin password changes, new login works, bad old password leaves session usable, stale cache cannot restore revoked session, legacy tokens and malformed versions rejected. Runtime LLM/MCP and external MCP revocation tests passed.",
+        "Real PostgreSQL test proves failed commit rolls back password/version/token revocation and simultaneous changes using one old password produce exactly one success. Existing frontend already signs out after successful password change; docs explain migration reauthentication and MCP/Runtime reconfiguration."
+      ]
+    },
+    {
+      "id": "mcp_token_storage",
+      "requirement": "Store only token hash; reveal raw token once and update client flow",
+      "status": "verified",
+      "evidence": [
+        "Removed token_value from ORM and persistence. All external MCP tokens store only SHA-256 hashes and hash-derived fingerprints; even short compatibility credentials cannot leak through previews.",
+        "GET /auth/mcp-token returns metadata only, does not issue a credential; login/registration no longer auto-issue discarded external MCP tokens. POST refresh reveals the new raw credential once and sends Cache-Control: no-store.",
+        "Migration 0004 rotates historical credentials, drops plaintext column and adds partial unique index on active user token. Issuance locks owner row to serialize concurrent refreshes.",
+        "Frontend consumes separate read/issuance contracts, displays raw credential only in current modal session; closes/unmounts clear memory, reopening reads metadata only, late responses are discarded and duplicate issuance blocked. Four frontend behavior tests passed; full frontend tests 9 passed, type-check and build passed.",
+        "Real Redis + SQLite auth suite: 67 passed. Full backend unit suite: 1187 passed, zero failures. Final real PostgreSQL suite: 9 passed, including legacy credential revocation/plaintext-column removal and concurrent issuance leaving exactly one valid credential."
+      ]
+    },
+    {
+      "id": "runtime_sandbox",
+      "requirement": "Non-root runtime, drop capabilities, no privilege escalation, PID and disk limits",
+      "status": "verified",
+      "evidence": [
+        "Actual _create uses UID 10001, read-only rootfs, cap_drop ALL, no-new-privileges, PID 128, CPU and memory caps.",
+        "Bounded tmpfs: home 256 MiB, workspace 512 MiB, /tmp 64 MiB. No host volume or Docker socket supplied to runtime.",
+        "Pinned installed upstream image digest, --pure mode avoids external plugins, provider/agent config reloads via instance/dispose instead of container restart.",
+        "Real unmocked Docker SDK integration verified running UID, forbidden rootfs write, applied resource policy, authenticated health and successful config reload with retained model/credential."
+      ]
+    },
+    {
+      "id": "service_boundaries",
+      "requirement": "Split oversized file/MCP/runtime services with explicit contracts",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "repository_boundaries",
+      "requirement": "Separate persistence and external resource adapters",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "api_contract",
+      "requirement": "Typed consistent response and error schemas with frontend compatibility",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "workspace_queries",
+      "requirement": "Eliminate workspace list N+1 queries",
+      "status": "verified",
+      "evidence": [
+        "Joined aggregate returns workspace, role and member count in one SQL query",
+        "SQLAlchemy statement-count regression verifies one query across multiple workspaces"
+      ]
+    },
+    {
+      "id": "frontend_auth",
+      "requirement": "Memory access token and HttpOnly refresh cookie; strict CSP",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "frontend_tests",
+      "requirement": "Behavior tests for auth, route guards, requests, uploads, workspace permissions and assistant",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "integration_tests",
+      "requirement": "Real PostgreSQL/vector/transaction/migration and Redis/MQ/MinIO integration coverage",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "ci",
+      "requirement": "Backend/frontend/image checks; inspect and configure remote branch protection if authorized access exists",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "reproducible_dependencies",
+      "requirement": "Lock Python dependencies and pin production image digests",
+      "status": "in_progress",
+      "evidence": [
+        "Runtime image pinned to local verified 1.18.11 digest in defaults, Compose and .env.example. Python lock and remaining images still pending."
+      ]
+    },
+    {
+      "id": "utc_time",
+      "requirement": "Consistent UTC storage and explicit presentation timezone",
+      "status": "pending",
+      "evidence": []
+    },
+    {
+      "id": "existing_test_failures",
+      "requirement": "Repair all 32 baseline unit test failures and verify full backend suite",
+      "status": "verified",
+      "evidence": [
+        "All 32 baseline failures repaired against current contracts: API async calls awaited with AsyncMock; Worker descriptions and organization use synchronous interfaces and correct adapter mock targets. Removed obsolete private vector-search import in favor of public async search contract.",
+        "Indexing success test now checks actual database description, vector, chunks and status across independent short-lived sessions. Redis unit fixtures isolate all consumers.",
+        "Full backend unit suite excluding tests/real: 1178 passed, 0 failed, 9 explicit opt-in skips; /private/tmp/skycloud-repaired-suite.log. No tests removed or skipped to hide failures."
+      ]
+    }
+  ],
+  "validation": {
+    "runtime": "/private/tmp/skycloud-fix-venv/bin/python",
+    "targeted": "169 passed: security regressions, auth, workspace, router integration, exception/folder/MCP",
+    "unit_suite": "1223 passed, 0 failed, 22 opt-in skips; /private/tmp/skycloud-quota-final-suite.log",
+    "baseline_log": "/private/tmp/skycloud-baseline-tests.log",
+    "baseline": "Original b37e070: 1088 passed, identical 32 failing test names, 2 skipped. Failures predate this repair.",
+    "latest_targeted": "77 passed: deployment credentials, security regressions, Controller, assistant, runtime LLM, MCP token refresh",
+    "docker_security": "6 passed with RUN_RUNTIME_SECURITY_TESTS=1: real Redis quotas, network boundaries, Compose, Controller lifecycle/config/OpenCode session/SSE; additional real PostgreSQL bootstrap test passed separately",
+    "opencode_smoke": "1 passed with RUN_OPENCODE_E2E=1: official health/MCP/session operations without a provider key",
+    "frontend": "Type-check passed; 4 test files / 9 tests passed including credential lifecycle; production build passed; /private/tmp/skycloud-hash-mcp-frontend-tests.log",
+    "nginx": "Actual skycloud-frontend nginx -t passed with finite body/connection limits and request streaming",
+    "postgres_bootstrap": "Real PostgreSQL initialized without seeded users; concurrent bootstrap from two separate transactions produces exactly one administrator, with complete personal workspace/membership/root",
+    "async_io": "Slow accounting and cache read/write/evict/put behavior tests passed; Redis-outage root-file DB fallback test passed",
+    "postgres_migrations": "13 passed with RUN_MIGRATION_TESTS=1; /private/tmp/skycloud-quota-postgres.log; fresh/legacy/parallel upgrades, credential recovery, quota overbooking and atomic consumption/concurrent completion.",
+    "jwt_revocation": "HTTP/auth/runtime final targeted tests passed; /private/tmp/skycloud-revocation-final-targeted.log. Real PostgreSQL bootstrap test with upgraded schema passed separately.",
+    "real_auth": "67 passed with isolated Redis and SQLite: /private/tmp/skycloud-hash-mcp-real-auth.log",
+    "upload_streaming": "13 behavior cases passed: exact bounds, early stream stop, encoded uploads, Content-Length/missing header, partial spool cleanup, part replacement and tampered assembly; /private/tmp/skycloud-stream-upload-final-targeted.log",
+    "upload_quota": "10 quota behavior cases plus 14 streaming/request-limit cases passed in full suite; real PostgreSQL admission races for shared user/workspace, failed commit rollback and exactly-once completion passed."
+  },
+  "next_work": [
+    "Finish crash-safe staging cleanup and real HTTP/MinIO upload lifecycle verification; then remove query JWT and implement frontend session cookies",
+    "Exercise complete OpenCode -> gateway -> mock-provider flow with isolated PostgreSQL and Redis",
+    "Complete streaming upload limits and quotas, query-token removal and frontend auth, service/repository/API contracts, remaining real integration tests, CI, dependency locks and UTC"
+  ]
+}

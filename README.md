@@ -52,14 +52,47 @@ SKYCloud 是一个 AI 增强的云文件管理系统，提供从文件存储、�
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
-cp .env.example .env
+python3 scripts/generate-env.py
 # 编辑 .env，至少填写 Chat 和 Embedding 模型的 API_URL / API_KEY / MODEL
-docker-compose up -d --build
+docker compose up -d --build
+docker compose exec backend-api python -m entry.bootstrap_admin --username admin
 ```
 
-启动后访问 `http://localhost`（默认端口 80），默认管理员 `admin / admin123`。
+启动后访问 `http://localhost`（默认端口 80），使用显式创建的管理员账号登录。创建命令在终端交互读取密码，不接受命令行密码。系统不会自动创建管理员；JWT 密钥缺失、过短或仍为占位值时拒绝启动。
 
-> 非演示环境请首次登录后立即修改密码。`SECRET_KEY` 未设置时会使用不安全的默认值，生产环境务必配置。
+配置生成脚本独立生成各项密钥，以权限 0600 写入，并拒绝覆盖已有文件。应用启动会检查三个主密钥互不相同、基础设施密码至少 12 字符且不为默认值。已有 PostgreSQL/RabbitMQ 数据卷中的密码不会随 `.env` 自动改变：先通过基础设施的受信管理工具轮换实际密码，再同步配置。
+
+历史版本自带的默认管理员账号会阻止应用启动，也无法登录。先备份数据库、完成迁移，再用部署终端交互重置密码：
+
+```bash
+docker compose run --rm --no-deps backend-api python -m entry.reset_admin --username admin
+docker compose up -d
+```
+
+该命令只重置指定的现有管理员，不创建或提升普通账户；保留用户数据，并撤销其旧会话和令牌。密码不会放入命令行参数。
+
+### 数据库升级
+
+API、Worker、MCP 和模型网关启动时只读取 Alembic 版本，不建表、不补列。Compose 的 `migrate` 服务成功后才启动它们；版本缺失或不匹配时拒绝启动。
+
+已有部署先备份数据库，再执行：
+
+```bash
+docker compose build
+docker compose run --rm migrate
+docker compose up -d
+```
+
+宿主机开发先设置 `DATABASE_URL`，在 `backend` 中执行 `python -m entry.migrate`。迁移兼容未版本化数据库，保留账号和文件数据，补齐历史缺失列并修复向量索引。迁移失败会回滚并阻止应用启动；不要手动 stamp 版本。初始版本禁止删除数据的降级，回退部署前应验证数据库备份恢复流程。
+
+真实迁移测试会创建并清理独立 PostgreSQL 容器：
+
+```bash
+cd backend
+RUN_MIGRATION_TESTS=1 python -m pytest tests/integration/test_migrations.py
+```
+
+修改密码（含管理员代改）会在同一事务中递增目标账户的认证版本，撤销其旧 Web 会话、外部 MCP Token 和 Runtime 凭据。本人改密后前端退出登录；其他浏览器会在下一次请求收到 401。外部 MCP 客户端需生成并重新配置 Token，Runtime 需重新启动以获取新凭据。升级认证版本迁移后，历史 Web Token 一律失效，需要重新登录。
 
 ### 停止服务（含 SKYcode 工作区）
 
@@ -108,37 +141,37 @@ docker compose down
 
 默认通过环境变量控制渐进式发布：`ASSISTANT_V2_ENABLED`、`ASSISTANT_EXPERT_ENABLED`、`ASSISTANT_PERMISSION_UI_ENABLED`、`ASSISTANT_RUNTIME_LOCK_TTL`。生产部署应设置独立的 `OPENCODE_SERVER_SECRET`，并使用固定版本或 digest 的 `OPENCODE_IMAGE`。
 
-### 本地 API / Worker / MCP + Docker 基础设施
+### Runtime 安全与开发端口
 
-专家模式会按用户和工作空间动态创建 OpenCode Runtime。它不是 `docker-compose.yml` 中的常驻服务，直接使用 OpenCode 官方镜像 `ghcr.io/anomalyco/opencode:latest`；首次创建时后端会自动拉取。若希望预拉取，可执行：
+专家 Runtime 使用固定 digest 的 OpenCode 镜像，首次使用时自动拉取。容器以 UID 10001 运行，移除所有额外能力，禁止提权，并设置 CPU、内存和 PID 限制。根文件系统只读，临时目录分别有容量上限：工作目录 512 MiB、用户目录 256 MiB、`/tmp` 64 MiB；容器停止后这些临时数据会清空，需保留的文件应上传到云盘。
+
+Runtime 位于 `runtime-network` 专用内网，不能访问 PostgreSQL、Redis、RabbitMQ 或 MinIO，也没有直接外网出口。模型请求通过 `llm-gateway`：只有网关持有 `CHAT_API_KEY`，Runtime 只获得一小时以内有效、可撤销、绑定用户/工作空间/Runtime/模型的调用凭据。额度按用户、工作空间和 Runtime 原子计数，刷新凭据或重建容器不会重置用户额度；请求失败及断开流仍计入预留额度。
+
+可通过 `RUNTIME_LLM_HOURLY_TOKEN_BUDGET`、`RUNTIME_LLM_HOURLY_REQUEST_LIMIT` 和 `RUNTIME_LLM_MAX_OUTPUT_TOKENS` 调整额度。计费采用保守的输入字节数加输出 Token 上限，网关支持文本和工具调用。公开模型密钥不会写入 Runtime 配置。
+
+生产 Compose 只发布前端端口，MCP 通过同源 `/mcp` 访问。需要从宿主机访问开发服务时，显式使用 loopback 覆盖：
 
 ```bash
-docker pull ghcr.io/anomalyco/opencode:latest
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
-当 API、Worker、MCP 在 macOS/Windows 主机上启动，而数据库等基础设施在 Docker 中时，无需额外设置 Runtime 地址：后端会通过 Runtime 的 `127.0.0.1` 映射端口访问它，Runtime 则通过 `host.docker.internal:5001` 访问本地 MCP。若端口或网络拓扑不同，可分别覆盖 `OPENCODE_RUNTIME_BASE_URL` 与 `OPENCODE_MCP_URL`。
+API 不挂载 Docker Socket，也不加入 Runtime 网络。独立 `runtime-controller` 仅接受固定镜像、沙箱策略和托管容器的生命周期/配置操作；不提供任意 Docker 参数或 exec 接口。它以非 root 身份运行，仅在独立控制网卡监听，通过独立随机 `RUNTIME_CONTROLLER_TOKEN` 鉴权，且只接收自身所需配置，不加载数据库或供应商密钥。
 
-专家模式复用 `.env` 中的 `CHAT_API_URL`、`CHAT_API_KEY`、`CHAT_API_MODEL`，并在每个 Runtime 内生成 OpenAI-compatible provider 配置；无需单独执行 OpenCode 登录。API Key 只注入对应 Runtime，不会通过浏览器接口返回。
+本地混合开发时，API/Worker 可在宿主机运行，并通过开发覆盖发布的 `http://127.0.0.1:5003` 访问 Controller。MCP、模型网关和 Controller 继续在 Compose 中运行，以保持 Runtime 内网边界。Runtime 不发布宿主机端口，HTTP、会话和 SSE 均经 Controller 转发。Linux 部署需设置 `DOCKER_SOCKET_GID` 为宿主机 Socket 的实际组 ID；Controller 凭据和 `OPENCODE_SERVER_SECRET` 必须分别生成，至少 32 字符，禁止使用示例占位值。
 
-可选的专家模式真实集成测试位于 `backend/tests/integration/test_expert_opencode_e2e.py`。普通测试不会启动容器或调用模型；需要验证官方镜像和真实模型时执行：
+无需供应商 Key 的真实安全测试会创建并清理临时 Docker 网络和容器，验证 Redis 并发额度、网络边界以及 OpenCode 的非 root 启动、鉴权和配置重载：
 
 ```bash
 cd backend
-RUN_OPENCODE_E2E=1 /opt/miniconda3/envs/skyoj/bin/python -m pytest -q tests/integration/test_expert_opencode_e2e.py
-RUN_OPENCODE_E2E=1 RUN_OPENCODE_MODEL_E2E=1 \
-OPENCODE_E2E_CHAT_API_URL=https://your-openai-compatible-endpoint/v1 \
-OPENCODE_E2E_CHAT_API_KEY=your-key \
-OPENCODE_E2E_CHAT_API_MODEL=your-model \
-/opt/miniconda3/envs/skyoj/bin/python -m pytest -q tests/integration/test_expert_opencode_e2e.py
+RUN_RUNTIME_SECURITY_TESTS=1 python -m pytest tests/integration/test_runtime_security.py
 ```
 
-模型地址必须能从 Docker 容器访问；测试会在结束时删除临时 OpenCode 容器。
-若要同时验证 MCP 注册和状态检查，再追加 `OPENCODE_E2E_MCP_URL`（以及需要时的 `OPENCODE_E2E_MCP_TOKEN`）。
+官方 OpenCode 冒烟测试和可选模型测试位于 `backend/tests/integration/test_expert_opencode_e2e.py`。模型测试只接受网关地址 `OPENCODE_E2E_GATEWAY_URL`、短期凭据 `OPENCODE_E2E_RUNTIME_LLM_TOKEN` 和允许的模型 `OPENCODE_E2E_MODEL`，禁止传入供应商 Key。
 
 ## MCP 接入
 
-MCP Server 独立容器运行，默认端口 **5001**。每个用户自动签发**唯一** MCP Token：登录后点击右上角头像 → **MCP Token**
-即可复制或刷新。工作区在创建/启动/重启时会自动注入该 Token，无需手动「连接 MCP」。
+MCP Server 独立容器运行，生产部署通过前端同源 **`/mcp`** 访问；开发覆盖可开放本机端口 **5001**。登录后点击右上角头像 → **MCP Token**，显式生成外部客户端凭据。完整 Token 仅在生成时显示，关闭窗口后无法恢复，只能重新生成；后端只保存 SHA-256 哈希和指纹，读取接口只返回元数据。升级哈希存储迁移后历史外部 Token 会撤销，请重新生成并配置客户端。
+工作区在创建/启动/重启时会自动注入独立的短期 Runtime Token，无需手动「连接 MCP」。
 
 | 工作区 / MCP              | Token 用量                            |
 |------------------------|-------------------------------------|
@@ -195,3 +228,7 @@ SKYCloud/
 ## License
 
 MIT
+
+上传大小限制：默认单文件 256 MiB、头像 5 MiB、单个请求 512 MiB、分片 64 MiB。后端在接收请求体和写入文件时均检查实际字节数（包括没有 Content-Length 的请求），超限返回 413 并清理临时文件。`.env.example` 中的 `UPLOAD_*` 可调整且必须为正整数；提高请求上限时还需同步调整 `frontend/nginx.conf` 的 `client_max_body_size`。
+
+上传配额默认每用户 10 GiB、每空间 50 GiB，统计逻辑文件（包括秒传副本）与未到期的预留容量；每日按 UTC 日期限制 200 次、5 GiB，在上传预留成功时扣除，中止和失败不返还每日额度。用户最多 8 个、空间最多 32 个活动上传，预留 1 小时后过期，Worker 每分钟清理。完成上传与释放预留在同一事务中，分片会话仅创建者可读写、完成或中止。迁移 `0005_upload_quotas` 后，旧的未完成分片会话需重新初始化；历史文件计入容量但不补计每日额度。API 每进程最多接收 8 个上传请求；Nginx 每客户端 IP 限制 8 个 API 连接，并流式转发请求体。相关正整数配置见 `.env.example`。

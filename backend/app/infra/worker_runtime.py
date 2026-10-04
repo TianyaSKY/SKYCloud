@@ -14,6 +14,7 @@ import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
 from app.features.file.service import cleanup_expired_uploads
+from app.infra.extensions import SessionLocal
 from app.features.folder import service as folder_service
 from app.features.folder.organize.handler import handle_organize_process
 from app.infra.indexing.handler import handle_file_indexing as handle_file_process
@@ -35,10 +36,11 @@ def run_scheduler() -> None:
     logger.info("Scheduler thread started")
     while True:
         try:
-            cleanup_expired_uploads(max_age_hours=24)
+            with SessionLocal() as session:
+                cleanup_expired_uploads(max_age_hours=24, session=session)
         except Exception:
             logger.exception("Error in scheduler")
-        time.sleep(3600)
+        time.sleep(60)
 
 
 def process_task(file_id: int) -> None:

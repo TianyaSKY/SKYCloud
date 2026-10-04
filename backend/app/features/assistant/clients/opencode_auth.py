@@ -10,6 +10,7 @@ import hmac
 import os
 
 from app.infra.extensions import SECRET_KEY
+from app.infra.secrets import required_secret
 
 
 def server_username() -> str:
@@ -17,7 +18,9 @@ def server_username() -> str:
 
 
 def server_password(runtime_id: int, user_id: int, workspace_id: int) -> str:
-    secret = os.getenv("OPENCODE_SERVER_SECRET") or SECRET_KEY
+    secret = required_secret("OPENCODE_SERVER_SECRET")
+    if secret == SECRET_KEY:
+        raise RuntimeError("OPENCODE_SERVER_SECRET must differ from SECRET_KEY")
     material = f"runtime:{runtime_id}:user:{user_id}:workspace:{workspace_id}".encode()
     return hmac.new(secret.encode(), material, hashlib.sha256).hexdigest()
 

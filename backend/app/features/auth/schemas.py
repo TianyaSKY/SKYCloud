@@ -1,6 +1,6 @@
 """认证与用户相关请求体。"""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoginRequest(BaseModel):
@@ -25,10 +25,11 @@ class UserCreateRequest(BaseModel):
 
 
 class UserUpdateRequest(BaseModel):
-    """用户资料局部更新。"""
+    """用户资料局部更新；密码只能通过专用改密接口修改。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     username: str | None = Field(default=None, min_length=1, max_length=80)
-    password: str | None = Field(default=None, min_length=1, max_length=128)
     avatar: str | None = None
 
 

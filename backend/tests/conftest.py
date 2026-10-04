@@ -10,13 +10,19 @@ import sys
 # ---------------------------------------------------------------------------
 # 1. 环境变量（必须在 app 包导入前设置）
 # ---------------------------------------------------------------------------
-os.environ["SECRET_KEY"] = "test-secret-key-for-unit-tests"
+os.environ["SECRET_KEY"] = "test-secret-key-for-unit-tests-only-32"
+os.environ["OPENCODE_SERVER_SECRET"] = "test-opencode-server-secret-only-32"
+os.environ["RUNTIME_CONTROLLER_TOKEN"] = "test-runtime-controller-secret-only-32"
+os.environ["RABBITMQ_USER"] = "test-user"
+os.environ["RABBITMQ_PASSWORD"] = "explicit-test-queue-password"
+os.environ["MINIO_ACCESS_KEY"] = "test-storage-user"
+os.environ["MINIO_SECRET_KEY"] = "explicit-test-storage-password"
 # 使用 PostgreSQL URL 让 extensions.py 的 create_engine 正常初始化（不会实际连接）
-os.environ["DATABASE_URL"] = "postgresql://test:test@127.0.0.1:5432/test_db"
+os.environ["DATABASE_URL"] = "postgresql://test:explicit-test-database-password@127.0.0.1:5432/test_db"
 os.environ["REDIS_HOST"] = "127.0.0.1"
 os.environ["REDIS_PORT"] = "6379"
 os.environ["POSTGRES_USER"] = "test"
-os.environ["POSTGRES_PASSWORD"] = "test"
+os.environ["POSTGRES_PASSWORD"] = "explicit-test-database-password"
 os.environ["POSTGRES_HOST"] = "127.0.0.1"
 os.environ["POSTGRES_PORT"] = "5432"
 os.environ["POSTGRES_DB"] = "test"
@@ -246,7 +252,10 @@ def session():
     """每个测试独立的数据库会话，测试结束回滚并清表。"""
     connection = _test_engine.connect()
     transaction = connection.begin()
-    sess = _TestSessionLocal(bind=connection)
+    # SQLite legacy mode does not send BEGIN until DML. A real outer
+    # transaction plus savepoints keeps service commits/rollbacks isolated.
+    connection.exec_driver_sql("BEGIN")
+    sess = _TestSessionLocal(bind=connection, join_transaction_mode="create_savepoint")
     yield sess
     sess.close()
     transaction.rollback()
@@ -257,10 +266,12 @@ def session():
 def mock_redis():
     """全局替换 redis_client 为 MagicMock，避免真实 Redis 连接。"""
     mock = MagicMock()
+    mock.get.return_value = None
     # scan_iter 返回空迭代器
     mock.scan_iter.return_value = iter([])
     with patch("app.infra.extensions.redis_client", mock), \
          patch("app.infra.cache.redis_client", mock), \
+         patch("app.features.file.service.redis_client", mock), \
          patch("app.features.folder.service.redis_client", mock):
         yield mock
 

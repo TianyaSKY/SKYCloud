@@ -32,18 +32,10 @@ DEFAULT_MODEL_PWD = os.getenv("DEFAULT_MODEL_PWD", "")
 # 本机开发或测试可通过环境变量覆盖。
 UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "./data/uploads")
 
-# JWT 密钥：生产环境必须通过环境变量设置，未设置时仅开发兜底并告警
-SECRET_KEY = os.getenv("SECRET_KEY")
-if not SECRET_KEY:
-    import warnings
+# No development fallback: every process requires an explicit signing secret.
+from app.infra.secrets import required_secret
 
-    warnings.warn(
-        "SECRET_KEY environment variable is not set. "
-        "Using default value for development only. "
-        "This is insecure for production!",
-        UserWarning,
-    )
-    SECRET_KEY = "sky_cloud_secret_key_dev_only"
+SECRET_KEY = required_secret("SECRET_KEY")
 
 # 连接串：优先 DATABASE_URL，否则由 POSTGRES_* 拼接
 DATABASE_URL = os.getenv("DATABASE_URL") or (

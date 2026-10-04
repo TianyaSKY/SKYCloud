@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 
 # ---------------------------------------------------------------------------
@@ -35,17 +35,17 @@ class TestAuthRouter:
         from app.features.auth.router import get_mcp_token
 
         with patch("app.features.auth.service.get_mcp_token", return_value={"token": "mcp"}):
-            result = get_mcp_token(test_user, session)
+            result = get_mcp_token(Response(), test_user, session)
         assert "token" in result
 
     def test_refresh_mcp_token(self, session, test_user):
         from app.features.auth.router import refresh_mcp_token
 
         with patch("app.features.auth.service.refresh_mcp_token", return_value={"token": "new"}):
-            result = refresh_mcp_token(test_user, session)
+            result = refresh_mcp_token(Response(), test_user, session)
         assert "token" in result
 
-    def test_create_user(self, session):
+    def test_create_user(self, session, admin_user):
         from app.features.auth.router import create_user
         from app.features.auth.schemas import UserCreateRequest
 
@@ -53,7 +53,7 @@ class TestAuthRouter:
         mock_user.to_dict.return_value = {"id": 2}
         payload = UserCreateRequest(username="created", password="pass")
         with patch("app.features.auth.user_service.create_user", return_value=mock_user):
-            result = create_user(payload, session)
+            result = create_user(payload, admin_user, session)
         assert result.status_code == 201
 
     def test_get_user(self, session, test_user):
@@ -392,14 +392,14 @@ class TestFileRouter:
         from app.features.file.router import get_multipart_upload_status
 
         with patch("app.features.file.service.get_multipart_upload_status", return_value={"chunks": []}):
-            result = get_multipart_upload_status("abc", test_user, test_workspace)
+            result = get_multipart_upload_status("abc", test_user, test_workspace, session)
         assert "chunks" in result
 
     def test_multipart_abort(self, session, test_user, test_workspace):
         from app.features.file.router import abort_multipart_upload
 
         with patch("app.features.file.service.abort_multipart_upload"):
-            result = abort_multipart_upload("abc", test_user, test_workspace)
+            result = abort_multipart_upload("abc", test_user, test_workspace, session)
         assert result.status_code == 204
 
     def test_multipart_complete(self, session, test_user, test_workspace):

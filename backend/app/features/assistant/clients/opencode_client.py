@@ -12,6 +12,8 @@ from urllib.parse import quote
 
 import httpx
 
+from runtime_controller.client import auth_headers as controller_auth_headers
+
 
 class OpenCodeClientError(RuntimeError):
     def __init__(self, message: str, status_code: int | None = None):
@@ -33,7 +35,9 @@ class OpenCodeClient:
             base_url=self.base_url,
             auth=httpx.BasicAuth(username, password),
             timeout=timeout if timeout is not None else float(os.getenv("OPENCODE_HTTP_TIMEOUT", "30")),
-            headers={"Accept": "application/json"},
+            headers={"Accept": "application/json", **controller_auth_headers(self.base_url)},
+            trust_env=False,
+            follow_redirects=False,
         )
 
     async def __aenter__(self) -> "OpenCodeClient":

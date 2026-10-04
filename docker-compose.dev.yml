@@ -1,0 +1,29 @@
+# Explicit development-only loopback access:
+# docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+services:
+  db:
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+  redis:
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+  rabbitmq:
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+  minio:
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+  backend-api:
+    ports:
+      - "127.0.0.1:${BACKEND_API_PORT:-5000}:5000"
+  backend-mcp:
+    ports:
+      - "127.0.0.1:${MCP_PORT:-5001}:5001"
+  llm-gateway:
+    ports:
+      - "127.0.0.1:5002:5002"
+  runtime-controller:
+    ports:
+      - "127.0.0.1:5003:5003"

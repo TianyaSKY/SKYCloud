@@ -18,6 +18,8 @@ import time
 
 import pytest
 
+from app.infra.upload_limits import positive_limit
+
 from tests.real.conftest import skip_unless_ai_api, skip_unless_rabbitmq, skip_unless_symlink
 
 from app.exceptions import (
@@ -32,7 +34,6 @@ from app.features.file.service import (
     UPLOAD_FOLDER,
     _calculate_file_hash,
     _clear_search_cache,
-    _env_int,
     _escape_like,
     _generate_unique_filename,
     _get_reusable_source_file,
@@ -260,16 +261,17 @@ class TestFileServiceUtils:
     def test_env_int_valid(self, monkeypatch):
         """有效环境变量。"""
         monkeypatch.setenv("TEST_INT_VAR", "42")
-        assert _env_int("TEST_INT_VAR", 10) == 42
+        assert positive_limit("TEST_INT_VAR", 10) == 42
 
     def test_env_int_invalid(self, monkeypatch):
         """无效值回退默认。"""
         monkeypatch.setenv("TEST_INT_VAR", "not_a_number")
-        assert _env_int("TEST_INT_VAR", 10) == 10
+        with pytest.raises(RuntimeError):
+            positive_limit("TEST_INT_VAR", 10)
 
     def test_env_int_missing(self):
         """缺失变量回退默认。"""
-        assert _env_int("NONEXISTENT_VAR_XYZ", 99) == 99
+        assert positive_limit("NONEXISTENT_VAR_XYZ", 99) == 99
 
     def test_generate_unique_filename(self):
         """生成唯一文件名。"""
@@ -634,27 +636,23 @@ class TestMultipartUpload:
         with pytest.raises(PermissionDeniedError):
             _load_multipart_meta(1, "valid_upload_id_12345678")
 
-    def test_abort_multipart_upload(self, tmp_path, monkeypatch):
-        """取消分片上传清理目录。"""
+    def test_abort_multipart_upload(self, session, test_workspace, test_user, tmp_path, monkeypatch):
         monkeypatch.setattr("app.features.file.service.MULTIPART_ROOT", str(tmp_path))
-        upload_dir = _multipart_upload_dir(1, "abort_test_id_123456789")
-        os.makedirs(upload_dir, exist_ok=True)
-        abort_multipart_upload(1, "abort_test_id_123456789")
+        result = init_multipart_upload(session, test_workspace.id, test_user.id,
+                                      {"filename": "x", "total_size": 5})
+        upload_dir = _multipart_upload_dir(test_workspace.id, result["upload_id"])
+        abort_multipart_upload(session, test_workspace.id, test_user.id, result["upload_id"])
         assert not os.path.exists(upload_dir)
 
-    def test_get_multipart_upload_status(self, tmp_path, monkeypatch):
-        """查询上传状态。"""
+    def test_get_multipart_upload_status(self, session, test_workspace, test_user, tmp_path, monkeypatch):
         monkeypatch.setattr("app.features.file.service.MULTIPART_ROOT", str(tmp_path))
-        upload_dir = _multipart_upload_dir(1, "status_test_id_12345678")
-        chunks_dir = _multipart_chunks_dir(upload_dir)
-        os.makedirs(chunks_dir, exist_ok=True)
-        meta = {"upload_id": "status_test_id_12345678", "workspace_id": 1,
-                "chunk_size": 1024, "total_chunks": 3, "total_size": 3072}
-        _write_multipart_meta(_multipart_meta_path(upload_dir), meta)
-        # 模拟已上传分片
+        result = init_multipart_upload(session, test_workspace.id, test_user.id,
+                                      {"filename": "x", "total_size": 3072, "chunk_size": 1024})
+        upload_id = result["upload_id"]
+        chunks_dir = _multipart_chunks_dir(_multipart_upload_dir(test_workspace.id, upload_id))
         open(os.path.join(chunks_dir, "0.part"), "w").close()
         open(os.path.join(chunks_dir, "1.part"), "w").close()
-        result = get_multipart_upload_status(1, "status_test_id_12345678")
+        result = get_multipart_upload_status(session, test_workspace.id, test_user.id, upload_id)
         assert result["uploaded_chunks"] == [0, 1]
         assert result["total_chunks"] == 3
 
@@ -882,7 +880,7 @@ class TestMultipartUploadDeep:
                     f.write(b"x" * 100)
 
         with pytest.raises(BusinessRuleError, match="Invalid chunk_index"):
-            save_multipart_chunk(test_workspace.id, upload_id, "not_a_number", FakeChunk())
+            save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, "not_a_number", FakeChunk())
 
     def test_save_multipart_chunk_out_of_range(self, session, test_workspace, test_user, tmp_path, monkeypatch):
         """分片索引越界（line 562）。"""
@@ -898,7 +896,7 @@ class TestMultipartUploadDeep:
                     f.write(b"x" * 100)
 
         with pytest.raises(BusinessRuleError, match="out of range"):
-            save_multipart_chunk(test_workspace.id, upload_id, 5, FakeChunk())
+            save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 5, FakeChunk())
 
     def test_save_multipart_chunk_wrong_size(self, session, test_workspace, test_user, tmp_path, monkeypatch):
         """分片大小不匹配（lines 584-585）。"""
@@ -914,7 +912,7 @@ class TestMultipartUploadDeep:
                     f.write(b"x" * 50)  # 应该是 100 字节
 
         with pytest.raises(BusinessRuleError, match="Invalid chunk size"):
-            save_multipart_chunk(test_workspace.id, upload_id, 0, WrongSizeChunk())
+            save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 0, WrongSizeChunk())
 
     def test_complete_multipart_upload_missing_chunks(self, session, test_workspace, test_user, tmp_path, monkeypatch):
         """缺少分片时抛 BusinessRuleError（lines 615-616）。"""
@@ -974,8 +972,8 @@ class TestMultipartUploadDeep:
                 with open(path, "wb") as f:
                     f.write(content_part1)
 
-        save_multipart_chunk(test_workspace.id, upload_id, 0, Chunk0())
-        save_multipart_chunk(test_workspace.id, upload_id, 1, Chunk1())
+        save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 0, Chunk0())
+        save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 1, Chunk1())
         file_obj = complete_multipart_upload(session, test_workspace.id, test_user.id, upload_id)
         assert file_obj.name == "complete.bin"
         assert file_obj.file_size == total_size
@@ -1092,7 +1090,7 @@ class TestFileServiceDeepBranches:
     def test_upload_avatar(self, session, test_user, tmp_path, monkeypatch):
         """头像上传完整流程（lines 960-984）。"""
         monkeypatch.setattr("app.features.file.service.UPLOAD_FOLDER", str(tmp_path))
-        # 创建 workspace_id=1 的工作空间和根文件夹
+        # 创建属于头像目标用户的个人工作空间和根文件夹
         from app.models.workspace import Workspace
         ws = Workspace(name="公共空间", owner_id=test_user.id)
         session.add(ws)
@@ -1109,10 +1107,6 @@ class TestFileServiceDeepBranches:
                 with open(path, "wb") as f:
                     f.write(b"\x89PNG fake")
 
-        # upload_avatar 硬编码 workspace_id=1，所以需要确保 ws.id==1
-        # 在测试环境中第一个创建的 workspace 通常 id=1
-        if ws.id != 1:
-            pytest.skip("需要 workspace_id=1，当前测试环境不满足")
         result = upload_avatar(session, FakeAvatar(), test_user.id)
         assert "avatar_url" in result
         assert "/api/share/" in result["avatar_url"]
@@ -1126,7 +1120,7 @@ class TestFileServiceDeepBranches:
             "filename": "status.bin", "total_size": 200, "chunk_size": 100,
         })
         upload_id = result["upload_id"]
-        status = get_multipart_upload_status(test_workspace.id, upload_id)
+        status = get_multipart_upload_status(session, test_workspace.id, test_user.id, upload_id)
         assert status["upload_id"] == upload_id
         assert status["total_chunks"] == 2
         assert status["uploaded_chunks"] == []
@@ -1140,14 +1134,14 @@ class TestFileServiceDeepBranches:
         upload_id = result["upload_id"]
         upload_dir = tmp_path / "mp" / str(test_workspace.id) / upload_id
         assert upload_dir.exists()
-        abort_multipart_upload(test_workspace.id, upload_id)
+        abort_multipart_upload(session, test_workspace.id, test_user.id, upload_id)
         assert not upload_dir.exists()
 
-    def test_abort_multipart_upload_not_found(self, session, test_workspace, tmp_path, monkeypatch):
+    def test_abort_multipart_upload_not_found(self, session, test_workspace, test_user, tmp_path, monkeypatch):
         """取消不存在的上传不报错（shutil.rmtree ignore_errors=True）。"""
         monkeypatch.setattr("app.features.file.service.MULTIPART_ROOT", str(tmp_path / "mp"))
-        # abort_multipart_upload 使用 shutil.rmtree(ignore_errors=True)，不存在时静默成功
-        abort_multipart_upload(test_workspace.id, "nonexistent_id_123456")  # 不抛异常
+        with pytest.raises(PermissionDeniedError):
+            abort_multipart_upload(session, test_workspace.id, test_user.id, "nonexistent_id_123456")
 
     def test_save_multipart_chunk_tmp_file_exists(self, session, test_workspace, test_user, tmp_path, monkeypatch):
         """已存在 .tmp 文件时先删除再写入（line 572）。"""
@@ -1167,7 +1161,7 @@ class TestFileServiceDeepBranches:
                 with open(path, "wb") as f:
                     f.write(b"x" * 100)
 
-        res = save_multipart_chunk(test_workspace.id, upload_id, 0, Chunk())
+        res = save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 0, Chunk())
         assert res["chunk_index"] == 0
         assert 0 in res["uploaded_chunks"]
 
@@ -1198,7 +1192,7 @@ class TestFileServiceDeepBranches:
                     f.write(b"x" * 100)  # 写入 chunk_size 大小
 
         # expected_size 回退到 chunk_size=100，实际写入 100，应该成功
-        res = save_multipart_chunk(test_workspace.id, upload_id, 0, Chunk())
+        res = save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 0, Chunk())
         assert res["chunk_index"] == 0
 
     def test_complete_multipart_upload_tmp_final_exists(self, session, test_workspace, test_user, tmp_path, monkeypatch):
@@ -1321,9 +1315,6 @@ class TestFileServiceDeepBranches:
         session.add(avatar_folder)
         session.commit()
 
-        if ws.id != 1:
-            pytest.skip("需要 workspace_id=1")
-
         class FakeAvatar:
             filename = "av2.png"
             mimetype = "image/png"
@@ -1334,7 +1325,7 @@ class TestFileServiceDeepBranches:
         result = upload_avatar(session, FakeAvatar(), test_user.id)
         assert "avatar_url" in result
         # 确认没有创建新的“所有用户头像”文件夹
-        count = session.query(Folder).filter_by(workspace_id=1, name="所有用户头像").count()
+        count = session.query(Folder).filter_by(workspace_id=ws.id, name="所有用户头像").count()
         assert count == 1
 
     def test_complete_multipart_upload_merge_error(self, session, test_workspace, test_user, tmp_path, monkeypatch):

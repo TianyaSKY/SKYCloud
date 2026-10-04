@@ -25,45 +25,45 @@ def test_runtime_container_name_is_unique_per_user_and_workspace():
     assert docker_service._name(Workspace(), 19) == "skycloud-opencode-w12-u19"
 
 
-def test_local_api_uses_runtime_loopback_port(monkeypatch):
+def test_local_api_uses_authenticated_controller_relay(monkeypatch):
     class Workspace:
         id = 12
 
     runtime = SimpleNamespace(id=7, container_id="runtime-container")
     monkeypatch.delenv("OPENCODE_RUNTIME_BASE_URL", raising=False)
     monkeypatch.delenv("OPENCODE_SERVER_URL", raising=False)
-    monkeypatch.setattr(docker_service.os.path, "exists", lambda _path: False)
+    monkeypatch.setenv("RUNTIME_CONTROLLER_URL", "http://127.0.0.1:5003")
 
     with patch(
         "app.features.workspace.docker_service.get_access_url",
-        return_value="http://localhost:39123",
+        return_value="http://127.0.0.1:5003/runtimes/runtime-container/http",
     ):
         assert (
             docker_service.get_runtime_base_url(Workspace(), 8, runtime)
-            == "http://localhost:39123"
+            == "http://127.0.0.1:5003/runtimes/runtime-container/http"
         )
 
 
-def test_containerized_api_uses_runtime_docker_dns(monkeypatch):
+def test_containerized_api_uses_authenticated_controller_relay(monkeypatch):
     class Workspace:
         id = 12
 
     runtime = SimpleNamespace(id=7, container_id="runtime-container")
     monkeypatch.delenv("OPENCODE_RUNTIME_BASE_URL", raising=False)
     monkeypatch.delenv("OPENCODE_SERVER_URL", raising=False)
-    monkeypatch.setattr(docker_service.os.path, "exists", lambda _path: True)
+    monkeypatch.setenv("RUNTIME_CONTROLLER_URL", "http://runtime-controller-control:5003")
 
     assert (
         docker_service.get_runtime_base_url(Workspace(), 8, runtime)
-        == "http://skycloud-opencode-w12-u8:3000"
+        == "http://runtime-controller-control:5003/runtimes/runtime-container/http"
     )
 
 
-def test_local_api_runtime_uses_host_docker_internal_for_mcp(monkeypatch):
+def test_local_api_runtime_uses_isolated_mcp_service(monkeypatch):
     monkeypatch.delenv("OPENCODE_MCP_URL", raising=False)
-    monkeypatch.setattr(docker_service.os.path, "exists", lambda _path: False)
+    monkeypatch.setenv("RUNTIME_CONTROLLER_URL", "http://127.0.0.1:5003")
 
-    assert docker_service._mcp_endpoint() == f"http://host.docker.internal:{docker_service.MCP_PORT}/mcp"
+    assert docker_service._mcp_endpoint() == f"http://skycloud-backend-mcp:{docker_service.MCP_PORT}/mcp"
 
 
 def test_missing_official_image_is_pulled_automatically(monkeypatch):

@@ -124,7 +124,7 @@ def _mark_file_failed(session, file_id: int, error: Exception) -> None:
                         "处理文件时出现了错误\n"
                         f"时间:{datetime.datetime.now()}\n"
                         f"文件id:{file_id}\n"
-                        f"{error}\n"
+                        "请稍后重试或联系管理员。\n"
                     ),
                 },
             )

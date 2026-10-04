@@ -42,12 +42,15 @@ def _rabbitmq_port() -> int:
 def _connection_parameters() -> pika.connection.Parameters:
     """优先 RABBITMQ_URL；否则拼 host/port/凭证。"""
     rabbitmq_url = os.getenv("RABBITMQ_URL")
+    from app.infra.secrets import configured_password
     if rabbitmq_url:
+        from urllib.parse import urlsplit, unquote
+        configured_password("RabbitMQ URL password", unquote(urlsplit(rabbitmq_url).password or ""))
         return pika.URLParameters(rabbitmq_url)
 
     credentials = pika.PlainCredentials(
-        os.getenv("RABBITMQ_USER", "guest"),
-        os.getenv("RABBITMQ_PASSWORD", "guest"),
+        os.getenv("RABBITMQ_USER", "skycloud"),
+        configured_password("RABBITMQ_PASSWORD", os.getenv("RABBITMQ_PASSWORD")),
     )
     return pika.ConnectionParameters(
         host=os.getenv("RABBITMQ_HOST", "localhost"),

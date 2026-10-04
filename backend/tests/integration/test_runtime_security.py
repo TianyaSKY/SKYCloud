@@ -1,0 +1,306 @@
+"""Opt-in real Docker/Redis checks. All resources are uniquely named and removed.
+
+RUN_RUNTIME_SECURITY_TESTS=1 python -m pytest tests/integration/test_runtime_security.py
+"""
+
+import concurrent.futures
+import json
+import os
+from pathlib import Path
+import subprocess
+import time
+import uuid
+from unittest.mock import patch
+
+import pytest
+from fastapi import HTTPException
+from redis import Redis
+
+from app.features.runtime_llm import quota
+
+pytestmark = pytest.mark.skipif(os.getenv("RUN_RUNTIME_SECURITY_TESTS") != "1", reason="Opt-in isolated Docker integration tests")
+IMAGE = "redis:7-alpine"
+
+
+def docker(*args, check=True):
+    result = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=30)
+    if check and result.returncode:
+        raise AssertionError(result.stderr)
+    return result
+
+
+@pytest.fixture
+def infrastructure():
+    prefix = "skycloud-security-test-" + uuid.uuid4().hex[:12]
+    infra, runtime, control, target, bridge = [prefix + suffix for suffix in ("-infra", "-runtime", "-control", "-redis", "-bridge")]
+    cleanup = [bridge, target]
+    try:
+        docker("network", "create", infra)
+        docker("network", "create", control)
+        docker("network", "create", "--internal", runtime)
+        docker("run", "-d", "--name", target, "--network", infra, "-p", "127.0.0.1::6379", IMAGE)
+        port = docker("port", target, "6379/tcp").stdout.strip().rsplit(":", 1)[1]
+        client = Redis(host="127.0.0.1", port=int(port), decode_responses=True)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                if client.ping():
+                    break
+            except Exception:
+                time.sleep(0.1)
+        else:
+            raise AssertionError("Isolated Redis did not start")
+        yield {"infra": infra, "runtime": runtime, "control": control, "target": target, "bridge": bridge, "redis": client, "cleanup": cleanup}
+        client.close()
+    finally:
+        for name in reversed(cleanup):
+            docker("rm", "-f", name, check=False)
+        for name in (runtime, control, infra):
+            docker("network", "rm", name, check=False)
+
+
+def test_quota_is_atomic_across_concurrent_requests(infrastructure, monkeypatch):
+    client = infrastructure["redis"]
+    monkeypatch.setenv("RUNTIME_LLM_HOURLY_REQUEST_LIMIT", "7")
+    credential = {"sub": "test-user", "workspace_id": 17, "runtime_id": 29, "quota": 100000}
+
+    def invoke(_):
+        try:
+            quota.reserve(credential, 10, 20)
+            return True
+        except HTTPException as exc:
+            assert exc.status_code == 429
+            return False
+
+    with patch.object(quota, "redis_client", client), concurrent.futures.ThreadPoolExecutor(max_workers=16) as workers:
+        accepted = list(workers.map(invoke, range(40)))
+    assert sum(accepted) == 7
+    for key in client.scan_iter("runtime-llm-quota:*:requests"):
+        assert int(client.get(key)) == 7
+    for key in client.scan_iter("runtime-llm-quota:*:tokens"):
+        assert int(client.get(key)) == 210
+
+
+def test_quota_cannot_be_bypassed_by_recreating_runtime(infrastructure, monkeypatch):
+    client = infrastructure["redis"]
+    monkeypatch.setenv("RUNTIME_LLM_HOURLY_REQUEST_LIMIT", "1")
+    credential = {"sub": "restart-user", "workspace_id": 18, "runtime_id": 30, "quota": 100000}
+    with patch.object(quota, "redis_client", client):
+        quota.reserve(credential, 10, 20)
+        with pytest.raises(HTTPException) as denied:
+            quota.reserve({**credential, "runtime_id": 31}, 10, 20)
+    assert denied.value.status_code == 429
+    assert not list(client.scan_iter("runtime-llm-quota:runtime:31:*"))
+
+
+def test_internal_runtime_cannot_reach_infrastructure_by_name_or_ip(infrastructure):
+    target = infrastructure["target"]
+    inspect = json.loads(docker("inspect", target).stdout)[0]
+    address = inspect["NetworkSettings"]["Networks"][infrastructure["infra"]]["IPAddress"]
+    for host in (target, address):
+        result = docker("run", "--rm", "--network", infrastructure["runtime"], "--entrypoint", "sh", IMAGE,
+                        "-c", f"timeout 2 redis-cli -h {host} ping", check=False)
+        assert result.returncode != 0
+        assert "PONG" not in result.stdout
+    # A dedicated gateway with both interfaces can reach infrastructure.
+    docker("run", "-d", "--name", infrastructure["bridge"], "--network", infrastructure["infra"], IMAGE)
+    docker("network", "connect", infrastructure["runtime"], infrastructure["bridge"])
+    assert docker("exec", infrastructure["bridge"], "redis-cli", "-h", target, "ping").stdout.strip() == "PONG"
+
+
+def test_production_ports_and_runtime_network_are_restricted(tmp_path):
+    root = Path(__file__).resolve().parents[3]
+    generated_env = tmp_path / "deployment.env"
+    subprocess.run(["python3", str(root / "scripts/generate-env.py"), "--output", str(generated_env)], check=True, capture_output=True)
+    result = subprocess.run(
+        ["docker", "compose", "--env-file", str(generated_env), "-f", str(root / "docker-compose.yml"), "config", "--format", "json"],
+        env={**os.environ, "SKYCLOUD_ENV_FILE": str(generated_env)}, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    config = json.loads(result.stdout)
+    assert config["services"]["migrate"]["command"] == ["python", "-m", "entry.migrate"]
+    assert not any(mount.get("target", "").startswith("/docker-entrypoint-initdb.d") for mount in config["services"]["db"].get("volumes", []))
+    for service in ("backend-api", "backend-worker", "backend-mcp", "llm-gateway"):
+        assert config["services"][service]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
+    for name, service in config["services"].items():
+        if name != "frontend":
+            assert not service.get("ports"), name
+    assert config["networks"]["runtime-network"]["internal"] is True
+    assert "runtime-network" not in config["services"]["backend-api"]["networks"]
+    for name, service in config["services"].items():
+        socket_mounts = [mount for mount in service.get("volumes", []) if mount.get("target") == "/var/run/docker.sock"]
+        assert bool(socket_mounts) == (name == "runtime-controller")
+    assert "env_file" not in config["services"]["runtime-controller"]
+    for name in ("db", "redis", "rabbitmq", "minio"):
+        assert "runtime-network" not in config["services"][name]["networks"]
+
+
+def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import Session
+    from entry.bootstrap_admin import bootstrap_admin
+
+    root = Path(__file__).resolve().parents[3]
+    name = "skycloud-bootstrap-test-" + uuid.uuid4().hex[:12]
+    password = uuid.uuid4().hex + uuid.uuid4().hex
+    engine = None
+    try:
+        docker("run", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=" + password,
+               "-p", "127.0.0.1::5432", "-v", str(root / "backend/init_db.sql") + ":/docker-entrypoint-initdb.d/init_db.sql:ro",
+               "pgvector/pgvector:pg15")
+        port = docker("port", name, "5432/tcp").stdout.strip().rsplit(":", 1)[1]
+        engine = create_engine(f"postgresql://postgres:{password}@127.0.0.1:{port}/postgres")
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                with engine.connect() as conn:
+                    assert conn.scalar(text("SELECT count(*) FROM users")) == 0
+                break
+            except Exception:
+                time.sleep(0.2)
+        else:
+            raise AssertionError("PostgreSQL initialization failed")
+        from entry.migrate import upgrade
+        upgrade(engine)
+
+        def create(index):
+            with Session(engine) as session:
+                try:
+                    return bootstrap_admin(session, f"operator-{index}", "unique-long-admin-password")
+                except ValueError as exc:
+                    assert "already exists" in str(exc)
+                    return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
+            results = list(workers.map(create, range(2)))
+        winners = [result for result in results if result is not None]
+        assert len(winners) == 1
+        user_id = winners[0]
+        with engine.connect() as conn:
+            assert conn.scalar(text("SELECT count(*) FROM users WHERE role='admin'")) == 1
+            assert conn.scalar(text("SELECT owner_id FROM workspaces")) == user_id
+            assert conn.scalar(text("SELECT count(*) FROM workspace_members WHERE role='admin'")) == 1
+            assert conn.scalar(text("SELECT count(*) FROM folder WHERE parent_id IS NULL")) == 1
+    finally:
+        if engine:
+            engine.dispose()
+        docker("rm", "-f", name, check=False)
+
+
+@pytest.fixture
+def controller(infrastructure, monkeypatch):
+    import httpx
+    from runtime_controller.client import ControllerClient
+    from runtime_controller.policy import DEFAULT_IMAGE
+
+    name = infrastructure["target"] + "-controller"
+    infrastructure["cleanup"].append(name)
+    token, secret = "T" * 48, "S" * 48
+    gid = docker("run", "--rm", "--entrypoint", "stat", "-v", "/var/run/docker.sock:/var/run/docker.sock", IMAGE, "-c", "%g", "/var/run/docker.sock").stdout.strip()
+    docker("run", "-d", "--name", name, "--network", infrastructure["control"], "--network-alias", "runtime-controller-control",
+           "-p", "127.0.0.1::5003", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--group-add", gid,
+           "-v", "/var/run/docker.sock:/var/run/docker.sock",
+           "-e", "RUNTIME_CONTROLLER_TOKEN=" + token, "-e", "OPENCODE_SERVER_SECRET=" + secret,
+           "-e", "OPENCODE_IMAGE=" + DEFAULT_IMAGE, "-e", "SKYCLOUD_DOCKER_NETWORK=" + infrastructure["runtime"],
+           "-e", "RUNTIME_CONTROLLER_BIND_HOST=runtime-controller-control", "skycloud-runtime-controller:remediation-test")
+    docker("network", "connect", infrastructure["runtime"], name)
+    port = docker("port", name, "5003/tcp").stdout.strip().rsplit(":", 1)[1]
+    url = "http://127.0.0.1:" + port
+    monkeypatch.setenv("RUNTIME_CONTROLLER_TOKEN", token)
+    monkeypatch.setenv("RUNTIME_CONTROLLER_URL", url)
+    monkeypatch.setenv("OPENCODE_SERVER_SECRET", secret)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        try:
+            response = httpx.get(url + "/health", headers={"X-Runtime-Controller-Token": token}, timeout=1)
+            if response.status_code == 200:
+                break
+        except httpx.HTTPError:
+            pass
+        time.sleep(.2)
+    else:
+        raise AssertionError(docker("logs", name).stderr)
+    try:
+        yield {"client": ControllerClient(), "url": url, "token": token, "name": name}
+    finally:
+        logs = docker("logs", name, check=False)
+        Path("/private/tmp/skycloud-controller-integration.log").write_text(logs.stdout + logs.stderr)
+
+
+def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, controller):
+    import httpx
+    from types import SimpleNamespace
+    from app.features.workspace import docker_service as service
+    from runtime_controller.client import auth_headers
+
+    workspace = SimpleNamespace(id=int(uuid.uuid4().hex[:10], 16))
+    name = f"skycloud-opencode-w{workspace.id}-u1"
+    infrastructure["cleanup"].append(name)
+    container = service._create(workspace, 1, 1)
+    inspect = json.loads(docker("inspect", container.id).stdout)[0]
+    policy = inspect["HostConfig"]
+    assert policy["ReadonlyRootfs"] is True
+    assert policy["CapDrop"] == ["ALL"]
+    assert "no-new-privileges:true" in policy["SecurityOpt"]
+    assert policy["PidsLimit"] == 128
+    assert inspect["Config"]["User"] == "10001:10001"
+    assert docker("exec", container.id, "id", "-u").stdout.strip() == "10001"
+    assert docker("exec", container.id, "sh", "-c", "touch /etc/write-test", check=False).returncode != 0
+    assert "size=512m" in policy["Tmpfs"]["/workspace"]
+    assert not policy.get("PortBindings")
+    assert not inspect["Mounts"]
+    runtime = SimpleNamespace(container_id=container.id, id=1)
+    base = service.get_runtime_base_url(workspace, 1, runtime)
+    with httpx.Client(base_url=base, headers=auth_headers(base), timeout=10) as client:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                response = client.get("/global/health")
+            except httpx.HTTPError:
+                logs = docker("logs", container.id, check=False)
+                Path("/private/tmp/skycloud-runtime-integration.log").write_text(logs.stdout + logs.stderr)
+                raise
+            if response.status_code == 200:
+                break
+            time.sleep(.2)
+        else:
+            raise AssertionError("Sandbox not reachable through Controller")
+        config = service.merge_opencode_chat_provider({}, {"base_url": "http://gateway:5002/v1", "model": "test-model", "api_key": "scoped-token"})
+        service._write_opencode_config(container, config)
+        assert service._read_opencode_config(container) == config
+        assert client.post("/instance/dispose").status_code == 200
+        loaded = client.get("/config")
+        assert loaded.status_code == 200
+        assert loaded.json()["model"] == "skycloud-chat/test-model"
+        assert service._read_opencode_config(container)["provider"] == config["provider"]
+    async def exercise_async_client():
+        import asyncio
+        from app.features.assistant.clients.opencode_client import OpenCodeClient
+        async with OpenCodeClient(base, service.server_username(), service.server_password(1, 1, workspace.id), timeout=10) as client:
+            assert (await client.health())["healthy"] is True
+            session_id = await client.create_session("Controller relay session")
+            assert (await client.get_session(session_id))["id"] == session_id
+            stream = client.stream_events()
+            try:
+                event = await asyncio.wait_for(anext(stream), timeout=10)
+                assert isinstance(event, dict) and event.get("type")
+            finally:
+                await stream.aclose()
+    import asyncio
+    asyncio.run(exercise_async_client())
+    assert httpx.get(base + "/global/health", timeout=5).status_code == 401
+    container.stop()
+    assert controller["client"].get(container.id).status == "exited"
+    container.start()
+    assert controller["client"].get(container.id).status == "running"
+    container.remove()
+
+
+def test_runtime_network_cannot_contact_controller_rpc_listener(infrastructure, controller):
+    inspect = json.loads(docker("inspect", controller["name"]).stdout)[0]
+    address = inspect["NetworkSettings"]["Networks"][infrastructure["runtime"]]["IPAddress"]
+    # Supplying the valid service credential still cannot bypass binding the
+    # listener to the separate control interface.
+    script = "try { await fetch(process.argv[1], {headers:{'X-Runtime-Controller-Token':process.argv[2]}, signal:AbortSignal.timeout(1500)}); process.exit(1); } catch { process.exit(0); }"
+    docker("run", "--rm", "--network", infrastructure["runtime"], "node:20", "node", "--input-type=module", "-e", script,
+           "http://" + address + ":5003/health", controller["token"])

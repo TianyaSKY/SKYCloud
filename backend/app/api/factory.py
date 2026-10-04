@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app import initialize_application
 from app.exceptions import register_exception_handlers
+from app.infra.upload_limits import UploadBodyLimitMiddleware
 from app.features.auth.router import router as auth_router
 from app.features.chat.router import router as chat_router
 from app.features.file.router import router as file_router
@@ -40,6 +41,7 @@ def create_fastapi_app() -> FastAPI:
         lifespan=lifespan,
     )
     register_exception_handlers(app)
+    app.add_middleware(UploadBodyLimitMiddleware)
 
     app.include_router(auth_router, prefix="/api")
     app.include_router(folder_router, prefix="/api")

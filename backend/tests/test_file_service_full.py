@@ -1,7 +1,7 @@
 """file/service.py 完整测试。"""
 import json
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -232,7 +232,7 @@ class TestFileServiceMultipart:
 
             chunk = MagicMock()
             chunk.save = lambda p: open(p, "wb").write(b"a" * 10)
-            res = save_multipart_chunk(test_workspace.id, upload_id, 0, chunk)
+            res = save_multipart_chunk(session, 1, test_workspace.id, upload_id, 0, chunk)
         assert res["chunk_index"] == 0
 
     def test_complete_multipart_upload(self, session, test_workspace, tmp_path):
@@ -248,7 +248,7 @@ class TestFileServiceMultipart:
             for i in range(2):
                 chunk = MagicMock()
                 chunk.save = lambda p, d=b"x" * 10: open(p, "wb").write(d)
-                save_multipart_chunk(test_workspace.id, upload_id, i, chunk)
+                save_multipart_chunk(session, 1, test_workspace.id, upload_id, i, chunk)
             with patch("app.features.file.service._push_processing_queue"):
                 f = complete_multipart_upload(session, test_workspace.id, 1, upload_id)
             assert f.name == "comp.txt"
@@ -258,22 +258,22 @@ class TestFileServiceMultipart:
         with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path / ".multipart")):
             data = {"filename": "abort.txt", "total_size": 20, "chunk_size": 10}
             result = init_multipart_upload(session, test_workspace.id, 1, data)
-            abort_multipart_upload(test_workspace.id, result["upload_id"])
+            abort_multipart_upload(session, test_workspace.id, 1, result["upload_id"])
 
     def test_get_multipart_status(self, session, test_workspace, tmp_path):
         from app.features.file.service import init_multipart_upload, get_multipart_upload_status
         with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path / ".multipart")):
             data = {"filename": "stat.txt", "total_size": 20, "chunk_size": 10}
             result = init_multipart_upload(session, test_workspace.id, 1, data)
-            status = get_multipart_upload_status(test_workspace.id, result["upload_id"])
+            status = get_multipart_upload_status(session, test_workspace.id, 1, result["upload_id"])
         assert status["total_chunks"] == 2
 
 
 class TestFileServiceSearch:
-    def test_search_files_vector_no_config(self, session, test_workspace):
-        from app.features.file.service import _search_files_vector
+    async def test_search_files_vector_no_config(self, session, test_workspace):
+        from app.features.file.service import search_files
         with patch("app.features.file.service.get_embedding_model_config", side_effect=Exception("No config")):
-            result = _search_files_vector(session, test_workspace.id, "test", 1, 10)
+            result = await search_files(session, test_workspace.id, "test", 1, 10, "vector")
         assert "error" in result
 
     def test_get_files_and_folders(self, session, test_workspace):
@@ -305,22 +305,22 @@ class TestFileServiceSearch:
         result = get_all_files(session, test_workspace.id)
         assert isinstance(result, list)
 
-    def test_embedding_desc(self):
+    async def test_embedding_desc(self):
         from app.features.file.service import embedding_desc
         with patch("app.infra.llm.client._get_client") as mock_gc:
             mock_client = MagicMock()
             mock_resp = MagicMock()
             mock_resp.data = [MagicMock(embedding=[0.1, 0.2])]
             mock_resp.usage = None
-            mock_client.embeddings.create.return_value = mock_resp
+            mock_client.embeddings.create = AsyncMock(return_value=mock_resp)
             mock_gc.return_value = mock_client
-            result = embedding_desc("test", {"api": "x", "key": "y", "model": "z"})
+            result = await embedding_desc("test", {"api": "x", "key": "y", "model": "z"})
         assert result == [0.1, 0.2]
 
-    def test_embedding_desc_error(self):
+    async def test_embedding_desc_error(self):
         from app.features.file.service import embedding_desc
         with patch("app.infra.llm.client._get_client", side_effect=Exception("fail")):
-            result = embedding_desc("test", {"api": "x", "key": "y", "model": "z"})
+            result = await embedding_desc("test", {"api": "x", "key": "y", "model": "z"})
         assert result == []
 
     def test_retry_embedding(self, session, test_workspace, tmp_path):

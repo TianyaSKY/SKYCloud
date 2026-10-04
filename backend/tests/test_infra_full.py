@@ -314,7 +314,7 @@ class TestRemoteEmbedder:
 class TestTaskQueue:
     def test_connection_parameters_with_url(self):
         import app.infra.task_queue as tq
-        with patch.dict(os.environ, {"RABBITMQ_URL": "amqp://user:pass@host:5672/vhost"}):
+        with patch.dict(os.environ, {"RABBITMQ_URL": "amqp://user:explicit-test-queue-password@host:5672/vhost"}):
             params = tq._connection_parameters()
             assert params is not None
 
@@ -324,7 +324,7 @@ class TestTaskQueue:
             "RABBITMQ_HOST": "localhost",
             "RABBITMQ_PORT": "5672",
             "RABBITMQ_USER": "guest",
-            "RABBITMQ_PASSWORD": "guest",
+            "RABBITMQ_PASSWORD": "explicit-test-queue-password",
             "RABBITMQ_VHOST": "/",
             "RABBITMQ_HEARTBEAT": "60",
             "RABBITMQ_BLOCKED_CONNECTION_TIMEOUT": "30",
@@ -482,6 +482,7 @@ class TestLLMClient:
         c1 = client._get_client("http://api", "key")
         c2 = client._get_client("http://api", "key")
         assert c1 is c2
+        client._client_cache.clear()
 
     def test_get_client_different_keys(self):
         from app.infra.llm import client
@@ -494,6 +495,7 @@ class TestLLMClient:
         # Different key should create new entry
         c2 = client._get_client("http://api", "key2")
         assert len(client._client_cache) == 2
+        client._client_cache.clear()
 
     def test_chat_completion(self):
         from app.infra.llm import client
@@ -669,162 +671,22 @@ class TestLLMClient:
 
 
 class TestAppInit:
-    def test_ensure_file_vector_index_exists_correct(self):
-        from app import _ensure_file_vector_index
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        # existing index with vector_cosine_ops
-        mock_conn.execute.return_value.scalar.return_value = "CREATE INDEX ... vector_cosine_ops ..."
-        with patch("app.engine.connect", return_value=mock_conn):
-            _ensure_file_vector_index()
-        # Should not recreate
-        assert mock_conn.execute.call_count >= 1
-
-    def test_ensure_file_vector_index_recreate(self):
-        from app import _ensure_file_vector_index
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        # existing index with wrong operator
-        mock_conn.execute.return_value.scalar.return_value = "CREATE INDEX ... vector_l2_ops ..."
-        with patch("app.engine.connect", return_value=mock_conn):
-            _ensure_file_vector_index()
-
-    def test_ensure_file_vector_index_create_new(self):
-        from app import _ensure_file_vector_index
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_conn.execute.return_value.scalar.return_value = None
-        with patch("app.engine.connect", return_value=mock_conn):
-            _ensure_file_vector_index()
-
-    def test_ensure_file_vector_index_exception(self):
-        from app import _ensure_file_vector_index
-        with patch("app.engine.connect", side_effect=Exception("DB error")):
-            # Should not raise
-            _ensure_file_vector_index()
-
-    def test_ensure_file_content_hash_column_exists(self):
-        from app import _ensure_file_content_hash_column
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_conn.execute.return_value.scalar.return_value = 1
-        with patch("app.engine.connect", return_value=mock_conn):
-            _ensure_file_content_hash_column()
-
-    def test_ensure_file_content_hash_column_not_exists(self):
-        from app import _ensure_file_content_hash_column
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_conn.execute.return_value.scalar.return_value = None
-        with patch("app.engine.connect", return_value=mock_conn):
-            _ensure_file_content_hash_column()
-
-    def test_ensure_file_content_hash_column_exception(self):
-        from app import _ensure_file_content_hash_column
-        with patch("app.engine.connect", side_effect=Exception("DB error")):
-            _ensure_file_content_hash_column()
-
-    def test_ensure_mcp_token_value_column_exists(self):
-        from app import _ensure_mcp_token_value_column
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_conn.execute.return_value.scalar.return_value = 1
-        with patch("app.engine.connect", return_value=mock_conn):
-            _ensure_mcp_token_value_column()
-
-    def test_ensure_mcp_token_value_column_not_exists(self):
-        from app import _ensure_mcp_token_value_column
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_conn.execute.return_value.scalar.return_value = None
-        with patch("app.engine.connect", return_value=mock_conn):
-            _ensure_mcp_token_value_column()
-
-    def test_ensure_mcp_token_value_column_exception(self):
-        from app import _ensure_mcp_token_value_column
-        with patch("app.engine.connect", side_effect=Exception("DB error")):
-            _ensure_mcp_token_value_column()
-
-    def test_initialize_application_success(self):
+    def test_initialize_application_checks_schema_before_creating_upload_directory(self):
         from app import initialize_application
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        with patch("app.engine.connect", return_value=mock_conn), \
-             patch("app.os.path.exists", return_value=True), \
-             patch("app.Base.metadata.create_all"), \
-             patch("app._ensure_file_content_hash_column"), \
-             patch("app._ensure_mcp_token_value_column"), \
-             patch("app._ensure_file_vector_index"):
+        with patch("app.check_schema") as check, patch("app.check_legacy_admin"), patch("app.os.makedirs") as mkdir:
             initialize_application()
+        check.assert_called_once()
+        mkdir.assert_called_once()
 
-    def test_initialize_application_upload_dir_create(self):
+    def test_initialize_application_stops_on_schema_error(self):
         from app import initialize_application
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        with patch("app.engine.connect", return_value=mock_conn), \
-             patch("app.os.path.exists", return_value=False), \
-             patch("app.os.makedirs"), \
-             patch("app.Base.metadata.create_all"), \
-             patch("app._ensure_file_content_hash_column"), \
-             patch("app._ensure_mcp_token_value_column"), \
-             patch("app._ensure_file_vector_index"):
-            initialize_application()
-
-    def test_initialize_application_upload_dir_fail(self):
-        from app import initialize_application
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        with patch("app.engine.connect", return_value=mock_conn), \
-             patch("app.os.path.exists", return_value=False), \
-             patch("app.os.makedirs", side_effect=Exception("Permission denied")), \
-             patch("app.Base.metadata.create_all"), \
-             patch("app._ensure_file_content_hash_column"), \
-             patch("app._ensure_mcp_token_value_column"), \
-             patch("app._ensure_file_vector_index"):
-            initialize_application()  # should not raise
-
-    def test_initialize_application_db_retry_fail(self):
-        from app import initialize_application
-        # All retries fail
-        with patch("app.engine.connect", side_effect=Exception("DB connection failed")), \
-             patch("app.os.path.exists", return_value=True), \
-             patch("app.time.sleep"):
-            with pytest.raises(Exception, match="DB connection failed"):
+        with patch("app.check_schema", side_effect=RuntimeError("Schema mismatch")), patch("app.os.makedirs") as mkdir:
+            with pytest.raises(RuntimeError, match="Schema mismatch"):
                 initialize_application()
+        mkdir.assert_not_called()
 
-    def test_initialize_application_vector_ext_warning(self):
+    def test_initialize_application_stops_on_upload_directory_error(self):
         from app import initialize_application
-        mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        # First connect (SELECT 1) succeeds, second (CREATE EXTENSION) fails
-        call_count = [0]
-        def mock_execute(query):
-            call_count[0] += 1
-            return MagicMock()
-        mock_conn.execute = mock_execute
-        with patch("app.engine.connect", return_value=mock_conn), \
-             patch("app.os.path.exists", return_value=True), \
-             patch("app.Base.metadata.create_all"), \
-             patch("app._ensure_file_content_hash_column"), \
-             patch("app._ensure_mcp_token_value_column"), \
-             patch("app._ensure_file_vector_index"):
-            # Make CREATE EXTENSION fail on second connect
-            connect_count = [0]
-            def side_connect():
-                connect_count[0] += 1
-                if connect_count[0] == 2:
-                    raise Exception("CREATE EXTENSION failed")
-                return mock_conn
-            with patch("app.engine.connect", side_effect=side_connect):
-                initialize_application()  # should not raise
+        with patch("app.check_schema"), patch("app.check_legacy_admin"), patch("app.os.makedirs", side_effect=PermissionError("Permission denied")):
+            with pytest.raises(PermissionError):
+                initialize_application()

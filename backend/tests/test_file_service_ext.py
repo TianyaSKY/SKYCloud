@@ -130,6 +130,16 @@ class TestCleanupExpiredUploads:
 
 
 class TestGetRootFileId:
+    def test_redis_outage_falls_back_to_database(self, session, test_workspace):
+        redis = MagicMock()
+        redis.get.side_effect = ConnectionError("Redis unavailable")
+        redis.set.side_effect = ConnectionError("Redis unavailable")
+        file = File(name="root.txt", file_path="root.txt", workspace_id=test_workspace.id)
+        session.add(file)
+        session.flush()
+        with patch("app.features.file.service.redis_client", redis):
+            assert get_root_file_id(session, test_workspace.id) == file.id
+
     def test_cached(self, session, test_workspace):
         mock_redis = MagicMock()
         mock_redis.get.return_value = "42"

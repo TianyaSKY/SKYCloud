@@ -72,7 +72,8 @@ async def chat_completion(
     )
 
     if resp.usage:
-        _safe_record(
+        await asyncio.to_thread(
+            _safe_record,
             user_id=user_id,
             action=action,
             model_name=model,
@@ -106,7 +107,8 @@ async def embed_texts(
     vectors = [item.embedding[:1024] for item in sorted_data]
 
     if resp.usage and resp.usage.total_tokens:
-        _safe_record(
+        await asyncio.to_thread(
+            _safe_record,
             user_id=user_id,
             action="embedding",
             model_name=model,
