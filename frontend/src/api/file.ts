@@ -242,3 +242,8 @@ export const organizeFiles = () => {
 export const getProcessStatus = () => {
   return request.get<ProcessStatusResult>('/files/process_status')
 }
+
+/** Protected bytes always travel through the request header interceptor. */
+export const downloadFileBlob = (id: number, signal?: AbortSignal) => {
+  return request.get<Blob>(`/files/${id}/download`, { responseType: 'blob', signal, timeout: 0 })
+}

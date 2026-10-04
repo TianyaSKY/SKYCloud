@@ -5,6 +5,7 @@ import jwt
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from fastapi import HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials
 
 from app.api.dependencies import (
     get_current_user,
@@ -27,12 +28,12 @@ from app.models.workspace import Workspace
 class TestGetCurrentUser:
     async def test_no_token(self):
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(credentials=None, token=None, session=MagicMock())
+            await get_current_user(credentials=None, session=MagicMock())
         assert exc_info.value.status_code == 401
 
     async def test_valid_token(self, session, test_user):
         token = jwt.encode({"sub": str(test_user.id), "ver": test_user.auth_version}, SECRET_KEY, algorithm="HS256")
-        user = await get_current_user(credentials=None, token=token, session=session)
+        user = await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=session)
         assert user.id == test_user.id
 
     async def test_expired_token(self):
@@ -42,32 +43,32 @@ class TestGetCurrentUser:
             SECRET_KEY, algorithm="HS256"
         )
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(credentials=None, token=token, session=MagicMock())
+            await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=MagicMock())
         assert exc_info.value.status_code == 401
         assert "expired" in exc_info.value.detail.lower()
 
     async def test_invalid_token(self):
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(credentials=None, token="invalid.token.here", session=MagicMock())
+            await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid.token.here"), session=MagicMock())
         assert exc_info.value.status_code == 401
 
     async def test_no_sub(self):
         token = jwt.encode({"foo": "bar"}, SECRET_KEY, algorithm="HS256")
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(credentials=None, token=token, session=MagicMock())
+            await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=MagicMock())
         assert exc_info.value.status_code == 401
 
     async def test_mcp_token_revoked(self, session, test_user):
         token = jwt.encode({"sub": str(test_user.id), "type": "mcp"}, SECRET_KEY, algorithm="HS256")
         with patch("app.mcp.token_service.get_active_mcp_token", return_value=None):
             with pytest.raises(HTTPException) as exc_info:
-                await get_current_user(credentials=None, token=token, session=session)
+                await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=session)
             assert exc_info.value.status_code == 401
 
     async def test_mcp_token_valid(self, session, test_user):
         token = jwt.encode({"sub": str(test_user.id), "type": "mcp"}, SECRET_KEY, algorithm="HS256")
         with patch("app.mcp.token_service.get_active_mcp_token", return_value=MagicMock()):
-            user = await get_current_user(credentials=None, token=token, session=session)
+            user = await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=session)
         assert user.id == test_user.id
 
     async def test_bearer_credentials(self, session, test_user):
@@ -75,7 +76,7 @@ class TestGetCurrentUser:
         creds = MagicMock()
         creds.scheme = "Bearer"
         creds.credentials = token
-        user = await get_current_user(credentials=creds, token=None, session=session)
+        user = await get_current_user(credentials=creds, session=session)
         assert user.id == test_user.id
 
 

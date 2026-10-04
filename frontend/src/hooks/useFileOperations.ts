@@ -17,6 +17,7 @@ import {
 } from '../api/file'
 import { createShare } from '../api/share'
 import { logger } from '../utils/logger'
+import { downloadAttachment } from '../utils/fileDownload'
 
 /** 移动目标文件夹树节点；children 恒为数组（叶子为空） */
 interface FolderTreeNode {
@@ -103,16 +104,12 @@ export function useFileOperations(
     }
   }
 
-  const handleDownload = (record: FileItem) => {
-    // 原生 <a> 下载避免大文件 Blob 占内存；无法附 Authorization，暂经 query 传 token
-    const token = localStorage.getItem('token')
-    const url = `/api/files/${record.id}/download${token ? `?token=${encodeURIComponent(token)}` : ''}`
-    const link = document.createElement('a')
-    link.href = url
-    link.setAttribute('download', record.name)
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
+  const handleDownload = async (record: FileItem) => {
+    try {
+      await downloadAttachment(record.id, record.name)
+    } catch (error) {
+      logger.warn('文件下载失败 id={} error={}', record.id, error)
+    }
   }
 
   const handleShare = (record: FileItem) => {

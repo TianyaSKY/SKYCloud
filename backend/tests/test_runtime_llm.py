@@ -194,7 +194,7 @@ def test_model_token_cannot_access_rest_or_mcp(session, credential, runtime):
 
     credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=credential)
     with pytest.raises(HTTPException) as denied:
-        asyncio.run(get_current_user(credentials=credentials, token=None, session=session))
+        asyncio.run(get_current_user(credentials=credentials, session=session))
     assert denied.value.status_code == 403
     assert JWTAuthMiddleware._resolve_context(session, credential, str(runtime.workspace_id)) is None
 

@@ -4,13 +4,14 @@
 - authenticate_user 返回元组 (token, role, user_id)
 - generate_token(user_id) 接收 int
 - sys_dict service 使用 db.session（Flask 风格），不接受 session 参数
-- get_current_user 接收 credentials, token, session 三个参数
+- get_current_user 接收 credentials, session 两个参数
 - get_share_by_token 而非 get_share_link_by_token
 """
 import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from fastapi.security import HTTPAuthorizationCredentials
 import pytest
 
 
@@ -454,14 +455,14 @@ class TestDependencies:
         from app.api.dependencies import get_current_user
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(get_current_user(None, None, session))
+            asyncio.run(get_current_user(None, session))
         assert exc_info.value.status_code == 401
 
     def test_get_current_user_invalid_token(self, session):
         from app.api.dependencies import get_current_user
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(get_current_user(None, "invalid.token", session))
+            asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid.token"), session))
         assert exc_info.value.status_code == 401
 
     def test_get_current_user_valid_token(self, session, test_user):
@@ -471,14 +472,14 @@ class TestDependencies:
         mock_creds = MagicMock()
         mock_creds.scheme = "Bearer"
         mock_creds.credentials = token
-        result = asyncio.run(get_current_user(mock_creds, None, session))
+        result = asyncio.run(get_current_user(mock_creds, session))
         assert result.id == test_user.id
 
-    def test_get_current_user_query_token(self, session, test_user):
+    def test_get_current_user_header_token(self, session, test_user):
         from app.api.dependencies import get_current_user
         from app.features.auth.service import generate_token
         token = generate_token(test_user.id)
-        result = asyncio.run(get_current_user(None, token, session))
+        result = asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session))
         assert result.id == test_user.id
 
     def test_get_current_user_expired(self, session):
@@ -493,7 +494,7 @@ class TestDependencies:
         token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(get_current_user(None, token, session))
+            asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session))
         assert exc_info.value.status_code == 401
 
     def test_get_current_user_mcp_revoked(self, session, test_user):
@@ -503,7 +504,7 @@ class TestDependencies:
         with patch("app.mcp.token_service.get_active_mcp_token", return_value=None):
             from fastapi import HTTPException
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(get_current_user(None, token, session))
+                asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session))
             assert exc_info.value.status_code == 401
 
     def test_get_current_user_no_sub(self, session):
@@ -513,7 +514,7 @@ class TestDependencies:
         token = jwt.encode({}, SECRET_KEY, algorithm="HS256")
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(get_current_user(None, token, session))
+            asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session))
         assert exc_info.value.status_code == 401
 
     def test_get_current_user_user_not_found(self, session, test_user):
@@ -522,7 +523,7 @@ class TestDependencies:
         token = generate_token(99999)
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(get_current_user(None, token, session))
+            asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session))
         assert exc_info.value.status_code == 401
 
     def test_require_admin_admin(self, session, admin_user):

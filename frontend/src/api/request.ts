@@ -60,9 +60,13 @@ service.interceptors.request.use(
 // 此处是全局唯一的错误提示点，调用方不再重复弹消息。
 service.interceptors.response.use(
   (response) => response.data,
-  (error) => {
+  async (error) => {
+    if (axios.isCancel(error)) return Promise.reject(error)
     const status: number = error?.response?.status ?? 0
-    const data: unknown = error?.response?.data
+    let data: unknown = error?.response?.data
+    if (data instanceof Blob && data.size <= 65536 && data.type.includes('json')) {
+      try { data = JSON.parse(await data.text()) } catch { /* Keep the bounded original payload. */ }
+    }
     const payload = data as { message?: string; detail?: string; code?: number } | undefined
     const msg = payload?.message || payload?.detail || '网络错误'
     const code = payload?.code

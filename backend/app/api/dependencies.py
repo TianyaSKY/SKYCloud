@@ -1,11 +1,11 @@
 """HTTP 鉴权依赖：JWT 解析、管理员校验、资源归属检查、工作空间上下文。
 
-支持 Authorization Bearer 与 query ``token``（iframe / SSE 等无法自定义头的场景）。
+仅接受 Authorization Bearer；URL 参数不能用作身份凭据。
 MCP 专用 JWT 额外校验库内是否仍有效（吊销后立即拒绝）。
 """
 
 import jwt
-from fastapi import Depends, HTTPException, Request, status, Query
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -20,13 +20,13 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 async def get_current_user(
         credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-        token: str | None = Query(default=None, alias="token"),
         session: Session = Depends(get_db),
 ) -> User:
-    """解析当前请求用户；Bearer 优先于 query token。
+    """解析当前请求用户；仅接受 Bearer 请求头。
 
     MCP type 的 JWT 必须在 mcp_token 表中仍为 active，否则按未授权处理。
     """
+    token = None
     if credentials and credentials.scheme.lower() == "bearer":
         token = credentials.credentials
 

@@ -1,10 +1,12 @@
 <template>
-  <div class="markdown-body" v-html="renderedHtml"></div>
+  <div ref="bodyElement" class="markdown-body" v-html="renderedHtml" @click="downloadLink"></div>
 </template>
 
 <script lang="ts" setup>
-import { computed } from 'vue'
-import { marked, type Tokens } from 'marked'
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { downloadFileBlob } from '../api/file'
+import { downloadAttachment, protectedFileId } from '../utils/fileDownload'
+import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { logger } from '@/utils/logger'
 
@@ -12,41 +14,21 @@ const props = defineProps<{
   content: string
 }>()
 
-/**
- * 为每次渲染单独构造 marked renderer，避免模块级单例 renderer.image 被多实例共享
- * （聊天消息每条都是独立 MarkdownRenderer 实例）造成 token.href 串改/竞态。
- * 返回的 renderer 仅覆盖 image，其它渲染保持 marked 默认行为。
- */
-const buildRenderer = () => {
-  const renderer = new marked.Renderer()
-  const originalImage = renderer.image.bind(renderer)
+const PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
-  renderer.image = (token: Tokens.Image) => {
-    if (token.href && token.href.includes('/api/file')) {
-      // 兼容 AI 可能生成的两种历史下载路径，统一为后端实际路由。
-
-      // 安全说明：img 标签无法附加 Authorization header，仍需通过 query 传 token。
-      // TODO(安全)：后续应改为后端签发短时下载 URL，避免 JWT 落入日志/Referer。
-      let normalizedHref = token.href
-      const downloadMatch = normalizedHref.match(/\/download\/(\d+)/)
-      if (downloadMatch) {
-        const fileId = downloadMatch[1]
-        normalizedHref = `/api/files/${fileId}/download`
-      } else if (!normalizedHref.includes('/api/files/')) {
-        // 统一单数路径为复数路径。
-        normalizedHref = normalizedHref.replace('/api/file/', '/api/files/')
-      }
-
-      const authToken = localStorage.getItem('token')
-      if (authToken) {
-        normalizedHref = `${normalizedHref}${normalizedHref.includes('?') ? '&' : '?'}token=${authToken}`
-      }
-      token.href = normalizedHref
-    }
-    return originalImage(token)
+/** Normalize both Markdown and raw HTML file references before insertion. */
+function protectedMarkup(html: string) {
+  const template = document.createElement('template')
+  template.innerHTML = html
+  for (const element of template.content.querySelectorAll<HTMLElement>('img, a')) {
+    element.removeAttribute('data-protected-file')
+    const attribute = element.tagName === 'IMG' ? 'src' : 'href'
+    const id = protectedFileId(element.getAttribute(attribute) || '')
+    if (id === null) continue
+    element.dataset.protectedFile = String(id)
+    element.setAttribute(attribute, attribute === 'src' ? PLACEHOLDER : `/api/files/${id}/download`)
   }
-
-  return renderer
+  return template.innerHTML
 }
 
 const renderedHtml = computed(() => {
@@ -62,17 +44,65 @@ const renderedHtml = computed(() => {
     rawHtml = marked.parse(cleanContent, {
       breaks: true,
       gfm: true,
-      renderer: buildRenderer(),
+      renderer: new marked.Renderer(),
     }) as string
   } catch (err) {
     // 畸形 markdown 不应冒泡到 ErrorBoundary 整页替换；回退为原始文本（已过特殊标记过滤）。
     logger.warn('markdown 解析失败，回退为原始文本', err)
-    return DOMPurify.sanitize(cleanContent, { ADD_ATTR: ['target'] })
+    return protectedMarkup(DOMPurify.sanitize(cleanContent, { ADD_ATTR: ['target'] }))
   }
   // 防御 XSS：marked 默认不过滤 HTML，AI 输出与用户上传 markdown 均经过此组件渲染，
   // 必须用 DOMPurify 净化后再 v-html，阻断存储型/反射型 XSS。
-  return DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target'] })
+  return protectedMarkup(DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['target'] }))
 })
+
+const bodyElement = ref<HTMLElement | null>(null)
+let generation = 0
+const controllers = new Set<AbortController>()
+const objectUrls = new Set<string>()
+
+function clearImages() {
+  generation += 1
+  for (const controller of controllers) controller.abort()
+  controllers.clear()
+  for (const url of objectUrls) URL.revokeObjectURL(url)
+  objectUrls.clear()
+}
+
+async function loadImages() {
+  clearImages()
+  const current = generation
+  const images = bodyElement.value?.querySelectorAll<HTMLImageElement>('img[data-protected-file]') || []
+  await Promise.all(Array.from(images).map(async (image) => {
+    const controller = new AbortController()
+    controllers.add(controller)
+    try {
+      const blob = await downloadFileBlob(Number(image.dataset.protectedFile), controller.signal)
+      if (current !== generation || !image.isConnected) return
+      const url = URL.createObjectURL(blob)
+      objectUrls.add(url)
+      image.src = url
+    } catch (error) {
+      if (!controller.signal.aborted) logger.warn('Markdown 文件图片加载失败', error)
+    } finally {
+      controllers.delete(controller)
+    }
+  }))
+}
+
+watch(renderedHtml, loadImages, { flush: 'post' })
+onMounted(loadImages)
+
+function downloadLink(event: MouseEvent) {
+  const link = (event.target as HTMLElement | null)?.closest<HTMLAnchorElement>('a[data-protected-file]')
+  if (!link || !bodyElement.value?.contains(link)) return
+  event.preventDefault()
+  void downloadAttachment(Number(link.dataset.protectedFile), link.textContent || 'download')
+    .catch((error) => logger.warn('Markdown 文件下载失败', error))
+}
+
+onBeforeUnmount(clearImages)
+
 </script>
 
 <style scoped>

@@ -5,6 +5,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import jwt
+from fastapi.security import HTTPAuthorizationCredentials
 import pytest
 
 from app.exceptions import BusinessRuleError, ConflictError, ResourceNotFoundError
@@ -603,7 +604,7 @@ async def test_runtime_token_cannot_call_rest_user_dependency(session, test_user
         algorithm="HS256",
     )
     try:
-        await get_current_user(credentials=None, token=token, session=session)
+        await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=session)
     except HTTPException as exc:
         assert exc.status_code == 403
     else:

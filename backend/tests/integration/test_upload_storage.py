@@ -90,6 +90,9 @@ def test_authenticated_upload_download_multipart_owner_and_limits(upload_api, po
     assert response.status_code == 201, response.text
     record = response.json()
     assert record['file_size'] == 5
+    assert client.get(f"/api/files/{record['id']}/download",
+                      params={'token': generate_token(1)},
+                      headers={'X-Workspace-Id': '1'}).status_code == 401
     response = client.get(f"/api/files/{record['id']}/download", headers=headers)
     assert response.status_code == 200 and response.content == b'hello'
     monkeypatch.setattr(service, 'MAX_UPLOAD_SIZE', 5)

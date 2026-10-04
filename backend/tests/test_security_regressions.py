@@ -243,3 +243,14 @@ async def test_vector_search_failure_is_sanitized(session, test_workspace):
         result = await search_files(session, test_workspace.id, "query", search_type="vector")
     assert result["error"] == "Vector search is temporarily unavailable"
     assert "private-provider-key" not in str(result)
+
+
+def test_url_jwt_and_generic_cookies_never_authenticate(client, test_user, test_workspace):
+    token = generate_token(test_user.id, test_user.auth_version)
+    assert client.get(f'/api/users/{test_user.id}', params={'token': token}).status_code == 401
+    assert client.get('/api/files/1/download', params={'token': token},
+                      headers={'X-Workspace-Id': str(test_workspace.id)}).status_code == 401
+    client.cookies.set('token', token)
+    assert client.get(f'/api/users/{test_user.id}').status_code == 401
+    assert client.get(f'/api/users/{test_user.id}', params={'token': 'invalid'},
+                      headers=headers(test_user)).status_code == 200
