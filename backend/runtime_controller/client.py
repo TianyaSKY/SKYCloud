@@ -54,6 +54,9 @@ class ControllerClient:
     def get(self, ref):
         return RemoteContainer(self, self.call("GET", "/containers/" + quote(str(ref), safe="")))
 
+    def user_snapshot(self, user_id):
+        return self.call("GET", f"/users/{int(user_id)}/containers")
+
     def create(self, workspace_id, user_id, runtime_id):
         data = self.call("POST", "/containers/create", json={"workspace_id": int(workspace_id), "user_id": int(user_id), "runtime_id": int(runtime_id)})
         return RemoteContainer(self, data)

@@ -107,7 +107,8 @@
       "evidence": [
         "Async LLM chat/embedding accounting executes database writes in threads; chat stream usage recording also offloaded.",
         "Async Redis cacheable/cache_evict/cache_put read/write/evict moved to threads. Behavior tests hold slow accounting/Redis operations and prove event loop stays available.",
-        "Complete router/service event-loop and Session ownership audit remains pending."
+        "Complete router/service event-loop and Session ownership audit remains pending.",
+        "Workspace listing is a synchronous FastAPI handler, so its synchronous Session/Controller operations run in a worker thread instead of the event loop. Other router/service paths remain under audit."
       ]
     },
     {
@@ -186,10 +187,12 @@
     {
       "id": "workspace_queries",
       "requirement": "Eliminate workspace list N+1 queries",
-      "status": "in_progress",
+      "status": "verified",
       "evidence": [
-        "Joined aggregate service returns workspace, role and member count in one SQL query; service statement-count test passed.",
-        "Further route inspection found per-workspace entity/runtime queries and Controller calls in list_workspaces. HTTP-level list behavior must be repaired and verified before this requirement is complete."
+        "Actual GET /api/workspace joins membership aggregates and only the caller runtime in one SQL SELECT. Controller uses one authenticated per-user filtered Docker list request, with identity validation and no secret/environment/port output; listing runs in FastAPI threadpool.",
+        "Fresh running/stopped/missing runtime states are reconciled with one conditional bulk update; missing-runtime credential revocation is atomic and batched. Serialization precedes commit to avoid identity expiration N+1. Observed container/status/update timestamp conditions preserve concurrent recreations.",
+        "HTTP statement-count tests cover 1 and 25 workspaces with running/missing/unavailable Controller states and foreign-owner runtimes: exactly one joined list SELECT and one Controller call, at most five data statements including actual auth and both bulk writes. 147 targeted tests passed.",
+        "Three isolated real PostgreSQL cases passed with 25 workspaces, constant query counts, atomic missing-runtime revocation and a recreation committed through a separate connection during list observation. Real Docker/OpenCode lifecycle test confirms snapshot running/stopped/deleted states and owner filtering."
       ]
     },
     {
@@ -212,7 +215,8 @@
       "status": "in_progress",
       "evidence": [
         "14 real isolated PostgreSQL migration/schema/transaction/credential/quota scenarios passed; 5 real PostgreSQL/MinIO upload scenarios passed including SQL failure, storage denial and process crash reconciliation.",
-        "Prior isolated Redis quota and Docker runtime/network/controller checks passed. RabbitMQ integration, full vector query behavior and remaining service workflows still require real infrastructure coverage."
+        "Prior isolated Redis quota and Docker runtime/network/controller checks passed. RabbitMQ integration, full vector query behavior and remaining service workflows still require real infrastructure coverage.",
+        "Three real PostgreSQL workspace-list cases now verify constant SQL counts and concurrent recreation preservation; real Docker lifecycle/snapshot owner filtering passed on the rebuilt Controller."
       ]
     },
     {
@@ -249,10 +253,10 @@
   "validation": {
     "runtime": "/private/tmp/skycloud-fix-venv/bin/python",
     "targeted": "169 passed: security regressions, auth, workspace, router integration, exception/folder/MCP",
-    "unit_suite": "1236 passed, 0 failed, 28 opt-in skips; /private/tmp/skycloud-header-auth-complete-suite.log",
+    "unit_suite": "1245 passed, 0 failed, 31 opt-in skips; /private/tmp/skycloud-workspace-list-final-suite.log",
     "baseline_log": "/private/tmp/skycloud-baseline-tests.log",
     "baseline": "Original b37e070: 1088 passed, identical 32 failing test names, 2 skipped. Failures predate this repair.",
-    "latest_targeted": "77 passed: deployment credentials, security regressions, Controller, assistant, runtime LLM, MCP token refresh",
+    "latest_targeted": "147 passed: workspace HTTP list, routers, Controller, workspace service and security regressions; /private/tmp/skycloud-workspace-list-final-targeted.log",
     "docker_security": "6 passed with RUN_RUNTIME_SECURITY_TESTS=1: real Redis quotas, network boundaries, Compose, Controller lifecycle/config/OpenCode session/SSE; additional real PostgreSQL bootstrap test passed separately",
     "opencode_smoke": "1 passed with RUN_OPENCODE_E2E=1: official health/MCP/session operations without a provider key",
     "frontend": "Type-check and production build passed; 7 test files / 16 tests passed; /private/tmp/skycloud-header-download-final-frontend-tests.log",
@@ -265,11 +269,11 @@
     "upload_streaming": "13 behavior cases passed: exact bounds, early stream stop, encoded uploads, Content-Length/missing header, partial spool cleanup, part replacement and tampered assembly; /private/tmp/skycloud-stream-upload-final-targeted.log",
     "upload_quota": "16 quota behavior cases, 17 streaming/request-bound cases and 3 process-lease staging cases passed in the full suite. Capacity includes uncertain unreferenced objects until deletion is confirmed.",
     "upload_storage": "5 isolated real PostgreSQL/MinIO scenarios passed; /private/tmp/skycloud-upload-storage-crash-final-real.log: authenticated HTTP upload/download and multipart ownership/limits, duplicate completion, real SQL constraint failure, real S3 denial/recovery, and actual process crash after PUT before metadata commit.",
-    "header_download": "154 targeted backend cases passed; one isolated real PostgreSQL/MinIO HTTP upload/download/multipart scenario rerun passed, including rejection of query JWT. /private/tmp/skycloud-header-download-real-storage.log"
+    "header_download": "154 targeted backend cases passed; one isolated real PostgreSQL/MinIO HTTP upload/download/multipart scenario rerun passed, including rejection of query JWT. /private/tmp/skycloud-header-download-real-storage.log",
+    "workspace_list": "3 real PostgreSQL cases passed; /private/tmp/skycloud-workspace-list-real-postgres.log. 1 real Docker/OpenCode lifecycle and owner-scoped snapshot passed; /private/tmp/skycloud-workspace-snapshot-real.log. Disposable test containers removed."
   },
   "next_work": [
     "Replace iframe URL JWT with scoped short-lived tickets and functioning isolated UI proxy; implement memory tokens and refresh cookies",
-    "Repair workspace list route N+1 queries and verify actual HTTP-level SQL count",
     "Exercise complete OpenCode -> gateway -> mock-provider flow with isolated PostgreSQL and Redis",
     "Complete service/repository/API contracts, remaining frontend and real integration tests, CI, dependency locks and UTC"
   ]

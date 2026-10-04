@@ -238,6 +238,9 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
     infrastructure["cleanup"].append(name)
     container = service._create(workspace, 1, 1)
     inspect = json.loads(docker("inspect", container.id).stdout)[0]
+    snapshot = controller["client"].user_snapshot(1)
+    assert {"id": container.id, "workspace_id": workspace.id, "user_id": 1, "runtime_id": 1, "status": "running"} in snapshot
+    assert controller["client"].user_snapshot(2) == []
     policy = inspect["HostConfig"]
     assert policy["ReadonlyRootfs"] is True
     assert policy["CapDrop"] == ["ALL"]
@@ -291,9 +294,11 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
     assert httpx.get(base + "/global/health", timeout=5).status_code == 401
     container.stop()
     assert controller["client"].get(container.id).status == "exited"
+    assert next(row for row in controller["client"].user_snapshot(1) if row["id"] == container.id)["status"] == "stopped"
     container.start()
     assert controller["client"].get(container.id).status == "running"
     container.remove()
+    assert not any(row["id"] == container.id for row in controller["client"].user_snapshot(1))
 
 
 def test_runtime_network_cannot_contact_controller_rpc_listener(infrastructure, controller):

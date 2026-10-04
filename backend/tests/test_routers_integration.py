@@ -120,9 +120,8 @@ class TestWorkspaceRouter:
     def test_list_workspaces(self, session, test_user):
         from app.features.workspace.router import list_workspaces
 
-        with patch("app.features.workspace.service.get_user_workspaces", return_value=[]):
-            import asyncio
-            result = asyncio.run(list_workspaces(test_user, session))
+        with patch("app.features.workspace.service.get_user_workspace_rows", return_value=[]):
+            result = list_workspaces(test_user, session)
         assert "workspaces" in result
 
     def test_get_workspace(self, session, test_user, test_workspace):

@@ -6,7 +6,9 @@ import time
 
 import httpx
 from loguru import logger
+from sqlalchemy import case, update
 from sqlalchemy.orm import Session
+from app.models.mcp_runtime_token import McpRuntimeToken
 
 from app.exceptions import BusinessRuleError
 from app.features.workspace import runtime_service
@@ -283,6 +285,72 @@ def summary(
         "config_version": None,
         "access_url": get_access_url(workspace) if workspace.status == "running" else None,
     }
+
+
+def list_summaries(session: Session, rows: list, user_id: int) -> list[dict]:
+    """Refresh a user's list with constant database and Controller requests.
+
+    Serialize before committing so expire_on_commit cannot cause lazy reloads.
+    No host access URL is available for the isolated, unpublished runtimes.
+    """
+    runtimes = [runtime for _, runtime in rows if runtime is not None]
+    snapshot = None
+    if any(runtime.container_id for runtime in runtimes):
+        try:
+            snapshot = {(row["runtime_id"], row["workspace_id"], row["id"]): row["status"]
+                        for row in _client().user_snapshot(user_id)
+                        if row["user_id"] == user_id}
+        except DockerException as exc:
+            logger.warning("批量同步 OpenCode 状态失败：user_id={}, reason={}", user_id, exc)
+    changed_status, changed_container, missing = {}, {}, []
+    result = []
+    for workspace, runtime in rows:
+        if runtime is None:
+            result.append({**workspace, "runtime_id": None, "user_id": user_id,
+                           "config_version": None, "access_url": None})
+            continue
+        status, container_id = runtime.status, runtime.container_id
+        if snapshot is not None and container_id:
+            key = (runtime.id, runtime.workspace_id, container_id)
+            status = snapshot.get(key, "stopped")
+            if key not in snapshot:
+                container_id = None
+                missing.append(runtime.id)
+            if status != runtime.status or container_id != runtime.container_id:
+                changed_status[runtime.id] = status
+                changed_container[runtime.id] = container_id
+        result.append({**workspace, "runtime_id": runtime.id, "user_id": user_id,
+                       "container_id": container_id[:12] if container_id else None,
+                       "status": status, "error_message": runtime.error_message,
+                       "config_version": runtime.config_version, "access_url": None})
+    if changed_status:
+        now = beijing_now()
+        # Compare the observed container too: a concurrent recreation must not
+        # be overwritten or have its new credentials revoked by an old snapshot.
+        observed = {runtime.id: runtime for runtime in runtimes if runtime.id in changed_status}
+        updated = session.execute(
+            update(OpenCodeRuntime).where(
+                OpenCodeRuntime.id.in_(observed),
+                OpenCodeRuntime.container_id == case(
+                    {key: runtime.container_id for key, runtime in observed.items()}, value=OpenCodeRuntime.id),
+                OpenCodeRuntime.status == case(
+                    {key: runtime.status for key, runtime in observed.items()}, value=OpenCodeRuntime.id),
+                OpenCodeRuntime.updated_at == case(
+                    {key: runtime.updated_at for key, runtime in observed.items()}, value=OpenCodeRuntime.id),
+            )
+            .values(status=case(changed_status, value=OpenCodeRuntime.id),
+                    container_id=case(changed_container, value=OpenCodeRuntime.id),
+                    last_used_at=now)
+            .returning(OpenCodeRuntime.id),
+            execution_options={"synchronize_session": False},
+        ).scalars().all()
+        removed = set(updated).intersection(missing)
+        if removed:
+            session.execute(update(McpRuntimeToken).where(
+                McpRuntimeToken.runtime_id.in_(removed), McpRuntimeToken.revoked_at.is_(None)
+            ).values(revoked_at=now), execution_options={"synchronize_session": False})
+        session.commit()
+    return result
 
 
 def start(session: Session, workspace: Workspace, user_id: int) -> Workspace:

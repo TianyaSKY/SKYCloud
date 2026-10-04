@@ -76,6 +76,30 @@ class Engine:
                 "image": container.attrs["Config"].get("Image"), "labels": {key: value for key, value in labels.items() if key in {"skycloud.component", "skycloud.workspace_id", "skycloud.user_id", "skycloud.runtime_id", "skycloud.runtime_policy"}},
                 "ports": container.attrs.get("NetworkSettings", {}).get("Ports", {})}
 
+    def user_snapshot(self, user_id):
+        """One Docker list request, exposing only this user's managed identities."""
+        rows = self.client.api.containers(all=True, filters={"label": [
+            "skycloud.component=opencode-runtime", f"skycloud.user_id={user_id}",
+        ]})
+        result = []
+        for row in rows:
+            labels = row.get("Labels") or {}
+            try:
+                workspace_id = int(labels["skycloud.workspace_id"])
+                owner_id = int(labels["skycloud.user_id"])
+                runtime_id = int(labels["skycloud.runtime_id"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            if (min(workspace_id, owner_id, runtime_id) <= 0 or owner_id != user_id
+                    or labels.get("skycloud.component") != "opencode-runtime"
+                    or "/" + container_name(workspace_id, owner_id) not in row.get("Names", [])
+                    or not re.fullmatch(r"[0-9a-f]{64}", row.get("Id", ""))):
+                continue
+            result.append({"id": row["Id"], "workspace_id": workspace_id,
+                           "user_id": owner_id, "runtime_id": runtime_id,
+                           "status": "running" if row.get("State") == "running" else "stopped"})
+        return result
+
     def create(self, workspace_id, user_id, runtime_id):
         network = self.client.networks.get(self.settings.network)
         if not network.attrs.get("Internal"):

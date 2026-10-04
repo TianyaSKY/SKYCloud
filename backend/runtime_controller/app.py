@@ -106,6 +106,12 @@ def create_app(settings=None, engine=None):
     def create(payload: CreateRequest):
         return engine.create(**payload.model_dump())
 
+    @app.get("/users/{user_id}/containers")
+    def user_snapshot(user_id: int):
+        if user_id <= 0 or user_id > 2**63 - 1:
+            raise HTTPException(422, "Invalid user identity")
+        return engine.user_snapshot(user_id)
+
     @app.get("/containers/{ref}")
     def inspect(ref: str):
         return engine.inspect(ref)

@@ -167,3 +167,29 @@ def test_control_token_is_sent_only_to_controller_url(monkeypatch):
     assert auth_headers("http://external.example:3000") == {}
     assert auth_headers("http://controller:5003.evil/runtimes/x/http") == {}
     assert auth_headers(runtime_url("a" * 64))["X-Runtime-Controller-Token"] == "private-controller-credential"
+
+
+def test_user_snapshot_is_one_filtered_docker_request(settings):
+    from copy import deepcopy
+    labels = settings.container_options(2, 3, 4)['labels']
+    good = dict(Id='a' * 64, Names=['/skycloud-opencode-w2-u3'], State='running',
+                Labels=labels, Env=['PRIVATE'], Ports=[{'PublicPort': 1}])
+    foreign = deepcopy(good); foreign['Labels']['skycloud.user_id'] = '9'
+    invalid = deepcopy(good); invalid['Names'] = ['/database']
+    client = Mock(); client.api.containers.return_value = [good, foreign, invalid]
+    result = Engine(settings, client).user_snapshot(3)
+    assert result == [dict(id='a' * 64, workspace_id=2, user_id=3, runtime_id=4, status='running')]
+    client.api.containers.assert_called_once_with(all=True, filters={'label': [
+        'skycloud.component=opencode-runtime', 'skycloud.user_id=3']})
+    client.containers.get.assert_not_called()
+    assert 'PRIVATE' not in str(result) and 'PublicPort' not in str(result)
+
+
+def test_user_snapshot_endpoint_requires_auth_and_positive_identity(settings):
+    engine = Mock(); engine.user_snapshot.return_value = []
+    with TestClient(create_app(settings, engine)) as client:
+        assert client.get('/users/3/containers').status_code == 401
+        headers = {'X-Runtime-Controller-Token': settings.token}
+        assert client.get('/users/0/containers', headers=headers).status_code == 422
+        assert client.get('/users/3/containers', headers=headers).json() == []
+    engine.user_snapshot.assert_called_once_with(3)

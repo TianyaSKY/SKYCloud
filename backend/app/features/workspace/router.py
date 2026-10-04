@@ -46,15 +46,13 @@ async def create_workspace(
 
 
 @router.get("/workspace")
-async def list_workspaces(
+def list_workspaces(
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
 ):
     """列出当前用户加入的所有工作空间。"""
-    workspaces = workspace_service.get_user_workspaces(session, current_user.id)
-    for workspace in workspaces:
-        entity = workspace_service.get_workspace(session, workspace["id"])
-        workspace.update(docker_service.summary(session, entity, current_user.id))
+    rows = workspace_service.get_user_workspace_rows(session, current_user.id)
+    workspaces = docker_service.list_summaries(session, rows, current_user.id)
     return {"workspaces": workspaces, "code": 200}
 
 
