@@ -306,7 +306,10 @@ RAG 分块检索同时限定分块与所属文件的工作空间，避免历史�
 
 RabbitMQ 发布使用持久化消息和 publisher confirms，消费者在任务结果落库后手动确认。执行线程池满时连接线程继续处理心跳，未确认消息在连接关闭后由 broker 重投；重连后的旧 delivery tag 不会用于新 channel。语义为至少一次，任务可能重复执行。非法消息和无法持久化结果的异常任务先复制到持久化 `failed_task_queue`，等待发布确认后才确认原消息；失败队列写入失败则保留原消息。失败队列只保存来源队列、原始消息 Base64 和异常类型，需管理员核实失败原因后按原 payload 重投；整理任务重投前需核实当前空间锁状态。已持久化的文件业务失败仍通过文件状态展示。
 
-真实队列检查：在 backend 目录运行 `RUN_TASK_QUEUE_TESTS=1 python -m pytest -o addopts='' tests/integration/test_task_queue.py`。测试使用生产固定摘要的 RabbitMQ 镜像，创建并清理独立容器，覆盖不可路由发布拒绝、断线重投、旧 tag 隔离、满载心跳、完成后确认、异常任务保留及 broker 重启后的消息持久化。业务处理函数使用受控测试任务；完整文件索引与整理的真实数据库/存储/MQ 联动、重复任务幂等性，以及数据库提交与入队之间的可靠交接仍需继续验证。确认机制参考 [RabbitMQ 官方说明](https://www.rabbitmq.com/docs/confirms)。
+真实队列检查：在 backend 目录运行 `RUN_TASK_QUEUE_TESTS=1 python -m pytest -o addopts='' tests/integration/test_task_queue.py`。测试使用生产固定摘要的 RabbitMQ 镜像，创建并清理独立容器，覆盖不可路由发布拒绝、断线重投、旧 tag 隔离、满载心跳、完成后确认、异常任务保留及 broker 重启后的消息持久化。业务处理函数使用受控测试任务；真实文本文件索引链路见后续测试；完整 AI 整理流程、重复任务幂等性，以及数据库提交与入队之间的可靠交接仍需继续验证。确认机制参考 [RabbitMQ 官方说明](https://www.rabbitmq.com/docs/confirms)。
 
 
 Worker 的失败状态写入发生数据库异常时会回滚并向队列层传播，避免仅记录日志后确认任务。索引结果写入先锁定文件行，再在同一事务替换全部分块，避免并发重投互相穿插。整理锁按完整 token 和 queued/running 状态比较；过期或被替换的锁不能启动整理，也不能释放新任务的锁。这尚不保证整个 AI 整理流程只执行一次。真实 PostgreSQL/Redis 检查可在 backend 目录运行 `RUN_WORKER_OUTCOME_TESTS=1 python -m pytest -o addopts='' tests/integration/test_worker_outcomes.py`，测试会清理自身的独立容器。
+
+
+文本文件索引集成检查可在 backend 目录执行 `RUN_INDEXING_PIPELINE_TESTS=1 SKYCLOUD_TEST_MINIO_IMAGE=sha256:<已构建的 MinIO 镜像ID> python -m pytest -o addopts='' tests/integration/test_indexing_pipeline.py`。它将实际 HTTP 上传、RabbitMQ、MinIO 和 PostgreSQL 串联，在独立子进程运行生产 Worker 和锁定版本 OpenAI SDK，使用本地 HTTP 模型端点提供合成响应；上传 API 的 Redis 缓存仍使用测试替身。成功场景重复投递同一文件，核实完整向量、分块替换、Token 记录和临时文件清理。供应商拒绝、空向量响应及全零向量场景核实明确失败状态和收件箱通知。Embedding 失败不再静默填充空向量并报告成功；缺失数量、非 1024 维、非有限或全零向量都会让索引失败。

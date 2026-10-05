@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import math
 from dataclasses import dataclass
 
 from app.exceptions import ResourceNotFoundError
@@ -154,18 +155,8 @@ def _embed_text(
     *,
     user_id: int,
 ) -> list[float]:
-    """Worker-compatible single embedding; failed calls degrade to an empty vector."""
-    try:
-        vectors = embed_texts(
-            texts=text,
-            config=config,
-            user_id=user_id,
-            query_summary=text[:100] if text else None,
-        )
-        return vectors[0] if vectors else []
-    except Exception as exc:
-        logger.exception("Embedding failed: {}", exc)
-        return []
+    """Generate a complete searchable file vector or fail the indexing task."""
+    return _embed_texts([text], config, user_id=user_id)[0]
 
 
 def _embed_texts(
@@ -174,19 +165,23 @@ def _embed_texts(
     *,
     user_id: int,
 ) -> list[list[float]]:
-    """Worker-compatible batch embedding that keeps result alignment on failure."""
+    """Require one valid database-compatible vector for every requested text."""
     if not texts:
         return []
-    try:
-        return embed_texts(
-            texts=texts,
-            config=config,
-            user_id=user_id,
-            query_summary=f"batch({len(texts)} texts)",
-        )
-    except Exception as exc:
-        logger.exception("Batch embedding failed: {}", exc)
-        return [[] for _ in texts]
+    vectors = embed_texts(
+        texts=texts,
+        config=config,
+        user_id=user_id,
+        query_summary=f"batch({len(texts)} texts)",
+    )
+    if len(vectors) != len(texts):
+        raise ValueError("Embedding response does not match the requested text count")
+    for vector in vectors:
+        if (len(vector) != 1024
+                or any(not math.isfinite(value) for value in vector)
+                or not any(value != 0 for value in vector)):
+            raise ValueError("Embedding response must contain finite nonzero 1024-dimensional vectors")
+    return vectors
 
 
 def _build_chunk_results(
@@ -212,14 +207,7 @@ def _build_chunk_results(
     ]
     vectors = _embed_texts(embedding_texts, emb_config, user_id=user_id)
     if len(vectors) != len(chunks):
-        logger.warning(
-            "Embedding returned %s vectors for %s chunks; padding to preserve alignment",
-            len(vectors),
-            len(chunks),
-        )
-        vectors = vectors[: len(chunks)] + [
-            [] for _ in range(len(chunks) - len(vectors))
-        ]
+        raise ValueError("Embedding response does not match the extracted chunk count")
 
     return [
         ChunkIndexResult(
