@@ -1,205 +1,140 @@
-import type { FilePreflightResponse, MultipartInitResponse } from '../api/file'
-import {
-  completeMultipartUpload,
-  initMultipartUpload,
-  preflightFileUpload,
-  uploadFile,
-  uploadMultipartChunk,
-} from '../api/file'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { isCancel, type AxiosRequestConfig } from 'axios'
+import type { MultipartInitRequest, MultipartInitResponse } from '../api/file'
+import { completeMultipartUpload, initMultipartUpload, preflightFileUpload, uploadFile, uploadMultipartChunk } from '../api/file'
+import { assertRequestContext, captureRequestContext, type RequestContext } from './requestContext'
 
 type ProgressCallback = (percent: number) => void
-
-interface UploadResult {
-  instantUpload: boolean
-}
-
-/** 超过此大小走分片上传，避免单请求超时与内存压力 */
+interface UploadResult { instantUpload: boolean }
+export interface UploadOptions { signal?: AbortSignal; context?: RequestContext }
 const LARGE_FILE_THRESHOLD = 20 * 1024 * 1024
-/** 客户端默认分片大小；服务端 init 返回的 chunk_size 优先 */
-const CLIENT_DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024
-const CHUNK_UPLOAD_RETRIES = 3
-/** 分片串行上传，避免多连接抢占带宽导致整体更慢 */
-const CHUNK_UPLOAD_CONCURRENCY = 1
-const RETRY_BASE_DELAY_MS = 500
+const CHUNK_SIZE = 2 * 1024 * 1024
+const CHUNK_UPLOAD_ATTEMPTS = 3
+const restartedUploads = new Map<string, string>()
 
-function clampPercent(value: number): number {
-  if (!Number.isFinite(value)) return 0
-  if (value < 0) return 0
-  if (value > 100) return 100
-  return value
+function statusOf(error: unknown): number {
+  return error && typeof error === 'object' && 'status' in error ? Number(error.status) : 0
 }
 
-function getUploadId(file: File, parentId?: number | null): string {
-  const raw = `${file.name}:${file.size}:${file.lastModified}:${parentId ?? 0}`
-  let hash = 0
-  for (let i = 0; i < raw.length; i++) {
-    hash = (hash * 31 + raw.charCodeAt(i)) >>> 0
-  }
-  return `up_${hash.toString(16)}_${file.size.toString(16)}`
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function calculateFileHash(file: File): Promise<string> {
-  // TODO(性能)：file.arrayBuffer() 整文件入内存，大文件可能 OOM；
-  // 后续可改为 ReadableStream 流式 SHA-256 分块哈希，本次保持算法不变。
-  const buffer = await file.arrayBuffer()
-  const digest = await crypto.subtle.digest('SHA-256', buffer)
-  return Array.from(new Uint8Array(digest))
-    .map((value) => value.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-function getChunkSize(file: File, chunkIndex: number, chunkSize: number): number {
-  const start = chunkIndex * chunkSize
-  const end = Math.min(file.size, start + chunkSize)
-  return Math.max(0, end - start)
-}
-
-async function uploadChunkWithRetry(file: File, uploadId: string, chunkIndex: number, chunkSize: number) {
-  const start = chunkIndex * chunkSize
-  const end = Math.min(file.size, start + chunkSize)
-  const chunkBlob = file.slice(start, end)
-
-  for (let attempt = 1; attempt <= CHUNK_UPLOAD_RETRIES; attempt++) {
-    try {
-      const formData = new FormData()
-      formData.append('upload_id', uploadId)
-      formData.append('chunk_index', chunkIndex.toString())
-      formData.append('chunk', chunkBlob, `${file.name}.part${chunkIndex}`)
-      await uploadMultipartChunk(formData)
-      return
-    } catch (error) {
-      if (attempt >= CHUNK_UPLOAD_RETRIES) {
-        throw error
-      }
-      await sleep(RETRY_BASE_DELAY_MS * attempt)
-    }
-  }
-}
-
-async function uploadSmallFile(
-  file: File,
-  contentHash: string,
-  parentId?: number | null,
-  onProgress?: ProgressCallback,
-): Promise<UploadResult> {
-  const preflight: FilePreflightResponse = await preflightFileUpload({
-    filename: file.name,
-    total_size: file.size,
-    parent_id: parentId ?? undefined,
-    mime_type: file.type || undefined,
-    content_hash: contentHash,
+async function wait(ms: number, signal?: AbortSignal) {
+  if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError')
+  await new Promise<void>((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(new DOMException('Upload cancelled', 'AbortError')) }
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve() }, ms)
+    signal?.addEventListener('abort', abort, { once: true })
   })
-  if (preflight.instant_upload) {
-    onProgress?.(100)
-    return { instantUpload: true }
-  }
-
-  const formData = new FormData()
-  formData.append('file', file)
-  if (parentId !== undefined && parentId !== null) {
-    formData.append('parent_id', String(parentId))
-  }
-
-  await uploadFile(formData, {
-    onUploadProgress: (event) => {
-      const total = event.total || file.size
-      if (!total) return
-      const percent = clampPercent((event.loaded / total) * 100)
-      onProgress?.(percent)
-    },
-  })
-  onProgress?.(100)
-  return { instantUpload: false }
 }
 
-async function uploadLargeFile(
-  file: File,
-  contentHash: string,
-  parentId?: number | null,
-  onProgress?: ProgressCallback,
-): Promise<UploadResult> {
-  const initRes: MultipartInitResponse = await initMultipartUpload({
-    filename: file.name,
-    total_size: file.size,
-    chunk_size: CLIENT_DEFAULT_CHUNK_SIZE,
-    parent_id: parentId ?? undefined,
-    mime_type: file.type || undefined,
-    content_hash: contentHash,
-    upload_id: getUploadId(file, parentId),
-  })
-
-  if (initRes.instant_upload) {
-    onProgress?.(100)
-    return { instantUpload: true }
-  }
-  if (!initRes.upload_id) {
-    throw new Error('initMultipartUpload 未返回 upload_id')
-  }
-  const uploadId = initRes.upload_id
-  const chunkSize = initRes.chunk_size
-  const totalChunks = initRes.total_chunks
-  const uploadedChunks = new Set<number>(initRes.uploaded_chunks || [])
-
-  let uploadedBytes = 0
-  for (const idx of uploadedChunks) {
-    uploadedBytes += getChunkSize(file, idx, chunkSize)
-  }
-  onProgress?.(clampPercent((uploadedBytes / file.size) * 100))
-
-  const pendingChunks: number[] = []
-  for (let i = 0; i < totalChunks; i++) {
-    if (!uploadedChunks.has(i)) {
-      pendingChunks.push(i)
+// Incremental SHA-256 keeps at most one 2 MiB slice in memory; no whole-file copy.
+async function calculateFileHash(file: File, check: () => void): Promise<string> {
+  const hash = sha256.create()
+  try {
+    for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
+      check()
+      const bytes = await file.slice(offset, offset + CHUNK_SIZE).arrayBuffer()
+      check()
+      hash.update(new Uint8Array(bytes))
     }
-  }
-
-  let cursor = 0
-  let firstError: unknown = null
-
-  const worker = async () => {
-    while (true) {
-      if (firstError) return
-      const current = cursor
-      cursor += 1
-      if (current >= pendingChunks.length) return
-
-      const chunkIndex = pendingChunks[current]
-      if (chunkIndex === undefined) return
-      try {
-        await uploadChunkWithRetry(file, uploadId, chunkIndex, chunkSize)
-        uploadedBytes += getChunkSize(file, chunkIndex, chunkSize)
-        onProgress?.(clampPercent((uploadedBytes / file.size) * 100))
-      } catch (error) {
-        firstError = error
-        return
-      }
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(CHUNK_UPLOAD_CONCURRENCY, pendingChunks.length) }, () => worker())
-  await Promise.all(workers)
-
-  if (firstError) {
-    throw firstError
-  }
-
-  await completeMultipartUpload(uploadId)
-  onProgress?.(100)
-  return { instantUpload: false }
+    check()
+    return Array.from(hash.digest(), value => value.toString(16).padStart(2, '0')).join('')
+  } finally { hash.destroy() }
 }
 
-export async function uploadFileOptimized(
-  file: File,
-  parentId?: number | null,
-  onProgress?: ProgressCallback,
-): Promise<UploadResult> {
-  const contentHash = await calculateFileHash(file)
+function resumeIdentity(file: File, contentHash: string, parentId: number | null | undefined, context: RequestContext): string {
+  const bytes = new TextEncoder().encode(JSON.stringify([context.userId, context.workspaceId, parentId ?? null, file.name, file.size, file.lastModified, contentHash]))
+  return 'up_' + Array.from(sha256(bytes), value => value.toString(16).padStart(2, '0')).join('')
+}
+function resumeId(identity: string): string {
+  let stored = restartedUploads.get(identity)
+  try { stored ||= localStorage.getItem('skycloud-upload-' + identity) || undefined } catch { /* Storage may be disabled. */ }
+  return stored && /^[A-Za-z0-9_-]{8,128}$/.test(stored) ? stored : identity
+}
+function saveRestart(identity: string, id: string) {
+  restartedUploads.set(identity, id)
+  try { localStorage.setItem('skycloud-upload-' + identity, id) } catch { /* In-memory resume remains available. */ }
+}
+function clearRestart(identity: string) {
+  restartedUploads.delete(identity)
+  try { localStorage.removeItem('skycloud-upload-' + identity) } catch { /* Storage may be disabled. */ }
+}
+
+export async function uploadFileOptimized(file: File, parentId?: number | null, onProgress?: ProgressCallback, options: UploadOptions = {}): Promise<UploadResult> {
+  const context = options.context ?? captureRequestContext()
+  const check = () => assertRequestContext(context, options.signal)
+  const config: AxiosRequestConfig = { signal: options.signal, skycloudContext: context }
+  let progress = 0
+  const report = (percent: number, committed = false) => {
+    check()
+    if (!Number.isFinite(percent)) return
+    progress = Math.max(progress, Math.min(committed ? 100 : 99, Math.max(0, percent)))
+    onProgress?.(progress)
+  }
+  check()
+  const contentHash = await calculateFileHash(file, check)
   if (file.size <= LARGE_FILE_THRESHOLD) {
-    return uploadSmallFile(file, contentHash, parentId, onProgress)
+    const preflight = await preflightFileUpload({ filename: file.name, total_size: file.size,
+      parent_id: parentId ?? undefined, mime_type: file.type || undefined, content_hash: contentHash }, config)
+    check()
+    if (preflight.instant_upload) { report(100, true); return { instantUpload: true } }
+    const data = new FormData(); data.append('file', file)
+    if (parentId !== undefined && parentId !== null) data.append('parent_id', String(parentId))
+    await uploadFile(data, { ...config, onUploadProgress: event => {
+      try { check() } catch { return }
+      const total = event.total || file.size
+      if (total > 0) report(event.loaded / total * 100)
+    } })
+    report(100, true)
+    return { instantUpload: false }
   }
-  return uploadLargeFile(file, contentHash, parentId, onProgress)
+
+  const identity = resumeIdentity(file, contentHash, parentId, context)
+  const request: MultipartInitRequest = { filename: file.name, total_size: file.size, chunk_size: CHUNK_SIZE,
+    parent_id: parentId ?? undefined, mime_type: file.type || undefined, content_hash: contentHash, upload_id: resumeId(identity) }
+  let init: MultipartInitResponse
+  try { init = await initMultipartUpload(request, config) } catch (error) {
+    check()
+    if (statusOf(error) !== 409) throw error
+    // Consumed/expired reservations cannot be resumed; retain the fresh ID for later retries.
+    const restartedId = crypto.randomUUID()
+    saveRestart(identity, restartedId)
+    init = await initMultipartUpload({ ...request, upload_id: restartedId }, config)
+  }
+  check()
+  if (init.instant_upload) { clearRestart(identity); report(100, true); return { instantUpload: true } }
+  const { upload_id: id, chunk_size: chunkSize, total_chunks: totalChunks } = init
+  if (!id || !/^[A-Za-z0-9_-]{8,128}$/.test(id) || !Number.isSafeInteger(chunkSize) || chunkSize <= 0 || !Number.isSafeInteger(totalChunks) || totalChunks !== Math.ceil(file.size / chunkSize) || !Array.isArray(init.uploaded_chunks)) {
+    throw new Error('服务器返回的分片上传参数无效')
+  }
+  if (init.uploaded_chunks.some(index => !Number.isSafeInteger(index) || index < 0 || index >= totalChunks)) throw new Error('服务器返回的已上传分片索引无效')
+  const uploaded = new Set(init.uploaded_chunks)
+  const bytesFor = (index: number) => Math.min(chunkSize, file.size - index * chunkSize)
+  let uploadedBytes = [...uploaded].reduce((sum, index) => sum + bytesFor(index), 0)
+  report(uploadedBytes / file.size * 100)
+  for (let index = 0; index < totalChunks; index++) {
+    check()
+    if (uploaded.has(index)) continue
+    for (let attempt = 1; ; attempt++) {
+      check()
+      try {
+        const data = new FormData(); data.append('upload_id', id); data.append('chunk_index', String(index))
+        data.append('chunk', file.slice(index * chunkSize, (index + 1) * chunkSize), `${file.name}.part${index}`)
+        await uploadMultipartChunk(data, undefined, config)
+        check()
+        break
+      } catch (error) {
+        check()
+        const status = statusOf(error)
+        if (isCancel(error) || attempt >= CHUNK_UPLOAD_ATTEMPTS || ![0, 408, 429, 500, 502, 503, 504].includes(status)) throw error
+        await wait(500 * attempt, options.signal)
+      }
+    }
+    uploadedBytes += bytesFor(index)
+    report(uploadedBytes / file.size * 100)
+  }
+  check()
+  await completeMultipartUpload(id, config)
+  check()
+  clearRestart(identity)
+  report(100, true)
+  return { instantUpload: false }
 }

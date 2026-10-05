@@ -21,8 +21,9 @@ export async function sseRequest(
   const workspace = useWorkspaceStore()
   const workspaceId = workspace.currentWorkspace?.id
   const userId = auth.user.id
+  const sessionVersion = auth.sessionVersion
   const checkContext = () => {
-    if (options.signal?.aborted || workspace.currentWorkspace?.id !== workspaceId || auth.user.id !== userId) {
+    if (options.signal?.aborted || workspace.currentWorkspace?.id !== workspaceId || auth.user.id !== userId || auth.sessionVersion !== sessionVersion) {
       throw new DOMException('Assistant context changed', 'AbortError')
     }
   }

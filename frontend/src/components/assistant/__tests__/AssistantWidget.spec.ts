@@ -4,6 +4,7 @@ import { reactive, nextTick } from 'vue'
 import AssistantWidget from '../AssistantWidget.vue'
 const mocks = vi.hoisted(() => ({ assistant: {} as Record<string, unknown>, workspace: {} as Record<string, unknown>, bind: vi.fn(), cancel: vi.fn(), error: vi.fn() }))
 vi.mock('@/stores/assistant', () => ({ useAssistantStore: () => mocks.assistant }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ user: { id: 7 }, sessionVersion: 0 }) }))
 vi.mock('@/stores/workspace', () => ({ useWorkspaceStore: () => mocks.workspace }))
 vi.mock('@arco-design/web-vue', () => ({ Message: { error: mocks.error }, Modal: { confirm: vi.fn() } }))
 beforeEach(() => {

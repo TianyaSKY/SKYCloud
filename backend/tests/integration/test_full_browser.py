@@ -1,6 +1,6 @@
-"""Manual CUA verification against actual frontend/nginx, API, PG and Redis.
+"""Manual CUA verification against actual frontend/nginx, API, PG, Redis and MinIO.
 
-RUN_FULL_BROWSER=1 SKYCLOUD_TEST_RUNTIME_IMAGE=<builder output> pytest tests/integration/test_full_browser.py
+RUN_FULL_BROWSER=1 SKYCLOUD_TEST_RUNTIME_IMAGE=<builder output> SKYCLOUD_TEST_MINIO_IMAGE=<builder output> pytest tests/integration/test_full_browser.py
 Read the synthetic fixture URL from /private/tmp/skycloud-full-browser.json;
 record verified in its completion file only after browser checks succeed.
 """
@@ -20,6 +20,7 @@ from sqlalchemy import text
 
 from tests.integration.test_runtime_security import infrastructure, controller, docker
 from tests.integration.test_migrations import postgres
+from tests.integration.test_upload_storage import minio_storage
 from entry.migrate import upgrade
 from app.infra.extensions import get_db
 from app.infra.schema import check_schema
@@ -37,13 +38,20 @@ def free_port():
         return probe.getsockname()[1]
 
 
-def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, monkeypatch, tmp_path):
+def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, minio_storage, monkeypatch, tmp_path):
     from app.api.factory import create_fastapi_app
     from app.infra import cache
     root = Path(__file__).resolve().parents[3]
     assert (root / 'frontend/dist/index.html').is_file(), 'Build the production frontend first'
     upgrade(postgres); check_schema(postgres)
     factory = sessionmaker(bind=postgres)
+    from app.infra import storage
+    from app.features.file import service as upload_service
+    from app.features.folder import change_log
+    monkeypatch.setattr(storage, '_storage_client', minio_storage)
+    monkeypatch.setattr(upload_service, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
+    monkeypatch.setattr(upload_service, 'MULTIPART_ROOT', str(tmp_path / 'parts'))
+    monkeypatch.setattr(change_log, 'SessionLocal', factory)
     for module in (refresh_sessions, ui_tickets, cache):
         monkeypatch.setattr(module, 'redis_client', infrastructure['redis'])
     monkeypatch.setattr(ui_gateway, 'SessionLocal', factory)

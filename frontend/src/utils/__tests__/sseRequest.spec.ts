@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { sseRequest } from '../sseRequest'
-const mocks = vi.hoisted(() => ({ auth: { token: 'access', user: { id: 7 }, restore: vi.fn() }, workspace: { currentWorkspace: { id: 11 } } }))
+const mocks = vi.hoisted(() => ({ auth: { token: 'access', sessionVersion: 0, user: { id: 7 }, restore: vi.fn() }, workspace: { currentWorkspace: { id: 11 } } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
 vi.mock('@/stores/workspace', () => ({ useWorkspaceStore: () => mocks.workspace }))
 const fetchMock = vi.fn()
@@ -8,7 +8,7 @@ const encode = (text: string) => new TextEncoder().encode(text)
 function response(chunks: Uint8Array[]) {
   return new Response(new ReadableStream<Uint8Array>({ start(controller) { chunks.forEach(chunk => controller.enqueue(chunk)); controller.close() } }), { headers: { 'Content-Type': 'text/event-stream' } })
 }
-beforeEach(() => { vi.resetAllMocks(); vi.stubGlobal('fetch', fetchMock); mocks.auth.token = 'access'; mocks.auth.user.id = 7; mocks.workspace.currentWorkspace.id = 11 })
+beforeEach(() => { vi.resetAllMocks(); vi.stubGlobal('fetch', fetchMock); mocks.auth.token = 'access'; mocks.auth.sessionVersion = 0; mocks.auth.user.id = 7; mocks.workspace.currentWorkspace.id = 11 })
 afterEach(() => vi.unstubAllGlobals())
 
 describe('authenticated assistant stream', () => {
@@ -69,8 +69,8 @@ describe('authenticated assistant stream', () => {
     await expect(sseRequest('/stream', {}, { onEvent: vi.fn() })).rejects.toThrow('broken connection')
     expect(fetchMock).toHaveBeenCalledTimes(2); expect(mocks.auth.restore).not.toHaveBeenCalled()
   })
-  it.each(['workspace', 'user'])('does not resend in a changed %s after refreshing', async kind => {
-    fetchMock.mockResolvedValue(new Response('{}', { status: 401 })); mocks.auth.restore.mockImplementation(async () => { if (kind === 'workspace') mocks.workspace.currentWorkspace.id = 12; else mocks.auth.user.id = 8; return true })
+  it.each(['workspace', 'user', 'session'])('does not resend in a changed %s after refreshing', async kind => {
+    fetchMock.mockResolvedValue(new Response('{}', { status: 401 })); mocks.auth.restore.mockImplementation(async () => { if (kind === 'workspace') mocks.workspace.currentWorkspace.id = 12; else if (kind === 'user') mocks.auth.user.id = 8; else mocks.auth.sessionVersion++; return true })
     await expect(sseRequest('/stream', {}, { onEvent: vi.fn() })).rejects.toMatchObject({ name: 'AbortError' }); expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

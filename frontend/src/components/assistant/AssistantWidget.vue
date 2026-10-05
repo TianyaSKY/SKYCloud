@@ -73,12 +73,14 @@ import AssistantMessageList from './AssistantMessageList.vue'
 import AssistantComposer from './AssistantComposer.vue'
 import { useAssistantStore } from '@/stores/assistant'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { useAuthStore } from '@/stores/auth'
 import type { AssistantConversation } from '@/api/assistant'
 
 defineProps<{ show: boolean }>()
 
 const assistant = useAssistantStore()
 const wsStore = useWorkspaceStore()
+const auth = useAuthStore()
 const visible = ref(false)
 const permissionLoading = ref(false)
 const position = ref({ x: window.innerWidth - 76, y: window.innerHeight - 76 })
@@ -87,9 +89,9 @@ const dragOffset = ref({ x: 0, y: 0 })
 let mouseDownAt = 0
 
 watch(
-  () => wsStore.currentWorkspace?.id,
-  (id) => {
-    void assistant.bindWorkspace(id ?? null).catch((error) => {
+  [() => wsStore.currentWorkspace?.id, () => auth.user.id, () => auth.sessionVersion],
+  ([id]) => {
+    void assistant.bindWorkspace(id ?? null, true).catch((error) => {
       Message.error((error as Error).message || '助手初始化失败')
     })
   },

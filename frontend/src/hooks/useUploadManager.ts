@@ -1,162 +1,93 @@
 import { Notification } from '@arco-design/web-vue'
+import { CanceledError, isCancel } from 'axios'
+import { onScopeDispose, watch, type Ref } from 'vue'
 import { uploadFileOptimized } from '../utils/upload'
-import type { Ref } from 'vue'
+import { assertRequestContext, captureRequestContext, type RequestContext } from '../utils/requestContext'
 import { logger } from '../utils/logger'
 
-/** 批量上传并发上限，避免同时打满带宽与浏览器连接数 */
 const UPLOAD_CONCURRENCY = 3
+interface Batch { controller: AbortController; context: RequestContext; parentId: number | null; notification: string }
 
-/**
- * 统一的文件上传管理器：单文件实时进度 / 多文件聚合通知 + 并发队列。
- *
- * 卸载时调用 cancelAll() 可阻止队列继续派发；进行中的 HTTP 请求无法中断
- *（uploadFileOptimized 未暴露 signal，保持签名以免破坏调用方），已发起的请求会自然完成。
- */
+/** Each batch owns its target, cancellation signal and notification; all batches share three slots. */
 export function useUploadManager(currentParentId: Ref<number | null>, fetchFiles: () => Promise<void>) {
-  /** cancelAll 置位后批量队列停止派发新任务 */
-  let cancelled = false
-
-  /** 阻止队列派发新任务；已发起的请求不中断 */
-  const cancelAll = () => {
-    cancelled = true
-  }
-
-  /**
-   * 上传一组文件（≥1 个）。
-   * 单文件：独立实时进度通知；多文件：聚合计数 + 并发队列。
-   */
-  const startUpload = async (files: File[]) => {
-    if (!files || files.length === 0) return
-    cancelled = false
-
-    if (files.length === 1) {
-      await uploadSingle(files[0]!)
-    } else {
-      await uploadBatch(files)
-    }
-  }
-
-  const uploadSingle = async (file: File) => {
-    if (cancelled) return
-    const nid = `upload-${file.name}-${Date.now()}`
-
-    Notification.info({
-      id: nid,
-      title: '上传中',
-      content: `正在准备上传 ${file.name}...`,
-      duration: 0,
-      closable: false,
+  const batches = new Set<Batch>()
+  let sequence = 0
+  let disposed = false
+  let active = 0
+  const waiting: Array<{ resolve: () => void; reject: (error: Error) => void; signal: AbortSignal; abort: () => void }> = []
+  const acquire = (signal: AbortSignal): Promise<void> => {
+    if (signal.aborted) return Promise.reject(new CanceledError('Upload cancelled'))
+    if (active < UPLOAD_CONCURRENCY) { active++; return Promise.resolve() }
+    return new Promise((resolve, reject) => {
+      const entry = { resolve, reject, signal, abort: () => {
+        const index = waiting.indexOf(entry)
+        if (index >= 0) waiting.splice(index, 1)
+        signal.removeEventListener('abort', entry.abort)
+        reject(new CanceledError('Upload cancelled'))
+      } }
+      waiting.push(entry); signal.addEventListener('abort', entry.abort, { once: true })
     })
-
-    try {
-      const result = await uploadFileOptimized(file, currentParentId.value, (percent) => {
-        Notification.info({
-          id: nid,
-          title: '上传中',
-          content: `正在上传 ${file.name}: ${Math.round(percent)}%`,
-          duration: 0,
-          closable: false,
-        })
-      })
-
-      Notification.success({
-        id: nid,
-        title: result.instantUpload ? '秒传完成' : '上传完成',
-        content: `${file.name} ${result.instantUpload ? '秒传成功' : '上传成功'}`,
-        duration: 3000,
-        closable: true,
-      })
-
-      await fetchFiles()
-    } catch (error) {
-      // 拦截器已弹唯一 Message.error，这里仅用 Notification 收尾「上传中」进度态
-      const msg = error instanceof Error ? error.message : '未知错误'
-      Notification.error({
-        id: nid,
-        title: '上传失败',
-        content: `${file.name} 上传失败: ${msg}`,
-        duration: 4000,
-        closable: true,
-      })
-    }
   }
+  const release = () => {
+    const entry = waiting.shift()
+    if (entry) { entry.signal.removeEventListener('abort', entry.abort); entry.resolve() }
+    else active--
+  }
+  const current = (batch: Batch) => {
+    try { assertRequestContext(batch.context, batch.controller.signal); return true } catch { return false }
+  }
+  const cancelAll = () => {
+    for (const batch of batches) { batch.controller.abort(); Notification.remove(batch.notification) }
+  }
+  watch([() => captureRequestContext().workspaceId, () => captureRequestContext().userId, () => captureRequestContext().sessionVersion], cancelAll, { flush: 'sync' })
+  onScopeDispose(() => { disposed = true; cancelAll() })
 
-  const uploadBatch = async (files: File[]) => {
-    const batchId = `batch-upload-${Date.now()}`
-    const total = files.length
+  const refresh = async (batch: Batch) => {
+    if (!current(batch)) return
+    try { await fetchFiles() } catch (error) { logger.warn('上传已完成，但文件列表刷新失败: {}', error) }
+  }
+  const startUpload = async (files: File[]) => {
+    if (disposed || !files.length) return
+    const batch: Batch = { controller: new AbortController(), context: captureRequestContext(),
+      parentId: currentParentId.value, notification: `upload-${Date.now()}-${++sequence}` }
+    batches.add(batch)
     let completed = 0
     let failed = 0
-    let currentFileName = ''
-
-    const updateNotification = () => {
-      const inProgress = total - completed - failed
-      Notification.info({
-        id: batchId,
-        title: '批量上传中',
-        content: `总计 ${total} 个文件：已完成 ${completed}，失败 ${failed}，进行中 ${inProgress}${
-          currentFileName ? `\n当前：${currentFileName}` : ''
-        }`,
-        duration: 0,
-        closable: false,
-      })
+    const single = files.length === 1
+    const update = (content: string) => {
+      if (current(batch)) Notification.info({ id: batch.notification, title: single ? '上传中' : '批量上传中', content, duration: 0, closable: false })
     }
-
-    updateNotification()
-    await new Promise((resolve) => setTimeout(resolve, 0))
-
-    // 固定并发 worker 抢占式消费队列
+    update(`正在准备上传 ${single ? files[0]!.name : files.length + ' 个文件'}...`)
     let cursor = 0
     const worker = async () => {
-      while (true) {
-        if (cancelled) return
-        const current = cursor++
-        if (current >= files.length) return
-        const file = files[current]
+      while (current(batch)) {
+        const file = files[cursor++]
         if (!file) return
-
-        currentFileName = file.name
-        updateNotification()
-
+        let acquired = false
         try {
-          await uploadFileOptimized(file, currentParentId.value)
+          await acquire(batch.controller.signal); acquired = true
+          if (!current(batch)) return
+          const result = await uploadFileOptimized(file, batch.parentId,
+            single ? percent => update(`正在上传 ${file.name}: ${Math.round(percent)}%`) : undefined,
+            { signal: batch.controller.signal, context: batch.context })
+          if (!current(batch)) return
           completed++
+          if (single) Notification.success({ id: batch.notification, title: result.instantUpload ? '秒传完成' : '上传完成', content: `${file.name} 上传成功`, duration: 3000, closable: true })
         } catch (error) {
+          if (!current(batch) || isCancel(error)) return
           failed++
-          // 拦截器已弹 Message.error，此处仅记日志，最终由汇总 Notification 呈现失败计数
-          logger.warn('uploadBatch 单文件上传失败 name={} error={}', file.name, error)
-        }
-        updateNotification()
-
-        // 让出主线程，避免连续上传时 UI 卡顿
-        await new Promise((resolve) => setTimeout(resolve, 0))
+          if (single) Notification.error({ id: batch.notification, title: '上传失败', content: `${file.name} 上传失败: ${error instanceof Error ? error.message : '未知错误'}`, duration: 4000, closable: true })
+          else logger.warn('uploadBatch 单文件上传失败 name={} error={}', file.name, error)
+        } finally { if (acquired) release() }
+        if (!single) update(`总计 ${files.length} 个文件：已完成 ${completed}，失败 ${failed}，剩余 ${files.length - completed - failed}`)
       }
     }
-
-    const workers = Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, () => worker())
-    await Promise.all(workers)
-
-    if (failed === 0) {
-      Notification.success({
-        id: batchId,
-        title: '批量上传完成',
-        content: `全部 ${total} 个文件上传成功`,
-        duration: 4000,
-        closable: true,
-      })
-    } else {
-      Notification.warning({
-        id: batchId,
-        title: '批量上传完成',
-        content: `共 ${total} 个文件：成功 ${completed}，失败 ${failed}`,
-        duration: 6000,
-        closable: true,
-      })
-    }
-
-    if (completed > 0) {
-      await fetchFiles()
-    }
+    try {
+      await Promise.all(Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, worker))
+      if (!current(batch)) { Notification.remove(batch.notification); return }
+      if (!single) Notification[failed ? 'warning' : 'success']({ id: batch.notification, title: '批量上传完成', content: `共 ${files.length} 个文件：成功 ${completed}，失败 ${failed}`, duration: 4000, closable: true })
+      if (completed) await refresh(batch)
+    } finally { batches.delete(batch) }
   }
-
   return { startUpload, cancelAll }
 }

@@ -18,17 +18,18 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => !!token.value)
   const isAdmin = computed(() => user.value.role === 'admin')
   let initialized = false
-  let generation = 0
+  const generation = ref(0)
+  const sessionVersion = computed(() => generation.value)
   let pending: Promise<boolean> | undefined
 
   function clear() {
-    generation += 1
+    generation.value += 1
     initialized = true
     token.value = null
     user.value = { ...EMPTY_USER }
   }
   function setAuth(t: string, u: Partial<UserInfo>) {
-    generation += 1
+    generation.value += 1
     initialized = true
     token.value = t
     user.value = { ...EMPTY_USER, ...u }
@@ -38,10 +39,10 @@ export const useAuthStore = defineStore('auth', () => {
   async function restore(force = false): Promise<boolean> {
     if (!force && initialized) return isAuthenticated.value
     if (pending) return pending
-    const current = generation
+    const current = generation.value
     pending = (async () => {
       const result = await refreshBrowserSession()
-      if (current !== generation) return isAuthenticated.value
+      if (current !== generation.value) return isAuthenticated.value
       initialized = true
       if (result) {
         if (user.value.id !== null && user.value.id !== result.user.id) {
@@ -62,5 +63,5 @@ export const useAuthStore = defineStore('auth', () => {
     clear()
   }
 
-  return { token, user, isAuthenticated, isAdmin, setAuth, setUser, restore, logout, clear }
+  return { token, user, sessionVersion, isAuthenticated, isAdmin, setAuth, setUser, restore, logout, clear }
 })

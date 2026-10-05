@@ -154,33 +154,37 @@ export const batchUploadFiles = (data: FormData, config?: AxiosRequestConfig) =>
   })
 }
 
-export const initMultipartUpload = (data: MultipartInitRequest) => {
+export const initMultipartUpload = (data: MultipartInitRequest, config?: AxiosRequestConfig) => {
   return request.post<MultipartInitResponse>('/files/multipart/init', data, {
     timeout: 0,
+    ...config,
   })
 }
 
-export const preflightFileUpload = (data: FilePreflightRequest) => {
+export const preflightFileUpload = (data: FilePreflightRequest, config?: AxiosRequestConfig) => {
   return request.post<FilePreflightResponse>('/files/preflight', data, {
     timeout: 0,
+    ...config,
   })
 }
 
 export const uploadMultipartChunk = (
   data: FormData,
   onUploadProgress?: (progressEvent: AxiosProgressEvent) => void,
+  config?: AxiosRequestConfig,
 ) => {
   return request.post<void>('/files/multipart/chunk', data, {
     timeout: 0,
     onUploadProgress,
+    ...config,
     headers: {
       'Content-Type': 'multipart/form-data',
     },
   })
 }
 
-export const completeMultipartUpload = (upload_id: string) => {
-  return request.post<void>('/files/multipart/complete', { upload_id }, { timeout: 0 })
+export const completeMultipartUpload = (upload_id: string, config?: AxiosRequestConfig) => {
+  return request.post<void>('/files/multipart/complete', { upload_id }, { timeout: 0, ...config })
 }
 
 export const getMultipartUploadStatus = (upload_id: string) => {

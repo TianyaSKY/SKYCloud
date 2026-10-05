@@ -54,39 +54,56 @@
 </template>
 
 <script lang="ts" setup>
-import { ref } from 'vue'
+import { onUnmounted, ref, watch } from 'vue'
 import { IconBulb, IconFolderAdd, IconMore, IconRefresh, IconTool, IconUpload } from '@arco-design/web-vue/es/icon'
 
 const props = withDefaults(
   defineProps<{
     handleBatchUpload: (files: File[]) => void
     canWrite?: boolean
+    uploadContextKey?: string
   }>(),
-  { canWrite: true },
+  { canWrite: true, uploadContextKey: '' },
 )
 
 defineEmits(['create-folder', 'organize', 'refresh', 'rebuild-indexes'])
 
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
+let generation = 0
+let pickerGeneration: number | null = null
+const pendingFrames = new Set<number>()
+const invalidatePicker = () => {
+  generation += 1
+  pickerGeneration = null
+  for (const frame of pendingFrames) cancelAnimationFrame(frame)
+  pendingFrames.clear()
+}
+watch([() => props.uploadContextKey, () => props.canWrite], invalidatePicker, { flush: 'sync' })
+onUnmounted(invalidatePicker)
+
 const triggerUpload = () => {
+  if (!props.canWrite) return
+  pickerGeneration = generation
   fileInputRef.value?.click()
 }
 
 const onFilesSelected = (event: Event) => {
   const input = event.target as HTMLInputElement
-  const files = input.files
-  if (!files || files.length === 0) return
-
-  // 先清空 input，避免选择同一文件时不触发 change
-  const fileArray = Array.from(files)
+  const files = Array.from(input.files ?? [])
   input.value = ''
+  const selectedGeneration = pickerGeneration
+  pickerGeneration = null
+  if (!files.length || !props.canWrite || selectedGeneration !== generation) return
 
-  // 用 requestAnimationFrame 延迟处理，让文件对话框先关闭、浏览器先渲染
-  requestAnimationFrame(() => {
-    props.handleBatchUpload(fileArray)
+  // Allow the picker to close before hashing; discard callbacks after navigation.
+  const frame = requestAnimationFrame(() => {
+    pendingFrames.delete(frame)
+    if (props.canWrite && selectedGeneration === generation) props.handleBatchUpload(files)
   })
+  pendingFrames.add(frame)
 }
+
 </script>
 
 <style scoped>

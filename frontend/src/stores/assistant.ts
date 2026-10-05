@@ -200,8 +200,8 @@ export const useAssistantStore = defineStore('assistant', () => {
     }
   }
 
-  async function bindWorkspace(id: number | null) {
-    if (workspaceId.value === id && (initialized.value || initializing.value)) return
+  async function bindWorkspace(id: number | null, force = false) {
+    if (!force && workspaceId.value === id && (initialized.value || initializing.value)) return
     const version = ++stateVersion
     initializing.value = true
     try {

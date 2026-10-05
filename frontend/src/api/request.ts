@@ -4,6 +4,7 @@ import router from '../router'
 import { useAuthStore } from '../stores/auth'
 import { useWorkspaceStore } from '../stores/workspace'
 import { logger } from '../utils/logger'
+import { assertRequestContext, captureRequestContext, type RequestContext } from '../utils/requestContext'
 
 const service = axios.create({
   baseURL: '/api',
@@ -13,6 +14,10 @@ const service = axios.create({
 // 通过模块扩展让实例方法直接返回业务数据 Promise<T>，
 // 配合响应拦截器 (response) => response.data 的解包行为。
 declare module 'axios' {
+  export interface AxiosRequestConfig {
+    skycloudContext?: RequestContext
+    sessionRetried?: boolean
+  }
   export interface AxiosInstance {
     get<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>
     delete<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<T>
@@ -43,14 +48,15 @@ export class BizError extends Error {
 // 请求拦截器：从 store 注入 Authorization 和 X-Workspace-Id
 service.interceptors.request.use(
   (config) => {
+    config.skycloudContext ??= captureRequestContext()
+    assertRequestContext(config.skycloudContext)
     const auth = useAuthStore()
     if (auth.token) {
       config.headers.Authorization = `Bearer ${auth.token}`
-    }
-    const wsStore = useWorkspaceStore()
-    if (wsStore.currentWorkspace) {
-      config.headers['X-Workspace-Id'] = String(wsStore.currentWorkspace.id)
-    }
+    } else config.headers.delete('Authorization')
+    if (config.skycloudContext.workspaceId !== null) {
+      config.headers['X-Workspace-Id'] = String(config.skycloudContext.workspaceId)
+    } else config.headers.delete('X-Workspace-Id')
     return config
   },
   (error) => Promise.reject(error),
@@ -59,11 +65,15 @@ service.interceptors.request.use(
 // 响应拦截器：成功解包为业务数据；失败统一 Message 提示并归一为 BizError。
 // 此处是全局唯一的错误提示点，调用方不再重复弹消息。
 service.interceptors.response.use(
-  (response) => response.data,
+  (response) => {
+    if (response.config.skycloudContext) assertRequestContext(response.config.skycloudContext)
+    return response.data
+  },
   async (error) => {
     if (axios.isCancel(error)) return Promise.reject(error)
     const status: number = error?.response?.status ?? 0
-    const config = error?.config as (AxiosRequestConfig & { sessionRetried?: boolean }) | undefined
+    const config = error?.config as AxiosRequestConfig | undefined
+    if (config?.skycloudContext) assertRequestContext(config.skycloudContext)
     if (status === 401 && config && !config.sessionRetried && !config.url?.startsWith('/auth/login')) {
       config.sessionRetried = true
       const auth = useAuthStore()

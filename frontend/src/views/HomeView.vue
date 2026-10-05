@@ -24,6 +24,7 @@
 
       <FileToolbar
         :can-write="canWrite"
+        :upload-context-key="JSON.stringify([wsStore.currentWorkspace?.id, authStore.user.id, authStore.sessionVersion, currentParentId])"
         :handle-batch-upload="handleBatchUpload"
         @organize="handleOrganize"
         @refresh="fetchFiles"
@@ -97,10 +98,12 @@ import { useFilePreview } from '../hooks/useFilePreview'
 import { useFileOperations } from '../hooks/useFileOperations'
 import { useFileBrowser } from '../hooks/useFileBrowser'
 import { useUploadManager } from '../hooks/useUploadManager'
+import { useAuthStore } from '../stores/auth'
 import { useWorkspaceStore } from '../stores/workspace'
 import type { FileItem } from '../api/file'
 
 const wsStore = useWorkspaceStore()
+const authStore = useAuthStore()
 const canWrite = computed(() => wsStore.canWrite)
 
 const {
