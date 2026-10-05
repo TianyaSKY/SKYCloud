@@ -148,10 +148,12 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                             if event.type == 'permission_required':
                                 assert permission_response is not None
                                 assert "printf 'AUTHORIZED_ONLY'" in event.payload['tool']
-                                with factory() as responder:
-                                    restored = responder.get(type(run), run.id)
-                                    assert restored.to_dict()['pending_permission']['tool'] == event.payload['tool']
-                                    service.respond_permission(responder, responder.get(Workspace, ws_id), user_id, run.id, event.payload['permission_id'], permission_response)
+                                def respond_from_worker():
+                                    with factory() as responder:
+                                        restored = responder.get(type(run), run.id)
+                                        assert restored.to_dict()['pending_permission']['tool'] == event.payload['tool']
+                                        service.respond_permission(responder, responder.get(Workspace, ws_id), user_id, run.id, event.payload['permission_id'], permission_response)
+                                await asyncio.to_thread(respond_from_worker)
                         return observed
                     events = asyncio.run(asyncio.wait_for(collect(), 120))
                     db.refresh(run)

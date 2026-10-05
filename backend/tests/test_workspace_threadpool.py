@@ -13,7 +13,7 @@ from app.features.workspace import router as workspace_router
 from app.infra.extensions import get_db
 
 
-@pytest.mark.parametrize('boundary', ['create', 'workspace', 'role', 'profile', 'mcp'])
+@pytest.mark.parametrize('boundary', ['create', 'workspace', 'role', 'profile', 'mcp', 'assistant_list', 'assistant_cancel'])
 async def test_slow_sync_boundary_allows_concurrent_http_request(monkeypatch, boundary):
     loop_thread = threading.get_ident()
     entered, release = threading.Event(), threading.Event()
@@ -40,7 +40,21 @@ async def test_slow_sync_boundary_allows_concurrent_http_request(monkeypatch, bo
         assert not release.is_set()
         return {'responsive': True}
 
-    if boundary == 'create':
+    if boundary in {'assistant_list', 'assistant_cancel'}:
+        from app.features.assistant import router as assistant_router
+        app.include_router(assistant_router.router)
+        app.dependency_overrides[get_current_workspace] = lambda: workspace
+        if boundary == 'assistant_list':
+            monkeypatch.setattr(assistant_router.service, 'list_user_conversations', slow([]))
+            method, path, kwargs = 'GET', '/assistant/conversations', {}
+        else:
+            monkeypatch.setattr(assistant_router.service, 'request_cancel',
+                                slow(SimpleNamespace(to_dict=lambda: {'id': 2, 'cancel_requested': True})))
+            async def notify_cancel(run_id):
+                assert threading.get_ident() == loop_thread
+            monkeypatch.setattr(assistant_router.service.run_registry, 'request_cancel', notify_cancel)
+            method, path, kwargs = 'POST', '/assistant/runs/2/cancel', {}
+    elif boundary == 'create':
         monkeypatch.setattr(workspace_router.workspace_service, 'create_workspace',
                             slow(SimpleNamespace(to_dict=lambda: {'id': 2})))
         method, path, kwargs = 'POST', '/workspace', {'json': {'name': 'Thread pool'}}

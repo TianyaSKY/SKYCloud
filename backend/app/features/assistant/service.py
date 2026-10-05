@@ -63,7 +63,25 @@ class RunController:
         future = self._permission_futures.get(permission_id)
         if future is None or future.done():
             return False
-        future.set_result(response)
+        def deliver() -> None:
+            # Cancellation or another notification may win before this callback.
+            if not future.done():
+                future.set_result(response)
+
+        loop = future.get_loop()
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is loop:
+            deliver()
+        else:
+            try:
+                loop.call_soon_threadsafe(deliver)
+            except RuntimeError:
+                # A disconnected stream may already have closed its loop;
+                # the committed database response remains authoritative.
+                return False
         return True
 
 
@@ -637,8 +655,10 @@ def respond_permission(
     # future below is only the low-latency path for same-worker requests.
     if not repository.set_permission_response(session, run_id, permission_id, response):
         raise ConflictError("Permission request has already been answered")
-    run_registry.resolve_permission(run_id, permission_id, response)
     session.commit()
+    # A worker-thread notification can wake the stream immediately. Never
+    # authorize provider execution before the durable transaction succeeds.
+    run_registry.resolve_permission(run_id, permission_id, response)
     return run
 
 

@@ -192,7 +192,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
         session, test_workspace, test_user.id, "fast", "HTTP 会话"
     )
 
-    updated = asyncio.run(
+    updated = (
         update_assistant_conversation(
             conversation.id,
             AssistantConversationUpdate(title="接口重命名"),
@@ -203,7 +203,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
     )
     assert updated["title"] == "接口重命名"
 
-    active_run = asyncio.run(
+    active_run = (
         get_active_assistant_run_for_conversation(
             conversation.id,
             current_user=test_user,
@@ -213,7 +213,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
     )
     assert active_run is None
 
-    asyncio.run(
+    (
         update_assistant_conversation(
             conversation.id,
             AssistantConversationUpdate(status="archived"),
@@ -222,7 +222,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             session=session,
         )
     )
-    active_only = asyncio.run(
+    active_only = (
         list_assistant_conversations(
             mode="fast",
             include_archived=False,
@@ -231,7 +231,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             session=session,
         )
     )
-    all_sessions = asyncio.run(
+    all_sessions = (
         list_assistant_conversations(
             mode="fast",
             include_archived=True,
@@ -243,7 +243,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
     assert conversation.id not in {item["id"] for item in active_only["conversations"]}
     assert conversation.id in {item["id"] for item in all_sessions["conversations"]}
 
-    assert asyncio.run(
+    assert (
         delete_assistant_conversation(
             conversation.id,
             current_user=test_user,

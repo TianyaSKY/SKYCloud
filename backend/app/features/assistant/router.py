@@ -5,6 +5,7 @@ import os
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.api.dependencies import get_current_user, get_current_workspace
 from app.features.assistant import service
@@ -50,7 +51,7 @@ def _require_permission_ui() -> None:
 
 
 @router.post("/assistant/conversations", status_code=status.HTTP_201_CREATED)
-async def create_assistant_conversation(
+def create_assistant_conversation(
     payload: AssistantConversationCreate,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
@@ -66,7 +67,7 @@ async def create_assistant_conversation(
 
 
 @router.get("/assistant/conversations")
-async def list_assistant_conversations(
+def list_assistant_conversations(
     mode: str | None = None,
     include_archived: bool = False,
     current_user: User = Depends(get_current_user),
@@ -91,7 +92,7 @@ async def list_assistant_conversations(
 
 
 @router.patch("/assistant/conversations/{conversation_id}")
-async def update_assistant_conversation(
+def update_assistant_conversation(
     conversation_id: int,
     payload: AssistantConversationUpdate,
     current_user: User = Depends(get_current_user),
@@ -111,7 +112,7 @@ async def update_assistant_conversation(
 
 
 @router.delete("/assistant/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_assistant_conversation(
+def delete_assistant_conversation(
     conversation_id: int,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
@@ -123,7 +124,7 @@ async def delete_assistant_conversation(
 
 
 @router.get("/assistant/conversations/{conversation_id}/messages")
-async def list_assistant_messages(
+def list_assistant_messages(
     conversation_id: int,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
@@ -141,7 +142,7 @@ async def list_assistant_messages(
 
 
 @router.get("/assistant/conversations/{conversation_id}/active-run")
-async def get_active_assistant_run_for_conversation(
+def get_active_assistant_run_for_conversation(
     conversation_id: int,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
@@ -169,27 +170,26 @@ async def stream_assistant_message(
     _require_v2()
     if not payload.query.strip():
         raise HTTPException(status_code=400, detail="Query is required")
-    existing_conversation = service.get_user_conversation(
-        session, workspace, current_user.id, conversation_id
+    def prepare_stream():
+        existing_conversation = service.get_user_conversation(
+            session, workspace, current_user.id, conversation_id
+        )
+        if existing_conversation.mode == "expert":
+            _require_expert()
+        conversation, run, history = service.prepare_run(
+            session,
+            workspace,
+            current_user.id,
+            conversation_id,
+            payload.query,
+            request.headers.get("X-Request-Id"),
+        )
+        return int(workspace.id), int(current_user.id), int(conversation.id), int(run.id), history
+
+    # Resolve all commit-expired attributes in the blocking preparation unit.
+    stream_workspace_id, stream_user_id, stream_conversation_id, stream_run_id, history = (
+        await run_in_threadpool(prepare_stream)
     )
-    if existing_conversation.mode == "expert":
-        _require_expert()
-    conversation, run, history = service.prepare_run(
-        session,
-        workspace,
-        current_user.id,
-        conversation_id,
-        payload.query,
-        request.headers.get("X-Request-Id"),
-    )
-    # Streaming starts after this endpoint returns.  The request-scoped DB
-    # session may already be closed by then, so never carry its ORM instances
-    # into the async generator.  Capture only stable scalar identifiers and
-    # rehydrate everything in a session owned by the stream itself.
-    stream_workspace_id = int(workspace.id)
-    stream_user_id = int(current_user.id)
-    stream_conversation_id = int(conversation.id)
-    stream_run_id = int(run.id)
 
     async def stream():
         stream_session = SessionLocal()
@@ -221,7 +221,7 @@ async def stream_assistant_message(
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-            "X-Assistant-Run-Id": str(run.id),
+            "X-Assistant-Run-Id": str(stream_run_id),
         },
     )
 
@@ -234,13 +234,17 @@ async def cancel_assistant_run(
     session: Session = Depends(get_db),
 ):
     _require_v2()
-    run = service.request_cancel(session, workspace, current_user.id, run_id)
+    def persist_cancel():
+        # Keep commit-expired ORM serialization in the same blocking unit.
+        return service.request_cancel(session, workspace, current_user.id, run_id).to_dict()
+
+    result = await run_in_threadpool(persist_cancel)
     await service.run_registry.request_cancel(run_id)
-    return run.to_dict()
+    return result
 
 
 @router.get("/assistant/runs/active")
-async def get_active_assistant_run_for_member(
+def get_active_assistant_run_for_member(
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
     session: Session = Depends(get_db),
@@ -251,7 +255,7 @@ async def get_active_assistant_run_for_member(
 
 
 @router.get("/assistant/runs/{run_id}")
-async def get_assistant_run(
+def get_assistant_run(
     run_id: int,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
@@ -272,7 +276,7 @@ async def get_assistant_run(
 
 
 @router.post("/assistant/runs/{run_id}/permissions/{permission_id}")
-async def respond_assistant_permission(
+def respond_assistant_permission(
     run_id: int,
     permission_id: str,
     payload: AssistantPermissionResponse,
@@ -295,7 +299,7 @@ async def respond_assistant_permission(
 
 
 @router.post("/assistant/conversations/{conversation_id}/handoff", status_code=status.HTTP_201_CREATED)
-async def handoff_assistant_conversation(
+def handoff_assistant_conversation(
     conversation_id: int,
     payload: AssistantHandoffRequest,
     current_user: User = Depends(get_current_user),
