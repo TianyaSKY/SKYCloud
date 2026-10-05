@@ -47,7 +47,7 @@ async def get_current_user(
         if payload.get("type") == "mcp":
             from app.mcp import token_service as mcp_token_service
 
-            if not mcp_token_service.get_active_mcp_token(session, token):
+            if not await run_in_threadpool(mcp_token_service.get_active_mcp_token, session, token):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="MCP token is revoked or expired!",
@@ -112,7 +112,7 @@ def ensure_owner_or_admin(current_user: User, owner_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def get_current_workspace(
+def get_current_workspace(
         request: Request,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -176,7 +176,7 @@ def require_workspace_role(min_role: str):
     用法：Depends(require_workspace_role("editor"))
     """
 
-    async def checker(
+    def checker(
             workspace: Workspace = Depends(get_current_workspace),
             current_user: User = Depends(get_current_user),
             session: Session = Depends(get_db),

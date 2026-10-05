@@ -27,7 +27,7 @@ router = APIRouter(tags=["workspace"])
 
 
 @router.post("/workspace")
-async def create_workspace(
+def create_workspace(
         payload: WorkspaceCreateRequest,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -57,7 +57,7 @@ def list_workspaces(
 
 
 @router.get("/workspace/{workspace_id}")
-async def get_workspace(
+def get_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -108,7 +108,7 @@ def issue_ui_ticket(
 
 
 @router.post("/workspace/{workspace_id}/opencode/start")
-async def start_opencode_workspace(
+def start_opencode_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -121,7 +121,7 @@ async def start_opencode_workspace(
 
 
 @router.post("/workspace/{workspace_id}/opencode/stop")
-async def stop_opencode_workspace(
+def stop_opencode_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -134,7 +134,7 @@ async def stop_opencode_workspace(
 
 
 @router.post("/workspace/{workspace_id}/opencode/restart")
-async def restart_opencode_workspace(
+def restart_opencode_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -147,7 +147,7 @@ async def restart_opencode_workspace(
 
 
 @router.post("/workspace/{workspace_id}/opencode/setup-mcp")
-async def setup_opencode_mcp(
+def setup_opencode_mcp(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -165,7 +165,7 @@ async def setup_opencode_mcp(
 
 
 @router.get("/workspace/{workspace_id}/opencode/runtime")
-async def get_opencode_runtime(
+def get_opencode_runtime(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -177,7 +177,7 @@ async def get_opencode_runtime(
 
 
 @router.post("/workspace/{workspace_id}/opencode/runtime/start")
-async def start_opencode_runtime(
+def start_opencode_runtime(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -189,7 +189,7 @@ async def start_opencode_runtime(
 
 
 @router.post("/workspace/{workspace_id}/opencode/runtime/stop")
-async def stop_opencode_runtime(
+def stop_opencode_runtime(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -201,7 +201,7 @@ async def stop_opencode_runtime(
 
 
 @router.post("/workspace/{workspace_id}/opencode/runtime/restart")
-async def restart_opencode_runtime(
+def restart_opencode_runtime(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -213,7 +213,7 @@ async def restart_opencode_runtime(
 
 
 @router.put("/workspace/{workspace_id}")
-async def update_workspace(
+def update_workspace(
         workspace_id: int,
         payload: WorkspaceUpdateRequest,
         current_user: User = Depends(get_current_user),
@@ -231,7 +231,7 @@ async def update_workspace(
 
 
 @router.delete("/workspace/{workspace_id}")
-async def delete_workspace(
+def delete_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -247,7 +247,7 @@ async def delete_workspace(
 
 
 @router.post("/workspace/{workspace_id}/members")
-async def invite_member(
+def invite_member(
         workspace_id: int,
         payload: MemberInviteRequest,
         current_user: User = Depends(get_current_user),
@@ -268,7 +268,7 @@ async def invite_member(
 
 
 @router.get("/workspace/{workspace_id}/members")
-async def list_members(
+def list_members(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -281,7 +281,7 @@ async def list_members(
 
 
 @router.put("/workspace/{workspace_id}/members/{user_id}")
-async def update_member_role(
+def update_member_role(
         workspace_id: int,
         user_id: int,
         payload: MemberRoleUpdateRequest,
@@ -300,7 +300,7 @@ async def update_member_role(
 
 
 @router.delete("/workspace/{workspace_id}/members/{user_id}")
-async def remove_member(
+def remove_member(
         workspace_id: int,
         user_id: int,
         current_user: User = Depends(get_current_user),

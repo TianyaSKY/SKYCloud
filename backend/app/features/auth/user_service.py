@@ -1,6 +1,7 @@
 """用户资料 CRUD、缓存，以及改密/访问权限校验。"""
 
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
 from app.infra.cache import cacheable, evict_cache
@@ -53,7 +54,7 @@ def _get_user_data(session: Session, id: int) -> dict | None:
 
 
 async def get_user(session: Session, id: int) -> User:
-    user_data = _get_user_data(session, id)
+    user_data = await run_in_threadpool(_get_user_data, session, id)
     if not user_data:
         raise ResourceNotFoundError("User not found")
     return User.from_cache(user_data)

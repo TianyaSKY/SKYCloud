@@ -122,14 +122,14 @@ class TestGetCurrentWorkspace:
         request = MagicMock()
         request.headers = {}
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_workspace(request, MagicMock(), MagicMock())
+            get_current_workspace(request, MagicMock(), MagicMock())
         assert exc_info.value.status_code == 400
 
     async def test_invalid_header(self):
         request = MagicMock()
         request.headers = {"X-Workspace-Id": "abc"}
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_workspace(request, MagicMock(), MagicMock())
+            get_current_workspace(request, MagicMock(), MagicMock())
         assert exc_info.value.status_code == 400
 
     async def test_not_found(self, session):
@@ -138,13 +138,13 @@ class TestGetCurrentWorkspace:
         user = MagicMock()
         user.id = 1
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_workspace(request, user, session)
+            get_current_workspace(request, user, session)
         assert exc_info.value.status_code == 404
 
     async def test_success(self, session, test_workspace, test_user):
         request = MagicMock()
         request.headers = {"X-Workspace-Id": str(test_workspace.id)}
-        ws = await get_current_workspace(request, test_user, session)
+        ws = get_current_workspace(request, test_user, session)
         assert ws.id == test_workspace.id
 
 
@@ -152,21 +152,21 @@ class TestRequireWorkspaceRole:
     async def test_sufficient_role(self, session, test_workspace, test_user):
         checker = require_workspace_role("viewer")
         with patch("app.features.workspace.permissions.get_member_role", return_value="admin"):
-            result = await checker(workspace=test_workspace, current_user=test_user, session=session)
+            result = checker(workspace=test_workspace, current_user=test_user, session=session)
         assert result.id == test_workspace.id
 
     async def test_insufficient_role(self, session, test_workspace, test_user):
         checker = require_workspace_role("admin")
         with patch("app.features.workspace.permissions.get_member_role", return_value="viewer"):
             with pytest.raises(HTTPException) as exc_info:
-                await checker(workspace=test_workspace, current_user=test_user, session=session)
+                checker(workspace=test_workspace, current_user=test_user, session=session)
             assert exc_info.value.status_code == 403
 
     async def test_no_role(self, session, test_workspace, test_user):
         checker = require_workspace_role("editor")
         with patch("app.features.workspace.permissions.get_member_role", return_value=None):
             with pytest.raises(HTTPException) as exc_info:
-                await checker(workspace=test_workspace, current_user=test_user, session=session)
+                checker(workspace=test_workspace, current_user=test_user, session=session)
             assert exc_info.value.status_code == 403
 
 

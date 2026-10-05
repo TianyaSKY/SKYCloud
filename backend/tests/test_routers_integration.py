@@ -109,13 +109,10 @@ class TestWorkspaceRouter:
 
         mock_ws = MagicMock()
         mock_ws.to_dict.return_value = {"id": 1, "name": "new"}
-        # 使用 MagicMock 代替 schema，因为 schemas.py 有重复类定义导致字段缺失
-        payload = MagicMock()
-        payload.name = "new"
-        payload.description = None
+        from app.features.workspace.schemas import WorkspaceCreateRequest
+        payload = WorkspaceCreateRequest(name="new")
         with patch("app.features.workspace.service.create_workspace", return_value=mock_ws):
-            import asyncio
-            result = asyncio.run(create_workspace(payload, test_user, session))
+            result = create_workspace(payload, test_user, session)
         assert result.status_code == 201
 
     def test_list_workspaces(self, session, test_user):
@@ -130,8 +127,7 @@ class TestWorkspaceRouter:
 
         with patch("app.features.workspace.permissions.assert_member"), \
              patch("app.features.workspace.service.get_workspace_detail", return_value={"id": 1}):
-            import asyncio
-            result = asyncio.run(get_workspace(test_workspace.id, test_user, session))
+            result = get_workspace(test_workspace.id, test_user, session)
         assert "id" in result
 
     def test_update_workspace(self, session, test_user, test_workspace):
@@ -142,16 +138,14 @@ class TestWorkspaceRouter:
         mock_ws.to_dict.return_value = {"id": test_workspace.id}
         payload = WorkspaceUpdateRequest(name="updated")
         with patch("app.features.workspace.service.update_workspace", return_value=mock_ws):
-            import asyncio
-            result = asyncio.run(update_workspace(test_workspace.id, payload, test_user, session))
+            result = update_workspace(test_workspace.id, payload, test_user, session)
         assert "id" in result
 
     def test_delete_workspace(self, session, test_user, test_workspace):
         from app.features.workspace.router import delete_workspace
 
         with patch("app.features.workspace.service.delete_workspace"):
-            import asyncio
-            result = asyncio.run(delete_workspace(test_workspace.id, test_user, session))
+            result = delete_workspace(test_workspace.id, test_user, session)
         assert result.status_code == 200
 
     def test_invite_member(self, session, test_user, test_workspace):
@@ -162,8 +156,7 @@ class TestWorkspaceRouter:
         mock_member.to_dict.return_value = {"user_id": 2}
         payload = MemberInviteRequest(username="new", role="editor")
         with patch("app.features.workspace.service.invite_member", return_value=mock_member):
-            import asyncio
-            result = asyncio.run(invite_member(test_workspace.id, payload, test_user, session))
+            result = invite_member(test_workspace.id, payload, test_user, session)
         assert result.status_code == 201
 
     def test_list_members(self, session, test_user, test_workspace):
@@ -171,8 +164,7 @@ class TestWorkspaceRouter:
 
         with patch("app.features.workspace.permissions.assert_member"), \
              patch("app.features.workspace.service.list_members", return_value=[]):
-            import asyncio
-            result = asyncio.run(list_members(test_workspace.id, test_user, session))
+            result = list_members(test_workspace.id, test_user, session)
         assert "members" in result
 
     def test_update_member_role(self, session, test_user, test_workspace):
@@ -183,16 +175,14 @@ class TestWorkspaceRouter:
         mock_member.to_dict.return_value = {"user_id": 2}
         payload = MemberRoleUpdateRequest(role="admin")
         with patch("app.features.workspace.service.update_member_role", return_value=mock_member):
-            import asyncio
-            result = asyncio.run(update_member_role(test_workspace.id, 2, payload, test_user, session))
+            result = update_member_role(test_workspace.id, 2, payload, test_user, session)
         assert "user_id" in result
 
     def test_remove_member(self, session, test_user, test_workspace):
         from app.features.workspace.router import remove_member
 
         with patch("app.features.workspace.service.remove_member"):
-            import asyncio
-            result = asyncio.run(remove_member(test_workspace.id, 2, test_user, session))
+            result = remove_member(test_workspace.id, 2, test_user, session)
         assert result.status_code == 200
 
 
