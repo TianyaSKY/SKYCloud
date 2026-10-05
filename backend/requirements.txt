@@ -44,7 +44,7 @@ loguru>=0.7,<1.0
 
 # --- 工作区（opencode 容器管理） ---
 docker>=7.0
-websockets>=12.0
+websockets==15.0.1
 
 # --- 测试 ---
 pytest>=8.0

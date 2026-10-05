@@ -12,12 +12,14 @@ from fastapi.testclient import TestClient
 from runtime_controller.app import MAX_BODY, create_app
 from runtime_controller.client import ControllerClient, ControllerError, auth_headers, runtime_url
 from runtime_controller.engine import Engine, MissingRuntime, PolicyViolation
-from runtime_controller.policy import DEFAULT_IMAGE, POLICY_VERSION, Settings, container_name
+from runtime_controller.policy import POLICY_VERSION, Settings, container_name
+
+TEST_IMAGE = 'test/runtime@sha256:' + 'a' * 64
 
 
 @pytest.fixture
 def settings():
-    return Settings("T" * 48, "S" * 48, DEFAULT_IMAGE, "isolated-runtime-net", "1g", 100000, "skycloud")
+    return Settings("T" * 48, "S" * 48, TEST_IMAGE, "isolated-runtime-net", "1g", 100000, "skycloud")
 
 
 @pytest.fixture
@@ -37,7 +39,7 @@ def managed_container(settings):
 
 def test_fixed_policy_excludes_host_mounts_and_secrets(settings):
     options = settings.container_options(2, 3, 4)
-    assert options["image"] == DEFAULT_IMAGE
+    assert options["image"] == TEST_IMAGE
     assert options["network"] == settings.network
     assert options["user"] == "10001:10001"
     assert options["read_only"] and options["cap_drop"] == ["ALL"]
@@ -45,6 +47,10 @@ def test_fixed_policy_excludes_host_mounts_and_secrets(settings):
     assert options["pids_limit"] == 128
     assert "volumes" not in options and "privileged" not in options
     assert "ports" not in options  # Runtime accessible only through the relay.
+    assert "noexec" in options["tmpfs"]["/tmp"]
+    assert options["environment"]["TMPDIR"] == "/tmp/.native"
+    assert "exec" in options["tmpfs"]["/tmp/.native"]
+    assert "size=64m" in options["tmpfs"]["/tmp/.native"]
     assert settings.token not in str(options)
     assert settings.server_secret not in str(options)
     assert "CHAT_API_KEY" not in str(options)
@@ -193,3 +199,51 @@ def test_user_snapshot_endpoint_requires_auth_and_positive_identity(settings):
         assert client.get('/users/0/containers', headers=headers).status_code == 422
         assert client.get('/users/3/containers', headers=headers).json() == []
     engine.user_snapshot.assert_called_once_with(3)
+
+
+def test_controller_socket_auth_and_fixed_target(settings):
+    from tests.test_runtime_ui_socket import EchoSocket
+    engine = Mock(); engine.target.return_value = ('http://172.20.0.2:3000', ('runtime-user', 'server-secret'))
+    requests = []; peers = []
+    def connect(url, headers):
+        requests.append((url, headers)); peer = EchoSocket(); peers.append(peer); return peer
+    path = '/runtimes/' + 'a' * 64 + '/ws/pty/pty_42/connect'
+    with TestClient(create_app(settings, engine)) as client, patch('runtime_controller.app.direct_connect', side_effect=connect):
+        with pytest.raises(Exception) as exc:
+            with client.websocket_connect(path):
+                pass
+        assert exc.value.code == 1008
+        engine.target.assert_not_called()
+        headers = {'X-Runtime-Controller-Token': settings.token, 'Authorization': 'Bearer caller', 'Cookie': 'parent=session'}
+        with client.websocket_connect(path + '?cursor=0', headers=headers) as socket:
+            socket.send_text('terminal text'); assert socket.receive_text() == 'terminal text'
+        assert requests[0][0] == 'ws://172.20.0.2:3000/pty/pty_42/connect?cursor=0'
+        assert set(requests[0][1]) == {'Authorization'}
+        import base64
+        assert requests[0][1]['Authorization'] == 'Basic ' + base64.b64encode(b'runtime-user:server-secret').decode()
+        with pytest.raises(Exception) as exc:
+            with client.websocket_connect(path + '?auth_token=caller', headers=headers):
+                pass
+        assert exc.value.code == 1008
+
+
+async def test_websocket_redirect_never_reaches_another_host():
+    from runtime_controller.socket_relay import direct_connect
+    from websockets.exceptions import InvalidStatus
+    hits = []
+    async def attacker(reader, writer):
+        hits.append(await reader.readuntil(b'\r\n\r\n'))
+        writer.close(); await writer.wait_closed()
+    async with await asyncio.start_server(attacker, '127.0.0.1', 0) as target:
+        port = target.sockets[0].getsockname()[1]
+        async def redirect(reader, writer):
+            await reader.readuntil(b'\r\n\r\n')
+            response = f'HTTP/1.1 307 Temporary Redirect\r\nLocation: ws://127.0.0.1:{port}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+            writer.write(response.encode()); await writer.drain()
+            writer.close(); await writer.wait_closed()
+        async with await asyncio.start_server(redirect, '127.0.0.1', 0) as server:
+            origin_port = server.sockets[0].getsockname()[1]
+            with pytest.raises(InvalidStatus):
+                async with direct_connect(f'ws://127.0.0.1:{origin_port}/terminal', {'Authorization': 'Bearer test-only-secret'}):
+                    raise AssertionError('Redirect was followed')
+    assert hits == []

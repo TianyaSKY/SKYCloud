@@ -6,10 +6,9 @@ import hmac
 import os
 import re
 
-DEFAULT_IMAGE = "ghcr.io/anomalyco/opencode@sha256:2eb8006dc63d702c038e0b16836b8692ca7c65b3fbcda8c0a6b976e17350006f"
 CONFIG_PATH = "/home/opencode/.config/opencode/opencode.json"
 RUNTIME_USER = "10001:10001"
-POLICY_VERSION = "3"
+POLICY_VERSION = "4"
 
 
 def secret_setting(name: str) -> str:
@@ -31,8 +30,8 @@ class Settings:
 
     @classmethod
     def from_env(cls):
-        image = os.getenv("OPENCODE_IMAGE", DEFAULT_IMAGE)
-        if not re.fullmatch(r"[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}", image):
+        image = os.getenv("OPENCODE_IMAGE", "")
+        if not re.fullmatch(r"(?:[a-zA-Z0-9./:_-]+@)?sha256:[0-9a-f]{64}", image):
             raise ValueError("OPENCODE_IMAGE must be pinned to a sha256 digest")
         memory = os.getenv("WORKSPACE_MEM_LIMIT", "1g")
         if not re.fullmatch(r"(?:[1-4]g|(?:[2-9][0-9]{2}|[1-3][0-9]{3}|40[0-8][0-9]|409[0-6])m)", memory.lower()):
@@ -66,9 +65,10 @@ class Settings:
                 "/home/opencode": "rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=700",
                 "/workspace": "rw,nosuid,nodev,size=512m,uid=10001,gid=10001,mode=700",
                 "/tmp": "rw,nosuid,nodev,noexec,size=64m,mode=1777",
+                "/tmp/.native": "rw,exec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=700",
             },
             "environment": {
-                "HOME": "/home/opencode", "XDG_CONFIG_HOME": "/home/opencode/.config",
+                "HOME": "/home/opencode", "TMPDIR": "/tmp/.native", "XDG_CONFIG_HOME": "/home/opencode/.config",
                 "XDG_CACHE_HOME": "/home/opencode/.cache", "XDG_DATA_HOME": "/home/opencode/.local/share",
                 "SKYCLOUD_WORKSPACE_ID": str(workspace_id), "SKYCLOUD_USER_ID": str(user_id),
                 "SKYCLOUD_RUNTIME_ID": str(runtime_id), "OPENCODE_SERVER_USERNAME": self.username,

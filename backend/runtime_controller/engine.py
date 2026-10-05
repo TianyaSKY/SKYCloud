@@ -39,6 +39,8 @@ class Engine:
         try:
             self.client.images.get(self.settings.image)
         except _docker_error("ImageNotFound"):
+            if self.settings.image.startswith("sha256:"):
+                raise ControllerError("Local runtime image is missing; rebuild with scripts/build-runtime-image.py")
             self.client.images.pull(self.settings.image)
 
     def managed(self, ref: str, *, require_policy=False):

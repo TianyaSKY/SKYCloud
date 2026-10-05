@@ -2,10 +2,10 @@
 import asyncio
 import time
 import os
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -13,11 +13,13 @@ from starlette.concurrency import run_in_threadpool
 from app.infra.extensions import get_db, SessionLocal
 from app.features.workspace import ui_tickets
 from runtime_controller.client import auth_headers, controller_url
+from runtime_controller.socket_relay import direct_connect, pump, terminal_path, SocketSlots
 
 router = APIRouter(prefix='/runtime-ui', include_in_schema=False)
 MAX_REQUEST = 256 * 1024
 MAX_RESPONSE = 64 * 1024 * 1024
 RECHECK_SECONDS = 15
+socket_slots = SocketSlots()
 
 
 def _host(request):
@@ -77,6 +79,8 @@ async def relay(path: str, request: Request, session: Session = Depends(get_db))
         payload = await run_in_threadpool(reauthenticate, _credential(request), _host(request))
     url = controller_url() + '/runtimes/' + quote(payload['container_id'], safe='') + '/ui/' + quote(path, safe='/')
     headers = {key: request.headers[key] for key in ('content-type', 'accept') if key in request.headers}
+    if request.headers.get('x-opencode-ticket') == '1':
+        headers['x-opencode-ticket'] = '1'
     headers.update(auth_headers())
     client = httpx.AsyncClient(timeout=httpx.Timeout(90, connect=5), trust_env=False, follow_redirects=False)
     try:
@@ -126,3 +130,48 @@ async def relay(path: str, request: Request, session: Session = Depends(get_db))
         'X-Content-Type-Options': 'nosniff',
         'Content-Security-Policy': 'frame-ancestors ' + os.getenv('APP_ORIGIN', 'http://app.skycloud.localhost').rstrip('/'),
     })
+
+
+@router.websocket('/{path:path}')
+async def terminal(path: str, websocket: WebSocket):
+    acquired = False
+    owner = None
+    try:
+        payload = await run_in_threadpool(reauthenticate, _credential(websocket), _host(websocket))
+        if (websocket.cookies.get(ui_tickets.cookie_name(payload['origin'])) != _credential(websocket)
+                or websocket.headers.get('origin') != payload['origin'] or not terminal_path(path)
+                or len(websocket.scope.get('query_string', b'')) > 4096
+                or any(key not in {'directory', 'location[directory]', 'workspace', 'cursor', 'ticket'} for key in websocket.query_params)):
+            await websocket.close(code=1008)
+            return
+        owner = payload['user_id']
+        if not socket_slots.acquire(owner):
+            await websocket.close(code=1013)
+            return
+        acquired = True
+        url = controller_url().replace('https://', 'wss://', 1).replace('http://', 'ws://', 1)
+        url += '/runtimes/' + quote(payload['container_id'], safe='') + '/ws/' + path
+        query = urlencode(list(websocket.query_params.multi_items()))
+        if query:
+            url += '?' + query
+        async def guard():
+            await run_in_threadpool(reauthenticate, _credential(websocket), _host(websocket))
+        async with direct_connect(url, auth_headers()) as upstream:
+            await websocket.accept()
+            await pump(websocket, upstream, seconds=payload['expires_at'] - time.time(),
+                       guard=guard, interval=RECHECK_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except HTTPException:
+        try:
+            await websocket.close(code=1008)
+        except RuntimeError:
+            pass
+    except Exception:
+        try:
+            await websocket.close(code=1011)
+        except RuntimeError:
+            pass
+    finally:
+        if acquired:
+            socket_slots.release(owner)

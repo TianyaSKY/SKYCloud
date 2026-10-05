@@ -30,9 +30,8 @@ from runtime_controller.client import (
 from runtime_controller.policy import POLICY_VERSION
 
 
-# Use the upstream image directly. The lifecycle code pulls it on demand, so
-# local development does not require a separate project-owned image build.
-OPENCODE_IMAGE = os.getenv("OPENCODE_IMAGE", "ghcr.io/anomalyco/opencode@sha256:2eb8006dc63d702c038e0b16836b8692ca7c65b3fbcda8c0a6b976e17350006f")
+# The glibc runtime builder writes an immutable local ID into private .env.
+OPENCODE_IMAGE = os.getenv("OPENCODE_IMAGE", "")
 MCP_PORT = int(os.getenv("MCP_PORT", "5001"))
 OPENCODE_EXPERT_AGENT = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
 OPENCODE_CHAT_PROVIDER_ID = os.getenv("OPENCODE_CHAT_PROVIDER_ID", "skycloud-chat")
@@ -454,7 +453,10 @@ def restart(session: Session, workspace: Workspace, user_id: int) -> Workspace:
     if not runtime or not runtime.container_id:
         return start(session, workspace, user_id)
     try:
-        _client().containers.get(runtime.container_id).restart(timeout=3)
+        container = _client().containers.get(runtime.container_id)
+        if not _container_uses_configured_image(container):
+            return start(session, workspace, user_id)
+        container.restart(timeout=3)
         runtime.status = "running"
         runtime.error_message = None
         runtime.last_started_at = beijing_now()

@@ -114,7 +114,9 @@ def test_production_ports_and_runtime_network_are_restricted(tmp_path):
     subprocess.run(["python3", str(root / "scripts/generate-env.py"), "--output", str(generated_env)], check=True, capture_output=True)
     result = subprocess.run(
         ["docker", "compose", "--env-file", str(generated_env), "-f", str(root / "docker-compose.yml"), "config", "--format", "json"],
-        env={**os.environ, "SKYCLOUD_ENV_FILE": str(generated_env)}, capture_output=True, text=True, timeout=30,
+        env={**os.environ, "SKYCLOUD_ENV_FILE": str(generated_env),
+             "OPENCODE_IMAGE": os.getenv("SKYCLOUD_TEST_RUNTIME_IMAGE", os.environ["OPENCODE_IMAGE"])},
+        capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stderr
     config = json.loads(result.stdout)
@@ -191,7 +193,10 @@ def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
 def controller(infrastructure, monkeypatch):
     import httpx
     from runtime_controller.client import ControllerClient
-    from runtime_controller.policy import DEFAULT_IMAGE
+    image = os.getenv("SKYCLOUD_TEST_RUNTIME_IMAGE", "")
+    assert image, "Build scripts/build-runtime-image.py and set SKYCLOUD_TEST_RUNTIME_IMAGE to its immutable ID"
+    from app.features.workspace import docker_service
+    monkeypatch.setattr(docker_service, "OPENCODE_IMAGE", image)
 
     name = infrastructure["target"] + "-controller"
     infrastructure["cleanup"].append(name)
@@ -201,7 +206,7 @@ def controller(infrastructure, monkeypatch):
            "-p", "127.0.0.1::5003", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--group-add", gid,
            "-v", "/var/run/docker.sock:/var/run/docker.sock",
            "-e", "RUNTIME_CONTROLLER_TOKEN=" + token, "-e", "OPENCODE_SERVER_SECRET=" + secret,
-           "-e", "OPENCODE_IMAGE=" + DEFAULT_IMAGE, "-e", "SKYCLOUD_DOCKER_NETWORK=" + infrastructure["runtime"],
+           "-e", "OPENCODE_IMAGE=" + image, "-e", "SKYCLOUD_DOCKER_NETWORK=" + infrastructure["runtime"],
            "-e", "RUNTIME_CONTROLLER_BIND_HOST=runtime-controller-control", "skycloud-runtime-controller:remediation-test")
     docker("network", "connect", infrastructure["runtime"], name)
     port = docker("port", name, "5003/tcp").stdout.strip().rsplit(":", 1)[1]

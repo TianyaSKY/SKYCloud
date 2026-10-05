@@ -13,6 +13,7 @@ import sys
 os.environ["SECRET_KEY"] = "test-secret-key-for-unit-tests-only-32"
 os.environ["OPENCODE_SERVER_SECRET"] = "test-opencode-server-secret-only-32"
 os.environ["RUNTIME_CONTROLLER_TOKEN"] = "test-runtime-controller-secret-only-32"
+os.environ["OPENCODE_IMAGE"] = "test/runtime@sha256:" + "a" * 64
 os.environ["RABBITMQ_USER"] = "test-user"
 os.environ["RABBITMQ_PASSWORD"] = "explicit-test-queue-password"
 os.environ["MINIO_ACCESS_KEY"] = "test-storage-user"
@@ -117,7 +118,6 @@ _MOCK_MODULES = [
     "mcp.server.fastmcp",
     "openai",
     "docker",
-    "websockets",
     "cv2",
     "fitz",
     "docx",

@@ -1,0 +1,9 @@
+{
+  "version": "1.18.11",
+  "base": "python:3.11-slim-bookworm@sha256:2333bd330d12de02514770b3585cad313644316047cdee24a7acfdece6de6efb",
+  "debian_snapshot": "20261001T000000Z",
+  "artifacts": {
+    "arm64": {"name": "opencode-linux-arm64.tar.gz", "sha256": "03e07aa461ac241dfa8c7ab54ed58c7a0e911c62fc3cb490b83e4fb3424eb73b"},
+    "amd64": {"name": "opencode-linux-x64-baseline.tar.gz", "sha256": "3b97ef1d5f27a0460b5fd64a59919009d16fb61f5138725b77fef51ad2d09a20"}
+  }
+}

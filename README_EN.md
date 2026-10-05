@@ -54,15 +54,18 @@ intelligent retrieval to autonomous execution.
 
 ## Quick Start
 
-> Requirements: Docker + Docker Compose
+> Requirements: Python 3.11+, Docker + Docker Compose; arm64 or amd64 runtime host.
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
 python3 scripts/generate-env.py
+python3 scripts/build-runtime-image.py --env-file .env
 # Edit .env and at least configure API_URL / API_KEY / MODEL for the Chat and Embedding models
 docker compose up -d --build
 docker compose exec backend-api python -m entry.bootstrap_admin --username admin
 ```
+
+The runtime builder verifies the locked official CLI archive checksum, uses an immutable glibc base image and Debian package snapshot, and saves its local immutable image ID into private `.env` while preserving credentials. The upstream Alpine image has a glibc incompatibility in its PTY library. Rebuild when moving Docker hosts. Ordinary `/tmp` remains `noexec`; the private 64 MiB `/tmp/.native` mount permits loading the PTY native library.
 
 Visit `http://app.skycloud.localhost` (default port 80) and sign in using the administrator you explicitly created. The command prompts for a password in the terminal. No administrator is automatically seeded; missing, short or placeholder signing secrets prevent startup.
 

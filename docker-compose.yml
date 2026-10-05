@@ -112,7 +112,7 @@ services:
       - MINIO_BUCKET=${MINIO_BUCKET:-skycloud}
       - MINIO_SECURE=${MINIO_SECURE:-false}
       - UPLOAD_FOLDER=/data/uploads
-      - OPENCODE_IMAGE=${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode@sha256:2eb8006dc63d702c038e0b16836b8692ca7c65b3fbcda8c0a6b976e17350006f}
+      - OPENCODE_IMAGE=${OPENCODE_IMAGE:?Build runtime with scripts/build-runtime-image.py --env-file .env}
       - SKYCLOUD_DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-skycloud}_runtime-network
       - RUNTIME_CONTROLLER_URL=http://runtime-controller-control:5003
       - OPENCODE_LLM_GATEWAY_URL=http://skycloud-llm-gateway:5002/v1
@@ -243,7 +243,7 @@ services:
       RUNTIME_CONTROLLER_TOKEN: ${RUNTIME_CONTROLLER_TOKEN:?Generate .env with scripts/generate-env.py}
       OPENCODE_SERVER_SECRET: ${OPENCODE_SERVER_SECRET:?Generate .env with scripts/generate-env.py}
       OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-skycloud}
-      OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode@sha256:2eb8006dc63d702c038e0b16836b8692ca7c65b3fbcda8c0a6b976e17350006f}
+      OPENCODE_IMAGE: ${OPENCODE_IMAGE:?Build runtime with scripts/build-runtime-image.py --env-file .env}
       SKYCLOUD_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-skycloud}_runtime-network
       WORKSPACE_MEM_LIMIT: ${WORKSPACE_MEM_LIMIT:-1g}
       WORKSPACE_CPU_QUOTA: ${WORKSPACE_CPU_QUOTA:-100000}

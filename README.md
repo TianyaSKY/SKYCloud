@@ -48,15 +48,18 @@ SKYCloud 是一个 AI 增强的云文件管理系统，提供从文件存储、�
 
 ## 快速开始
 
-> 环境要求：Docker + Docker Compose
+> 环境要求：Python 3.11+、Docker + Docker Compose；运行时支持 arm64 和 amd64。
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
 python3 scripts/generate-env.py
+python3 scripts/build-runtime-image.py --env-file .env
 # 编辑 .env，至少填写 Chat 和 Embedding 模型的 API_URL / API_KEY / MODEL
 docker compose up -d --build
 docker compose exec backend-api python -m entry.bootstrap_admin --username admin
 ```
+
+运行时构建脚本校验锁定的官方 CLI 压缩包 SHA-256，使用固定 glibc 基础镜像和 Debian 软件包快照，并将本机不可变镜像 ID 写入 `.env`，保留其他配置与密钥。官方 Alpine 镜像的 PTY 原生库存在 glibc 兼容问题，因此部署必须先执行此构建步骤；换 Docker 主机时重新构建。沙箱普通 `/tmp` 保持 `noexec`，仅限额 64 MiB 的私有 `/tmp/.native` 允许加载 PTY 原生库。
 
 启动后访问 `http://app.skycloud.localhost`（默认端口 80），使用显式创建的管理员账号登录。创建命令在终端交互读取密码，不接受命令行密码。系统不会自动创建管理员；JWT 密钥缺失、过短或仍为占位值时拒绝启动。
 

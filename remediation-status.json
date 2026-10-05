@@ -86,7 +86,7 @@
         "Current scalar database checks bind user, password version, editor membership, workspace, runtime and container. Host/origin checks isolate sibling runtimes; expiry, password changes, demotion/removal, stopped or recreated containers reject sessions. Mutations revalidate after bounded request reads. Streams recheck in independent sessions every 15 seconds, close at expiry/revocation and release upstream resources.",
         "Dedicated frontend 8081 listener serves only /runtime-ui gateway; parent frontend rejects this namespace. Server injects Controller authentication; caller cookies/Authorization and upstream cookies are not forwarded. Real official OpenCode root HTML and JavaScript loaded via Controller; real Redis proves exactly one winner among 32 simultaneous ticket redemptions and actual expiry.",
         "Default local parent app.skycloud.localhost and per-runtime r{id}.skycloud.localhost share a site while isolating origins. Actual in-app browser sandboxed iframe cookie probe visibly returned COOKIE_OK after Strict HttpOnly cookie redemption. Production requires same-site wildcard DNS/TLS and configured parent origin.",
-        "WebSocket terminal relay, full browser/OpenCode behavior and session renewal still need implementation/verification before the complete iframe requirement is achieved."
+        "Authenticated two-hop WebSocket terminal relay implemented with host/origin/path/query scoping, bounded frames/cumulative budgets/per-process connection slots, independent expiry watchdog, periodic fresh permission checks and cleanup. Caller credentials never forwarded; redirects/proxies disabled. Real PostgreSQL/Redis/Controller/glibc OpenCode shell proves UID 10001, direct and one-use PTY-ticket connections, idle demotion closure and reconnect rejection. Full browser flow and UI session renewal remain to be completed."
       ]
     },
     {
@@ -167,7 +167,8 @@
         "Actual _create uses UID 10001, read-only rootfs, cap_drop ALL, no-new-privileges, PID 128, CPU and memory caps.",
         "Bounded tmpfs: home 256 MiB, workspace 512 MiB, /tmp 64 MiB. No host volume or Docker socket supplied to runtime.",
         "Pinned installed upstream image digest, --pure mode avoids external plugins, provider/agent config reloads via instance/dispose instead of container restart.",
-        "Real unmocked Docker SDK integration verified running UID, forbidden rootfs write, applied resource policy, authenticated health and successful config reload with retained model/credential."
+        "Real unmocked Docker SDK integration verified running UID, forbidden rootfs write, applied resource policy, authenticated health and successful config reload with retained model/credential.",
+        "Policy v4 preserves noexec /tmp and adds private 64 MiB executable native-library tmpfs needed by Bun PTY FFI. A checksum-locked glibc image fixes the upstream Alpine ABI failure. Restart recreates previous-policy runtimes; real interactive shell and existing Docker security checks passed."
       ]
     },
     {
@@ -236,7 +237,7 @@
       "requirement": "Lock Python dependencies and pin production image digests",
       "status": "in_progress",
       "evidence": [
-        "Runtime image pinned to local verified 1.18.11 digest in defaults, Compose and .env.example. Python lock and remaining images still pending."
+        "Runtime builder locks official OpenCode 1.18.11 arm64/amd64 release SHA-256, immutable glibc base digest and Debian snapshot. Private env receives immutable local Docker ID; missing/mutable image configuration fails closed and missing local IDs never trigger registry pull. websockets pinned 15.0.1 with real redirect regression. Python lock and remaining production image pins are pending."
       ]
     },
     {
@@ -259,14 +260,14 @@
   "validation": {
     "runtime": "/private/tmp/skycloud-fix-venv/bin/python",
     "targeted": "169 passed: security regressions, auth, workspace, router integration, exception/folder/MCP",
-    "unit_suite": "1258 passed, 0 failed, 32 opt-in skips; /private/tmp/skycloud-runtime-ui-current-suite.log",
+    "unit_suite": "1281 passed, 0 failed, 34 opt-in skips; pytest --ignore=tests/real; /private/tmp/skycloud-runtime-websocket-final-unit.log. Legacy tests/real require running infrastructure and are verified separately; unconfigured run reports Redis connection errors.",
     "baseline_log": "/private/tmp/skycloud-baseline-tests.log",
     "baseline": "Original b37e070: 1088 passed, identical 32 failing test names, 2 skipped. Failures predate this repair.",
     "latest_targeted": "147 passed: workspace HTTP list, routers, Controller, workspace service and security regressions; /private/tmp/skycloud-workspace-list-final-targeted.log",
-    "docker_security": "6 passed with RUN_RUNTIME_SECURITY_TESTS=1: real Redis quotas, network boundaries, Compose, Controller lifecycle/config/OpenCode session/SSE; additional real PostgreSQL bootstrap test passed separately",
+    "docker_security": "Seven real Redis/Docker/bootstrap/network/controller cases passed with glibc runtime; Compose-only case passed separately after restoring isolated test CLI plugin discovery. /private/tmp/skycloud-runtime-native-security-real.log and /private/tmp/skycloud-runtime-compose-final.log.",
     "opencode_smoke": "1 passed with RUN_OPENCODE_E2E=1: official health/MCP/session operations without a provider key",
     "frontend": "Type-check and production build passed; 8 files / 24 tests passed; /private/tmp/skycloud-runtime-ui-current-frontend-tests.log; /private/tmp/skycloud-runtime-ui-current-frontend-build.log",
-    "nginx": "Actual container nginx -t passed with isolated runtime UI ingress and parent namespace rejection; /private/tmp/skycloud-runtime-ui-current-nginx.log. Existing REST/MCP finite body limits and streaming forwarding retained.",
+    "nginx": "Actual container nginx -t passed with WebSocket Upgrade forwarding and isolated UI ingress; /private/tmp/skycloud-ui-websocket-nginx.log.",
     "postgres_bootstrap": "Real PostgreSQL initialized without seeded users; concurrent bootstrap from two separate transactions produces exactly one administrator, with complete personal workspace/membership/root",
     "async_io": "Slow accounting and cache read/write/evict/put behavior tests passed; Redis-outage root-file DB fallback test passed",
     "postgres_migrations": "14 passed with RUN_MIGRATION_TESTS=1; /private/tmp/skycloud-upload-final-postgres.log; includes shared user/workspace/daily quota admission races and atomic completion rollback.",
@@ -277,10 +278,12 @@
     "upload_storage": "5 isolated real PostgreSQL/MinIO scenarios passed; /private/tmp/skycloud-upload-storage-crash-final-real.log: authenticated HTTP upload/download and multipart ownership/limits, duplicate completion, real SQL constraint failure, real S3 denial/recovery, and actual process crash after PUT before metadata commit.",
     "header_download": "154 targeted backend cases passed; one isolated real PostgreSQL/MinIO HTTP upload/download/multipart scenario rerun passed, including rejection of query JWT. /private/tmp/skycloud-header-download-real-storage.log",
     "workspace_list": "3 real PostgreSQL cases passed; /private/tmp/skycloud-workspace-list-real-postgres.log. 1 real Docker/OpenCode lifecycle and owner-scoped snapshot passed; /private/tmp/skycloud-workspace-snapshot-real.log. Disposable test containers removed.",
-    "runtime_ui": "HTTP scoping, cookies, one-use ticket, expiry/revocation, caller-header stripping, origin/host/body limits, periodic stream checks and mutation revalidation passed in the full unit suite. Real OpenCode root/script + Redis scenarios: 2 passed, /private/tmp/skycloud-runtime-ui-final-real.log. Final Redis expiry rerun passed, /private/tmp/skycloud-runtime-ui-final-redis-expiry.log. Actual in-app browser Strict iframe cookie probe returned COOKIE_OK; temporary server/tab closed."
+    "runtime_ui": "HTTP scoping, cookies, one-use ticket, expiry/revocation, caller-header stripping, origin/host/body limits, periodic stream checks and mutation revalidation passed in the full unit suite. Real OpenCode root/script + Redis scenarios: 2 passed, /private/tmp/skycloud-runtime-ui-final-real.log. Final Redis expiry rerun passed, /private/tmp/skycloud-runtime-ui-final-redis-expiry.log. Actual in-app browser Strict iframe cookie probe returned COOKIE_OK; temporary server/tab closed.",
+    "runtime_terminal": "2 real PostgreSQL/Redis/Controller/OpenCode terminal cases passed (direct and UI PTY ticket), UID 10001 and idle permission revocation; /private/tmp/skycloud-ui-terminal-ticket-real.log. Temporary resources removed.",
+    "runtime_image": "40 targeted runtime socket/controller/image regressions passed; /private/tmp/skycloud-runtime-image-regressions.log. Locked glibc image built successfully; local immutable ID only, no registry push."
   },
   "next_work": [
-    "Complete isolated runtime UI WebSocket terminal relay, full browser flow and credential renewal; implement frontend memory tokens and refresh cookies",
+    "Complete full browser/OpenCode UI flow and credential renewal; implement frontend memory tokens and refresh cookies",
     "Exercise complete OpenCode -> gateway -> mock-provider flow with isolated PostgreSQL and Redis",
     "Complete service/repository/API contracts, remaining frontend and real integration tests, CI, dependency locks and UTC"
   ]
