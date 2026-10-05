@@ -307,3 +307,6 @@ RAG 分块检索同时限定分块与所属文件的工作空间，避免历史�
 RabbitMQ 发布使用持久化消息和 publisher confirms，消费者在任务结果落库后手动确认。执行线程池满时连接线程继续处理心跳，未确认消息在连接关闭后由 broker 重投；重连后的旧 delivery tag 不会用于新 channel。语义为至少一次，任务可能重复执行。非法消息和无法持久化结果的异常任务先复制到持久化 `failed_task_queue`，等待发布确认后才确认原消息；失败队列写入失败则保留原消息。失败队列只保存来源队列、原始消息 Base64 和异常类型，需管理员核实失败原因后按原 payload 重投；整理任务重投前需核实当前空间锁状态。已持久化的文件业务失败仍通过文件状态展示。
 
 真实队列检查：在 backend 目录运行 `RUN_TASK_QUEUE_TESTS=1 python -m pytest -o addopts='' tests/integration/test_task_queue.py`。测试使用生产固定摘要的 RabbitMQ 镜像，创建并清理独立容器，覆盖不可路由发布拒绝、断线重投、旧 tag 隔离、满载心跳、完成后确认、异常任务保留及 broker 重启后的消息持久化。业务处理函数使用受控测试任务；完整文件索引与整理的真实数据库/存储/MQ 联动、重复任务幂等性，以及数据库提交与入队之间的可靠交接仍需继续验证。确认机制参考 [RabbitMQ 官方说明](https://www.rabbitmq.com/docs/confirms)。
+
+
+Worker 的失败状态写入发生数据库异常时会回滚并向队列层传播，避免仅记录日志后确认任务。索引结果写入先锁定文件行，再在同一事务替换全部分块，避免并发重投互相穿插。整理锁按完整 token 和 queued/running 状态比较；过期或被替换的锁不能启动整理，也不能释放新任务的锁。这尚不保证整个 AI 整理流程只执行一次。真实 PostgreSQL/Redis 检查可在 backend 目录运行 `RUN_WORKER_OUTCOME_TESTS=1 python -m pytest -o addopts='' tests/integration/test_worker_outcomes.py`，测试会清理自身的独立容器。

@@ -230,25 +230,27 @@ def _acquire_organize_task_lock_and_enqueue(workspace_id: int, user_id: int, loc
     return True
 
 
-def mark_organize_task_running(workspace_id: int, lock_token: str) -> None:
+def mark_organize_task_running(workspace_id: int, lock_token: str) -> bool:
     """仅当当前锁 token 匹配时，将状态改为 running 并续期。"""
     script = """
     local current = redis.call('GET', KEYS[1])
     if not current then
         return 0
     end
-    if string.sub(current, 1, string.len(ARGV[1])) ~= ARGV[1] then
+    if current ~= ARGV[1] .. ':queued' and current ~= ARGV[1] .. ':running' then
         return 0
     end
     redis.call('SET', KEYS[1], ARGV[1] .. ':running', 'EX', ARGV[2])
     return 1
     """
-    redis_client.eval(
-        script,
-        1,
-        _organize_task_lock_key(workspace_id),
-        lock_token,
-        ORGANIZE_TASK_LOCK_TTL_SECONDS,
+    return bool(
+        redis_client.eval(
+            script,
+            1,
+            _organize_task_lock_key(workspace_id),
+            lock_token,
+            ORGANIZE_TASK_LOCK_TTL_SECONDS,
+        )
     )
 
 
@@ -259,7 +261,7 @@ def release_organize_task_lock(workspace_id: int, lock_token: str) -> None:
     if not current then
         return 0
     end
-    if string.sub(current, 1, string.len(ARGV[1])) ~= ARGV[1] then
+    if current ~= ARGV[1] .. ':queued' and current ~= ARGV[1] .. ':running' then
         return 0
     end
     return redis.call('DEL', KEYS[1])

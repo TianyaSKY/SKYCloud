@@ -131,6 +131,7 @@ def _mark_file_failed(session, file_id: int, error: Exception) -> None:
     except Exception as inner_error:
         logger.error("Failed to mark file {} as failed: {}", file_id, inner_error)
         session.rollback()
+        raise
 
 
 def mark_file_failed(file_id: int, error: Exception) -> None:
@@ -141,6 +142,7 @@ def mark_file_failed(file_id: int, error: Exception) -> None:
         _mark_file_failed(session, file_id, error)
     except Exception as exc:
         logger.error("Could not persist failure status for file {}: {}", file_id, exc)
+        raise
     finally:
         if session is not None:
             session.close()
@@ -263,7 +265,12 @@ def _save_index_result(result: FileIndexResult) -> None:
     """Write a complete index result in one short transaction."""
     session = SessionLocal()
     try:
-        file = session.get(File, result.file_id)
+        file = (
+            session.query(File)
+            .filter(File.id == result.file_id)
+            .with_for_update()
+            .one_or_none()
+        )
         if file is None:
             raise ResourceNotFoundError(f"File {result.file_id} not found")
 

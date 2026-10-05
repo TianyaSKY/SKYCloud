@@ -58,7 +58,8 @@ def process_organize_task(
     """Run one long-lived organize task and always release its distributed lock."""
     token = lock_token or f"legacy-{workspace_id}"
     try:
-        folder_service.mark_organize_task_running(workspace_id, token)
+        if not folder_service.mark_organize_task_running(workspace_id, token):
+            raise RuntimeError("Organize task no longer owns its workspace lock")
         logger.info("Starting organize_files for workspace {}", workspace_id)
         result = handle_organize_process(workspace_id, user_id)
         logger.info("Finished organize_files for workspace {}: {}", workspace_id, result)
