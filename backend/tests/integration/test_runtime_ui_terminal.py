@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(os.getenv('RUN_RUNTIME_UI_TESTS') != '1',
 
 
 @pytest.mark.parametrize('use_ticket', [False, True])
-def test_real_terminal_and_current_permission_revocation(infrastructure, controller, postgres, monkeypatch, use_ticket):
+def test_real_terminal_and_current_permission_revocation(infrastructure, controller, postgres, monkeypatch, use_ticket, tmp_path):
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(ui_tickets, 'redis_client', infrastructure['redis'])
@@ -66,6 +66,11 @@ def test_real_terminal_and_current_permission_revocation(infrastructure, control
             yield db
     app.dependency_overrides[get_db] = database
     auth = {'Authorization': 'Bearer ' + generate_token(user_id, 0)}
+    if os.getenv('RUN_RUNTIME_UI_BROWSER') == '1':
+        from tests.integration.runtime_ui_browser import exercise_browser
+        exercise_browser(app, monkeypatch, user_id, ws_id, auth, tmp_path)
+        monkeypatch.setenv('APP_ORIGIN', 'http://app.skycloud.localhost')
+        monkeypatch.setenv('RUNTIME_UI_ORIGIN_TEMPLATE', 'http://r{runtime_id}.skycloud.localhost:8081')
     with TestClient(app) as client:
         issued = client.post(f'/api/workspace/{ws_id}/opencode/ui-ticket', headers=auth)
         assert issued.status_code == 200, issued.text

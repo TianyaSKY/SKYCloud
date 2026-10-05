@@ -84,6 +84,34 @@ def test_ticket_one_use_and_hash_only_store(ui, test_user, test_workspace):
     assert set(store.ttls.values()) == {30, 600}
 
 
+def test_renew_rotates_cookie_without_exposing_session_or_loading_runtime(ui, test_user, test_workspace):
+    host, previous, _ = launch(ui, test_user, test_workspace)
+    host, ticket = issue(ui, test_user, test_workspace)
+    client, store, _ = ui
+    response = client.get('/runtime-ui/__skycloud/renew?ticket=' + ticket, headers={'Host': host})
+    assert response.status_code == 200
+    raw = response.cookies[ui_tickets.COOKIE]
+    assert raw != previous and raw not in response.text
+    assert 'HttpOnly' in response.headers['set-cookie'] and 'SameSite=strict' in response.headers['set-cookie']
+    assert 'skycloud-runtime-ui-renewed' in response.text and ticket in response.text
+    assert 'http://app.skycloud.localhost' in response.text
+    assert "default-src 'none'" in response.headers['content-security-policy']
+    assert response.headers['cache-control'] == 'no-store'
+    assert client.get('/runtime-ui/__skycloud/renew?ticket=' + ticket, headers={'Host': host}).status_code == 401
+    # Existing streams keep their bounded old lease; new HTTP/WS requests use
+    # the rotated host cookie. Every lease still checks authoritative identity.
+    assert len(store.entries) == 2
+
+
+def test_renew_rechecks_permission_after_ticket_issuance(ui, session, test_user, test_workspace):
+    host, ticket = issue(ui, test_user, test_workspace)
+    session.execute(update(WorkspaceMember).where(WorkspaceMember.workspace_id == test_workspace.id,
+                    WorkspaceMember.user_id == test_user.id).values(role='viewer'))
+    session.commit()
+    response = ui[0].get('/runtime-ui/__skycloud/renew?ticket=' + ticket, headers={'Host': host})
+    assert response.status_code == 403 and 'set-cookie' not in response.headers
+
+
 @pytest.mark.parametrize('change', ['password', 'demote', 'remove', 'container', 'stop'])
 def test_current_identity_revokes_ui_session(ui, session, test_user, test_workspace, change):
     host, raw, _ = launch(ui, test_user, test_workspace)

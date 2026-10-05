@@ -181,7 +181,7 @@ import {
   restartSkycode as apiRestart,
   type WorkspaceInfo,
 } from '@/api/workspace'
-import { runtimeUiLaunchUrl } from '@/utils/runtimeUi'
+import { runtimeUiLaunchUrl, startRuntimeUiRenewal } from '@/utils/runtimeUi'
 import { createWorkspaceSchema } from '@/schemas/workspace'
 import { formatDate } from '@/utils/format'
 import { logger } from '@/utils/logger'
@@ -296,8 +296,11 @@ const handleDelete = async (ws: WorkspaceInfo) => {
 
 let uiGeneration = 0
 let uiOpening = false
+let stopUiRenewal: (() => void) | undefined
 watch(iframeVisible, (visible) => {
   if (!visible) {
+    stopUiRenewal?.()
+    stopUiRenewal = undefined
     uiGeneration += 1
     iframeSrc.value = ''
     activeWorkspace.value = null
@@ -314,6 +317,12 @@ const openWorkspace = async (ws: WorkspaceInfo) => {
     activeWorkspace.value = ws
     iframeSrc.value = url
     iframeVisible.value = true
+    stopUiRenewal?.()
+    stopUiRenewal = startRuntimeUiRenewal(ws.id, url, () => {
+      if (current !== uiGeneration) return
+      iframeVisible.value = false
+      Message.warning('工作区会话已失效，请重新打开')
+    })
   } catch (error) {
     logger.warn('工作区入口加载失败', error)
   } finally {
@@ -370,6 +379,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopUiRenewal?.()
   uiGeneration += 1
   iframeSrc.value = ''
   if (refreshTimer) clearInterval(refreshTimer)

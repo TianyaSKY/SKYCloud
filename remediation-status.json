@@ -86,7 +86,9 @@
         "Current scalar database checks bind user, password version, editor membership, workspace, runtime and container. Host/origin checks isolate sibling runtimes; expiry, password changes, demotion/removal, stopped or recreated containers reject sessions. Mutations revalidate after bounded request reads. Streams recheck in independent sessions every 15 seconds, close at expiry/revocation and release upstream resources.",
         "Dedicated frontend 8081 listener serves only /runtime-ui gateway; parent frontend rejects this namespace. Server injects Controller authentication; caller cookies/Authorization and upstream cookies are not forwarded. Real official OpenCode root HTML and JavaScript loaded via Controller; real Redis proves exactly one winner among 32 simultaneous ticket redemptions and actual expiry.",
         "Default local parent app.skycloud.localhost and per-runtime r{id}.skycloud.localhost share a site while isolating origins. Actual in-app browser sandboxed iframe cookie probe visibly returned COOKIE_OK after Strict HttpOnly cookie redemption. Production requires same-site wildcard DNS/TLS and configured parent origin.",
-        "Authenticated two-hop WebSocket terminal relay implemented with host/origin/path/query scoping, bounded frames/cumulative budgets/per-process connection slots, independent expiry watchdog, periodic fresh permission checks and cleanup. Caller credentials never forwarded; redirects/proxies disabled. Real PostgreSQL/Redis/Controller/glibc OpenCode shell proves UID 10001, direct and one-use PTY-ticket connections, idle demotion closure and reconnect rejection. Full browser flow and UI session renewal remain to be completed."
+        "Authenticated two-hop WebSocket terminal relay implemented with host/origin/path/query scoping, bounded frames/cumulative budgets/per-process connection slots, independent expiry watchdog, periodic fresh permission checks and cleanup. Caller credentials never forwarded; redirects/proxies disabled. Real PostgreSQL/Redis/Controller/glibc OpenCode shell proves UID 10001, direct and one-use PTY-ticket connections, idle demotion closure and reconnect rejection. ",
+        "Parent renews every five minutes and when returning to the visible page by minting a new one-use ticket, redeeming it in a hidden sandboxed runtime-origin iframe and rotating the HttpOnly cookie. Exact frame/origin/consumed-ticket acknowledgements prevent forged messages; denied/timeout renewal closes the workspace, and unmount cancels timers/frames/listeners and ignores late issuance. Old stream leases stay bounded at ten minutes and recheck current permissions.",
+        "Actual in-app browser ran the production renewal utility against isolated PostgreSQL/Redis/Controller/OpenCode: Strict cookie renewal acknowledged, main iframe load count stayed 1, root UI loaded, and direct same-runtime page selected /workspace and entered a draft. Browser tabs, server and disposable containers removed. Full SKYCloud WorkspaceView browser coverage with the main frontend still remains."
       ]
     },
     {
@@ -260,13 +262,13 @@
   "validation": {
     "runtime": "/private/tmp/skycloud-fix-venv/bin/python",
     "targeted": "169 passed: security regressions, auth, workspace, router integration, exception/folder/MCP",
-    "unit_suite": "1281 passed, 0 failed, 34 opt-in skips; pytest --ignore=tests/real; /private/tmp/skycloud-runtime-websocket-final-unit.log. Legacy tests/real require running infrastructure and are verified separately; unconfigured run reports Redis connection errors.",
+    "unit_suite": "1283 passed, 0 failed, 34 opt-in skips; pytest --ignore=tests/real; /private/tmp/skycloud-ui-renewal-all-backend.log. Legacy tests/real require running infrastructure and are verified separately.",
     "baseline_log": "/private/tmp/skycloud-baseline-tests.log",
     "baseline": "Original b37e070: 1088 passed, identical 32 failing test names, 2 skipped. Failures predate this repair.",
     "latest_targeted": "147 passed: workspace HTTP list, routers, Controller, workspace service and security regressions; /private/tmp/skycloud-workspace-list-final-targeted.log",
     "docker_security": "Seven real Redis/Docker/bootstrap/network/controller cases passed with glibc runtime; Compose-only case passed separately after restoring isolated test CLI plugin discovery. /private/tmp/skycloud-runtime-native-security-real.log and /private/tmp/skycloud-runtime-compose-final.log.",
     "opencode_smoke": "1 passed with RUN_OPENCODE_E2E=1: official health/MCP/session operations without a provider key",
-    "frontend": "Type-check and production build passed; 8 files / 24 tests passed; /private/tmp/skycloud-runtime-ui-current-frontend-tests.log; /private/tmp/skycloud-runtime-ui-current-frontend-build.log",
+    "frontend": "8 files / 28 tests passed; type-check and production build passed; /private/tmp/skycloud-ui-renewal-all-frontend.log and /private/tmp/skycloud-ui-renewal-build.log.",
     "nginx": "Actual container nginx -t passed with WebSocket Upgrade forwarding and isolated UI ingress; /private/tmp/skycloud-ui-websocket-nginx.log.",
     "postgres_bootstrap": "Real PostgreSQL initialized without seeded users; concurrent bootstrap from two separate transactions produces exactly one administrator, with complete personal workspace/membership/root",
     "async_io": "Slow accounting and cache read/write/evict/put behavior tests passed; Redis-outage root-file DB fallback test passed",
@@ -280,10 +282,11 @@
     "workspace_list": "3 real PostgreSQL cases passed; /private/tmp/skycloud-workspace-list-real-postgres.log. 1 real Docker/OpenCode lifecycle and owner-scoped snapshot passed; /private/tmp/skycloud-workspace-snapshot-real.log. Disposable test containers removed.",
     "runtime_ui": "HTTP scoping, cookies, one-use ticket, expiry/revocation, caller-header stripping, origin/host/body limits, periodic stream checks and mutation revalidation passed in the full unit suite. Real OpenCode root/script + Redis scenarios: 2 passed, /private/tmp/skycloud-runtime-ui-final-real.log. Final Redis expiry rerun passed, /private/tmp/skycloud-runtime-ui-final-redis-expiry.log. Actual in-app browser Strict iframe cookie probe returned COOKIE_OK; temporary server/tab closed.",
     "runtime_terminal": "2 real PostgreSQL/Redis/Controller/OpenCode terminal cases passed (direct and UI PTY ticket), UID 10001 and idle permission revocation; /private/tmp/skycloud-ui-terminal-ticket-real.log. Temporary resources removed.",
-    "runtime_image": "40 targeted runtime socket/controller/image regressions passed; /private/tmp/skycloud-runtime-image-regressions.log. Locked glibc image built successfully; local immutable ID only, no registry push."
+    "runtime_image": "40 targeted runtime socket/controller/image regressions passed; /private/tmp/skycloud-runtime-image-regressions.log. Locked glibc image built successfully; local immutable ID only, no registry push.",
+    "runtime_ui_renewal": "Backend renewal scoping/revocation/rotation and frontend forged-ack/timeout/cancellation/origin-change tests passed. Real in-app browser renewal: Renewed 1; main loads: 1. Screenshot /private/tmp/skycloud-runtime-ui-renewal-browser.jpg. Opt-in browser harness and following real terminal/revocation case passed; /private/tmp/skycloud-runtime-ui-browser-real.log."
   },
   "next_work": [
-    "Complete full browser/OpenCode UI flow and credential renewal; implement frontend memory tokens and refresh cookies",
+    "Complete full SKYCloud WorkspaceView browser coverage; implement frontend memory tokens and refresh cookies",
     "Exercise complete OpenCode -> gateway -> mock-provider flow with isolated PostgreSQL and Redis",
     "Complete service/repository/API contracts, remaining frontend and real integration tests, CI, dependency locks and UTC"
   ]

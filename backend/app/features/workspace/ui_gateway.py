@@ -2,11 +2,13 @@
 import asyncio
 import time
 import os
+import json
+import secrets
 from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse, HTMLResponse
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -42,6 +44,27 @@ def launch(request: Request, ticket: str, session: Session = Depends(get_db)):
     raw, payload = ui_tickets.redeem(session, ticket, _host(request))
     response = RedirectResponse('/', status_code=303, headers={
         'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
+    response.set_cookie(ui_tickets.cookie_name(payload['origin']), raw,
+                        max_age=ui_tickets.SESSION_TTL, httponly=True,
+                        secure=payload['origin'].startswith('https://'), samesite='strict', path='/')
+    return response
+
+
+@router.get('/__skycloud/renew')
+def renew(request: Request, ticket: str, session: Session = Depends(get_db)):
+    raw, payload = ui_tickets.redeem(session, ticket, _host(request))
+    nonce = secrets.token_urlsafe(32)
+    parent = os.getenv('APP_ORIGIN', 'http://app.skycloud.localhost').rstrip('/')
+    # The acknowledgement contains only the already consumed ticket, never
+    # the newly issued HttpOnly session. It identifies the exact pending frame.
+    message = json.dumps({'type': 'skycloud-runtime-ui-renewed', 'ticket': ticket}).replace('<', '\\u003c')
+    destination = json.dumps(parent).replace('<', '\\u003c')
+    response = HTMLResponse(f'<!doctype html><script nonce="{nonce}">'
+                            f'window.parent.postMessage({message}, {destination});</script>', headers={
+        'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': f"default-src 'none'; script-src 'nonce-{nonce}'; frame-ancestors {parent}",
+    })
     response.set_cookie(ui_tickets.cookie_name(payload['origin']), raw,
                         max_age=ui_tickets.SESSION_TTL, httponly=True,
                         secure=payload['origin'].startswith('https://'), samesite='strict', path='/')
