@@ -54,6 +54,7 @@ SKYCloud 是一个 AI 增强的云文件管理系统，提供从文件存储、�
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
 python3 scripts/generate-env.py
 python3 scripts/build-runtime-image.py --env-file .env
+python3 scripts/build-minio-image.py --env-file .env
 # 编辑 .env，至少填写 Chat 和 Embedding 模型的 API_URL / API_KEY / MODEL
 docker compose up -d --build
 docker compose exec backend-api python -m entry.bootstrap_admin --username admin
@@ -242,7 +243,7 @@ MIT
 
 上传配额默认每用户 10 GiB、每空间 50 GiB，统计逻辑文件（包括秒传副本）与未到期的预留容量；每日按 UTC 日期限制 200 次、5 GiB，在上传预留成功时扣除，中止和失败不返还每日额度。用户最多 8 个、空间最多 32 个活动上传，预留 1 小时后过期，Worker 每分钟清理。完成上传与释放预留在同一事务中，分片会话仅创建者可读写、完成或中止。迁移 `0005_upload_quotas` 后，旧的未完成分片会话需重新初始化；历史文件计入容量但不补计每日额度。API 每进程最多接收 8 个上传请求；Nginx 每客户端 IP 限制 8 个 API 连接，并流式转发请求体。相关正整数配置见 `.env.example`。
 
-上传临时文件保存在专用 `.staging` 目录，活跃上传持有进程锁；Worker 不会清理仍被使用的文件，崩溃后的旧目录会在到期后回收。对象键在 MinIO 上传前写入预留记录；Worker 删除无文件记录引用的对象，并在对象删除成功后确认清理。删除失败或结果不确定时，相关容量继续被预留并在下次清理重试，避免靠存储故障绕过容量上限。此版本之前尚未完成的分片会话需重新初始化（返回 409），历史文件与引用保留。真实 PostgreSQL/MinIO 上传检查可运行 `RUN_UPLOAD_STORAGE_TESTS=1 python -m pytest tests/integration/test_upload_storage.py`（在 backend 目录执行，需要 Docker）；测试创建独立容器并清理自身资源，Redis 缓存和 RabbitMQ 通知仍使用测试替身。
+上传临时文件保存在专用 `.staging` 目录，活跃上传持有进程锁；Worker 不会清理仍被使用的文件，崩溃后的旧目录会在到期后回收。对象键在 MinIO 上传前写入预留记录；Worker 删除无文件记录引用的对象，并在对象删除成功后确认清理。删除失败或结果不确定时，相关容量继续被预留并在下次清理重试，避免靠存储故障绕过容量上限。此版本之前尚未完成的分片会话需重新初始化（返回 409），历史文件与引用保留。真实 PostgreSQL/MinIO 上传检查可运行 `RUN_UPLOAD_STORAGE_TESTS=1 SKYCLOUD_TEST_MINIO_IMAGE=sha256:<构建输出的镜像ID> python -m pytest tests/integration/test_upload_storage.py`（在 backend 目录执行，需要 Docker）；测试创建独立容器并清理自身资源，Redis 缓存和 RabbitMQ 通知仍使用测试替身。
 
 MCP 内联文件上限为 8 MiB，Base64 解码前检查编码长度；MCP JSON 请求体默认上限 32 MiB、每进程最多 4 个并发 POST 请求。对应正整数设置为 `MCP_MAX_REQUEST_SIZE` 和 `MCP_REQUEST_CONCURRENCY`；调整请求体大小时需同步 Nginx `/mcp` 的 `client_max_body_size`。
 
@@ -260,4 +261,6 @@ Python 的运行、测试和 Controller 依赖分别锁定在 `backend/requireme
 
 更新依赖时，使用 uv 0.12.1 运行 `python scripts/lock-python.py --upgrade`；不加 `--upgrade` 会保留已有锁定版本。随后审计锁文件、运行上述测试，并运行 `python scripts/check-python-runtime.py`。该检查使用真实 SDK、合成凭证和进程内 HTTP，验证 API、MCP 协议/鉴权、代理 Host/Origin 及 Agent 构造，不访问部署环境或模型供应商。完整模型调用仍需单独集成验证。
 
-Python、Node、nginx、PostgreSQL、Redis 和 RabbitMQ 的生产镜像已固定为支持 amd64/arm64 的镜像索引摘要；后端 apt 包使用签名 Debian 快照。MinIO 的原公共镜像地址已不可拉取，可复现源码构建仍待完成。
+Python、Node、nginx、PostgreSQL、Redis 和 RabbitMQ 的生产镜像已固定为支持 amd64/arm64 的镜像索引摘要；后端 apt 包使用签名 Debian 快照。MinIO 的原公共镜像地址已不可拉取，MinIO 由 `backend/minio_image/lock.json` 锁定的官方源码构建，校验源码 SHA-256，固定 Go 工具链和运行镜像，并使用上游 `go.sum` 校验全部 Go 依赖；不会自动下载另一个工具链或改写 `go.mod`。容器内 `/usr/share/minio/` 包含源码压缩包、许可证及锁文件。执行 `scripts/build-minio-image.py --env-file .env` 后，Compose 使用本机不可变 `MINIO_IMAGE`，换 Docker 主机时重新构建。
+
+源码镜像的持久性验证在 `backend` 目录运行 `RUN_MINIO_IMAGE_TESTS=1 SKYCLOUD_TEST_MINIO_IMAGE=sha256:<构建输出的镜像ID> python -m pytest tests/integration/test_minio_image.py`。测试创建独立卷，验证读写、重启、删除及源码校验和；若设置 `SKYCLOUD_TEST_LEGACY_MINIO_IMAGE` 为本地已有的旧镜像 ID，还会验证旧数据卷升级。测试不下载旧镜像，未提供旧镜像时会明确跳过该用例。

@@ -115,11 +115,16 @@ def test_production_ports_and_runtime_network_are_restricted(tmp_path):
     result = subprocess.run(
         ["docker", "compose", "--env-file", str(generated_env), "-f", str(root / "docker-compose.yml"), "config", "--format", "json"],
         env={**os.environ, "SKYCLOUD_ENV_FILE": str(generated_env),
-             "OPENCODE_IMAGE": os.getenv("SKYCLOUD_TEST_RUNTIME_IMAGE", os.environ["OPENCODE_IMAGE"])},
+             "OPENCODE_IMAGE": os.getenv("SKYCLOUD_TEST_RUNTIME_IMAGE", os.environ["OPENCODE_IMAGE"]),
+             "MINIO_IMAGE": os.getenv("SKYCLOUD_TEST_MINIO_IMAGE", "sha256:" + "b" * 64)},
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stderr
     config = json.loads(result.stdout)
+    minio = config['services']['minio']
+    assert minio['image'] == os.getenv('SKYCLOUD_TEST_MINIO_IMAGE', 'sha256:' + 'b' * 64)
+    assert minio['pull_policy'] == 'never'
+    assert minio['healthcheck']['test'][:2] == ['CMD', 'python']
     assert config["services"]["migrate"]["command"] == ["python", "-m", "entry.migrate"]
     assert not any(mount.get("target", "").startswith("/docker-entrypoint-initdb.d") for mount in config["services"]["db"].get("volumes", []))
     for service in ("backend-api", "backend-worker", "backend-mcp", "llm-gateway"):

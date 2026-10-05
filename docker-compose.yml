@@ -52,7 +52,8 @@ services:
       - skycloud-network
 
   minio:
-    image: minio/minio:latest
+    image: ${MINIO_IMAGE:?Build storage with scripts/build-minio-image.py --env-file .env}
+    pull_policy: never
     container_name: skycloud-minio
     restart: always
     command: server /data --console-address ":9001"
@@ -62,7 +63,7 @@ services:
     volumes:
       - minio_data:/data
     healthcheck:
-      test: [ "CMD", "mc", "ready", "local" ]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/minio/health/cluster', timeout=2)" ]
       interval: 10s
       timeout: 5s
       retries: 5

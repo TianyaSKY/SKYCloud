@@ -1,0 +1,9 @@
+{
+  "commit": "7aac2a2c5b7c882e68c1ce017d8256be2feea27f",
+  "version": "2026-02-12T20:18:48Z",
+  "source_url": "https://codeload.github.com/minio/minio/tar.gz/7aac2a2c5b7c882e68c1ce017d8256be2feea27f",
+  "source_sha256": "71794c2df26aad0cc99e8421c58b7aa2dd55969f979b0e7d1e931042e9fabcd6",
+  "builder": "golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195",
+  "base": "python:3.11-slim-bookworm@sha256:2333bd330d12de02514770b3585cad313644316047cdee24a7acfdece6de6efb",
+  "architectures": ["arm64", "amd64"]
+}

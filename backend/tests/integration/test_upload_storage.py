@@ -32,18 +32,20 @@ pytestmark = pytest.mark.skipif(os.getenv('RUN_UPLOAD_STORAGE_TESTS') != '1', re
 
 @pytest.fixture
 def minio_storage():
+    image = os.getenv('SKYCLOUD_TEST_MINIO_IMAGE')
+    assert image and image.startswith('sha256:'), 'Build scripts/build-minio-image.py and set SKYCLOUD_TEST_MINIO_IMAGE to its immutable ID'
     name = 'skycloud-upload-test-' + uuid.uuid4().hex[:12]
     access, secret = uuid.uuid4().hex, uuid.uuid4().hex + uuid.uuid4().hex
     try:
-        docker('run', '-d', '--name', name, '-e', 'MINIO_ROOT_USER=' + access,
+        docker('run', '-d', '--pull', 'never', '--name', name, '-e', 'MINIO_ROOT_USER=' + access,
                '-e', 'MINIO_ROOT_PASSWORD=' + secret, '-p', '127.0.0.1::9000',
-               'minio/minio:latest', 'server', '/data')
+               image, 'server', '/data')
         port = docker('port', name, '9000/tcp').stdout.strip().rsplit(':', 1)[1]
         endpoint = '127.0.0.1:' + port
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             try:
-                with urlopen('http://' + endpoint + '/minio/health/live', timeout=1) as response:
+                with urlopen('http://' + endpoint + '/minio/health/cluster', timeout=1) as response:
                     if response.status == 200:
                         break
             except Exception:
