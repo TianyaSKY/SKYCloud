@@ -296,3 +296,5 @@ Assistant 会话 CRUD、状态查询、交接与权限回复也由线程池执�
 统一 Assistant 流的数据库操作通过 `StreamPersistence` 在专用线程中串行执行。生产流入口 `stream_run` 在同一线程创建、读取和关闭 Session；消息保存、租约更新、取消检查和终态事务都不在事件循环中执行。取消会等待正在运行的数据库操作结束再清理，HTTP 断开显式关闭底层流。权限事件重放保留已提交的单次回复，终态保存加行锁且不会覆盖已结束任务。`tests/test_stream_worker.py` 覆盖慢 SQL 响应、重复取消、创建期间取消、权限重放、终态保护与 HTTP 流断开；真实专家链路使用此生产入口。其他异步服务与请求依赖仍需继续核查。
 
 系统字典服务统一接收显式 Session，与路由参数保持一致，不再使用全局线程作用域 Session。字典读取在线程池执行，列表缓存使用固定 `all` 键，写入与删除清除同一键。`tests/test_sys_dict_http.py` 通过真实 HTTP/SQLite 和 fakeredis 验证 CRUD、缓存更新、管理员限制及模型配置键策略。头像存储与文件处理状态统计也在工作线程执行；公开文件搜索参数 `type=semantic` 进入 Embedding/向量检索分支，内部旧 `vector` 参数仍兼容。相关分支和响应性测试见 `tests/test_file_async_boundaries.py`，该测试不代替真实向量数据库集成。
+
+MCP JWT 鉴权在工作线程中完成 Session 创建、验证和关闭，只将不可变的身份上下文交回事件循环。MCP 文件搜索在工作线程内创建并关闭独立事务，查询前重新检查空间成员资格；权限拒绝不会被转换为向量搜索不可用的空结果。`tests/test_mcp_io_ownership.py` 验证慢鉴权时其他 HTTP 请求响应、Session 线程归属和撤销后的访问拒绝。真实专家网关集成测试还通过独立进程的锁定 MCP SDK 客户端调用实际 `search_files`，并检查 PostgreSQL 审计记录的 Runtime/用户/空间归属。该真实搜索用例使用 fuzzy 模式。

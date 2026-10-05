@@ -16,6 +16,7 @@ import json
 import mimetypes
 import os
 from contextvars import ContextVar
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import Any
 
@@ -35,7 +36,7 @@ from app.features.auth.service import decode_token
 from app.features.file import service as file_service
 from app.features.folder import service as folder_service
 from app.features.share import service as share_service
-from app.features.workspace.permissions import get_member_role
+from app.features.workspace.permissions import get_member_role, assert_member
 from app.mcp.context import (
     McpRequestContext,
     get_optional_mcp_context,
@@ -150,23 +151,19 @@ class JWTAuthMiddleware:
         if auth_value.lower().startswith("bearer "):
             token = auth_value.split(" ", 1)[1].strip()
             if token:
-                session = SessionLocal()
-                try:
-                    context = self._resolve_context(
-                        session, token, workspace_header_value
-                    )
-                    if context:
-                        user_id = context.user_id
-                    else:
-                        # Preserve the legacy diagnostic user-id ContextVar for
-                        # direct middleware callers. Real tool authorization
-                        # remains blocked because request_active=True and no
-                        # verified workspace context exists.
+                def authenticate():
+                    session = SessionLocal()
+                    try:
+                        resolved = self._resolve_context(session, token, workspace_header_value)
+                        if resolved:
+                            return resolved, resolved.user_id
+                        # Diagnostic identity never authorizes a real tool when
+                        # no verified workspace context could be resolved.
                         result = decode_token(session, token)
-                        if result and str(result).isdigit():
-                            user_id = int(result)
-                finally:
-                    session.close()
+                        return None, int(result) if result and str(result).isdigit() else None
+                    finally:
+                        session.close()
+                context, user_id = await asyncio.to_thread(authenticate)
 
         request_active_ctx = set_mcp_request_active(True)
         token_ctx = _current_user_id.set(user_id)
@@ -388,15 +385,21 @@ async def search_files(
               如果需要按文件内容查找，请使用 vector 模式。
     """
     context = _require_read_context()
-    # service 内部已 to_thread；session 在 await 完成后再 close
-    session = SessionLocal()
-    try:
-        result = await file_service.search_files(
-            session, context.workspace_id, query, page, page_size, search_type
-        )
-        return json.dumps(result, ensure_ascii=False, default=str)
-    finally:
-        session.close()
+    strict = is_mcp_request_active() or get_optional_mcp_context() is not None
+    @contextmanager
+    def search_session():
+        session = SessionLocal()
+        try:
+            if strict:
+                assert_member(session, context.workspace_id, context.user_id)
+            yield session
+        finally:
+            session.close()
+    result = await file_service.search_files(
+        None, context.workspace_id, query, page, page_size, search_type,
+        session_factory=search_session,
+    )
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 @mcp.tool()

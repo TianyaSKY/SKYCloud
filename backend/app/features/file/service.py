@@ -968,26 +968,33 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
 
 
 async def search_files(
-        session: Session,
+        session: Session | None,
         workspace_id: int,
         query: str,
         page: int = 1,
         page_size: int = 10,
         search_type: str = "fuzzy",
+        *, session_factory=None,
 ) -> dict[str, Any]:
+    async def execute(function, *args):
+        def work():
+            if session_factory is not None:
+                with session_factory() as owned_session:
+                    return function(owned_session, *args)
+            return function(session, *args)
+        return await asyncio.to_thread(work)
+
     if not query:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
     if search_type not in {"vector", "semantic"}:
-        return await asyncio.to_thread(
-            _search_files_fuzzy, session, workspace_id, query, page, page_size)
+        return await execute(_search_files_fuzzy, workspace_id, query, page, page_size)
 
     try:
         embeddings = await embedding_desc(query, get_embedding_model_config())
-        return await asyncio.to_thread(
-            _search_files_vector_by_embedding,
-            session, workspace_id, embeddings, page, page_size,
-        )
+        return await execute(_search_files_vector_by_embedding, workspace_id, embeddings, page, page_size)
+    except (PermissionDeniedError, PermissionError):
+        raise
     except Exception as e:
         logger.exception(f"Vector search error: {e}")
         return {

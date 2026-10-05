@@ -193,6 +193,36 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                             return await client.get_mcp_status(), await client.get_messages(run.opencode_session_id)
                     connected, messages = asyncio.run(mcp_status())
                     assert connected['SKYCLOUD']['status'] == 'connected'
+                    # Call the actual MCP search tool over its protocol using
+                    # the latest scoped Runtime credential after live refresh.
+                    mcp_headers = container.read_config()['mcp']['SKYCLOUD']['headers']
+                    # Parent unit conftest replaces the MCP package. Run the
+                    # locked SDK in an independent process, like the server.
+                    client_code = """
+import asyncio, json, sys, httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+settings = json.load(sys.stdin)
+async def main():
+    async with httpx.AsyncClient(headers=settings['headers'], trust_env=False, timeout=20) as client:
+        async with streamable_http_client(settings['url'], http_client=client) as (reader, writer, _):
+            async with ClientSession(reader, writer) as session:
+                await session.initialize()
+                result = await session.call_tool('search_files', {'query': 'no-matching-test-file', 'search_type': 'fuzzy'})
+                assert not result.isError
+                print(json.dumps(json.loads(result.content[0].text)))
+asyncio.run(main())
+"""
+                    checked = subprocess.run([sys.executable, '-c', client_code],
+                        input=json.dumps({'url': f'http://127.0.0.1:{mcp_port}/mcp', 'headers': mcp_headers}),
+                        capture_output=True, text=True, timeout=30)
+                    assert checked.returncode == 0, checked.stderr[-2000:]
+                    search_data = json.loads(checked.stdout)
+                    assert search_data['items'] == [] and search_data['total'] == 0
+                    from app.models.mcp_audit_log import McpAuditLog
+                    with factory() as observer:
+                        audit = observer.query(McpAuditLog).filter_by(workspace_id=ws_id, tool_name='search_files').one()
+                        assert audit.success and audit.user_id == user_id and audit.runtime_id == runtime.id
                     if permission_response == 'reject':
                         states = [part['state'] for message in messages for part in message.get('parts', []) if part.get('type') == 'tool' and part.get('tool') == 'bash']
                         assert any(state.get('status') == 'error' and 'rejected' in state.get('error', '').lower() for state in states)
