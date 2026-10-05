@@ -22,11 +22,13 @@ from app.infra.llm.sync_client import close_sync_clients
 from app.infra.task_queue import (
     FILE_PROCESS_QUEUE,
     ORGANIZE_FILE_QUEUE,
+    RABBITMQ_RECONNECT_DELAY_SECONDS,
     QueueMessage,
     RabbitMQTaskConsumer,
 )
 
 from loguru import logger
+from pika.exceptions import AMQPError
 
 ORGANIZE_WORKERS = max(1, int(os.getenv("WORKER_ORGANIZE_THREADS", "1")))
 
@@ -62,6 +64,7 @@ def process_organize_task(
         logger.info("Finished organize_files for workspace {}: {}", workspace_id, result)
     except Exception:
         logger.exception("Error organizing files for workspace {}", workspace_id)
+        raise
     finally:
         folder_service.release_organize_task_lock(workspace_id, token)
 
@@ -98,6 +101,16 @@ class WorkerRuntime:
     def reap_completed(self) -> None:
         self._reap("index")
         self._reap("organize")
+
+    def available_queues(self) -> list[str]:
+        """Only fetch work that can start without blocking the connection thread."""
+        self.reap_completed()
+        return [
+            queue for queue, pool, capacity in (
+                (FILE_PROCESS_QUEUE, "index", self.index_workers),
+                (ORGANIZE_FILE_QUEUE, "organize", self.organize_workers),
+            ) if len(self._running[pool]) < capacity
+        ]
 
     def wait_for_capacity(self, queue_name: str) -> None:
         """Block only at the runtime boundary until the selected pool has room."""
@@ -150,25 +163,50 @@ def parse_organize_message(data: str) -> tuple[int, int, str | None]:
 def dispatch_message(
     runtime: WorkerRuntime,
     message: QueueMessage,
-) -> None:
+) -> Future[object]:
     """Decode one queue message and submit it to its dedicated executor."""
     if message.queue_name == FILE_PROCESS_QUEUE:
-        runtime.wait_for_capacity("index")
-        runtime.submit_index(process_task, int(message.body))
-        return
+        return runtime.submit_index(process_task, int(message.body))
 
     if message.queue_name == ORGANIZE_FILE_QUEUE:
-        runtime.wait_for_capacity("organize")
         workspace_id, user_id, lock_token = parse_organize_message(message.body)
-        runtime.submit_organize(
+        return runtime.submit_organize(
             process_organize_task,
             workspace_id,
             user_id,
             lock_token,
         )
-        return
 
     raise ValueError(f"Unknown task queue: {message.queue_name}")
+
+
+def worker_step(
+    runtime: WorkerRuntime,
+    consumer: RabbitMQTaskConsumer,
+    inflight: dict[Future[object], QueueMessage],
+) -> None:
+    """Settle deliveries and fetch only available work, all on the connection thread."""
+    for future, message in list(inflight.items()):
+        if not future.done():
+            continue
+        error = future.exception()
+        if error is None:
+            consumer.acknowledge(message)
+        else:
+            consumer.park_failed(message, error)
+        del inflight[future]
+    message = consumer.poll(runtime.available_queues())
+    if message is None:
+        consumer.idle()
+        return
+    try:
+        if message.raw_body is not None:
+            message.raw_body.decode("utf-8")
+        future = dispatch_message(runtime, message)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        consumer.park_failed(message, error)
+    else:
+        inflight[future] = message
 
 
 def run_worker(max_workers: int | None = None) -> None:
@@ -184,18 +222,15 @@ def run_worker(max_workers: int | None = None) -> None:
 
     consumer = RabbitMQTaskConsumer()
     runtime = WorkerRuntime(index_workers=index_workers)
+    inflight: dict[Future[object], QueueMessage] = {}
     try:
         while True:
-            runtime.reap_completed()
-            message = consumer.get_next_message()
             try:
-                dispatch_message(runtime, message)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                logger.exception(
-                    "Invalid data received from queue %s: %s",
-                    message.queue_name,
-                    message.body,
-                )
+                worker_step(runtime, consumer, inflight)
+            except AMQPError:
+                consumer.close()
+                logger.exception("RabbitMQ delivery failed; reconnecting")
+                time.sleep(RABBITMQ_RECONNECT_DELAY_SECONDS)
     finally:
         consumer.close()
         runtime.shutdown()

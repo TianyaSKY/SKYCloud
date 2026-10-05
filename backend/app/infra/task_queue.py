@@ -1,7 +1,6 @@
 """RabbitMQ 任务队列：发布文件索引 / 整理任务，以及阻塞式消费轮询。
 
-队列名与 payload 格式需与 backend/tasks.py worker 保持一致；
-整理任务使用 JSON ``{user_id, lock_token}``，worker 侧兼容旧版纯 user_id 字符串。
+整理任务使用 workspace_id/user_id/lock_token JSON，worker 兼容旧版 workspace_id 字符串。
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ from loguru import logger
 
 FILE_PROCESS_QUEUE = "file_process_queue"
 ORGANIZE_FILE_QUEUE = "organize_file_queue"
+FAILED_TASK_QUEUE = "failed_task_queue"
 TASK_QUEUES = (FILE_PROCESS_QUEUE, ORGANIZE_FILE_QUEUE)
 
 RABBITMQ_RECONNECT_DELAY_SECONDS = float(
@@ -33,6 +33,9 @@ class QueueMessage:
 
     queue_name: str
     body: str
+    delivery_tag: int | None = None
+    generation: int = 0
+    raw_body: bytes | None = None
 
 
 def _rabbitmq_port() -> int:
@@ -73,7 +76,7 @@ def open_connection() -> pika.BlockingConnection:
 
 def declare_task_queues(channel: BlockingChannel) -> None:
     """声明全部任务队列为 durable，保证 broker 重启后不丢定义。"""
-    for queue_name in TASK_QUEUES:
+    for queue_name in (*TASK_QUEUES, FAILED_TASK_QUEUE):
         channel.queue_declare(queue=queue_name, durable=True)
 
 
@@ -83,6 +86,7 @@ def publish_messages(queue_name: str, messages: Iterable[str | int]) -> None:
     try:
         channel = connection.channel()
         declare_task_queues(channel)
+        channel.confirm_delivery()
         properties = pika.BasicProperties(
             content_type="text/plain",
             delivery_mode=2,
@@ -121,6 +125,7 @@ class RabbitMQTaskConsumer:
         self._connection: pika.BlockingConnection | None = None
         self._channel: BlockingChannel | None = None
         self._next_queue_index = 0
+        self._generation = 0
 
     def connect(self) -> None:
         """建立连接并声明队列。"""
@@ -128,6 +133,7 @@ class RabbitMQTaskConsumer:
         self._connection = open_connection()
         self._channel = self._connection.channel()
         declare_task_queues(self._channel)
+        self._generation += 1
         logger.info("Connected to RabbitMQ task queues")
 
     def close(self) -> None:
@@ -158,12 +164,61 @@ class RabbitMQTaskConsumer:
         return body
 
     def get_message(self, queue_name: str) -> QueueMessage | None:
-        """非阻塞取一条；auto_ack 简化失败重试策略（任务本身需幂等）。"""
+        """取出但不确认；仅在任务持久化完成后确认。"""
         channel = self._ensure_channel()
-        method_frame, _, body = channel.basic_get(queue=queue_name, auto_ack=True)
+        method_frame, _, body = channel.basic_get(queue=queue_name, auto_ack=False)
         if not method_frame:
             return None
-        return QueueMessage(queue_name=queue_name, body=self._decode_body(body))
+        return QueueMessage(
+            queue_name=queue_name,
+            body=body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body,
+            delivery_tag=method_frame.delivery_tag, generation=self._generation,
+            raw_body=body if isinstance(body, bytes) else body.encode("utf-8"),
+        )
+
+    def owns_delivery(self, message: QueueMessage) -> bool:
+        return (message.generation == self._generation and self._channel is not None
+                and not self._channel.is_closed and message.delivery_tag is not None)
+
+    def acknowledge(self, message: QueueMessage) -> bool:
+        """Confirm on the receiving channel only; old tags cannot survive reconnect."""
+        if not self.owns_delivery(message):
+            return False
+        self._channel.basic_ack(delivery_tag=message.delivery_tag)
+        return True
+
+    def park_failed(self, message: QueueMessage, error: Exception) -> None:
+        """Keep failed payloads durably; only ack after the broker confirms the copy."""
+        import base64
+        if not self.owns_delivery(message):
+            return
+        payload = json.dumps({
+            "queue": message.queue_name,
+            "body_base64": base64.b64encode(
+                message.raw_body or message.body.encode("utf-8")
+            ).decode("ascii"),
+            "error_type": type(error).__name__,
+        })
+        publish_messages(FAILED_TASK_QUEUE, [payload])
+        self.acknowledge(message)
+
+    def poll(self, queue_names: Iterable[str]) -> QueueMessage | None:
+        """One fair polling round; the caller can settle futures between rounds."""
+        enabled = set(queue_names)
+        for offset in range(len(TASK_QUEUES)):
+            index = (self._next_queue_index + offset) % len(TASK_QUEUES)
+            if TASK_QUEUES[index] not in enabled:
+                continue
+            message = self.get_message(TASK_QUEUES[index])
+            if message is not None:
+                self._next_queue_index = (index + 1) % len(TASK_QUEUES)
+                return message
+        return None
+
+    def idle(self) -> None:
+        """Service heartbeats even when all executor slots are occupied."""
+        self._ensure_channel()
+        self._connection.sleep(self.poll_interval_seconds)
 
     def get_next_message(self) -> QueueMessage:
         """阻塞轮询全部 TASK_QUEUES，公平轮转避免饿死某一队列。"""

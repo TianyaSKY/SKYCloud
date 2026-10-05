@@ -351,7 +351,8 @@ class TestTaskQueue:
         import app.infra.task_queue as tq
         channel = MagicMock()
         tq.declare_task_queues(channel)
-        assert channel.queue_declare.call_count == len(tq.TASK_QUEUES)
+        assert channel.queue_declare.call_count == len(tq.TASK_QUEUES) + 1
+        channel.queue_declare.assert_any_call(queue=tq.FAILED_TASK_QUEUE, durable=True)
 
     def test_publish_messages(self, mock_task_queue):
         import app.infra.task_queue as tq

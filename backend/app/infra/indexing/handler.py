@@ -375,6 +375,9 @@ def handle_file_indexing(file_id: int) -> None:
                 mark_file_failed(file_id, exc)
             except Exception:
                 logger.exception("Could not persist failure status for file {}", file_id)
+                raise
+        else:
+            raise
     finally:
         if local_path and os.path.exists(local_path):
             os.remove(local_path)
