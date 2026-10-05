@@ -87,7 +87,9 @@ service.interceptors.response.use(
     }
     let data: unknown = error?.response?.data
     if (data instanceof Blob && data.size <= 65536 && data.type.includes('json')) {
+      const parsingContext = captureRequestContext()
       try { data = JSON.parse(await data.text()) } catch { /* Keep the bounded original payload. */ }
+      assertRequestContext(parsingContext)
     }
     const payload = data as { message?: string; detail?: string; code?: number } | undefined
     const msg = payload?.message || payload?.detail || '网络错误'

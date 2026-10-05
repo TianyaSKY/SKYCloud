@@ -3,6 +3,7 @@ import { CanceledError, isCancel } from 'axios'
 import { onScopeDispose, watch, type Ref } from 'vue'
 import { uploadFileOptimized } from '../utils/upload'
 import { assertRequestContext, captureRequestContext, type RequestContext } from '../utils/requestContext'
+import { useWorkspaceStore } from '../stores/workspace'
 import { logger } from '../utils/logger'
 
 const UPLOAD_CONCURRENCY = 3
@@ -10,6 +11,7 @@ interface Batch { controller: AbortController; context: RequestContext; parentId
 
 /** Each batch owns its target, cancellation signal and notification; all batches share three slots. */
 export function useUploadManager(currentParentId: Ref<number | null>, fetchFiles: () => Promise<void>) {
+  const workspace = useWorkspaceStore()
   const batches = new Set<Batch>()
   let sequence = 0
   let disposed = false
@@ -34,12 +36,14 @@ export function useUploadManager(currentParentId: Ref<number | null>, fetchFiles
     else active--
   }
   const current = (batch: Batch) => {
+    if (!workspace.canWrite) return false
     try { assertRequestContext(batch.context, batch.controller.signal); return true } catch { return false }
   }
   const cancelAll = () => {
     for (const batch of batches) { batch.controller.abort(); Notification.remove(batch.notification) }
   }
   watch([() => captureRequestContext().workspaceId, () => captureRequestContext().userId, () => captureRequestContext().sessionVersion], cancelAll, { flush: 'sync' })
+  watch(() => workspace.canWrite, allowed => { if (!allowed) cancelAll() }, { flush: 'sync' })
   onScopeDispose(() => { disposed = true; cancelAll() })
 
   const refresh = async (batch: Batch) => {
@@ -47,7 +51,7 @@ export function useUploadManager(currentParentId: Ref<number | null>, fetchFiles
     try { await fetchFiles() } catch (error) { logger.warn('上传已完成，但文件列表刷新失败: {}', error) }
   }
   const startUpload = async (files: File[]) => {
-    if (disposed || !files.length) return
+    if (disposed || !workspace.canWrite || !files.length) return
     const batch: Batch = { controller: new AbortController(), context: captureRequestContext(),
       parentId: currentParentId.value, notification: `upload-${Date.now()}-${++sequence}` }
     batches.add(batch)

@@ -6,6 +6,7 @@ import RuntimeUiDialog from '@/components/RuntimeUiDialog.vue'
 
 const store = vi.hoisted(() => ({ workspaces: [] as Record<string, unknown>[], loading: false,
   currentWorkspace: null, switchWorkspace: vi.fn(), loadWorkspaces: vi.fn() }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ user: { id: 1 }, sessionVersion: 0 }) }))
 vi.mock('@/stores/workspace', () => ({ useWorkspaceStore: () => store }))
 vi.mock('@/api/workspace', () => ({ createWorkspace: vi.fn(), deleteWorkspace: vi.fn(),
   getWorkspace: vi.fn(), inviteMember: vi.fn(), listMembers: vi.fn(), removeMember: vi.fn(),

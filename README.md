@@ -245,6 +245,8 @@ MIT
 
 上传大小限制：默认单文件 256 MiB、头像 5 MiB、单个请求 512 MiB、分片 64 MiB。后端在接收请求体和写入文件时均检查实际字节数（包括没有 Content-Length 的请求），超限返回 413 并清理临时文件。`.env.example` 中的 `UPLOAD_*` 可调整且必须为正整数；提高请求上限时还需同步调整 `frontend/nginx.conf` 的 `client_max_body_size`。
 
+工作空间列表刷新采用最后一次请求的结果，保留用户在加载期间的最新选择；成员资格消失后切换到可访问空间，列表为空时清除当前空间和写权限。退出或重新登录会清除空间状态并丢弃旧请求。成员管理仅管理员可修改成员，所有者不可被移除或降级，空间删除仅向所有者显示。确认操作固定原空间及成员，抽屉切换、关闭、登录变化和页面卸载后旧操作失效；成功修改自己的角色或移除自己时立即撤销本地权限，再刷新服务端成员状态。
+
 前端按 2 MiB 读取文件并增量计算 SHA-256，上传任务固定创建时的账号、工作空间和目录；切换账号或空间、取消任务及页面卸载会中止请求和等待队列。全局最多同时执行 3 个文件上传，仅临时网络或服务端错误会重试分片，完成元数据提交后进度才显示 100%。分片恢复标识包含文件内容与所属上下文；浏览器本地保存的仅是恢复标识，过期会话返回 409 时重新初始化。文件选择器打开后若目录、空间、登录会话或写权限变化，原选择被丢弃，需在当前目录重新选择。
 
 可选端到端检查：在 backend 目录运行 `RUN_FULL_BROWSER=1 SKYCLOUD_TEST_RUNTIME_IMAGE=sha256:<Runtime镜像ID> SKYCLOUD_TEST_MINIO_IMAGE=sha256:<MinIO镜像ID> python -m pytest tests/integration/test_full_browser.py`。读取 `/private/tmp/skycloud-full-browser.json` 中的临时浏览器地址；保持测试运行，在 frontend 目录执行 `node scripts/check-upload-http.mjs`，用真实前端上传代码验证小文件、分片、下载 SHA-256 和秒传。完成浏览器登录、刷新和 Runtime 页面检查后，向元数据指定的 completion_file 写入 `verified`，测试将清理自身容器。HTTP 脚本仅替代路由和通知显示，不能证明原生文件选择器操作成功；`--build-only` 只检查脚本打包。

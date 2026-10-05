@@ -46,6 +46,17 @@ describe('request identity and workspace boundaries', () => {
     pending.resolve(fresh); await rejected; expect(adapter).toHaveBeenCalledTimes(1)
     if (kind === 'session') expect(useAuthStore().token).toBe('new-login')
   })
+  it.each([401, 403])('discards late HTTP %s Blob errors after the login changes during body parsing', async status => {
+    const body = deferred<string>()
+    const blob = new Blob(['{}'], { type: 'application/json' })
+    const read = vi.fn(() => body.promise); Object.defineProperty(blob, 'text', { value: read })
+    request.defaults.adapter = async config => { throw new AxiosError('old blob', 'ERR_BAD_REQUEST', config, undefined, { status, statusText: 'Denied', headers: {}, config, data: blob }) }
+    const old = request.get('/download', { responseType: 'blob', sessionRetried: true })
+    const rejected = expect(old).rejects.toMatchObject({ code: 'ERR_CANCELED' })
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1))
+    useAuthStore().setAuth('new-login', { id: 7 }); body.resolve('{"detail":"old denial"}'); await rejected
+    expect(useAuthStore().token).toBe('new-login'); expect(Message.error).not.toHaveBeenCalled(); expect(router.push).not.toHaveBeenCalled()
+  })
   it('permits a normal token refresh within the same session and original workspace', async () => {
     const context = captureRequestContext(); vi.mocked(refreshBrowserSession).mockResolvedValue(fresh)
     const adapter = vi.fn(async config => {

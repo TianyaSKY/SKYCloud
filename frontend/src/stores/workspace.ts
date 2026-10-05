@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { listWorkspaces, type WorkspaceInfo } from '../api/workspace'
+import { useAuthStore } from './auth'
 import { logger } from '../utils/logger'
 
 const WS_KEY = 'current_workspace_id'
@@ -18,31 +19,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const canWrite = computed(() => ['admin', 'editor'].includes(myRole.value))
   const isAdmin = computed(() => myRole.value === 'admin')
 
-  /** 加载用户所有工作空间，并恢复上次选中或默认选第一个 */
+  const auth = useAuthStore()
+  let generation = 0
+  // Logout and replacement login invalidate both permissions and pending loads.
+  watch(() => auth.sessionVersion, reset, { flush: 'sync' })
+
+  /** Refresh authoritative membership, retaining the user's latest selection. */
   async function loadWorkspaces() {
+    const current = ++generation
     loading.value = true
     try {
       const result = await listWorkspaces()
+      if (current !== generation) return
       workspaces.value = result.workspaces
-
-      // 恢复上次选中的空间
-      const savedId = localStorage.getItem(WS_KEY)
-      if (savedId) {
-        const found = workspaces.value.find((ws) => ws.id === Number(savedId))
-        if (found) {
-          currentWorkspace.value = found
-          return
-        }
-      }
-      // 默认选第一个
-      const firstWorkspace = workspaces.value[0]
-      if (firstWorkspace) {
-        switchWorkspace(firstWorkspace)
+      let savedId: string | null = null
+      try { savedId = localStorage.getItem(WS_KEY) } catch { /* Storage may be disabled. */ }
+      const selectedId = currentWorkspace.value?.id ?? Number(savedId)
+      const selected = workspaces.value.find(ws => ws.id === selectedId) ?? workspaces.value[0]
+      if (selected) switchWorkspace(selected)
+      else {
+        currentWorkspace.value = null
+        try { localStorage.removeItem(WS_KEY) } catch { /* Storage may be disabled. */ }
       }
     } catch (err) {
-      logger.warn('加载工作空间列表失败: {}', err)
+      if (current === generation) logger.warn('加载工作空间列表失败: {}', err)
     } finally {
-      loading.value = false
+      if (current === generation) loading.value = false
     }
   }
 
@@ -58,6 +60,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   /** 清空状态（登出时调用） */
   function reset() {
+    generation += 1
+    loading.value = false
     workspaces.value = []
     currentWorkspace.value = null
     try {

@@ -18,7 +18,7 @@ const files = (count: number) => Array.from({ length: count }, (_, index) => new
 function deferred() { let resolve!: (value: { instantUpload: boolean }) => void; const promise = new Promise<{ instantUpload: boolean }>(yes => { resolve = yes }); return { promise, resolve } }
 beforeEach(() => {
   vi.resetAllMocks(); setActivePinia(createPinia()); localStorage.clear()
-  useAuthStore().setAuth('access', { id: 7 }); useWorkspaceStore().currentWorkspace = { id: 11, name: 'space', owner_id: 7 }
+  useAuthStore().setAuth('access', { id: 7 }); useWorkspaceStore().currentWorkspace = { id: 11, name: 'space', owner_id: 7, my_role: 'editor' }
   mocks.upload.mockResolvedValue({ instantUpload: false })
 })
 afterEach(() => { scopes.splice(0).forEach(scope => scope.stop()) })
@@ -49,16 +49,22 @@ describe('upload batch lifetime and concurrency', () => {
     pending.splice(0).forEach(request => request.resolve({ instantUpload: false })); await Promise.all([old, newer])
     expect(mocks.success).toHaveBeenCalledTimes(1); expect(uploader.fetchFiles).toHaveBeenCalledTimes(1); expect(mocks.warning).not.toHaveBeenCalled()
   })
-  it.each(['workspace', 'login', 'dispose'])('aborts HTTP signals and queued uploads on %s change', async kind => {
+  it.each(['workspace', 'login', 'demotion', 'dispose'])('aborts HTTP signals and queued uploads on %s change', async kind => {
     const pending: ReturnType<typeof deferred>[] = []
     mocks.upload.mockImplementation(() => { const request = deferred(); pending.push(request); return request.promise })
     const uploader = manager(); const starting = uploader.startUpload(files(8)); await flushPromises()
     if (kind === 'workspace') useWorkspaceStore().currentWorkspace = { id: 12, name: 'other', owner_id: 7 }
+    else if (kind === 'demotion') useWorkspaceStore().currentWorkspace!.my_role = 'viewer'
     else if (kind === 'login') useAuthStore().setAuth('new-family', { id: 7 })
     else uploader.scope.stop()
     expect(mocks.upload.mock.calls.every(call => call[3].signal.aborted)).toBe(true)
     pending.forEach(request => request.resolve({ instantUpload: false })); await starting
     expect(mocks.upload).toHaveBeenCalledTimes(3); expect(mocks.success).not.toHaveBeenCalled(); expect(uploader.fetchFiles).not.toHaveBeenCalled(); expect(mocks.error).not.toHaveBeenCalled()
+  })
+  it('rejects new uploads from a viewer without creating notifications or requests', async () => {
+    useWorkspaceStore().currentWorkspace!.my_role = 'viewer'
+    const uploader = manager(); await uploader.startUpload(files(1))
+    expect(mocks.upload).not.toHaveBeenCalled(); expect(mocks.info).not.toHaveBeenCalled()
   })
   it('does not accept a late start callback after the component scope was disposed', async () => {
     const uploader = manager(); uploader.scope.stop(); await uploader.startUpload(files(1))
