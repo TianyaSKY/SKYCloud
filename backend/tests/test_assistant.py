@@ -731,3 +731,37 @@ def test_cancel_return_closes_engine_producer_before_stream_returns(session, tes
 
     with patch('app.features.assistant.service.FastEngine', WaitingEngine):
         asyncio.run(collect())
+
+
+def test_current_permission_contract_displays_command_instead_of_tool_pointer():
+    properties = {'id': 'p1', 'sessionID': 's1', 'permission': 'bash', 'patterns': ["printf 'marker'"],
+                  'metadata': {'command': "printf 'marker'", 'description': 'Print'},
+                  'tool': {'messageID': 'message-pointer', 'callID': 'call-pointer'}}
+    event = map_opencode_event({'type': 'permission.asked', 'properties': properties}, 's1', {})[0]
+    assert event.payload['title'] == '请求权限：bash'
+    assert event.payload['tool'] == "bash: printf 'marker'"
+    properties['metadata'] = {}
+    assert "printf 'marker'" in map_opencode_event({'type': 'permission.asked', 'properties': properties}, 's1', {})[0].payload['tool']
+    properties.pop('sessionID')
+    assert map_opencode_event({'type': 'permission.asked', 'properties': properties}, 's1', {}) == []
+
+
+def test_permission_display_marks_truncation_explicitly():
+    event = map_opencode_event({'type': 'permission.asked', 'properties': {'id': 'p1', 'sessionID': 's1', 'permission': 'bash', 'metadata': {'command': 'a' * 5000}}}, 's1', {})[0]
+    assert len(event.payload['tool']) == 4000
+    assert event.payload['tool'].endswith('（内容已截断）')
+
+
+def test_opencode_permission_transport_is_strictly_one_shot():
+    from unittest.mock import AsyncMock
+    from app.features.assistant.clients.opencode_client import OpenCodeClient
+    async def exercise():
+        async with OpenCodeClient('http://runtime', 'user', 'password') as client:
+            with patch.object(client, '_json', AsyncMock(return_value=True)) as request:
+                assert await client.respond_permission('s1', 'p1', 'once')
+                request.assert_awaited_once_with('POST', '/session/s1/permissions/p1', json={'response': 'once'})
+                for response, remember in [('always', False), ('once', True)]:
+                    with pytest.raises(ValueError, match='one-shot'):
+                        await client.respond_permission('s1', 'p1', response, remember)
+                assert request.await_count == 1
+    asyncio.run(exercise())

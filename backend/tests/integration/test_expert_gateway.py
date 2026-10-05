@@ -49,7 +49,8 @@ def serve(app):
         assert not thread.is_alive()
 
 
-def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path):
+@pytest.mark.parametrize('permission_response', [None, 'once', 'reject'])
+def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response):
     from entry.llm_gateway import app as gateway
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
@@ -67,12 +68,18 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
         reply = {'id': 'chatcmpl-test', 'object': 'chat.completion', 'created': int(time.time()), 'model': model,
                  'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'E2E_GATEWAY_OK'}, 'finish_reason': 'stop'}],
                  'usage': {'prompt_tokens': 20, 'completion_tokens': 5, 'total_tokens': 25}}
+        tool_request = permission_response is not None and any(tool.get('function', {}).get('name') == 'bash' for tool in body.get('tools', [])) and not any(message.get('role') == 'tool' for message in body['messages'])
+        call = {'id': 'call_skycloud_test', 'type': 'function', 'function': {'name': 'bash', 'arguments': json.dumps({'command': "printf 'AUTHORIZED_ONLY'", 'description': 'Print synthetic test marker'})}}
+        if tool_request:
+            reply['choices'][0]['message'] = {'role': 'assistant', 'content': None, 'tool_calls': [call]}
+            reply['choices'][0]['finish_reason'] = 'tool_calls'
         if not body.get('stream'):
             return reply
         async def chunks():
             base = {key: value for key, value in reply.items() if key not in ('choices', 'usage')}
             base['object'] = 'chat.completion.chunk'
-            for delta, finish in [({'role': 'assistant', 'content': ''}, None), ({'content': 'E2E_GATEWAY_OK'}, None), ({}, 'stop')]:
+            frames = [({'role': 'assistant', 'content': ''}, None), ({'tool_calls': [{'index': 0, **call}]}, None), ({}, 'tool_calls')] if tool_request else [({'role': 'assistant', 'content': ''}, None), ({'content': 'E2E_GATEWAY_OK'}, None), ({}, 'stop')]
+            for delta, finish in frames:
                 yield 'data: ' + json.dumps({**base, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}) + '\n\n'
             yield 'data: ' + json.dumps({**base, 'choices': [], 'usage': reply['usage']}) + '\n\n'
             yield 'data: [DONE]\n\n'
@@ -138,14 +145,28 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                     async def collect():
                         async for event in service.stream_prepared_run(db, workspace, user_id, conversation, run, history):
                             observed.append(event)
+                            if event.type == 'permission_required':
+                                assert permission_response is not None
+                                assert "printf 'AUTHORIZED_ONLY'" in event.payload['tool']
+                                with factory() as responder:
+                                    restored = responder.get(type(run), run.id)
+                                    assert restored.to_dict()['pending_permission']['tool'] == event.payload['tool']
+                                    service.respond_permission(responder, responder.get(Workspace, ws_id), user_id, run.id, event.payload['permission_id'], permission_response)
                         return observed
                     events = asyncio.run(asyncio.wait_for(collect(), 120))
                     db.refresh(run)
                     assert run.status == 'completed', [(event.type, event.payload) for event in events]
-                    assert 'E2E_GATEWAY_OK' in repository.get_messages(db, conversation.id)[-1].content
+                    if permission_response != 'reject':
+                        assert 'E2E_GATEWAY_OK' in repository.get_messages(db, conversation.id)[-1].content
                     assert requests, 'No model request traversed the real gateway'
                     assert all(0 < body.get('max_tokens', body.get('max_completion_tokens', 0)) <= 4096 for body in requests)
                     assert any(event.type == 'done' for event in events)
+                    if permission_response is not None:
+                        assert any(event.type == 'permission_required' for event in events)
+                        tool_replies = [message.get('content', '') for body in requests for message in body['messages'] if message.get('role') == 'tool']
+                        if permission_response == 'once':
+                            assert any('AUTHORIZED_ONLY' in str(reply) for reply in tool_replies)
+
                     runtime = docker_service.runtime_service.get_runtime(db, ws_id, user_id)
                     container = docker_service._client().containers.get(runtime.container_id)
                     runtime_config = container.read_config()
@@ -158,8 +179,13 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                     from app.features.assistant.clients.opencode_auth import server_password, server_username
                     async def mcp_status():
                         async with OpenCodeClient(docker_service.get_runtime_base_url(workspace, user_id, runtime), server_username(), server_password(runtime.id, user_id, ws_id)) as client:
-                            return await client.get_mcp_status()
-                    assert asyncio.run(mcp_status())['SKYCLOUD']['status'] == 'connected'
+                            return await client.get_mcp_status(), await client.get_messages(run.opencode_session_id)
+                    connected, messages = asyncio.run(mcp_status())
+                    assert connected['SKYCLOUD']['status'] == 'connected'
+                    if permission_response == 'reject':
+                        states = [part['state'] for message in messages for part in message.get('parts', []) if part.get('type') == 'tool' and part.get('tool') == 'bash']
+                        assert any(state.get('status') == 'error' and 'rejected' in state.get('error', '').lower() for state in states)
+                        assert all('AUTHORIZED_ONLY' not in state.get('output', '') for state in states)
 
     finally:
         Path('/private/tmp/skycloud-expert-gateway-results.json').write_text(json.dumps([{'fields': list(body), 'max_tokens': body.get('max_tokens')} for body in requests]))

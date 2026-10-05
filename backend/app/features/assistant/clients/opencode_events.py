@@ -34,6 +34,11 @@ def _tool_state(part: dict[str, Any], properties: dict[str, Any]) -> dict[str, A
     return state if isinstance(state, dict) else {}
 
 
+def _bounded_permission_text(value: str, limit: int) -> str:
+    suffix = "…（内容已截断）"
+    return value if len(value) <= limit else value[:limit - len(suffix)] + suffix
+
+
 def _permission_tool_label(value: Any) -> str | None:
     """Convert OpenCode's string/object permission details into safe text."""
 
@@ -53,7 +58,7 @@ def _permission_tool_label(value: Any) -> str | None:
             if detail_text:
                 return detail_text
         try:
-            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))[:500]
+            return _bounded_permission_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")), 4000)
         except (TypeError, ValueError):
             return str(value)
     if isinstance(value, (list, tuple)):
@@ -195,18 +200,29 @@ def map_opencode_event(
         return result
 
     if "permission" in kind and any(token in kind for token in ("ask", "request", "update")):
+        if provider_session != session_id:
+            return []
         permission = properties.get("permission")
         permission = permission if isinstance(permission, dict) else properties
         permission_id = permission.get("id") or permission.get("permissionID") or permission.get("permissionId")
         if permission_id:
-            tool = _permission_tool_label(permission.get("tool") or permission.get("command"))
+            name = permission.get("permission")
+            if isinstance(name, str):
+                # Current OpenCode tool is a message/call pointer; operation
+                # details live in metadata and patterns, not in that pointer.
+                details = permission.get("metadata") or permission.get("patterns")
+                tool = _permission_tool_label({"name": name, "input": details}) if details else name
+                title = permission.get("title") or permission.get("message") or f"请求权限：{name}"
+            else:
+                tool = _permission_tool_label(permission.get("tool") or permission.get("command"))
+                title = permission.get("title") or permission.get("message") or "专家请求执行高风险操作"
             result.append(
                 AssistantEvent(
                     "permission_required",
                     {
                         "permission_id": str(permission_id),
-                        "title": str(permission.get("title") or permission.get("message") or "专家请求执行高风险操作")[:2000],
-                        "tool": tool[:4000] if tool else None,
+                        "title": _bounded_permission_text(str(title), 2000),
+                        "tool": _bounded_permission_text(tool, 4000) if tool else None,
                     },
                 )
             )

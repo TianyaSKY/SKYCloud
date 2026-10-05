@@ -124,10 +124,12 @@ class OpenCodeClient:
         response: str,
         remember: bool = False,
     ) -> bool:
+        if remember or response not in {"once", "reject"}:
+            raise ValueError("Only one-shot permission responses are supported")
         result = await self._json(
             "POST",
             f"/session/{self._path_value(session_id)}/permissions/{self._path_value(permission_id)}",
-            json={"response": response, "remember": remember},
+            json={"response": response},
         )
         return self._result_ok(result)
 
