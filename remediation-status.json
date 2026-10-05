@@ -207,7 +207,7 @@
     {
       "id": "frontend_auth",
       "requirement": "Memory access token and HttpOnly refresh cookie; strict CSP",
-      "status": "in_progress",
+      "status": "verified",
       "evidence": [
         "Browser access JWT now has a fifteen-minute lifetime and stays only in Pinia memory. Historical localStorage credentials are removed without being read; profiles are also memory-only.",
         "Login creates a hash-only Redis refresh family with a seven-day absolute expiry. Host-only Strict HttpOnly cookie uses Secure and __Host- under HTTPS; non-localhost HTTP is refused. Every refresh rotates with atomic Lua; replay revokes the family, including signed access JWTs. Password version/deleted account checks use current PostgreSQL scalar state.",
@@ -215,7 +215,8 @@
         "Frontend restores via Cookie before route guards, coalesces same-tab refreshes, serializes login/refresh/logout with cross-tab Web Locks, and retries expired API requests once with a fresh header. Temporary failures retain retryable state; late refresh cannot overwrite a newer login and another-tab account switch clears identity/workspace context.",
         "Parent nginx template applies script-src self without inline/eval, object-src none, base-uri none, frame-ancestors none and bounded explicit runtime frame sources. Component styles still require unsafe-inline. Actual nginx template substitution and nginx -t passed; the new strict CSP still needs browser document/preview compatibility checks.",
         "1302 regular backend cases and 52 frontend behavior tests pass. Two real PostgreSQL/Redis cases prove atomic one-winner rotation, replay-family revocation, absolute TTL/hash-only records and committed password-version change rejection.",
-        "Actual production frontend/nginx with strict CSP, full API routes and isolated PostgreSQL/Redis/Controller/OpenCode verified in the browser: login, reload restoration, two-tab concurrent refresh, logout in one tab, other-tab refresh rejection and runtime HTTP 401 after logout. The actual /workspaces route used WorkspaceManageView, whose legacy access_url gate hid the running-runtime entry; it now opens the shared ticket/renewal dialog. Document/Office/PDF preview compatibility remains pending."
+        "Actual production frontend/nginx with strict CSP, full API routes and isolated PostgreSQL/Redis/Controller/OpenCode verified in the browser: login, reload restoration, two-tab concurrent refresh, logout in one tab, other-tab refresh rejection and runtime HTTP 401 after logout. The actual /workspaces route used WorkspaceManageView, whose legacy access_url gate hid the running-runtime entry; it now opens the shared ticket/renewal dialog. Document/Office/PDF preview compatibility remains pending.",
+        "Replaced @vue-office/pdf data-script/CDN loader with pinned pdfjs-dist 6.4.299 and same-origin worker, fonts, CMaps, ICC and decoder assets. Parent permits Blob reads but forbids inline/dynamic JavaScript; only the dedicated worker response permits WebAssembly compilation. Zod uses interpreter mode without JIT probes. Actual browser synthetic PDF (both pages), DOCX, XLSX and Markdown fixtures rendered with zero CSP violations; nginx template substitution/config check passed. This component harness complements the prior full browser authentication workflow; complex format variants are not claimed exhaustive."
       ]
     },
     {
@@ -226,7 +227,8 @@
         "Seven test files / 16 tests passed: MCP credential lifecycle, authenticated downloads, protected Markdown/raw HTML image loading, URL normalization, cancelled stale requests and object URL release. Remaining auth/guards/uploads/permissions/assistant behavior coverage pending.",
         "Eight test files / 24 tests now pass, including opaque UI ticket URL validation, same-origin/credential-bearing URL rejection and prior download/Markdown/MCP behaviors. Remaining complete auth/route/upload/assistant behavior coverage is still pending.",
         "Twelve files / 44 tests pass: memory-only auth store, cookie transport, pending refresh cancellation/account switch/outage handling, route restoration and role redirects, concurrent expired-header refresh/retry and rejected-session cleanup. Upload/workspace/assistant broader behavior coverage remains pending.",
-        "Fourteen files / 52 behavior tests pass. Shared runtime dialog tests cover close cleanup, late ticket cancellation and renewal rejection; actual WorkspaceManageView tests cover null legacy access_url, admin/editor opening, viewer restrictions, stopped-state entry and modal closing. Broader upload/assistant behavior coverage remains pending."
+        "Fourteen files / 52 behavior tests pass. Shared runtime dialog tests cover close cleanup, late ticket cancellation and renewal rejection; actual WorkspaceManageView tests cover null legacy access_url, admin/editor opening, viewer restrictions, stopped-state entry and modal closing. Broader upload/assistant behavior coverage remains pending.",
+        "17 files / 60 behavior tests pass. Added preview download/text-read race cancellation, close/unmount Blob cleanup, PDF navigation/load disposal/canvas limits and form validation without dynamic code generation. Broader upload/assistant coverage remains pending."
       ]
     },
     {
@@ -251,7 +253,8 @@
       "requirement": "Lock Python dependencies and pin production image digests",
       "status": "in_progress",
       "evidence": [
-        "Runtime builder locks official OpenCode 1.18.11 arm64/amd64 release SHA-256, immutable glibc base digest and Debian snapshot. Private env receives immutable local Docker ID; missing/mutable image configuration fails closed and missing local IDs never trigger registry pull. websockets pinned 15.0.1 with real redirect regression. Python lock and remaining production image pins are pending."
+        "Runtime builder locks official OpenCode 1.18.11 arm64/amd64 release SHA-256, immutable glibc base digest and Debian snapshot. Private env receives immutable local Docker ID; missing/mutable image configuration fails closed and missing local IDs never trigger registry pull. websockets pinned 15.0.1 with real redirect regression. Python lock and remaining production image pins are pending.",
+        "PDF.js pinned at 6.4.299 with package-lock integrity; build uses Node 24 and documented minimum 22.13. npm audit reports no pdfjs-dist advisory, but 26 advisories remain elsewhere (including axios, DOMPurify and build tooling) and require remediation; current report /private/tmp/skycloud-preview-final-audit.json."
       ]
     },
     {
@@ -280,7 +283,7 @@
     "latest_targeted": "147 passed: workspace HTTP list, routers, Controller, workspace service and security regressions; /private/tmp/skycloud-workspace-list-final-targeted.log",
     "docker_security": "Seven real Redis/Docker/bootstrap/network/controller cases passed with glibc runtime; Compose-only case passed separately after restoring isolated test CLI plugin discovery. /private/tmp/skycloud-runtime-native-security-real.log and /private/tmp/skycloud-runtime-compose-final.log.",
     "opencode_smoke": "1 passed with RUN_OPENCODE_E2E=1: official health/MCP/session operations without a provider key",
-    "frontend": "14 files / 52 tests passed; type-check and production build passed; /private/tmp/skycloud-routed-ui-final-tests.log and /private/tmp/skycloud-routed-ui-final-build.log.",
+    "frontend": "17 files / 60 tests passed; type-check and production build passed; /private/tmp/skycloud-preview-final-tests.log and /private/tmp/skycloud-preview-final-build.log.",
     "nginx": "Actual nginx container envsubst template and nginx -t passed with strict parent CSP plus runtime WebSocket forwarding; /private/tmp/skycloud-csp-nginx-test.log.",
     "postgres_bootstrap": "Real PostgreSQL initialized without seeded users; concurrent bootstrap from two separate transactions produces exactly one administrator, with complete personal workspace/membership/root",
     "async_io": "Slow accounting and cache read/write/evict/put behavior tests passed; Redis-outage root-file DB fallback test passed",
@@ -297,10 +300,11 @@
     "runtime_image": "40 targeted runtime socket/controller/image regressions passed; /private/tmp/skycloud-runtime-image-regressions.log. Locked glibc image built successfully; local immutable ID only, no registry push.",
     "runtime_ui_renewal": "Backend renewal scoping/revocation/rotation and frontend forged-ack/timeout/cancellation/origin-change tests passed. Real in-app browser renewal: Renewed 1; main loads: 1. Screenshot /private/tmp/skycloud-runtime-ui-renewal-browser.jpg. Opt-in browser harness and following real terminal/revocation case passed; /private/tmp/skycloud-runtime-ui-browser-real.log.",
     "browser_auth": "Actual production frontend/nginx + full API + isolated PostgreSQL/Redis/Controller/OpenCode browser login, reload, two-tab concurrent refresh and logout passed; runtime HTTP 401 after logout confirmed in nginx logs. Manual opt-in harness passed and temporary tabs/containers removed. /private/tmp/skycloud-full-browser.log; screenshot /private/tmp/skycloud-full-browser-runtime.jpg. Document preview CSP compatibility remains pending.",
-    "routed_runtime_ui": "52 frontend tests and production build passed; /private/tmp/skycloud-routed-ui-final-tests.log and /private/tmp/skycloud-routed-ui-final-build.log. 1302 regular backend tests passed with 37 opt-in skips; /private/tmp/skycloud-routed-ui-diagnostic.log. The tests/real suite requires its separate Redis infrastructure and is not included in this regular count."
+    "routed_runtime_ui": "52 frontend tests and production build passed; /private/tmp/skycloud-routed-ui-final-tests.log and /private/tmp/skycloud-routed-ui-final-build.log. 1302 regular backend tests passed with 37 opt-in skips; /private/tmp/skycloud-routed-ui-diagnostic.log. The tests/real suite requires its separate Redis infrastructure and is not included in this regular count.",
+    "preview_csp": "Actual browser harness compiled production FilePreview/PdfPreview/MarkdownRenderer and exact nginx policies, using committed synthetic fixtures: PDF both pages, DOCX, XLSX and sanitized Markdown rendered; CSP counter zero. /private/tmp/skycloud-pdf-csp-browser.jpg and /private/tmp/skycloud-excel-csp-browser.jpg. nginx -t with real envsubst passed /private/tmp/skycloud-preview-nginx.log. Temporary server/build/tab cleaned."
   },
   "next_work": [
-    "Verify strict CSP document/Office/PDF preview compatibility; finish broader frontend upload/permission/assistant behavior coverage",
+    "Remediate remaining frontend dependency advisories and finish upload/permission/assistant behavior coverage",
     "Exercise complete OpenCode -> gateway -> mock-provider flow with isolated PostgreSQL and Redis",
     "Complete service/repository/API contracts, remaining frontend and real integration tests, CI, dependency locks and UTC"
   ]

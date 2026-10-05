@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z } from '@/utils/validation'
 
 /** 登录表单：仅非空与长度，不做密码复杂度 */
 export const loginSchema = z.object({

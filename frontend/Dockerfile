@@ -1,4 +1,4 @@
-FROM node:20-slim as build-stage
+FROM node:24-slim as build-stage
 WORKDIR /app
 COPY package*.json ./
 # 使用 npm ci 配合 package-lock.json 确保构建一致性

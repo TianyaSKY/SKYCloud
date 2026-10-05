@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z } from '@/utils/validation'
 
 /** 修改密码表单：新旧密码 + 确认；confirmPassword 仅前端字段，提交时映射 snake_case */
 export const passwordChangeSchema = z

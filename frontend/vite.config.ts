@@ -6,11 +6,13 @@ import vueDevTools from 'vite-plugin-vue-devtools'
 import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import { ArcoResolver } from 'unplugin-vue-components/resolvers'
+import { pdfAssets } from './pdfAssets'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => ({
   plugins: [
     vue(),
+    pdfAssets(),
     ...(mode !== 'production' ? [vueDevTools()] : []),
     AutoImport({
       resolvers: [ArcoResolver()],
@@ -35,7 +37,7 @@ export default defineConfig(({ mode }) => ({
         manualChunks: {
           'vendor-vue': ['vue', 'vue-router'],
           'vendor-arco': ['@arco-design/web-vue'],
-          'vendor-office': ['@vue-office/docx', '@vue-office/excel', '@vue-office/pdf'],
+          'vendor-office': ['@vue-office/docx', '@vue-office/excel'],
           'vendor-markdown': ['marked'],
         },
       },

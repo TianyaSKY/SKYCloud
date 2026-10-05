@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z } from '@/utils/validation'
 
 /** 创建工作空间表单校验 */
 export const createWorkspaceSchema = z.object({

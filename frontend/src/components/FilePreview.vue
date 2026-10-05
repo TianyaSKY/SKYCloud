@@ -1,6 +1,7 @@
 <template>
-  <a-modal :footer="false" :title="title" :visible="visible" width="80%" @cancel="handleClose" @close="handleClose">
+  <a-modal :footer="false" :title="title" :visible="visible" width="80%" unmount-on-close @cancel="handleClose" @close="handleClose">
     <div
+      v-if="visible"
       style="
         height: 75vh;
         overflow: auto;
@@ -114,7 +115,7 @@
           <div class="office-error__text">预览加载失败</div>
           <div class="office-error__hint">该 PDF 无法在浏览器中预览，可尝试下载后查看</div>
         </div>
-        <vue-office-pdf v-else :src="url" style="width: 100%; height: 100%" @error="handleOfficeError" />
+        <PdfPreview v-else :src="url" @error="handleOfficeError" />
       </div>
 
       <!-- Excel 预览 -->
@@ -136,7 +137,7 @@
 import { computed, ref, watch } from 'vue'
 import VueOfficeDocx from '@vue-office/docx'
 import VueOfficeExcel from '@vue-office/excel'
-import VueOfficePdf from '@vue-office/pdf'
+import PdfPreview from './PdfPreview.vue'
 import '@vue-office/docx/lib/index.css'
 import '@vue-office/excel/lib/index.css'
 import { IconMusic, IconExclamationCircle } from '@arco-design/web-vue/es/icon'

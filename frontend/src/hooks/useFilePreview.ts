@@ -1,6 +1,6 @@
-import { ref } from 'vue'
+import { onScopeDispose, ref } from 'vue'
 import type { FileItem } from '../api/file'
-import { downloadFile } from '../api/file'
+import { downloadFileBlob } from '../api/file'
 import { readBlobAsText, safeRevokeObjectURL } from '../utils/blob'
 import { logger } from '../utils/logger'
 
@@ -12,8 +12,31 @@ export function useFilePreview() {
   const previewType = ref('')
   const textContent = ref('')
   const loading = ref(false)
+  let generation = 0
+  let pending: AbortController | undefined
+
+  const handlePreviewClose = () => {
+    generation += 1
+    pending?.abort()
+    pending = undefined
+    safeRevokeObjectURL(previewUrl.value)
+    previewVisible.value = false
+    previewUrl.value = ''
+    textContent.value = ''
+    previewType.value = ''
+    loading.value = false
+  }
+  onScopeDispose(handlePreviewClose)
 
   const handleFileClick = async (record: FileItem) => {
+    handlePreviewClose()
+    const current = generation
+    const readText = async (blob: Blob) => {
+      const text = await readBlobAsText(blob)
+      if (current === generation) textContent.value = text
+    }
+    const controller = new AbortController()
+    pending = controller
     previewTitle.value = record.name
     const ext = record.name.split('.').pop()?.toLowerCase() ?? ''
 
@@ -24,7 +47,8 @@ export function useFilePreview() {
       previewUrl.value = ''
       textContent.value = ''
 
-      const blob = await downloadFile(record.id)
+      const blob = await downloadFileBlob(record.id, controller.signal)
+      if (current !== generation) return
       const url = window.URL.createObjectURL(blob)
       previewUrl.value = url
 
@@ -32,7 +56,7 @@ export function useFilePreview() {
         previewType.value = 'image'
       } else if (['md', 'markdown'].includes(ext)) {
         previewType.value = 'markdown'
-        textContent.value = await readBlobAsText(blob)
+        await readText(blob)
       } else if (
         [
           'js',
@@ -84,14 +108,14 @@ export function useFilePreview() {
         ].includes(ext)
       ) {
         previewType.value = 'code'
-        textContent.value = await readBlobAsText(blob)
+        await readText(blob)
       } else if (
         ['txt', 'csv', 'tsv', 'log', 'env', 'gitignore', 'editorconfig', 'properties', 'lock', 'pid', 'out'].includes(
           ext,
         )
       ) {
         previewType.value = 'text'
-        textContent.value = await readBlobAsText(blob)
+        await readText(blob)
       } else if (['mp4', 'webm', 'ogg'].includes(ext)) {
         previewType.value = 'video'
       } else if (['mp3', 'wav', 'aac', 'flac', 'm4a'].includes(ext)) {
@@ -105,22 +129,20 @@ export function useFilePreview() {
       } else {
         previewType.value = 'unknown'
       }
+      if (current !== generation) return
       previewVisible.value = true
     } catch (error) {
+      if (current !== generation) return
       // 拦截器已弹唯一 Message.error，这里只做状态清理 + 日志
       logger.warn('handleFileClick 预览失败 id={} error={}', record.id, error)
       safeRevokeObjectURL(previewUrl.value)
       previewUrl.value = ''
     } finally {
-      loading.value = false
+      if (current === generation) {
+        pending = undefined
+        loading.value = false
+      }
     }
-  }
-
-  const handlePreviewClose = () => {
-    safeRevokeObjectURL(previewUrl.value)
-    previewUrl.value = ''
-    textContent.value = ''
-    previewType.value = ''
   }
 
   return {

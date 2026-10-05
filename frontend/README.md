@@ -28,8 +28,10 @@ See [Vite Configuration Reference](https://vite.dev/config/).
 
 ## Project Setup
 
+Use Node.js 24 (the production build image) or Node.js 22.13 and newer.
+
 ```sh
-npm install
+npm ci
 ```
 
 ### Compile and Hot-Reload for Development
@@ -43,3 +45,18 @@ npm run dev
 ```sh
 npm run build
 ```
+
+### Preview verification with production CSP
+
+```sh
+npm run test:unit
+node scripts/preview-browser.mjs
+```
+
+The manual harness prints a loopback URL and builds the actual preview components
+with synthetic PDF, DOCX, XLSX and Markdown fixtures. Open each preview, check
+rendered content and PDF page navigation, and confirm the CSP violation counter
+stays at zero. It reads the policies from `nginx.conf`. Stop it with Ctrl+C to
+remove its temporary build and fixtures. This verifies component rendering;
+authenticated upload/download and full application login use separate backend
+integration fixtures.

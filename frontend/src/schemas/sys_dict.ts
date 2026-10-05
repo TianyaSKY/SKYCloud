@@ -1,4 +1,4 @@
-import { z } from 'zod'
+import { z } from '@/utils/validation'
 
 /** 系统字典表单校验；des 可空字符串，enable 控制是否生效 */
 export const sysDictSchema = z.object({

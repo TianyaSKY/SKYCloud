@@ -73,6 +73,7 @@ declare module 'vue' {
     FileToolbar: typeof import('./src/components/FileToolbar.vue')['default']
     MainLayout: typeof import('./src/components/MainLayout.vue')['default']
     MarkdownRenderer: typeof import('./src/components/MarkdownRenderer.vue')['default']
+    PdfPreview: typeof import('./src/components/PdfPreview.vue')['default']
     PermissionRequestCard: typeof import('./src/components/assistant/PermissionRequestCard.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
