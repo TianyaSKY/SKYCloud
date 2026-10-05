@@ -298,3 +298,7 @@ Assistant 会话 CRUD、状态查询、交接与权限回复也由线程池执�
 系统字典服务统一接收显式 Session，与路由参数保持一致，不再使用全局线程作用域 Session。字典读取在线程池执行，列表缓存使用固定 `all` 键，写入与删除清除同一键。`tests/test_sys_dict_http.py` 通过真实 HTTP/SQLite 和 fakeredis 验证 CRUD、缓存更新、管理员限制及模型配置键策略。头像存储与文件处理状态统计也在工作线程执行；公开文件搜索参数 `type=semantic` 进入 Embedding/向量检索分支，内部旧 `vector` 参数仍兼容。相关分支和响应性测试见 `tests/test_file_async_boundaries.py`，该测试不代替真实向量数据库集成。
 
 MCP JWT 鉴权在工作线程中完成 Session 创建、验证和关闭，只将不可变的身份上下文交回事件循环。MCP 文件搜索在工作线程内创建并关闭独立事务，查询前重新检查空间成员资格；权限拒绝不会被转换为向量搜索不可用的空结果。`tests/test_mcp_io_ownership.py` 验证慢鉴权时其他 HTTP 请求响应、Session 线程归属和撤销后的访问拒绝。真实专家网关集成测试还通过独立进程的锁定 MCP SDK 客户端调用实际 `search_files`，并检查 PostgreSQL 审计记录的 Runtime/用户/空间归属。该真实搜索用例使用 fuzzy 模式。
+
+RAG 分块检索同时限定分块与所属文件的工作空间，避免历史不一致记录把另一空间的内容带入回答。真实 PostgreSQL/pgvector 检查在 backend 目录运行 `RUN_VECTOR_TESTS=1 python -m pytest tests/integration/test_vector_retrieval.py`：覆盖两个用户的空间隔离、余弦排序/分页、空向量、文件/分块余弦 HNSW 参考查询计划、错误维度回滚以及真实 LangChain Document 的来源元数据。测试使用合成向量，不调用模型供应商；创建并清理自身数据库容器。距离操作符与索引用法见 [pgvector 官方说明](https://github.com/pgvector/pgvector#querying)。
+
+当前数据库版本为 `0006_user_role_type`。升级前备份数据库，在 backend 目录显式运行 `python -m entry.migrate`，再启动新版服务。该迁移将历史原生用户角色 enum 列转换为与现有 SQL 基线一致的 VARCHAR(10)，保留角色值/NULL 和 common 默认值；ORM 同步使用非原生 Enum，避免 PostgreSQL 批量插入时引用不存在的 user_roles 类型。失败会原子回滚类型、默认值及版本记录；旧 enum 类型保留，迁移拒绝反向恢复不兼容结构。

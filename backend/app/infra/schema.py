@@ -3,7 +3,7 @@
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-EXPECTED_REVISION = "0005_upload_quotas"
+EXPECTED_REVISION = "0006_user_role_type"
 
 
 def check_schema(database_engine):

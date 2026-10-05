@@ -93,6 +93,7 @@ def _db_search_by_vector(
                 FROM file_chunks c
                 JOIN files f ON f.id = c.file_id
                 WHERE c.workspace_id = :workspace_id
+                  AND f.workspace_id = :workspace_id
                   AND c.vector_info IS NOT NULL
                 ORDER BY c.vector_info <=> :vector
                    LIMIT :limit
