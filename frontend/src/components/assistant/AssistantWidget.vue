@@ -42,7 +42,7 @@
           :mode="assistant.currentMode"
           :can-handoff="wsStore.canWrite && assistant.currentMode === 'fast'"
           :active-run-id="assistant.activeRun?.id"
-          :permission-loading="permissionLoading"
+          :permission-loading="permissionLoading || assistant.activeRun?.cancelRequested"
           @handoff="handoff"
           @permission="respondPermission"
         />
@@ -50,11 +50,12 @@
           :mode="assistant.currentMode"
           :loading="assistant.loading || Boolean(assistant.activeRun)"
           :disabled="
-            (assistant.currentMode === 'expert' && !assistant.expertAvailable)
+            !assistant.initialized || assistant.initializing
+              || (assistant.currentMode === 'expert' && (!assistant.expertAvailable || !wsStore.canWrite))
               || assistant.currentConversation?.status === 'archived'
           "
           @send="assistant.send"
-          @cancel="assistant.cancel"
+          @cancel="cancel"
         />
       </section>
     </transition>
@@ -95,7 +96,14 @@ watch(
   { immediate: true },
 )
 
-function toggle() { visible.value = !visible.value }
+function toggle() {
+  visible.value = !visible.value
+  if (visible.value) {
+    void assistant.bindWorkspace(wsStore.currentWorkspace?.id ?? null).catch((error) => {
+      Message.error((error as Error).message || '助手初始化失败')
+    })
+  }
+}
 
 function handleMouseDown(event: MouseEvent) {
   dragging.value = false
@@ -127,6 +135,11 @@ async function respondPermission(response: 'once' | 'reject') {
   try { await assistant.respondPermission(response) }
   catch (error) { Message.error((error as Error).message || '权限响应失败') }
   finally { permissionLoading.value = false }
+}
+
+async function cancel() {
+  try { await assistant.cancel() }
+  catch (error) { Message.error((error as Error).message || '取消任务失败') }
 }
 
 async function handoff(messageId: number) {
@@ -200,6 +213,7 @@ function handleResize() {
 onMounted(() => window.addEventListener('resize', handleResize))
 onUnmounted(() => {
   handleMouseUp()
+  void assistant.bindWorkspace(null)
   window.removeEventListener('resize', handleResize)
 })
 </script>
