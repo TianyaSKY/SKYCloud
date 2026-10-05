@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { Message } from '@arco-design/web-vue'
 
@@ -180,6 +180,46 @@ export const useAssistantStore = defineStore('assistant', () => {
     }
   }
 
+  let pollTimer: ReturnType<typeof setTimeout> | undefined
+  let polling = false
+  let pollGeneration = 0
+  let pollDisposed = false
+  let pollFailures = 0
+  function stopPolling() {
+    pollGeneration += 1
+    if (pollTimer !== undefined) clearTimeout(pollTimer)
+    pollTimer = undefined
+  }
+  function schedulePolling() {
+    stopPolling()
+    if (pollDisposed || polling || !activeRun.value || controller || loading.value || initializing.value || !workspaceId.value || !currentConversationId.value) return
+    if (currentMode.value === 'expert' && !useWorkspaceStore().canWrite) return
+    const version = stateVersion
+    const token = pollGeneration
+    const mode = currentMode.value
+    const id = currentConversationId.value
+    pollTimer = setTimeout(async () => {
+      pollTimer = undefined
+      polling = true
+      try {
+        const run = mode === 'expert' ? await getActiveExpertRun() : await getActiveAssistantRun(id)
+        if (!isCurrent(version) || token !== pollGeneration) return
+        const history = await getAssistantMessages(id)
+        if (!isCurrent(version) || token !== pollGeneration || controller || loading.value) return
+        messagesByConversation.value[id] = mapMessages(history.messages, mode)
+        applyActiveRun(run)
+        pollFailures = 0
+      } catch {
+        if (isCurrent(version) && token === pollGeneration) pollFailures += 1
+      } finally {
+        polling = false
+        schedulePolling()
+      }
+    }, Math.min(3000 * 2 ** Math.min(pollFailures, 4), 30000))
+  }
+  watch([activeRun, loading, initializing, currentMode, currentConversationId, workspaceId, () => useWorkspaceStore().canWrite], schedulePolling, { flush: 'sync' })
+  onScopeDispose(() => { pollDisposed = true; stopPolling() })
+
   async function loadMode(mode: AssistantMode, createIfMissing = true, version = stateVersion) {
     if (!workspaceId.value) return
     try {
@@ -217,6 +257,7 @@ export const useAssistantStore = defineStore('assistant', () => {
     if (!force && workspaceId.value === id && (initialized.value || initializing.value)) return
     const version = ++stateVersion
     initializing.value = true
+    pollFailures = 0
     try {
       controller?.abort()
       controller = null
@@ -512,8 +553,8 @@ export const useAssistantStore = defineStore('assistant', () => {
           try { await refreshActiveRun(mode, conversationId, version) } catch { /* Retain the known run for cancellation/retry. */ }
         }
         if (isCurrent(version) && controller === streamController) {
-          loading.value = false
           controller = null
+          loading.value = false
         }
       }
     }

@@ -2,8 +2,10 @@
 
 import asyncio
 import os
+import math
 import time
 import uuid
+from contextlib import aclosing
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
 
@@ -107,13 +109,23 @@ def _recover_abandoned_run(session: Session, run: AssistantRun) -> bool:
 
     if run_registry.get(int(run.id)) is not None:
         return False
+    # Read and lock the latest durable heartbeat. A process-local registry
+    # cannot establish that a worker on another host has disappeared.
+    run = repository.lock_run(session, int(run.id))
+    if run is None or run.status in repository.TERMINAL_RUN_STATUSES:
+        return False
     started_at = run.started_at or run.created_at
     if started_at is None:
         return False
     try:
-        grace_seconds = max(int(os.getenv("ASSISTANT_ABANDONED_RUN_GRACE_SECONDS", "45")), 0)
+        grace_seconds = max(int(os.getenv("ASSISTANT_ABANDONED_RUN_GRACE_SECONDS", "45")), 30)
     except ValueError:
         grace_seconds = 45
+    heartbeat = run.metadata_dict.get("worker_heartbeat_unix")
+    if isinstance(heartbeat, (float, int)) and not isinstance(heartbeat, bool) and math.isfinite(heartbeat):
+        age = time.time() - heartbeat
+        if -5 <= age < grace_seconds:
+            return False
     if (beijing_now() - started_at).total_seconds() < grace_seconds:
         return False
 
@@ -432,6 +444,13 @@ async def stream_prepared_run(
     last_commit = time.monotonic()
     event_count = 0
     last_cancel_poll = 0.0
+    last_lease = time.monotonic()
+    try:
+        if not repository.touch_run_lease(session, int(run.id), time.time()):
+            raise ConflictError("任务已结束，不能继续执行")
+    except BaseException:
+        run_registry.unregister(int(run.id))
+        raise
 
     try:
         yield AssistantEvent(
@@ -463,66 +482,71 @@ async def stream_prepared_run(
             history=history,
             controller=controller,
         )
-        async for event in _engine_events_with_heartbeats(engine_iterator, int(run.id)):
-            if event.run_id is None:
-                event.run_id = int(run.id)
-            if event.message_id is None and event.type not in {"heartbeat"}:
-                event.message_id = int(assistant_message.id)
-            if event.type != "heartbeat":
-                event_log.append(event)
+        async with aclosing(_engine_events_with_heartbeats(engine_iterator, int(run.id))) as engine_events:
+            async for event in engine_events:
+                if time.monotonic() - last_lease >= 10:
+                    if not repository.touch_run_lease(session, int(run.id), time.time()):
+                        return
+                    last_lease = time.monotonic()
+                if event.run_id is None:
+                    event.run_id = int(run.id)
+                if event.message_id is None and event.type not in {"heartbeat"}:
+                    event.message_id = int(assistant_message.id)
+                if event.type != "heartbeat":
+                    event_log.append(event)
 
-            cancel_requested = controller.cancel_event.is_set() or bool(run.cancel_requested)
-            if time.monotonic() - last_cancel_poll >= 0.5:
-                cancel_requested = cancel_requested or repository.is_run_cancel_requested(
-                    session, int(run.id)
-                )
-                last_cancel_poll = time.monotonic()
-            if cancel_requested:
-                repository.update_run_status(run, "cancelled")
-                assistant_message.status = "cancelled"
-                run.pending_permission_id = None
-                session.commit()
-                yield AssistantEvent(
-                    type="cancelled",
-                    run_id=run.id,
-                    message_id=assistant_message.id,
-                    payload={"status": "cancelled"},
-                )
-                return
+                cancel_requested = controller.cancel_event.is_set() or bool(run.cancel_requested)
+                if time.monotonic() - last_cancel_poll >= 0.5:
+                    cancel_requested = cancel_requested or repository.is_run_cancel_requested(
+                        session, int(run.id)
+                    )
+                    last_cancel_poll = time.monotonic()
+                if cancel_requested:
+                    repository.update_run_status(run, "cancelled")
+                    assistant_message.status = "cancelled"
+                    run.pending_permission_id = None
+                    session.commit()
+                    yield AssistantEvent(
+                        type="cancelled",
+                        run_id=run.id,
+                        message_id=assistant_message.id,
+                        payload={"status": "cancelled"},
+                    )
+                    return
 
-            if event.type == "token":
-                answer_parts.append(_event_content(event))
-            elif event.type == "title":
-                metadata["title"] = _event_content(event)
-            elif event.type == "keywords":
-                metadata["keywords"] = _event_content(event)
-            elif event.type == "sources":
-                metadata["sources"] = event.payload.get("sources", [])
-            elif event.type == "usage":
-                usage.update(event.payload)
-            elif event.type == "error":
-                raise RuntimeError(str(event.payload.get("message") or "assistant engine error"))
-            elif event.type == "file_diff":
-                metadata["diff"] = event.payload.get("files", event.payload)
-            elif event.type == "permission_required":
-                repository.set_pending_permission(run, event.payload)
-                session.commit()
-            elif event.type == "status" and run.status == "waiting_permission":
-                # Do not hide the waiting state until the permission resolver
-                # has handed the answer back to the engine.
-                pass
+                if event.type == "token":
+                    answer_parts.append(_event_content(event))
+                elif event.type == "title":
+                    metadata["title"] = _event_content(event)
+                elif event.type == "keywords":
+                    metadata["keywords"] = _event_content(event)
+                elif event.type == "sources":
+                    metadata["sources"] = event.payload.get("sources", [])
+                elif event.type == "usage":
+                    usage.update(event.payload)
+                elif event.type == "error":
+                    raise RuntimeError(str(event.payload.get("message") or "assistant engine error"))
+                elif event.type == "file_diff":
+                    metadata["diff"] = event.payload.get("files", event.payload)
+                elif event.type == "permission_required":
+                    repository.set_pending_permission(run, event.payload)
+                    session.commit()
+                elif event.type == "status" and run.status == "waiting_permission":
+                    # Do not hide the waiting state until the permission resolver
+                    # has handed the answer back to the engine.
+                    pass
 
-            event_count += 1
-            assistant_message.content = "".join(answer_parts)
-            assistant_message.metadata_dict = metadata
-            assistant_message.usage = usage
-            session.flush()
-            if event_count % 20 == 0 or time.monotonic() - last_commit > 1.0:
-                session.commit()
-                last_commit = time.monotonic()
+                event_count += 1
+                assistant_message.content = "".join(answer_parts)
+                assistant_message.metadata_dict = metadata
+                assistant_message.usage = usage
+                session.flush()
+                if event_count % 20 == 0 or time.monotonic() - last_commit > 1.0:
+                    session.commit()
+                    last_commit = time.monotonic()
 
-            if event.type != "done":
-                yield event
+                if event.type != "done":
+                    yield event
 
         assistant_message.content = "".join(answer_parts)
         assistant_message.status = "completed"

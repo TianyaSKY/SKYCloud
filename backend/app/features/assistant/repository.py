@@ -185,6 +185,21 @@ def create_run(
     return run
 
 
+def lock_run(session: Session, run_id: int) -> AssistantRun | None:
+    return session.query(AssistantRun).filter(AssistantRun.id == run_id).populate_existing().with_for_update().first()
+
+
+def touch_run_lease(session: Session, run_id: int, now: float) -> bool:
+    """Serialize execution heartbeats with abandoned-run recovery across workers."""
+    run = lock_run(session, run_id)
+    if run is None or run.status in TERMINAL_RUN_STATUSES:
+        session.commit()
+        return False
+    run.metadata_dict = {**run.metadata_dict, "worker_heartbeat_unix": now}
+    session.commit()
+    return True
+
+
 def set_pending_permission(run: AssistantRun, payload: dict[str, Any]) -> None:
     from app.features.assistant.permission_details import permission_details
 

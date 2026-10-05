@@ -692,3 +692,42 @@ def test_permission_wait_survives_heartbeat_and_status_events(session, test_user
 
     with patch('app.features.assistant.service.FastEngine', WaitingEngine):
         asyncio.run(collect())
+
+
+@pytest.mark.parametrize('heartbeat', [None, False, 'now', float('nan'), 10**20])
+def test_invalid_heartbeat_does_not_pin_an_abandoned_run(session, test_user, test_workspace, heartbeat):
+    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'expert', 'task')
+    user = repository.create_message(session, conversation, 'user', 'patch')
+    assistant = repository.create_message(session, conversation, 'assistant', '', status='pending')
+    run = repository.create_run(session, conversation, user, assistant)
+    repository.update_run_status(run, 'running')
+    run.started_at = beijing_now() - timedelta(minutes=5)
+    run.metadata_dict = {'worker_heartbeat_unix': heartbeat}
+    session.commit()
+    assert service._recover_abandoned_run(session, run)
+    assert run.status == 'failed'
+
+
+def test_cancel_return_closes_engine_producer_before_stream_returns(session, test_user, test_workspace):
+    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'fast', 'cancel')
+    session.commit()
+    conversation, run, history = service.prepare_run(session, test_workspace, test_user.id, conversation.id, 'check')
+    closed = asyncio.Event()
+
+    class WaitingEngine:
+        async def stream(self, **kwargs):
+            try:
+                kwargs['controller'].cancel_event.set()
+                yield AssistantEvent('status', {'content': 'wait'})
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+    async def collect():
+        events = [event async for event in service.stream_prepared_run(session, test_workspace, test_user.id, conversation, run, history)]
+        assert events[-1].type == 'cancelled'
+        assert closed.is_set()
+        assert service.run_registry.get(run.id) is None
+
+    with patch('app.features.assistant.service.FastEngine', WaitingEngine):
+        asyncio.run(collect())

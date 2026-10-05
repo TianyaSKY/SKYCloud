@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createPinia, setActivePinia } from 'pinia'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, disposePinia, getActivePinia, setActivePinia } from 'pinia'
 import type { AssistantConversation, AssistantMessageRecord, AssistantMode, AssistantRunRecord, AssistantEvent } from '@/api/assistant'
 import { useAssistantStore } from '../assistant'
 
@@ -66,6 +66,8 @@ beforeEach(() => {
     options.onEvent({ type: 'done', run_id: 501, payload: {} })
   })
 })
+
+afterEach(() => { const pinia = getActivePinia(); if (pinia) disposePinia(pinia); vi.useRealTimers() })
 
 describe('assistant workspace and conversation isolation', () => {
   it('does not adopt a late list or create a conversation in a former workspace', async () => {
@@ -262,5 +264,67 @@ describe('durable pending expert permission recovery', () => {
     expect(store.messages[0]?.permission).toBeUndefined(); expect(store.activeRun?.permissionId).toBeUndefined()
     await store.respondPermission('once'); expect(mocks.permission).not.toHaveBeenCalled()
     expect(store.activeRun?.id).toBe(501)
+  })
+})
+
+
+describe('recovered assistant run synchronization', () => {
+  async function recover() {
+    vi.useFakeTimers()
+    mocks.list.mockImplementation(async mode => ({ conversations: [conversation(11, mode)] }))
+    mocks.messages.mockResolvedValue({ conversation: conversation(11, 'expert'), messages: [{ ...record(601, 'partial'), status: 'streaming' }] })
+    mocks.expertActive.mockResolvedValue({ ...run(501, 'p1'), pending_permission: { permission_id: 'p1', title: 'Patch file' } })
+    const store = useAssistantStore(); await store.bindWorkspace(1); await store.selectMode('expert')
+    mocks.messages.mockClear(); mocks.expertActive.mockClear()
+    return store
+  }
+  it('synchronizes completion after restored permission response without an SSE connection', async () => {
+    const store = await recover(); await store.respondPermission('once')
+    mocks.messages.mockResolvedValue({ conversation: conversation(11, 'expert'), messages: [record(601, 'completed output')] })
+    mocks.expertActive.mockResolvedValue(null)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.messages[0]?.content).toBe('completed output'); expect(store.messages[0]?.status).toBe('completed')
+    expect(store.activeRun).toBeNull(); expect(vi.getTimerCount()).toBe(0)
+  })
+  it('does not overlap slow polling requests and discards replies after workspace rebinding', async () => {
+    const store = await recover(); const pending = deferred<{ conversation: AssistantConversation; messages: AssistantMessageRecord[] }>()
+    mocks.messages.mockReturnValueOnce(pending.promise)
+    await vi.advanceTimersByTimeAsync(12000); expect(mocks.messages).toHaveBeenCalledTimes(1)
+    await store.bindWorkspace(null)
+    pending.resolve({ conversation: conversation(), messages: [record(601, 'old private output')] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.messages).toEqual([]); expect(store.activeRun).toBeNull(); expect(vi.getTimerCount()).toBe(0)
+    expect(mocks.expertActive).toHaveBeenCalledTimes(1)
+  })
+  it('retains known run state and retries with backoff after a temporary history failure', async () => {
+    const store = await recover(); mocks.messages.mockRejectedValueOnce(new Error('outage'))
+    await vi.advanceTimersByTimeAsync(3000); expect(store.activeRun?.id).toBe(501)
+    await vi.advanceTimersByTimeAsync(5999); expect(mocks.messages).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1); expect(mocks.messages).toHaveBeenCalledTimes(2)
+    expect(store.messages[0]?.permission?.permission_id).toBe('p1')
+  })
+  it('reads active state before history and recovers a newer permission request', async () => {
+    const store = await recover()
+    mocks.expertActive.mockResolvedValue({ ...run(501, 'p2'), pending_permission: { permission_id: 'p2', title: 'Second operation' } })
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(mocks.expertActive.mock.invocationCallOrder[0]).toBeLessThan(mocks.messages.mock.invocationCallOrder[0]!)
+    expect(store.activeRun?.permissionId).toBe('p2'); expect(store.messages[0]?.permission?.title).toBe('Second operation')
+  })
+  it('continues confirmation polling until an asynchronous cancellation is terminal', async () => {
+    const store = await recover()
+    mocks.cancel.mockResolvedValue({ ...run(), cancel_requested: true })
+    mocks.expertActive.mockResolvedValue({ ...run(), cancel_requested: true })
+    await store.cancel(); expect(store.activeRun?.cancelRequested).toBe(true)
+    mocks.expertActive.mockResolvedValue(null)
+    mocks.messages.mockResolvedValue({ conversation: conversation(11, 'expert'), messages: [{ ...record(601, 'partial'), status: 'cancelled' }] })
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(store.activeRun).toBeNull(); expect(store.messages[0]?.status).toBe('cancelled'); expect(vi.getTimerCount()).toBe(0)
+  })
+  it('clears timers on disposal and ignores in-flight results', async () => {
+    const store = await recover(); const pending = deferred<{ conversation: AssistantConversation; messages: AssistantMessageRecord[] }>()
+    mocks.messages.mockReturnValueOnce(pending.promise); await vi.advanceTimersByTimeAsync(3000)
+    store.$dispose(); pending.resolve({ conversation: conversation(), messages: [record(601, 'late')] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.messages[0]?.content).toBe('partial'); expect(vi.getTimerCount()).toBe(0)
   })
 })
