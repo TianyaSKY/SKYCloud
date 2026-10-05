@@ -245,6 +245,9 @@ class AssistantRun(Base):
         self.metadata_json = _dump_json(value or {})
 
     def to_dict(self) -> dict[str, Any]:
+        from app.features.assistant.permission_details import permission_details
+
+        pending = permission_details(self.metadata_dict.get("pending_permission"), self.pending_permission_id) if self.status == "waiting_permission" and not self.cancel_requested and self.permission_response is None else None
         return {
             "id": self.id,
             "conversation_id": self.conversation_id,
@@ -255,6 +258,7 @@ class AssistantRun(Base):
             "request_id": self.request_id,
             "opencode_session_id": self.opencode_session_id,
             "pending_permission_id": self.pending_permission_id,
+            "pending_permission": pending,
             "cancel_requested": self.cancel_requested,
             "error_code": self.error_code,
             "error_message": self.error_message,

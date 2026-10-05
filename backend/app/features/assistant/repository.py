@@ -185,6 +185,27 @@ def create_run(
     return run
 
 
+def set_pending_permission(run: AssistantRun, payload: dict[str, Any]) -> None:
+    from app.features.assistant.permission_details import permission_details
+
+    permission_id = payload.get("permission_id")
+    details = permission_details({**payload, "title": payload.get("title") or "专家请求执行高风险操作"}, permission_id)
+    if details is None:
+        raise ValueError("Invalid permission display contract")
+    run.pending_permission_id = permission_id
+    run.permission_response = None
+    run.metadata_dict = {**run.metadata_dict, "pending_permission": details}
+    update_run_status(run, "waiting_permission")
+
+
+def clear_pending_permission(run: AssistantRun) -> None:
+    run.pending_permission_id = None
+    run.permission_response = None
+    metadata = run.metadata_dict
+    metadata.pop("pending_permission", None)
+    run.metadata_dict = metadata
+
+
 def update_run_status(
     run: AssistantRun,
     status: str,
@@ -196,6 +217,7 @@ def update_run_status(
     if status == "running" and run.started_at is None:
         run.started_at = beijing_now()
     if status in TERMINAL_RUN_STATUSES:
+        clear_pending_permission(run)
         run.completed_at = beijing_now()
     if error_code is not None:
         run.error_code = error_code

@@ -322,8 +322,7 @@ class ExpertEngine:
                                     )
                                     continue
                                 permission_future = controller.wait_for_permission(permission_id)
-                                self.run.pending_permission_id = permission_id
-                                self.run.status = "waiting_permission"
+                                repository.set_pending_permission(self.run, mapped.payload)
                                 self.session.commit()
                                 yield mapped
                                 cancel_task = asyncio.create_task(controller.cancel_event.wait())
@@ -357,8 +356,7 @@ class ExpertEngine:
                                 await client.respond_permission(
                                     str(session_id), permission_id, response, remember=False
                                 )
-                                self.run.pending_permission_id = None
-                                self.run.permission_response = None
+                                repository.clear_pending_permission(self.run)
                                 self.run.status = "running"
                                 self.session.commit()
                                 yield AssistantEvent("status", {"content": "权限已响应，继续执行"})

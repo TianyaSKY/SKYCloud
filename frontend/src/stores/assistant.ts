@@ -143,14 +143,27 @@ export const useAssistantStore = defineStore('assistant', () => {
   }
 
   function applyActiveRun(run: AssistantRunRecord | null) {
+    const message = run?.conversation_id === currentConversationId.value
+      ? messages.value.find(item => item.id === run.assistant_message_id && item.role === 'assistant') : undefined
+    const details = run?.pending_permission
+    const valid = run?.status === 'waiting_permission' && !run.cancel_requested &&
+      typeof run.pending_permission_id === 'string' && run.pending_permission_id.length > 0 && run.pending_permission_id.length <= 128 &&
+      details?.permission_id === run.pending_permission_id && typeof details?.title === 'string' &&
+      details.title.length > 0 && details.title.length <= 2000 &&
+      (details.tool === undefined || (typeof details.tool === 'string' && details.tool.length <= 4000))
+    const previous = message?.permission
+    const permission = valid ? details : previous && previous.permission_id === run?.pending_permission_id ? previous : undefined
+    for (const item of messages.value) item.permission = undefined
     if (!run || ['completed', 'failed', 'cancelled'].includes(run.status)) {
       activeRun.value = null
       return
     }
+    const waiting = run.status === 'waiting_permission' && !run.cancel_requested && !!message && !!permission
+    if (waiting) { message!.permission = { ...permission! }; message!.status = 'streaming' }
     activeRun.value = {
       id: run.id,
       messageId: run.assistant_message_id || 0,
-      permissionId: run.pending_permission_id || undefined,
+      permissionId: waiting ? run.pending_permission_id || undefined : undefined,
       cancelRequested: run.cancel_requested,
     }
   }

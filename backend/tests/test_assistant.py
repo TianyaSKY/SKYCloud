@@ -629,3 +629,66 @@ def test_handoff_creates_separate_expert_conversation(session, test_user, test_w
     assert target.source_conversation_id == fast.id
     system_message = repository.get_messages(session, target.id)[0]
     assert "import.md" in system_message.content
+
+
+def test_pending_permission_is_durable_bounded_and_response_gated(session, test_user, test_workspace):
+    from sqlalchemy.orm import Session
+    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'expert', 'task')
+    user = repository.create_message(session, conversation, 'user', 'patch')
+    assistant = repository.create_message(session, conversation, 'assistant', '', status='pending')
+    run = repository.create_run(session, conversation, user, assistant)
+    repository.set_pending_permission(run, {'permission_id': 'p1', 'title': 'Patch a.txt', 'tool': 'apply_patch a.txt', 'provider_secret': 'never-persist'})
+    session.commit()
+    with Session(bind=session.get_bind()) as restored:
+        recovered = restored.get(type(run), run.id)
+        assert recovered.to_dict()['pending_permission'] == {'permission_id': 'p1', 'title': 'Patch a.txt', 'tool': 'apply_patch a.txt'}
+        assert 'provider_secret' not in recovered.metadata_dict['pending_permission']
+        assert repository.set_permission_response(restored, run.id, 'p1', 'once')
+        restored.commit()
+        restored.refresh(recovered)
+        assert recovered.to_dict()['pending_permission'] is None
+        assert not repository.set_permission_response(restored, run.id, 'p1', 'reject')
+
+
+@pytest.mark.parametrize('state', ['running', 'completed', 'failed', 'cancelled', 'cancel_requested', 'mismatched', 'legacy'])
+def test_pending_permission_is_not_recovered_outside_matching_wait(session, test_user, test_workspace, state):
+    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'expert', 'task')
+    user = repository.create_message(session, conversation, 'user', 'patch')
+    assistant = repository.create_message(session, conversation, 'assistant', '', status='pending')
+    run = repository.create_run(session, conversation, user, assistant)
+    repository.set_pending_permission(run, {'permission_id': 'p1', 'title': 'Patch a.txt'})
+    if state == 'cancel_requested':
+        run.cancel_requested = True
+    elif state == 'mismatched':
+        run.pending_permission_id = 'p2'
+    elif state == 'legacy':
+        run.metadata_dict = {}
+    else:
+        repository.update_run_status(run, state)
+    assert run.to_dict()['pending_permission'] is None
+    if state in {'completed', 'failed', 'cancelled'}:
+        assert run.pending_permission_id is None
+        assert 'pending_permission' not in run.metadata_dict
+
+
+def test_permission_wait_survives_heartbeat_and_status_events(session, test_user, test_workspace):
+    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'fast', 'heartbeat')
+    session.commit()
+    conversation, run, history = service.prepare_run(session, test_workspace, test_user.id, conversation.id, 'check')
+
+    class WaitingEngine:
+        async def stream(self, **kwargs):
+            yield AssistantEvent('permission_required', {'permission_id': 'p1', 'title': 'Patch a.txt'})
+            yield AssistantEvent('heartbeat', {})
+            yield AssistantEvent('status', {'content': 'still waiting'})
+
+    async def collect():
+        async for event in service.stream_prepared_run(session, test_workspace, test_user.id, conversation, run, history):
+            if event.type in {'permission_required', 'heartbeat', 'status'}:
+                assert run.status == 'waiting_permission'
+                assert run.to_dict()['pending_permission']['permission_id'] == 'p1'
+        assert run.status == 'completed'
+        assert run.to_dict()['pending_permission'] is None
+
+    with patch('app.features.assistant.service.FastEngine', WaitingEngine):
+        asyncio.run(collect())

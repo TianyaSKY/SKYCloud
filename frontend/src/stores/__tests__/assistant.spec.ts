@@ -230,3 +230,37 @@ describe('assistant run and permission state', () => {
     store.activeRun = { id: 501, messageId: 601, permissionId: 'p1' }; await store.respondPermission('once'); expect(mocks.permission).not.toHaveBeenCalled()
   })
 })
+
+
+describe('durable pending expert permission recovery', () => {
+  async function restore(recovered: AssistantRunRecord) {
+    mocks.list.mockImplementation(async mode => ({ conversations: [conversation(11, mode)] }))
+    mocks.messages.mockResolvedValue({ conversation: conversation(11, 'expert'), messages: [{ ...record(601, 'working'), status: 'streaming' }] })
+    mocks.expertActive.mockResolvedValue(recovered)
+    const store = useAssistantStore(); await store.bindWorkspace(1); await store.selectMode('expert')
+    return store
+  }
+  it('restores the matching permission card and submits its one-shot response', async () => {
+    const recovered = { ...run(501, 'p1'), pending_permission: { permission_id: 'p1', title: 'Patch a.txt', tool: 'apply_patch a.txt' } }
+    const store = await restore(recovered)
+    expect(store.messages[0]?.permission).toEqual(recovered.pending_permission)
+    expect(store.activeRun?.permissionId).toBe('p1')
+    await store.respondPermission('once')
+    expect(mocks.permission).toHaveBeenCalledWith(501, 'p1', 'once')
+    expect(store.messages[0]?.permission).toBeUndefined()
+  })
+  it.each(['missing', 'mismatch', 'answered', 'cancel', 'wrong-message', 'wrong-conversation', 'oversized'])('fails closed for %s recovery data', async kind => {
+    const recovered: AssistantRunRecord = { ...run(501, 'p1'), pending_permission: { permission_id: 'p1', title: 'Patch a.txt' } }
+    if (kind === 'missing') recovered.pending_permission = null
+    if (kind === 'mismatch') recovered.pending_permission!.permission_id = 'p2'
+    if (kind === 'answered') recovered.status = 'running'
+    if (kind === 'cancel') recovered.cancel_requested = true
+    if (kind === 'wrong-message') recovered.assistant_message_id = 999
+    if (kind === 'wrong-conversation') recovered.conversation_id = 999
+    if (kind === 'oversized') recovered.pending_permission!.title = 'x'.repeat(2001)
+    const store = await restore(recovered)
+    expect(store.messages[0]?.permission).toBeUndefined(); expect(store.activeRun?.permissionId).toBeUndefined()
+    await store.respondPermission('once'); expect(mocks.permission).not.toHaveBeenCalled()
+    expect(store.activeRun?.id).toBe(501)
+  })
+})

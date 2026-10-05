@@ -42,6 +42,7 @@ export interface AssistantRunRecord {
   status: string
   request_id: string | null
   opencode_session_id: string | null
+  pending_permission?: { permission_id: string; title: string; tool?: string } | null
   pending_permission_id: string | null
   cancel_requested: boolean
   error_code: string | null

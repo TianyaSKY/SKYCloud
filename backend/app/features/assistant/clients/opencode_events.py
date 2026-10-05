@@ -205,8 +205,8 @@ def map_opencode_event(
                     "permission_required",
                     {
                         "permission_id": str(permission_id),
-                        "title": permission.get("title") or permission.get("message") or "专家请求执行高风险操作",
-                        "tool": tool,
+                        "title": str(permission.get("title") or permission.get("message") or "专家请求执行高风险操作")[:2000],
+                        "tool": tool[:4000] if tool else None,
                     },
                 )
             )

@@ -505,10 +505,7 @@ async def stream_prepared_run(
             elif event.type == "file_diff":
                 metadata["diff"] = event.payload.get("files", event.payload)
             elif event.type == "permission_required":
-                permission_id = str(event.payload.get("permission_id") or "")
-                run.pending_permission_id = permission_id or None
-                run.permission_response = None
-                repository.update_run_status(run, "waiting_permission")
+                repository.set_pending_permission(run, event.payload)
                 session.commit()
             elif event.type == "status" and run.status == "waiting_permission":
                 # Do not hide the waiting state until the permission resolver
@@ -519,8 +516,6 @@ async def stream_prepared_run(
             assistant_message.content = "".join(answer_parts)
             assistant_message.metadata_dict = metadata
             assistant_message.usage = usage
-            if run.status == "waiting_permission" and event.type != "permission_required":
-                repository.update_run_status(run, "running")
             session.flush()
             if event_count % 20 == 0 or time.monotonic() - last_commit > 1.0:
                 session.commit()
