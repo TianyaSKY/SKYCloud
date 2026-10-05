@@ -6,6 +6,11 @@ import uuid
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
+from dataclasses import dataclass
+
+from sqlalchemy.engine import Connection
+from sqlalchemy.orm import sessionmaker
+from starlette.concurrency import run_in_threadpool
 
 from app.exceptions import ConflictError, ServiceOperationError
 from app.features.assistant import repository
@@ -17,6 +22,7 @@ from app.features.assistant.clients.opencode_events import (
 )
 from app.features.assistant.event_protocol import AssistantEvent
 from app.features.workspace import docker_service, runtime_service
+from app.features.workspace.permissions import assert_can_write
 import app.infra.extensions as extensions
 from app.models.assistant import AssistantConversation, AssistantRun
 from app.models.workspace import Workspace
@@ -146,46 +152,70 @@ async def _runtime_lease(runtime_id: int):
         local_lock.release()
 
 
+@dataclass(frozen=True)
+class RuntimeConnection:
+    runtime_id: int
+    base_url: str
+
+
 class ExpertEngine:
     def __init__(self, *, session, conversation: AssistantConversation, run: AssistantRun) -> None:
         self.session = session
         self.conversation = conversation
         self.run = run
+        # Runtime setup must not share the stream's mutable Session while the
+        # consumer persists heartbeats/events. Create/close each Session in its
+        # worker and return scalars, never commit-expired ORM instances.
+        bind = session.get_bind()
+        if isinstance(bind, Connection):
+            bind = bind.engine
+        self.runtime_session_factory = sessionmaker(bind=bind)
 
-    async def _ensure_runtime(
-        self,
-        workspace_id: int,
-        user_id: int,
-    ):
-        workspace = self.session.get(Workspace, workspace_id)
-        if workspace is None:
-            raise ServiceOperationError("工作空间不存在")
-        runtime = runtime_service.get_or_create_runtime(self.session, workspace_id, user_id)
-        started_now = False
-        if (
-            runtime.status != "running"
-            or not runtime.container_id
-            or not docker_service.runtime_uses_configured_image(runtime)
-        ):
-            yield workspace, runtime, AssistantEvent(
-                "status", {"content": "正在准备专家工作区", "runtime_status": "starting"}
+    def _runtime_needs_start(self, workspace_id: int, user_id: int) -> bool:
+        with self.runtime_session_factory() as session:
+            workspace = session.get(Workspace, workspace_id)
+            if workspace is None:
+                raise ServiceOperationError("工作空间不存在")
+            assert_can_write(session, workspace_id, user_id)
+            runtime = runtime_service.get_or_create_runtime(session, workspace_id, user_id)
+            needs_start = (
+                runtime.status != "running"
+                or not runtime.container_id
+                or not docker_service.runtime_uses_configured_image(runtime)
             )
-            docker_service.start(self.session, workspace, user_id)
-            started_now = True
-            runtime = runtime_service.get_runtime(self.session, workspace_id, user_id)
+            session.commit()
+            return needs_start
+
+    def _prepare_runtime(self, workspace_id: int, user_id: int, needs_start: bool) -> RuntimeConnection:
+        with self.runtime_session_factory() as session:
+            workspace = session.get(Workspace, workspace_id)
+            if workspace is None:
+                raise ServiceOperationError("工作空间不存在")
+            assert_can_write(session, workspace_id, user_id)
+            if needs_start:
+                docker_service.start(session, workspace, user_id)
+            runtime = runtime_service.get_runtime(session, workspace_id, user_id)
             if runtime is None or runtime.status != "running":
                 raise ServiceOperationError(runtime.error_message if runtime else "OpenCode Runtime 启动失败")
-        else:
-            yield workspace, runtime, AssistantEvent(
-                "status", {"content": "正在连接专家工作区", "runtime_status": "running"}
+            # start already injects initial config. Existing runtimes refresh
+            # their scoped credentials through the live MCP API per task.
+            if not needs_start:
+                docker_service.setup_mcp(session, workspace, user_id, runtime=runtime)
+            return RuntimeConnection(
+                runtime_id=int(runtime.id),
+                base_url=docker_service.get_runtime_base_url(workspace, user_id, runtime),
             )
 
-        # ``start`` has already injected initial config before the Runtime
-        # begins listening. Existing runtimes refresh their scoped credential
-        # through OpenCode's live MCP API before every expert task.
-        if not started_now:
-            docker_service.setup_mcp(self.session, workspace, user_id, runtime=runtime)
-        yield workspace, runtime, AssistantEvent(
+    async def _ensure_runtime(self, workspace_id: int, user_id: int):
+        needs_start = await run_in_threadpool(self._runtime_needs_start, workspace_id, user_id)
+        yield None, AssistantEvent(
+            "status", {
+                "content": "正在准备专家工作区" if needs_start else "正在连接专家工作区",
+                "runtime_status": "starting" if needs_start else "running",
+            }
+        )
+        connection = await run_in_threadpool(self._prepare_runtime, workspace_id, user_id, needs_start)
+        yield connection, AssistantEvent(
             "status", {"content": "正在检查 OpenCode 服务", "runtime_status": "running"}
         )
 
@@ -203,17 +233,16 @@ class ExpertEngine:
         if controller is None:
             raise ServiceOperationError("Expert run controller is unavailable")
 
-        runtime_items = self._ensure_runtime(workspace_id, user_id)
-        workspace = None
-        runtime = None
-        async for item in runtime_items:
-            workspace, runtime, status_event = item
+        connection = None
+        async for prepared_connection, status_event in self._ensure_runtime(workspace_id, user_id):
+            if prepared_connection is not None:
+                connection = prepared_connection
             yield status_event
 
-        assert workspace is not None and runtime is not None
-        async with _runtime_lease(int(runtime.id)):
-            base_url = docker_service.get_runtime_base_url(workspace, user_id, runtime)
-            password = server_password(int(runtime.id), user_id, workspace_id)
+        assert connection is not None
+        async with _runtime_lease(connection.runtime_id):
+            base_url = connection.base_url
+            password = server_password(connection.runtime_id, user_id, workspace_id)
             agent = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
             session_id = self.conversation.opencode_session_id
             emitted_text = ""
@@ -246,12 +275,12 @@ class ExpertEngine:
                 if created_session:
                     session_id = await client.create_session(self.conversation.title)
                     self.conversation.opencode_session_id = session_id
-                    self.conversation.opencode_runtime_id = runtime.id
+                    self.conversation.opencode_runtime_id = connection.runtime_id
                     self.run.opencode_session_id = session_id
                     self.session.commit()
                 else:
                     self.run.opencode_session_id = session_id
-                    self.conversation.opencode_runtime_id = runtime.id
+                    self.conversation.opencode_runtime_id = connection.runtime_id
                     self.session.commit()
     
                 controller.set_abort_callback(lambda: client.abort_session(str(session_id)))

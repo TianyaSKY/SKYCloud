@@ -288,3 +288,5 @@ Python、Node、nginx、PostgreSQL、Redis 和 RabbitMQ 的生产镜像已固定
 工作空间 CRUD、成员管理与 Runtime Controller 路由，以及工作空间/成员角色依赖，使用 FastAPI 同步处理函数在线程池执行；异步鉴权显式将用户资料缓存/数据库读取及 MCP Token 查询交给线程池。`tests/test_workspace_threadpool.py` 验证这些同步操作等待期间其他 HTTP 请求仍可响应，并覆盖真实空间创建与请求字段校验。Assistant 流式处理及其他异步服务的同步 I/O 和 Session 使用仍需继续核查。
 
 Assistant 会话 CRUD、状态查询、交接与权限回复也由线程池执行；流式请求的准备和取消的数据库事务及序列化显式移入线程池。权限回复成功提交后才通知流式任务，跨线程通知通过 Future 所属事件循环发送；提交失败不会触发执行，Future 已取消时忽略迟到通知。`tests/test_assistant_control_threads.py` 覆盖事务顺序与线程安全；真实专家网关集成测试使用独立线程和独立数据库 Session 回复权限，覆盖单次允许和拒绝。流内部的数据库操作仍需继续改造。
+
+专家任务的 Runtime 检查、启动与已有 Runtime 的 MCP 凭据刷新使用工作线程，每个阶段创建并关闭独立数据库 Session，重新校验编辑权限，返回不可变的 Runtime ID/连接地址。它们不再与流式消息保存共用 Session。`tests/test_expert_runtime_threads.py` 验证慢 Controller 操作期间事件循环可响应及 Session 归属；真实专家网关测试同时覆盖冷启动与已有 Runtime 刷新。消息保存与权限轮询内部仍需继续改造。

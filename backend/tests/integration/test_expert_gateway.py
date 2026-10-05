@@ -177,6 +177,15 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                     from app.features.runtime_llm import tokens
                     assert tokens.validate_token(db, raw)['type'] == 'runtime_llm'
                     assert list(infrastructure['redis'].scan_iter('runtime-llm-quota:*:requests'))
+                    # Exercise the existing-runtime credential refresh with
+                    # independent worker Sessions as well as cold startup.
+                    from app.features.assistant.engines.expert_engine import ExpertEngine
+                    async def refresh_existing():
+                        engine = ExpertEngine(session=db, conversation=conversation, run=run)
+                        return [item async for item in engine._ensure_runtime(ws_id, user_id)]
+                    refreshed = asyncio.run(refresh_existing())
+                    assert refreshed[0][1].payload['runtime_status'] == 'running'
+                    assert refreshed[-1][0].runtime_id == runtime.id
                     from app.features.assistant.clients.opencode_client import OpenCodeClient
                     from app.features.assistant.clients.opencode_auth import server_password, server_username
                     async def mcp_status():
