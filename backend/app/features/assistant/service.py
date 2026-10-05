@@ -439,106 +439,53 @@ def _event_content(event: AssistantEvent) -> str:
     return value if isinstance(value, str) else ""
 
 
-async def stream_prepared_run(
-    session: Session,
-    workspace: Workspace,
-    user_id: int,
-    conversation: AssistantConversation,
-    run: AssistantRun,
-    history: Sequence[dict[str, str]],
-) -> AsyncIterator[AssistantEvent]:
-    """Execute a prepared run and persist every terminal outcome."""
-
-    controller = run_registry.register(int(run.id))
-    assistant_message = session.get(AssistantMessage, run.assistant_message_id)
-    if assistant_message is None:
-        run_registry.unregister(int(run.id))
-        raise ResourceNotFoundError("Assistant message not found")
-
-    event_log: list[AssistantEvent] = []
-    answer_parts: list[str] = []
-    metadata: dict[str, Any] = {}
-    usage: dict[str, Any] = {}
-    last_commit = time.monotonic()
+async def _stream_persisted(worker, persistence, history):
+    try:
+        run_id, message_id, workspace_id, mode, query = await worker.call(persistence.initialize, time.time())
+    except asyncio.CancelledError:
+        await worker.call(persistence.finish, "cancelled", "", {}, {}, [], None)
+        raise
+    controller = run_registry.register(run_id)
+    event_log = []
+    answer_parts = []
+    metadata = {}
+    usage = {}
+    last_commit = last_lease = time.monotonic()
     event_count = 0
-    last_cancel_poll = 0.0
-    last_lease = time.monotonic()
-    try:
-        if not repository.touch_run_lease(session, int(run.id), time.time()):
-            raise ConflictError("任务已结束，不能继续执行")
-    except BaseException:
-        run_registry.unregister(int(run.id))
-        raise
+
+    async def finish(status, error_code=None):
+        return await worker.call(persistence.finish, status, "".join(answer_parts),
+                                 dict(metadata), dict(usage), list(event_log), error_code)
 
     try:
-        yield AssistantEvent(
-            type="run_started",
-            run_id=run.id,
-            message_id=assistant_message.id,
-            payload={"engine": conversation.mode, "status": run.status},
-        )
-    except BaseException:
-        repository.update_run_status(run, "cancelled")
-        assistant_message.status = "cancelled"
-        session.commit()
-        run_registry.unregister(int(run.id))
-        raise
-
-    try:
-        if conversation.mode == "fast":
-            engine = FastEngine()
-        else:
-            from app.features.assistant.engines.expert_engine import ExpertEngine
-
-            engine = ExpertEngine(session=session, conversation=conversation, run=run)
-
-        engine_iterator = engine.stream(
-            run_id=int(run.id),
-            user_id=int(user_id),
-            workspace_id=int(workspace.id),
-            query=str(session.get(AssistantMessage, run.user_message_id).content),
-            history=history,
-            controller=controller,
-        )
-        async with aclosing(_engine_events_with_heartbeats(engine_iterator, int(run.id))) as engine_events:
+        yield AssistantEvent("run_started", {"engine": mode, "status": "running"},
+                             run_id=run_id, message_id=message_id)
+        engine = await worker.call(persistence.engine)
+        iterator = engine.stream(run_id=run_id, user_id=persistence.user_id,
+                                 workspace_id=workspace_id, query=query, history=history, controller=controller)
+        async with aclosing(_engine_events_with_heartbeats(iterator, run_id)) as engine_events:
             async for event in engine_events:
-                if time.monotonic() - last_lease >= 10:
-                    if not repository.touch_run_lease(session, int(run.id), time.time()):
-                        return
+                renew = time.monotonic() - last_lease >= 10
+                terminal, cancelled = await worker.call(persistence.poll, renew, time.time())
+                if terminal:
+                    return
+                if renew:
                     last_lease = time.monotonic()
                 if event.run_id is None:
-                    event.run_id = int(run.id)
-                if event.message_id is None and event.type not in {"heartbeat"}:
-                    event.message_id = int(assistant_message.id)
+                    event.run_id = run_id
+                if event.message_id is None and event.type != "heartbeat":
+                    event.message_id = message_id
                 if event.type != "heartbeat":
                     event_log.append(event)
-
-                cancel_requested = (event.type == "cancelled"
-                                    or controller.cancel_event.is_set() or bool(run.cancel_requested))
-                if time.monotonic() - last_cancel_poll >= 0.5:
-                    cancel_requested = cancel_requested or repository.is_run_cancel_requested(
-                        session, int(run.id)
-                    )
-                    last_cancel_poll = time.monotonic()
-                if cancel_requested:
-                    repository.update_run_status(run, "cancelled")
-                    assistant_message.status = "cancelled"
-                    run.pending_permission_id = None
-                    session.commit()
-                    yield AssistantEvent(
-                        type="cancelled",
-                        run_id=run.id,
-                        message_id=assistant_message.id,
-                        payload={"status": "cancelled"},
-                    )
+                if event.type == "cancelled" or controller.cancel_event.is_set() or cancelled:
+                    status = await finish("cancelled")
+                    if status == "cancelled":
+                        yield AssistantEvent("cancelled", {"status": status}, run_id=run_id, message_id=message_id)
                     return
-
                 if event.type == "token":
                     answer_parts.append(_event_content(event))
-                elif event.type == "title":
-                    metadata["title"] = _event_content(event)
-                elif event.type == "keywords":
-                    metadata["keywords"] = _event_content(event)
+                elif event.type in {"title", "keywords"}:
+                    metadata[event.type] = _event_content(event)
                 elif event.type == "sources":
                     metadata["sources"] = event.payload.get("sources", [])
                 elif event.type == "usage":
@@ -547,69 +494,72 @@ async def stream_prepared_run(
                     raise RuntimeError(str(event.payload.get("message") or "assistant engine error"))
                 elif event.type == "file_diff":
                     metadata["diff"] = event.payload.get("files", event.payload)
-                elif event.type == "permission_required":
-                    repository.set_pending_permission(run, event.payload)
-                    session.commit()
-                elif event.type == "status" and run.status == "waiting_permission":
-                    # Do not hide the waiting state until the permission resolver
-                    # has handed the answer back to the engine.
-                    pass
-
                 event_count += 1
-                assistant_message.content = "".join(answer_parts)
-                assistant_message.metadata_dict = metadata
-                assistant_message.usage = usage
-                session.flush()
-                if event_count % 20 == 0 or time.monotonic() - last_commit > 1.0:
-                    session.commit()
+                commit = event_count % 20 == 0 or time.monotonic() - last_commit > 1
+                permission = event.payload if event.type == "permission_required" else None
+                if not await worker.call(persistence.checkpoint, "".join(answer_parts),
+                                         dict(metadata), dict(usage), permission, commit):
+                    return
+                if commit or permission is not None:
                     last_commit = time.monotonic()
-
                 if event.type != "done":
                     yield event
-
-        assistant_message.content = "".join(answer_parts)
-        assistant_message.status = "completed"
-        assistant_message.metadata_dict = metadata
-        assistant_message.usage = usage
-        run.metadata_dict = repository.serialize_events_metadata(event_log)
-        run.pending_permission_id = None
-        repository.update_run_status(run, "completed")
-        session.commit()
-        yield AssistantEvent(
-            type="done",
-            run_id=run.id,
-            message_id=assistant_message.id,
-            payload={"status": "completed"},
-        )
-    except asyncio.CancelledError:
-        repository.update_run_status(run, "cancelled")
-        assistant_message.status = "cancelled"
-        assistant_message.content = "".join(answer_parts)
-        session.commit()
+        status = await finish("completed")
+        if status in {"completed", "cancelled"}:
+            yield AssistantEvent("cancelled" if status == "cancelled" else "done",
+                                 {"status": status}, run_id=run_id, message_id=message_id)
+    except (asyncio.CancelledError, GeneratorExit):
+        await finish("cancelled")
         raise
     except Exception as exc:
-        assistant_message.content = "".join(answer_parts)
-        assistant_message.status = "failed"
-        assistant_message.metadata_dict = metadata
-        assistant_message.usage = usage
-        run.metadata_dict = repository.serialize_events_metadata(event_log)
-        repository.update_run_status(
-            run,
-            "failed",
-            error_code=exc.__class__.__name__,
-            # Do not return provider response bodies, container paths, or
-            # request details through the recovery endpoint.
-            error_message="专家任务执行失败" if conversation.mode == "expert" else "快速问答执行失败",
-        )
-        session.commit()
-        yield AssistantEvent(
-            type="error",
-            run_id=run.id,
-            message_id=assistant_message.id,
-            payload={"code": run.error_code, "message": "专家任务执行失败" if conversation.mode == "expert" else "快速问答执行失败"},
-        )
+        status = await finish("failed", exc.__class__.__name__)
+        if status == "failed":
+            yield AssistantEvent("error", {"code": exc.__class__.__name__,
+                "message": "专家任务执行失败" if mode == "expert" else "快速问答执行失败"},
+                run_id=run_id, message_id=message_id)
     finally:
-        run_registry.unregister(int(run.id))
+        run_registry.unregister(run_id)
+
+
+async def stream_prepared_run(session, workspace, user_id, conversation, run, history):
+    """Compatibility seam for callers that own an existing prepared Session.
+
+    Callers must leave that Session idle until this iterator closes. HTTP
+    streams use stream_run, which creates and closes its Session in the worker.
+    """
+    from app.features.assistant.stream_persistence import StreamPersistence, StreamWorker
+    async with StreamWorker() as worker:
+        try:
+            persistence = await worker.call(StreamPersistence, session, workspace, user_id, conversation, run)
+            async with aclosing(_stream_persisted(worker, persistence, history)) as events:
+                async for event in events:
+                    yield event
+        finally:
+            await worker.call(session.rollback)
+
+
+async def stream_run(session_factory, workspace_id, user_id, conversation_id, run_id, history):
+    """Own the streaming Session entirely within its dedicated worker thread."""
+    from app.features.assistant.stream_persistence import StreamPersistence, StreamWorker
+    async with StreamWorker() as worker:
+        owned_sessions = []
+        def create():
+            session = session_factory()
+            owned_sessions.append(session)
+            workspace = session.get(Workspace, workspace_id)
+            conversation = session.get(AssistantConversation, conversation_id)
+            run = session.get(AssistantRun, run_id)
+            if workspace is None or conversation is None or run is None:
+                raise ResourceNotFoundError("Assistant stream records disappeared")
+            return StreamPersistence(session, workspace, user_id, conversation, run)
+        try:
+            persistence = await worker.call(create)
+            async with aclosing(_stream_persisted(worker, persistence, history)) as events:
+                async for event in events:
+                    yield event
+        finally:
+            for session in owned_sessions:
+                await worker.call(session.close)
 
 
 def request_cancel(

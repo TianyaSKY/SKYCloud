@@ -1,6 +1,7 @@
 """Unified Assistant HTTP API."""
 
 import os
+from contextlib import aclosing
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -18,7 +19,6 @@ from app.features.assistant.schemas import (
     AssistantPermissionResponse,
 )
 from app.infra.extensions import SessionLocal, get_db
-from app.models.assistant import AssistantConversation, AssistantRun
 from app.models.user import User
 from app.models.workspace import Workspace
 
@@ -192,27 +192,12 @@ async def stream_assistant_message(
     )
 
     async def stream():
-        stream_session = SessionLocal()
-        try:
-            stream_workspace = stream_session.get(Workspace, stream_workspace_id)
-            stream_conversation = stream_session.get(
-                AssistantConversation, stream_conversation_id
-            )
-            stream_run = stream_session.get(AssistantRun, stream_run_id)
-            if stream_workspace is None or stream_conversation is None or stream_run is None:
-                raise RuntimeError("Assistant stream records disappeared")
-
-            async for event in service.stream_prepared_run(
-                stream_session,
-                stream_workspace,
-                stream_user_id,
-                stream_conversation,
-                stream_run,
-                history,
-            ):
+        async with aclosing(service.stream_run(
+            SessionLocal, stream_workspace_id, stream_user_id,
+            stream_conversation_id, stream_run_id, history,
+        )) as events:
+            async for event in events:
                 yield encode_sse(event)
-        finally:
-            stream_session.close()
 
     return StreamingResponse(
         stream(),

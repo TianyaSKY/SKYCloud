@@ -143,7 +143,7 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                     conversation = repository.create_conversation(db, ws_id, user_id, 'expert', 'gateway task'); db.commit()
                     conversation, run, history = service.prepare_run(db, workspace, user_id, conversation.id, '只输出 E2E_GATEWAY_OK，不调用任何工具。')
                     async def collect():
-                        async for event in service.stream_prepared_run(db, workspace, user_id, conversation, run, history):
+                        async for event in service.stream_run(factory, ws_id, user_id, conversation.id, run.id, history):
                             observed.append(event)
                             if event.type == 'permission_required':
                                 assert permission_response is not None

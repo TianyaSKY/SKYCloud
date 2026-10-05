@@ -285,10 +285,12 @@ Python、Node、nginx、PostgreSQL、Redis 和 RabbitMQ 的生产镜像已固定
 
 源码镜像的持久性验证在 `backend` 目录运行 `RUN_MINIO_IMAGE_TESTS=1 SKYCLOUD_TEST_MINIO_IMAGE=sha256:<构建输出的镜像ID> python -m pytest tests/integration/test_minio_image.py`。测试创建独立卷，验证读写、重启、删除及源码校验和；若设置 `SKYCLOUD_TEST_LEGACY_MINIO_IMAGE` 为本地已有的旧镜像 ID，还会验证旧数据卷升级。测试不下载旧镜像，未提供旧镜像时会明确跳过该用例。
 
-工作空间 CRUD、成员管理与 Runtime Controller 路由，以及工作空间/成员角色依赖，使用 FastAPI 同步处理函数在线程池执行；异步鉴权显式将用户资料缓存/数据库读取及 MCP Token 查询交给线程池。`tests/test_workspace_threadpool.py` 验证这些同步操作等待期间其他 HTTP 请求仍可响应，并覆盖真实空间创建与请求字段校验。Assistant 流式处理及其他异步服务的同步 I/O 和 Session 使用仍需继续核查。
+工作空间 CRUD、成员管理与 Runtime Controller 路由，以及工作空间/成员角色依赖，使用 FastAPI 同步处理函数在线程池执行；异步鉴权显式将用户资料缓存/数据库读取及 MCP Token 查询交给线程池。`tests/test_workspace_threadpool.py` 验证这些同步操作等待期间其他 HTTP 请求仍可响应，并覆盖真实空间创建与请求字段校验。其他异步服务的同步 I/O 和 Session 使用仍需继续核查。
 
-Assistant 会话 CRUD、状态查询、交接与权限回复也由线程池执行；流式请求的准备和取消的数据库事务及序列化显式移入线程池。权限回复成功提交后才通知流式任务，跨线程通知通过 Future 所属事件循环发送；提交失败不会触发执行，Future 已取消时忽略迟到通知。`tests/test_assistant_control_threads.py` 覆盖事务顺序与线程安全；真实专家网关集成测试使用独立线程和独立数据库 Session 回复权限，覆盖单次允许和拒绝。流内部的数据库操作仍需继续改造。
+Assistant 会话 CRUD、状态查询、交接与权限回复也由线程池执行；流式请求的准备和取消的数据库事务及序列化显式移入线程池。权限回复成功提交后才通知流式任务，跨线程通知通过 Future 所属事件循环发送；提交失败不会触发执行，Future 已取消时忽略迟到通知。`tests/test_assistant_control_threads.py` 覆盖事务顺序与线程安全；真实专家网关集成测试使用独立线程和独立数据库 Session 回复权限，覆盖单次允许和拒绝。
 
-专家任务的 Runtime 检查、启动与已有 Runtime 的 MCP 凭据刷新使用工作线程，每个阶段创建并关闭独立数据库 Session，重新校验编辑权限，返回不可变的 Runtime ID/连接地址。它们不再与流式消息保存共用 Session。`tests/test_expert_runtime_threads.py` 验证慢 Controller 操作期间事件循环可响应及 Session 归属；真实专家网关测试同时覆盖冷启动与已有 Runtime 刷新。消息保存与权限轮询内部仍需继续改造。
+专家任务的 Runtime 检查、启动与已有 Runtime 的 MCP 凭据刷新使用工作线程，每个阶段创建并关闭独立数据库 Session，重新校验编辑权限，返回不可变的 Runtime ID/连接地址。它们不再与流式消息保存共用 Session。`tests/test_expert_runtime_threads.py` 验证慢 Controller 操作期间事件循环可响应及 Session 归属；真实专家网关测试同时覆盖冷启动与已有 Runtime 刷新。
 
-专家引擎的上下文读取、OpenCode 会话关联、权限等待保存、权限回复/取消轮询与权限清理也使用独立的工作线程事务；引擎只保留任务/会话 ID，不持有流式处理的 Session 或 ORM 对象。事务重新检查归属和编辑权限，持久化回复是授权执行的依据，权限清理不能恢复已结束的任务。等待权限时异常或断开会尝试中止供应商任务，并释放取消等待；统一流处理将引擎的取消事件保存为取消状态。流处理器自身的消息与租约保存仍需继续改造。
+专家引擎的上下文读取、OpenCode 会话关联、权限等待保存、权限回复/取消轮询与权限清理也使用独立的工作线程事务；引擎只保留任务/会话 ID，不持有流式处理的 Session 或 ORM 对象。事务重新检查归属和编辑权限，持久化回复是授权执行的依据，权限清理不能恢复已结束的任务。等待权限时异常或断开会尝试中止供应商任务，并释放取消等待；统一流处理将引擎的取消事件保存为取消状态。
+
+统一 Assistant 流的数据库操作通过 `StreamPersistence` 在专用线程中串行执行。生产流入口 `stream_run` 在同一线程创建、读取和关闭 Session；消息保存、租约更新、取消检查和终态事务都不在事件循环中执行。取消会等待正在运行的数据库操作结束再清理，HTTP 断开显式关闭底层流。权限事件重放保留已提交的单次回复，终态保存加行锁且不会覆盖已结束任务。`tests/test_stream_worker.py` 覆盖慢 SQL 响应、重复取消、创建期间取消、权限重放、终态保护与 HTTP 流断开；真实专家链路使用此生产入口。其他异步服务与请求依赖仍需继续核查。
