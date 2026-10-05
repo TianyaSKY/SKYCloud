@@ -5,13 +5,14 @@
     {
       "id": "runtime_llm_proxy",
       "requirement": "Keep provider secrets in backend; scoped expiring runtime LLM tokens, allowed model and quotas",
-      "status": "in_progress",
+      "status": "verified",
       "evidence": [
         "Runtime receives only a model-only JWT; provider key stays in independent llm-gateway process. Hash persistence reuses revocable runtime records.",
         "JWT binds user/workspace/runtime/model and maximum one-hour expiry; gateway checks current runtime state and editor membership, rejects REST/MCP credentials and alternate models.",
         "Body/output/stream caps and atomic shared user/workspace/runtime Redis reservations; text/tool inputs only; no upstream redirect or caller headers.",
         "HTTP forwarding, SSE, errors, expiration/revocation/demotion, cross-endpoint rejection and real Redis concurrency/recreation checks passed.",
-        "Complete OpenCode -> gateway -> mock-provider flow using PostgreSQL remains to be exercised alongside controller relay."
+        "Complete OpenCode -> gateway -> mock-provider flow using PostgreSQL remains to be exercised alongside controller relay.",
+        "Actual isolated PostgreSQL/Redis/Controller/non-root OpenCode -> production model gateway -> local synthetic provider -> persisted assistant answer passed, with a real unmocked MCP subprocess connected through Controller relay. Runtime config excludes provider key, contains a valid database-bound runtime_llm credential, and Redis quota counters are consumed. This exposed OpenCode default max_tokens=32000 versus gateway max=4096; Runtime model.limit.output now follows the gateway setting, with explicit configurable context budget. Final actual request max_tokens=4096, completed output E2E_GATEWAY_OK persisted. /private/tmp/skycloud-expert-gateway-real.log and /private/tmp/skycloud-expert-gateway-results.json. Does not claim real external-provider or full browser permission flow."
       ]
     },
     {
@@ -248,7 +249,8 @@
         "Real OpenCode HTML/JavaScript relay and Redis one-use/TTL scenarios passed; default Strict iframe cookie behavior was checked in the actual in-app browser. Full UI browser flows and WebSocket terminal remain pending.",
         "Locked dependency environment: 1306 regular tests pass with 37 opt-in skips; two isolated PostgreSQL/Redis refresh cases, new Controller network/RPC boundary and real OpenCode sandbox/lifecycle/configuration reload passed. Unmocked dependency smoke passed locally and in the network-disabled production Linux image: actual API health, MCP initialize/anonymous tool denial, 5 MiB request compatibility, configured proxy host and foreign Host/Origin rejection; actual organization-agent construction. Complete model provider workflow remains pending.",
         "Checksum-locked source-built MinIO passed real object persistence and cached legacy-volume upgrade tests; all five SQL/MinIO authenticated upload/failure/crash cases passed on the final immutable image. 11 targeted checks passed /private/tmp/skycloud-minio-final-tests.log. Tests used uniquely named disposable containers/volumes and removed their resources.",
-        "Two real isolated PostgreSQL execution-lease cases passed /private/tmp/skycloud-assistant-lease-real.log: an observer with a stale ORM row retains another worker's fresh waiting permission, expires an old lease and rejects resurrection; concurrent heartbeat and recovery serialize on the same row and observe the committed heartbeat. Disposable PostgreSQL containers removed. Five invalid-heartbeat cases and producer-close cancellation regression passed in the full regular suite: 1324 passed / 41 opt-in skips."
+        "Two real isolated PostgreSQL execution-lease cases passed /private/tmp/skycloud-assistant-lease-real.log: an observer with a stale ORM row retains another worker's fresh waiting permission, expires an old lease and rejects resurrection; concurrent heartbeat and recovery serialize on the same row and observe the committed heartbeat. Disposable PostgreSQL containers removed. Five invalid-heartbeat cases and producer-close cancellation regression passed in the full regular suite: 1324 passed / 41 opt-in skips.",
+        "One complete expert gateway scenario passed on final source: actual SQL/Redis/Controller/OpenCode/gateway/MCP, synthetic HTTP/SSE model endpoint only. Scoped credential/provider-secret separation, model output cap, MCP connected state, quota consumption and persisted completed answer asserted. Test resources removed. Full regular backend suite 1325 pass / 42 opt-in skips; /private/tmp/skycloud-expert-gateway-suite.log."
       ]
     },
     {
@@ -289,7 +291,7 @@
   "validation": {
     "runtime": "/private/tmp/skycloud-fix-venv/bin/python",
     "targeted": "169 passed: security regressions, auth, workspace, router integration, exception/folder/MCP",
-    "unit_suite": "1324 passed / 41 opt-in skips, no failures, full locked regular backend suite excluding separately provisioned tests/real; /private/tmp/skycloud-assistant-lease-suite.log.",
+    "unit_suite": "1325 passed / 42 opt-in skips, no failures, full locked regular backend suite excluding separately provisioned tests/real; /private/tmp/skycloud-expert-gateway-suite.log.",
     "baseline_log": "/private/tmp/skycloud-baseline-tests.log",
     "baseline": "Original b37e070: 1088 passed, identical 32 failing test names, 2 skipped. Failures predate this repair.",
     "latest_targeted": "147 passed: workspace HTTP list, routers, Controller, workspace service and security regressions; /private/tmp/skycloud-workspace-list-final-targeted.log",
@@ -322,11 +324,12 @@
     "frontend_upload": "Real frontend HTTP small/multipart upload, downloaded SHA-256 and instant reuse passed /private/tmp/skycloud-upload-http-real.log. Isolated production browser login/reload/file list/runtime iframe passed /private/tmp/skycloud-upload-browser-final.log, screenshot /private/tmp/skycloud-upload-browser-verified.png. Disposable resources cleaned. Native file picker automation was inconclusive; it is not a passed browser upload check.",
     "workspace_frontend": "31 additional store/view/upload/request cases pass with actual Vue/Pinia code and controlled API boundaries, including self-role/membership changes, immutable confirmation targets, stale lists, duplicate submissions and role-loss cancellation. Backend role authorization remains authoritative; no real-browser member mutation flow is claimed.",
     "permission_recovery": "27 targeted assistant backend cases passed /private/tmp/skycloud-permission-recovery-backend.log; 8 new actual frontend store/history recovery cases. Display metadata persists before permission event emission; the API exposes only matching unanswered waits. Heartbeats/status events no longer spuriously release waiting_permission. Cross-worker liveness and post-response recovered-run polling are not yet verified.",
-    "assistant_lease": "2 real PostgreSQL row-lock/heartbeat/recovery cases pass /private/tmp/skycloud-assistant-lease-real.log. SQL metadata stores an execution heartbeat in Unix UTC time, renewed at stream start and at most 15 seconds apart during waits; recovery uses current row locks and a minimum 30-second grace. Terminal records cannot be revived. Explicit async generator closure proves the canceled producer exits before the stream returns. This tests independent SQL sessions/threads; full deployed provider/browser flow remains pending."
+    "assistant_lease": "2 real PostgreSQL row-lock/heartbeat/recovery cases pass /private/tmp/skycloud-assistant-lease-real.log. SQL metadata stores an execution heartbeat in Unix UTC time, renewed at stream start and at most 15 seconds apart during waits; recovery uses current row locks and a minimum 30-second grace. Terminal records cannot be revived. Explicit async generator closure proves the canceled producer exits before the stream returns. This tests independent SQL sessions/threads; full deployed provider/browser flow remains pending.",
+    "expert_gateway": "1 passed in 9.63s /private/tmp/skycloud-expert-gateway-real.log. Actual OpenCode/Controller/MCP plus PostgreSQL/Redis gateway -> synthetic provider HTTP/SSE -> durable completed answer. Scoped model credential only in Runtime config; real MCP connected, Redis admission counters present, actual max_tokens=4096. Temporary subprocess, HTTP servers and uniquely named containers/networks removed. Initial attempts failed in test proxy configuration and then revealed the genuine output-limit mismatch, now fixed."
   },
   "next_work": [
     "Exercise full provider/browser expert permission recovery, native file picker browser verification and broader frontend flows",
-    "Exercise complete OpenCode -> gateway -> mock-provider flow with isolated PostgreSQL and Redis",
+    "Exercise expert permission operations/recovery through the complete browser flow; add real RabbitMQ/vector integration coverage",
     "Complete service/repository/API contracts, remaining frontend and real integration tests, CI and UTC"
   ]
 }

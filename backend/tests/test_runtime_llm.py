@@ -207,3 +207,13 @@ def test_expired_or_tampered_model_token_is_rejected(session, credential):
     expired = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
     assert tokens.validate_token(session, expired) is None
     assert tokens.validate_token(session, credential + "tampered") is None
+
+
+def test_runtime_model_output_limit_matches_gateway(monkeypatch):
+    monkeypatch.setenv('RUNTIME_LLM_MAX_OUTPUT_TOKENS', '2048')
+    monkeypatch.setenv('RUNTIME_LLM_CONTEXT_TOKENS', '32768')
+    config = docker_service.merge_opencode_chat_provider({}, {'model': 'test-model', 'base_url': 'http://gateway/v1', 'api_key': 'scoped'})
+    assert config['provider'][docker_service.OPENCODE_CHAT_PROVIDER_ID]['models']['test-model']['limit'] == {'context': 32768, 'output': 2048}
+    monkeypatch.setenv('RUNTIME_LLM_CONTEXT_TOKENS', '2048')
+    with pytest.raises(ValueError, match='context must exceed'):
+        docker_service.merge_opencode_chat_provider({}, {'model': 'test-model', 'base_url': 'http://gateway/v1', 'api_key': 'scoped'})

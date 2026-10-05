@@ -247,6 +247,10 @@ MIT
 
 助手执行进程在开始和流心跳期间续写数据库运行心跳；其他进程恢复中断任务时锁定同一条记录并读取最新心跳，避免将长任务误判为服务重启。默认失联宽限期 45 秒，`ASSISTANT_ABANDONED_RUN_GRACE_SECONDS` 最小有效值为 30 秒；历史没有心跳的运行仍按开始时间恢复。恢复出的运行在没有本地 SSE 时每 3 秒串行同步状态与历史，临时失败退避至最多 30 秒；确认终态后停止，切换或卸载会清理轮询。取消或恢复终止执行时会关闭事件生成器，等待其生产任务退出。
 
+Runtime 模型配置的输出上限与网关的 `RUNTIME_LLM_MAX_OUTPUT_TOKENS` 保持一致（默认 4096），避免 OpenCode 默认请求 32000 而被网关拒绝。模型上下文预算由 `RUNTIME_LLM_CONTEXT_TOKENS` 控制（默认 65536），必须大于输出上限；配置使用固定版本 OpenCode 的 [model.limit 契约](https://github.com/anomalyco/opencode/blob/v1.18.11/packages/core/src/v1/config/provider.ts)。
+
+完整隔离模型检查可在 backend 目录执行 `RUN_EXPERT_GATEWAY_TESTS=1 SKYCLOUD_TEST_RUNTIME_IMAGE=sha256:<Runtime镜像ID> SKYCLOUD_TEST_CONTROLLER_IMAGE=<本地Controller镜像> python -m pytest tests/integration/test_expert_gateway.py`，需要 Docker 和本地 `skycloud-frontend:locked-test` 镜像作为测试代理。测试使用独立 PostgreSQL、Redis、Controller、非 root Runtime 和真实 MCP 子进程，唯一模拟边界是本地模型端点；验证流式回答、数据库保存、MCP 连接、作用域凭据及 Redis 配额，并清理自身资源。
+
 专家待授权运行将授权 ID、标题与工具说明持久化在既有运行元数据中；标题最多 2000 字符、工具说明最多 4000 字符，不保存原始提供方事件。活动运行接口仅在仍等待该授权、尚未响应且未请求取消时返回 `pending_permission`。前端恢复时核对会话、助手消息和授权 ID，信息缺失或不匹配时保留取消入口，不提供盲目授权。心跳和普通状态消息不会解除授权等待；授权仍仅允许一次性同意或拒绝。
 
 工作空间列表刷新采用最后一次请求的结果，保留用户在加载期间的最新选择；成员资格消失后切换到可访问空间，列表为空时清除当前空间和写权限。退出或重新登录会清除空间状态并丢弃旧请求。成员管理仅管理员可修改成员，所有者不可被移除或降级，空间删除仅向所有者显示。确认操作固定原空间及成员，抽屉切换、关闭、登录变化和页面卸载后旧操作失效；成功修改自己的角色或移除自己时立即撤销本地权限，再刷新服务端成员状态。

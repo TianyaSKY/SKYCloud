@@ -561,12 +561,16 @@ def _build_opencode_chat_provider(chat_config: dict[str, str]) -> dict:
         # This is a revocable model-only Runtime credential, never the
         # provider key used by the gateway.
         options["apiKey"] = chat_config["api_key"]
+    output_limit = runtime_llm_tokens.positive_setting("RUNTIME_LLM_MAX_OUTPUT_TOKENS", 4096)
+    context_limit = runtime_llm_tokens.positive_setting("RUNTIME_LLM_CONTEXT_TOKENS", 65536)
+    if context_limit <= output_limit:
+        raise ValueError("Runtime model context must exceed its output limit")
     return {
         "npm": "@ai-sdk/openai-compatible",
         "name": "SKYCloud Chat API",
         "options": options,
         "models": {
-            chat_config["model"]: {"name": chat_config["model"]},
+            chat_config["model"]: {"name": chat_config["model"], "limit": {"context": context_limit, "output": output_limit}},
         },
     }
 
