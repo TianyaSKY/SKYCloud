@@ -50,6 +50,8 @@ npm run build
 
 ```sh
 npm run test:unit
+npm run lint:check
+npm run audit
 node scripts/preview-browser.mjs
 ```
 

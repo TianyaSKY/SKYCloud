@@ -1,8 +1,8 @@
 import pluginVue from 'eslint-plugin-vue'
-import { vueTsConfigs, withVueTs } from '@vue/eslint-config-typescript'
+import tseslint from 'typescript-eslint'
 import skipFormatting from 'eslint-config-prettier'
 
-export default withVueTs(
+export default tseslint.config(
   {
     name: 'app/files-to-ignore',
     ignores: [
@@ -15,8 +15,12 @@ export default withVueTs(
       'env.d.ts',
     ],
   },
+  tseslint.configs.recommended,
   pluginVue.configs['flat/essential'],
-  vueTsConfigs.recommended,
+  {
+    files: ['**/*.vue'],
+    languageOptions: { parserOptions: { parser: tseslint.parser } },
+  },
   skipFormatting,
   {
     name: 'app/custom-rules',

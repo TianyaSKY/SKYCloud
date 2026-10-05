@@ -228,7 +228,8 @@
         "Eight test files / 24 tests now pass, including opaque UI ticket URL validation, same-origin/credential-bearing URL rejection and prior download/Markdown/MCP behaviors. Remaining complete auth/route/upload/assistant behavior coverage is still pending.",
         "Twelve files / 44 tests pass: memory-only auth store, cookie transport, pending refresh cancellation/account switch/outage handling, route restoration and role redirects, concurrent expired-header refresh/retry and rejected-session cleanup. Upload/workspace/assistant broader behavior coverage remains pending.",
         "Fourteen files / 52 behavior tests pass. Shared runtime dialog tests cover close cleanup, late ticket cancellation and renewal rejection; actual WorkspaceManageView tests cover null legacy access_url, admin/editor opening, viewer restrictions, stopped-state entry and modal closing. Broader upload/assistant behavior coverage remains pending.",
-        "17 files / 60 behavior tests pass. Added preview download/text-read race cancellation, close/unmount Blob cleanup, PDF navigation/load disposal/canvas limits and form validation without dynamic code generation. Broader upload/assistant coverage remains pending."
+        "17 files / 60 behavior tests pass. Added preview download/text-read race cancellation, close/unmount Blob cleanup, PDF navigation/load disposal/canvas limits and form validation without dynamic code generation. Broader upload/assistant coverage remains pending.",
+        "After frontend dependency remediation and a clean npm ci, all 60 tests and production type-check/build pass. Lint migration preserves Vue/TypeScript rules: duplicate Vue attributes and empty TypeScript object types are rejected by an injected stdin probe. The only pre-existing warning was an unused workspace import, now removed; lint:check is clean."
       ]
     },
     {
@@ -254,7 +255,8 @@
       "status": "in_progress",
       "evidence": [
         "Runtime builder locks official OpenCode 1.18.11 arm64/amd64 release SHA-256, immutable glibc base digest and Debian snapshot. Private env receives immutable local Docker ID; missing/mutable image configuration fails closed and missing local IDs never trigger registry pull. websockets pinned 15.0.1 with real redirect regression. Python lock and remaining production image pins are pending.",
-        "PDF.js pinned at 6.4.299 with package-lock integrity; build uses Node 24 and documented minimum 22.13. npm audit reports no pdfjs-dist advisory, but 26 advisories remain elsewhere (including axios, DOMPurify and build tooling) and require remediation; current report /private/tmp/skycloud-preview-final-audit.json."
+        "PDF.js pinned at 6.4.299 with package-lock integrity; build uses Node 24 and documented minimum 22.13. npm audit reports no pdfjs-dist advisory, but 26 advisories remain elsewhere (including axios, DOMPurify and build tooling) and require remediation; current report /private/tmp/skycloud-preview-final-audit.json.",
+        "Frontend audit remediation: Axios 1.20.0, DOMPurify 3.4.16, Vite 7.3.6, Vitest 4.1.11 and compatible transitive fixes; auto-import/components plugins pinned at 21.1.0/32.1.0. Removed unpatched braces/micromatch/fast-glob chain by replacing @vue/eslint-config-typescript with direct recommended TypeScript/Vue flat configs. npm ci from the committed lock succeeds; full audit reports zero advisories at every severity. Python lock and production image digests remain pending."
       ]
     },
     {
@@ -283,7 +285,7 @@
     "latest_targeted": "147 passed: workspace HTTP list, routers, Controller, workspace service and security regressions; /private/tmp/skycloud-workspace-list-final-targeted.log",
     "docker_security": "Seven real Redis/Docker/bootstrap/network/controller cases passed with glibc runtime; Compose-only case passed separately after restoring isolated test CLI plugin discovery. /private/tmp/skycloud-runtime-native-security-real.log and /private/tmp/skycloud-runtime-compose-final.log.",
     "opencode_smoke": "1 passed with RUN_OPENCODE_E2E=1: official health/MCP/session operations without a provider key",
-    "frontend": "17 files / 60 tests passed; type-check and production build passed; /private/tmp/skycloud-preview-final-tests.log and /private/tmp/skycloud-preview-final-build.log.",
+    "frontend": "17 files / 60 tests passed after clean npm ci; production type-check/build and lint:check passed. /private/tmp/skycloud-dependency-tests-final.log, /private/tmp/skycloud-dependency-build-final.log, /private/tmp/skycloud-dependency-lint-final.log.",
     "nginx": "Actual nginx container envsubst template and nginx -t passed with strict parent CSP plus runtime WebSocket forwarding; /private/tmp/skycloud-csp-nginx-test.log.",
     "postgres_bootstrap": "Real PostgreSQL initialized without seeded users; concurrent bootstrap from two separate transactions produces exactly one administrator, with complete personal workspace/membership/root",
     "async_io": "Slow accounting and cache read/write/evict/put behavior tests passed; Redis-outage root-file DB fallback test passed",
@@ -301,10 +303,11 @@
     "runtime_ui_renewal": "Backend renewal scoping/revocation/rotation and frontend forged-ack/timeout/cancellation/origin-change tests passed. Real in-app browser renewal: Renewed 1; main loads: 1. Screenshot /private/tmp/skycloud-runtime-ui-renewal-browser.jpg. Opt-in browser harness and following real terminal/revocation case passed; /private/tmp/skycloud-runtime-ui-browser-real.log.",
     "browser_auth": "Actual production frontend/nginx + full API + isolated PostgreSQL/Redis/Controller/OpenCode browser login, reload, two-tab concurrent refresh and logout passed; runtime HTTP 401 after logout confirmed in nginx logs. Manual opt-in harness passed and temporary tabs/containers removed. /private/tmp/skycloud-full-browser.log; screenshot /private/tmp/skycloud-full-browser-runtime.jpg. Document preview CSP compatibility remains pending.",
     "routed_runtime_ui": "52 frontend tests and production build passed; /private/tmp/skycloud-routed-ui-final-tests.log and /private/tmp/skycloud-routed-ui-final-build.log. 1302 regular backend tests passed with 37 opt-in skips; /private/tmp/skycloud-routed-ui-diagnostic.log. The tests/real suite requires its separate Redis infrastructure and is not included in this regular count.",
-    "preview_csp": "Actual browser harness compiled production FilePreview/PdfPreview/MarkdownRenderer and exact nginx policies, using committed synthetic fixtures: PDF both pages, DOCX, XLSX and sanitized Markdown rendered; CSP counter zero. /private/tmp/skycloud-pdf-csp-browser.jpg and /private/tmp/skycloud-excel-csp-browser.jpg. nginx -t with real envsubst passed /private/tmp/skycloud-preview-nginx.log. Temporary server/build/tab cleaned."
+    "preview_csp": "Actual browser harness compiled production FilePreview/PdfPreview/MarkdownRenderer and exact nginx policies, using committed synthetic fixtures: PDF both pages, DOCX, XLSX and sanitized Markdown rendered; CSP counter zero. /private/tmp/skycloud-pdf-csp-browser.jpg and /private/tmp/skycloud-excel-csp-browser.jpg. nginx -t with real envsubst passed /private/tmp/skycloud-preview-nginx.log. Temporary server/build/tab cleaned.",
+    "frontend_dependencies": "npm ci succeeded with zero known advisories; npm audit reports 0 info/low/moderate/high/critical. /private/tmp/skycloud-dependency-clean-install.log, /private/tmp/skycloud-dependency-audit-after.json and /private/tmp/skycloud-dependency-audit-final.log. Both Vue and TypeScript lint probe violations were rejected; /private/tmp/skycloud-dependency-lint-probe.json."
   },
   "next_work": [
-    "Remediate remaining frontend dependency advisories and finish upload/permission/assistant behavior coverage",
+    "Finish frontend upload/permission/assistant behavior coverage; lock Python dependencies and pin remaining production image digests",
     "Exercise complete OpenCode -> gateway -> mock-provider flow with isolated PostgreSQL and Redis",
     "Complete service/repository/API contracts, remaining frontend and real integration tests, CI, dependency locks and UTC"
   ]

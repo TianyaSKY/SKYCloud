@@ -125,7 +125,6 @@ import { useWorkspaceStore } from '@/stores/workspace'
 import {
   createWorkspace,
   deleteWorkspace,
-  getWorkspace,
   inviteMember,
   listMembers,
   removeMember,
