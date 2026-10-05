@@ -297,18 +297,16 @@ class TestShareService:
 class TestSysDictService:
     def test_create_sys_dict(self, session, test_user):
         from app.features.sys_dict.service import create_sys_dict
-        with patch("app.features.sys_dict.service.db") as mock_db:
-            mock_db.session = session
-            with patch("app.features.sys_dict.service._invalidate_sys_dict_cache"):
-                result = create_sys_dict({"key": "test_key", "value": "val", "des": "desc", "enable": True})
+        with patch("app.features.sys_dict.service._invalidate_sys_dict_cache"):
+            result = create_sys_dict(session, {"key": "test_key", "value": "val", "des": "desc", "enable": True})
         assert result.key == "test_key"
 
-    def test_create_sys_dict_model_config_key(self):
+    def test_create_sys_dict_model_config_key(self, session):
         from app.features.sys_dict.service import create_sys_dict
         from app.exceptions import BusinessRuleError
         with patch("app.features.sys_dict.service.is_model_config_sys_dict_key", return_value=True):
             with pytest.raises(BusinessRuleError):
-                create_sys_dict({"key": "CHAT_MODEL_API", "value": "x"})
+                create_sys_dict(session, {"key": "CHAT_MODEL_API", "value": "x"})
 
     def test_update_sys_dict(self, session, test_user):
         from app.features.sys_dict.service import update_sys_dict
@@ -316,19 +314,15 @@ class TestSysDictService:
         sd = SysDict(key="update_me", value="old", des="d", enable=True)
         session.add(sd)
         session.flush()
-        with patch("app.features.sys_dict.service.db") as mock_db:
-            mock_db.session = session
-            with patch("app.features.sys_dict.service._invalidate_sys_dict_cache"):
-                result = update_sys_dict(sd.id, {"value": "new"})
+        with patch("app.features.sys_dict.service._invalidate_sys_dict_cache"):
+            result = update_sys_dict(session, sd.id, {"value": "new"})
         assert result.value == "new"
 
     def test_update_sys_dict_not_found(self, session):
         from app.features.sys_dict.service import update_sys_dict
         from app.exceptions import ResourceNotFoundError
-        with patch("app.features.sys_dict.service.db") as mock_db:
-            mock_db.session = session
-            with pytest.raises(ResourceNotFoundError):
-                update_sys_dict(99999, {"value": "x"})
+        with pytest.raises(ResourceNotFoundError):
+            update_sys_dict(session, 99999, {"value": "x"})
 
     def test_update_sys_dict_model_config_key(self, session):
         from app.features.sys_dict.service import update_sys_dict
@@ -337,11 +331,9 @@ class TestSysDictService:
         sd = SysDict(key="normal_key", value="old", des="d", enable=True)
         session.add(sd)
         session.flush()
-        with patch("app.features.sys_dict.service.db") as mock_db:
-            mock_db.session = session
-            with patch("app.features.sys_dict.service.is_model_config_sys_dict_key", return_value=True):
-                with pytest.raises(BusinessRuleError):
-                    update_sys_dict(sd.id, {"key": "CHAT_MODEL_API"})
+        with patch("app.features.sys_dict.service.is_model_config_sys_dict_key", return_value=True):
+            with pytest.raises(BusinessRuleError):
+                update_sys_dict(session, sd.id, {"key": "CHAT_MODEL_API"})
 
     def test_delete_sys_dict(self, session):
         from app.features.sys_dict.service import delete_sys_dict
@@ -349,18 +341,14 @@ class TestSysDictService:
         sd = SysDict(key="delete_me", value="v", des="d", enable=True)
         session.add(sd)
         session.flush()
-        with patch("app.features.sys_dict.service.db") as mock_db:
-            mock_db.session = session
-            with patch("app.features.sys_dict.service._invalidate_sys_dict_cache"):
-                delete_sys_dict(sd.id)
+        with patch("app.features.sys_dict.service._invalidate_sys_dict_cache"):
+            delete_sys_dict(session, sd.id)
 
     def test_delete_sys_dict_not_found(self, session):
         from app.features.sys_dict.service import delete_sys_dict
         from app.exceptions import ResourceNotFoundError
-        with patch("app.features.sys_dict.service.db") as mock_db:
-            mock_db.session = session
-            with pytest.raises(ResourceNotFoundError):
-                delete_sys_dict(99999)
+        with pytest.raises(ResourceNotFoundError):
+            delete_sys_dict(session, 99999)
 
     def test_get_sys_dict_all(self, session):
         from app.features.sys_dict.service import get_sys_dict_all
@@ -371,10 +359,8 @@ class TestSysDictService:
         # @cacheable 使用 Redis，mock redis 返回 None（cache miss）
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
-        with patch("app.features.sys_dict.service.db") as mock_db, \
-             patch("app.infra.cache.redis_client", mock_redis):
-            mock_db.session = session
-            result = asyncio.run(get_sys_dict_all())
+        with patch('app.infra.cache.redis_client', mock_redis):
+            result = asyncio.run(get_sys_dict_all(session))
         assert any(d["key"] == "list_me" for d in result)
 
     def test_get_sys_dict_by_key(self, session):
@@ -385,26 +371,22 @@ class TestSysDictService:
         session.flush()
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
-        with patch("app.features.sys_dict.service.db") as mock_db, \
-             patch("app.infra.cache.redis_client", mock_redis):
-            mock_db.session = session
-            result = asyncio.run(get_sys_dict_by_key("find_me"))
+        with patch('app.infra.cache.redis_client', mock_redis):
+            result = asyncio.run(get_sys_dict_by_key(session, "find_me"))
         assert result is not None
 
     def test_get_sys_dict_by_key_not_found(self, session):
         from app.features.sys_dict.service import get_sys_dict_by_key
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
-        with patch("app.features.sys_dict.service.db") as mock_db, \
-             patch("app.infra.cache.redis_client", mock_redis):
-            mock_db.session = session
-            result = asyncio.run(get_sys_dict_by_key("nonexistent"))
+        with patch('app.infra.cache.redis_client', mock_redis):
+            result = asyncio.run(get_sys_dict_by_key(session, "nonexistent"))
         assert result is None
 
-    def test_get_sys_dict_by_key_model_config(self):
+    def test_get_sys_dict_by_key_model_config(self, session):
         from app.features.sys_dict.service import get_sys_dict_by_key
         with patch("app.features.sys_dict.service.is_model_config_sys_dict_key", return_value=True):
-            result = asyncio.run(get_sys_dict_by_key("CHAT_MODEL_API"))
+            result = asyncio.run(get_sys_dict_by_key(session, "CHAT_MODEL_API"))
         assert result is None
 
     def test_get_sys_dict_by_key_sync(self, session):
@@ -413,15 +395,13 @@ class TestSysDictService:
         sd = SysDict(key="sync_key", value="v", des="d", enable=True)
         session.add(sd)
         session.flush()
-        with patch("app.features.sys_dict.service.db") as mock_db:
-            mock_db.session = session
-            result = get_sys_dict_by_key_sync("sync_key")
+        result = get_sys_dict_by_key_sync(session, "sync_key")
         assert result is not None
 
-    def test_get_sys_dict_by_key_sync_model_config(self):
+    def test_get_sys_dict_by_key_sync_model_config(self, session):
         from app.features.sys_dict.service import get_sys_dict_by_key_sync
         with patch("app.features.sys_dict.service.is_model_config_sys_dict_key", return_value=True):
-            result = get_sys_dict_by_key_sync("CHAT_MODEL_API")
+            result = get_sys_dict_by_key_sync(session, "CHAT_MODEL_API")
         assert result is None
 
     def test_get_sys_dict(self, session):
@@ -432,10 +412,8 @@ class TestSysDictService:
         session.flush()
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
-        with patch("app.features.sys_dict.service.db") as mock_db, \
-             patch("app.infra.cache.redis_client", mock_redis):
-            mock_db.session = session
-            result = asyncio.run(get_sys_dict(sd.id))
+        with patch('app.infra.cache.redis_client', mock_redis):
+            result = asyncio.run(get_sys_dict(session, sd.id))
         assert result["key"] == "get_me"
 
     def test_get_sys_dict_not_found(self, session):
@@ -443,11 +421,9 @@ class TestSysDictService:
         from app.exceptions import ResourceNotFoundError
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
-        with patch("app.features.sys_dict.service.db") as mock_db, \
-             patch("app.infra.cache.redis_client", mock_redis):
-            mock_db.session = session
+        with patch('app.infra.cache.redis_client', mock_redis):
             with pytest.raises(ResourceNotFoundError):
-                asyncio.run(get_sys_dict(99999))
+                asyncio.run(get_sys_dict(session, 99999))
 
 
 class TestDependencies:

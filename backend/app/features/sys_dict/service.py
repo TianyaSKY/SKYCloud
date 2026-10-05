@@ -1,6 +1,7 @@
 from app.infra.cache import cacheable, evict_cache
 from app.exceptions import BusinessRuleError, ResourceNotFoundError
-from app.infra.extensions import db
+from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 from app.models.sys_dict import SysDict
 from app.infra.llm.config import is_model_config_sys_dict_key
 
@@ -18,22 +19,22 @@ def _ensure_non_model_config_key(key: str | None) -> None:
 
 
 def _invalidate_sys_dict_cache() -> None:
-    evict_cache(SYS_DICT_CACHE_PREFIX)
+    evict_cache(SYS_DICT_CACHE_PREFIX, "all")
 
 
-def create_sys_dict(data):
+def create_sys_dict(session: Session, data):
     _ensure_non_model_config_key(data.get("key"))
     new_dict = SysDict(
         key=data["key"], value=data["value"], des=data["des"], enable=data["enable"]
     )
-    db.session.add(new_dict)
-    db.session.commit()
+    session.add(new_dict)
+    session.commit()
     _invalidate_sys_dict_cache()
     return new_dict
 
 
-def update_sys_dict(id, data):
-    sys_dict = db.session.get(SysDict, id)
+def update_sys_dict(session: Session, id, data):
+    sys_dict = session.get(SysDict, id)
     if not sys_dict:
         raise ResourceNotFoundError("SysDict not found")
     next_key = data.get("key", sys_dict.key)
@@ -44,23 +45,23 @@ def update_sys_dict(id, data):
     sys_dict.value = data.get("value", sys_dict.value)
     sys_dict.des = data.get("des", sys_dict.des)
     sys_dict.enable = data.get("enable", sys_dict.enable)
-    db.session.commit()
+    session.commit()
     _invalidate_sys_dict_cache()
     return sys_dict
 
 
-def delete_sys_dict(id):
-    sys_dict = db.session.get(SysDict, id)
+def delete_sys_dict(session: Session, id):
+    sys_dict = session.get(SysDict, id)
     if not sys_dict:
         raise ResourceNotFoundError("SysDict not found")
-    db.session.delete(sys_dict)
-    db.session.commit()
+    session.delete(sys_dict)
+    session.commit()
     _invalidate_sys_dict_cache()
 
 
-@cacheable(prefix=SYS_DICT_CACHE_PREFIX, expire=SYS_DICT_CACHE_EXPIRE)
-def _get_sys_dict_all_cached() -> list[dict]:
-    sys_dicts = db.session.query(SysDict).all()
+@cacheable(prefix=SYS_DICT_CACHE_PREFIX, expire=SYS_DICT_CACHE_EXPIRE, key=lambda session: "all")
+def _get_sys_dict_all_cached(session: Session) -> list[dict]:
+    sys_dicts = session.query(SysDict).all()
     return [
         sys_dict.to_dict()
         for sys_dict in sys_dicts
@@ -68,33 +69,33 @@ def _get_sys_dict_all_cached() -> list[dict]:
     ]
 
 
-async def get_sys_dict_all():
-    return _get_sys_dict_all_cached()
+async def get_sys_dict_all(session: Session):
+    return await run_in_threadpool(_get_sys_dict_all_cached, session)
 
 
-async def get_sys_dict_by_key(key):
+async def get_sys_dict_by_key(session: Session, key):
     if is_model_config_sys_dict_key(key):
         return None
-    all_dicts = await get_sys_dict_all()
+    all_dicts = await get_sys_dict_all(session)
     for item in all_dicts:
         if item["key"] == key and item["enable"]:
             return SysDict.from_cache(item)
     return None
 
 
-def get_sys_dict_by_key_sync(key):
+def get_sys_dict_by_key_sync(session: Session, key):
     """Synchronous lookup for worker/thread contexts."""
     if is_model_config_sys_dict_key(key):
         return None
     return (
-        db.session.query(SysDict).filter_by(key=key, enable=True)
+        session.query(SysDict).filter_by(key=key, enable=True)
         .order_by(SysDict.id.desc())
         .first()
     )
 
 
-async def get_sys_dict(id):
-    all_dicts = await get_sys_dict_all()
+async def get_sys_dict(session: Session, id):
+    all_dicts = await get_sys_dict_all(session)
     for item in all_dicts:
         if item["id"] == int(id):
             return item

@@ -20,6 +20,7 @@ from fastapi import UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 
 from app.api.dependencies import get_current_user, get_current_workspace, require_workspace_role
 from app.models.workspace import Workspace
@@ -290,8 +291,8 @@ async def upload_avatar(
             )
         adapter = Base64UploadAdapter(avatar_text)
 
-    result = file_service.upload_avatar_for_user(
-        session, current_user.id, current_user.role, id, adapter
+    result = await run_in_threadpool(
+        file_service.upload_avatar_for_user, session, current_user.id, current_user.role, id, adapter
     )
     # 兼容旧前端字段名 avatar
     if result.get("avatar_url") and "avatar" not in result:

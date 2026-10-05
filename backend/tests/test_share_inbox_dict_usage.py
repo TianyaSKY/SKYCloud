@@ -227,28 +227,24 @@ class TestSysDictService:
     def test_create_sys_dict(self, session, mock_redis):
         from app.features.sys_dict import service as sys_dict_svc
 
-        with patch.object(sys_dict_svc, "db") as mock_db:
-            mock_db.session = session
-            result = sys_dict_svc.create_sys_dict({
-                "key": "test_key",
-                "value": "test_value",
-                "des": "描述",
-                "enable": True,
-            })
-            assert result.key == "test_key"
+        result = sys_dict_svc.create_sys_dict(session, {
+            "key": "test_key",
+            "value": "test_value",
+            "des": "描述",
+            "enable": True,
+        })
+        assert result.key == "test_key"
 
     def test_create_model_config_key_rejected(self, session):
         from app.features.sys_dict import service as sys_dict_svc
 
-        with patch.object(sys_dict_svc, "db") as mock_db:
-            mock_db.session = session
-            with pytest.raises(BusinessRuleError):
-                sys_dict_svc.create_sys_dict({
-                    "key": "chat_api_url",
-                    "value": "http://x",
-                    "des": "",
-                    "enable": True,
-                })
+        with pytest.raises(BusinessRuleError):
+            sys_dict_svc.create_sys_dict(session, {
+                "key": "chat_api_url",
+                "value": "http://x",
+                "des": "",
+                "enable": True,
+            })
 
     def test_update_sys_dict(self, session, mock_redis):
         from app.features.sys_dict import service as sys_dict_svc
@@ -257,18 +253,14 @@ class TestSysDictService:
         session.add(sd)
         session.flush()
 
-        with patch.object(sys_dict_svc, "db") as mock_db:
-            mock_db.session = session
-            updated = sys_dict_svc.update_sys_dict(sd.id, {"value": "new"})
-            assert updated.value == "new"
+        updated = sys_dict_svc.update_sys_dict(session, sd.id, {"value": "new"})
+        assert updated.value == "new"
 
     def test_update_nonexistent(self, session):
         from app.features.sys_dict import service as sys_dict_svc
 
-        with patch.object(sys_dict_svc, "db") as mock_db:
-            mock_db.session = session
-            with pytest.raises(ResourceNotFoundError):
-                sys_dict_svc.update_sys_dict(99999, {"value": "x"})
+        with pytest.raises(ResourceNotFoundError):
+            sys_dict_svc.update_sys_dict(session, 99999, {"value": "x"})
 
     def test_delete_sys_dict(self, session, mock_redis):
         from app.features.sys_dict import service as sys_dict_svc
@@ -277,18 +269,14 @@ class TestSysDictService:
         session.add(sd)
         session.flush()
 
-        with patch.object(sys_dict_svc, "db") as mock_db:
-            mock_db.session = session
-            sys_dict_svc.delete_sys_dict(sd.id)
-            assert session.get(SysDict, sd.id) is None
+        sys_dict_svc.delete_sys_dict(session, sd.id)
+        assert session.get(SysDict, sd.id) is None
 
     def test_delete_nonexistent(self, session):
         from app.features.sys_dict import service as sys_dict_svc
 
-        with patch.object(sys_dict_svc, "db") as mock_db:
-            mock_db.session = session
-            with pytest.raises(ResourceNotFoundError):
-                sys_dict_svc.delete_sys_dict(99999)
+        with pytest.raises(ResourceNotFoundError):
+            sys_dict_svc.delete_sys_dict(session, 99999)
 
     def test_get_sys_dict_by_key_sync(self, session):
         from app.features.sys_dict import service as sys_dict_svc
@@ -297,16 +285,14 @@ class TestSysDictService:
         session.add(sd)
         session.flush()
 
-        with patch.object(sys_dict_svc, "db") as mock_db:
-            mock_db.session = session
-            result = sys_dict_svc.get_sys_dict_by_key_sync("sync_key")
-            assert result is not None
-            assert result.value == "sv"
+        result = sys_dict_svc.get_sys_dict_by_key_sync(session, "sync_key")
+        assert result is not None
+        assert result.value == "sv"
 
     def test_get_sys_dict_by_key_sync_model_config(self, session):
         from app.features.sys_dict import service as sys_dict_svc
 
-        result = sys_dict_svc.get_sys_dict_by_key_sync("chat_api_key")
+        result = sys_dict_svc.get_sys_dict_by_key_sync(session, "chat_api_key")
         assert result is None
 
 

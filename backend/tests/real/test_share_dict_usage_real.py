@@ -219,32 +219,32 @@ class TestSysDictService:
 
     def test_create_sys_dict(self):
         """创建字典项。"""
-        result = create_sys_dict({"key": "test_key", "value": "v1", "des": "描述", "enable": True})
+        result = create_sys_dict(db.session, {"key": "test_key", "value": "v1", "des": "描述", "enable": True})
         assert result.id is not None
         assert result.key == "test_key"
 
     def test_create_sys_dict_model_config_rejected(self):
         """模型配置键禁止写入。"""
         with pytest.raises(BusinessRuleError, match="environment variables"):
-            create_sys_dict({"key": "chat_api_key", "value": "x", "des": "", "enable": True})
+            create_sys_dict(db.session, {"key": "chat_api_key", "value": "x", "des": "", "enable": True})
 
     def test_update_sys_dict_success(self):
         """更新字典项。"""
-        created = create_sys_dict({"key": "upd_key", "value": "old", "des": "d", "enable": True})
-        updated = update_sys_dict(created.id, {"value": "new", "des": "new_des"})
+        created = create_sys_dict(db.session, {"key": "upd_key", "value": "old", "des": "d", "enable": True})
+        updated = update_sys_dict(db.session, created.id, {"value": "new", "des": "new_des"})
         assert updated.value == "new"
         assert updated.des == "new_des"
 
     def test_update_sys_dict_not_found(self):
         """更新不存在抛 404。"""
         with pytest.raises(ResourceNotFoundError):
-            update_sys_dict(99999, {"value": "x"})
+            update_sys_dict(db.session, 99999, {"value": "x"})
 
     def test_update_sys_dict_to_model_config_key(self):
         """不可将键改为模型配置键。"""
-        created = create_sys_dict({"key": "safe_key", "value": "v", "des": "", "enable": True})
+        created = create_sys_dict(db.session, {"key": "safe_key", "value": "v", "des": "", "enable": True})
         with pytest.raises(BusinessRuleError, match="environment variables"):
-            update_sys_dict(created.id, {"key": "emb_api_key"})
+            update_sys_dict(db.session, created.id, {"key": "emb_api_key"})
 
     def test_update_sys_dict_from_model_config_key(self):
         """模型配置键记录不可修改。"""
@@ -253,24 +253,24 @@ class TestSysDictService:
         db.session.add(d)
         db.session.commit()
         with pytest.raises(BusinessRuleError, match="environment variables"):
-            update_sys_dict(d.id, {"value": "new"})
+            update_sys_dict(db.session, d.id, {"value": "new"})
 
     def test_delete_sys_dict_success(self):
         """删除字典项。"""
-        created = create_sys_dict({"key": "del_key", "value": "v", "des": "", "enable": True})
-        delete_sys_dict(created.id)
+        created = create_sys_dict(db.session, {"key": "del_key", "value": "v", "des": "", "enable": True})
+        delete_sys_dict(db.session, created.id)
         assert db.session.get(SysDict, created.id) is None
 
     def test_delete_sys_dict_not_found(self):
         """删除不存在抛 404。"""
         with pytest.raises(ResourceNotFoundError):
-            delete_sys_dict(99999)
+            delete_sys_dict(db.session, 99999)
 
     @pytest.mark.asyncio
     async def test_get_sys_dict_all(self):
         """获取全部（排除模型配置键）。"""
-        create_sys_dict({"key": "visible_key", "value": "v", "des": "", "enable": True})
-        result = await get_sys_dict_all()
+        create_sys_dict(db.session, {"key": "visible_key", "value": "v", "des": "", "enable": True})
+        result = await get_sys_dict_all(db.session)
         keys = [item["key"] for item in result]
         assert "visible_key" in keys
         # 模型配置键不出现
@@ -279,47 +279,47 @@ class TestSysDictService:
     @pytest.mark.asyncio
     async def test_get_sys_dict_by_key_found(self):
         """按 key 查找启用的字典。"""
-        create_sys_dict({"key": "findme", "value": "val", "des": "", "enable": True})
-        result = await get_sys_dict_by_key("findme")
+        create_sys_dict(db.session, {"key": "findme", "value": "val", "des": "", "enable": True})
+        result = await get_sys_dict_by_key(db.session, "findme")
         assert result is not None
         assert result.value == "val"
 
     @pytest.mark.asyncio
     async def test_get_sys_dict_by_key_disabled(self):
         """禁用的字典不返回。"""
-        create_sys_dict({"key": "disabled_key", "value": "v", "des": "", "enable": False})
-        result = await get_sys_dict_by_key("disabled_key")
+        create_sys_dict(db.session, {"key": "disabled_key", "value": "v", "des": "", "enable": False})
+        result = await get_sys_dict_by_key(db.session, "disabled_key")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_get_sys_dict_by_key_model_config(self):
         """模型配置键返回 None。"""
-        result = await get_sys_dict_by_key("chat_api_key")
+        result = await get_sys_dict_by_key(db.session, "chat_api_key")
         assert result is None
 
     def test_get_sys_dict_by_key_sync_found(self):
         """同步查找。"""
-        create_sys_dict({"key": "sync_key", "value": "sv", "des": "", "enable": True})
-        result = get_sys_dict_by_key_sync("sync_key")
+        create_sys_dict(db.session, {"key": "sync_key", "value": "sv", "des": "", "enable": True})
+        result = get_sys_dict_by_key_sync(db.session, "sync_key")
         assert result is not None
         assert result.value == "sv"
 
     def test_get_sys_dict_by_key_sync_model_config(self):
         """同步查找模型配置键返回 None。"""
-        assert get_sys_dict_by_key_sync("emb_api_url") is None
+        assert get_sys_dict_by_key_sync(db.session, "emb_api_url") is None
 
     @pytest.mark.asyncio
     async def test_get_sys_dict_by_id(self):
         """按 ID 查找。"""
-        created = create_sys_dict({"key": "id_key", "value": "v", "des": "", "enable": True})
-        result = await get_sys_dict(created.id)
+        created = create_sys_dict(db.session, {"key": "id_key", "value": "v", "des": "", "enable": True})
+        result = await get_sys_dict(db.session, created.id)
         assert result["key"] == "id_key"
 
     @pytest.mark.asyncio
     async def test_get_sys_dict_by_id_not_found(self):
         """ID 不存在抛 404。"""
         with pytest.raises(ResourceNotFoundError):
-            await get_sys_dict(99999)
+            await get_sys_dict(db.session, 99999)
 
 
 # ===========================================================================

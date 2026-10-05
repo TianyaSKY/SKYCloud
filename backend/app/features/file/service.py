@@ -978,7 +978,7 @@ async def search_files(
     if not query:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
-    if search_type != "vector":
+    if search_type not in {"vector", "semantic"}:
         return await asyncio.to_thread(
             _search_files_fuzzy, session, workspace_id, query, page, page_size)
 
@@ -1180,6 +1180,10 @@ def get_all_files(session: Session, workspace_id: int) -> list[File]:
 
 
 async def process_status(session: Session, workspace_id: int) -> dict[str, int]:
+    return await asyncio.to_thread(_process_status, session, workspace_id)
+
+
+def _process_status(session: Session, workspace_id: int) -> dict[str, int]:
     """按状态聚合统计；用 GROUP BY 避免把空间全部文件载入内存。"""
     rows = (
         session.query(File.status, func.count(File.id))
