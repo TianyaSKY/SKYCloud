@@ -1,5 +1,5 @@
-# 使用 3.10-slim
-FROM python:3.10-slim-bookworm
+# Python 3.11 matches the tested dependency locks
+FROM python:3.11-slim-bookworm@sha256:2333bd330d12de02514770b3585cad313644316047cdee24a7acfdece6de6efb
 
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -10,9 +10,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # 设置工作目录
 WORKDIR /app
 
-# 优化系统依赖安装：替换清华源并清理缓存
-RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources || \
-    sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list && \
+# Freeze Debian package resolution at the same signed snapshot as the runtime.
+RUN rm -f /etc/apt/sources.list.d/debian.sources && \
+    printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261001T000000Z/ bookworm main\n' > /etc/apt/sources.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
     libreoffice \
@@ -29,12 +29,10 @@ RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.li
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# 先复制 requirements.txt 以利用镜像层缓存
-COPY requirements.txt .
-
-# 使用清华源加速安装 Python 依赖
-RUN pip install --no-cache-dir -r requirements.txt \
-    -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+# Production includes only hashed runtime dependencies; test tools are separate.
+COPY requirements.lock .
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements.lock \
+    --index-url https://pypi.org/simple
 
 # 复制项目代码
 COPY . .

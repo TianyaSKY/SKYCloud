@@ -197,11 +197,11 @@ MCP Server 独立容器运行，生产部署通过前端同源 **`/mcp`** 访问
 ## 本地开发
 
 ```bash
-# 后端（需 PostgreSQL / Redis / RabbitMQ）
-cd backend && pip install -r requirements.txt
-python run.py          # API
-python tasks.py        # Worker
-python mcp_run.py      # MCP Server
+# 后端（Python 3.11；需 PostgreSQL / Redis / RabbitMQ）
+cd backend && python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
+python -m entry.api          # API
+python -m entry.worker       # Worker
+python -m entry.mcp_run      # MCP Server
 
 # 前端（Vite dev proxy → localhost:5000）
 cd frontend && npm ci && npm run dev
@@ -254,4 +254,10 @@ OpenCode 页面入口通过 `POST /api/workspace/{id}/opencode/ui-ticket` 获取
 
 ### 认证行为验证
 
-在 `backend` 目录安装 `python -m pip install -r requirements-test.txt`，再运行 `python -m pytest --ignore=tests/real`。刷新会话单元测试使用执行真实 Lua 脚本的 fakeredis；`RUN_REFRESH_SESSION_TESTS=1 python -m pytest tests/integration/test_refresh_sessions.py` 使用独立 Redis/PostgreSQL 容器验证并发重放与撤销，需要 Docker，并在结束后清理自己的资源。前端验证在 `frontend` 目录运行 `npm run test:unit` 和 `npm run build`。
+在 `backend` 目录安装 `python -m pip install --require-hashes --only-binary=:all: -r requirements-test.lock`，再运行 `python -m pytest --ignore=tests/real`。刷新会话单元测试使用执行真实 Lua 脚本的 fakeredis；`RUN_REFRESH_SESSION_TESTS=1 python -m pytest tests/integration/test_refresh_sessions.py` 使用独立 Redis/PostgreSQL 容器验证并发重放与撤销，需要 Docker，并在结束后清理自己的资源。前端验证在 `frontend` 目录运行 `npm run test:unit` 和 `npm run build`。
+
+Python 的运行、测试和 Controller 依赖分别锁定在 `backend/requirements.lock`、`backend/requirements-test.lock` 和 `backend/runtime_controller/requirements.lock`，包含所有传递依赖版本及发布文件的 SHA-256。测试锁以运行锁为约束，生产镜像不安装测试工具。输入文件仍是对应的 `requirements*.txt`；安装时使用 `.lock`。
+
+更新依赖时，使用 uv 0.12.1 运行 `python scripts/lock-python.py --upgrade`；不加 `--upgrade` 会保留已有锁定版本。随后审计锁文件、运行上述测试，并运行 `python scripts/check-python-runtime.py`。该检查使用真实 SDK、合成凭证和进程内 HTTP，验证 API、MCP 协议/鉴权、代理 Host/Origin 及 Agent 构造，不访问部署环境或模型供应商。完整模型调用仍需单独集成验证。
+
+Python、Node、nginx、PostgreSQL、Redis 和 RabbitMQ 的生产镜像已固定为支持 amd64/arm64 的镜像索引摘要；后端 apt 包使用签名 Debian 快照。MinIO 的原公共镜像地址已不可拉取，可复现源码构建仍待完成。

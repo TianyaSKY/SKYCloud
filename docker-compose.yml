@@ -1,6 +1,6 @@
 services:
   db:
-    image: pgvector/pgvector:pg15
+    image: pgvector/pgvector:pg15@sha256:47af0b65960b14f1c6945aa4ccae37836c632e9a6fe0eea9160936e616e5b2e9
     container_name: skycloud-db
     restart: always
     command: [ "postgres", "-c", "timezone=Asia/Shanghai" ]
@@ -20,7 +20,7 @@ services:
       - skycloud-network
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: skycloud-redis
     restart: always
     volumes:
@@ -34,7 +34,7 @@ services:
       - skycloud-network
 
   rabbitmq:
-    image: rabbitmq:3.13-management-alpine
+    image: rabbitmq:3.13-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
     container_name: skycloud-rabbitmq
     restart: always
     environment:

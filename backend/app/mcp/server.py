@@ -22,6 +22,7 @@ from typing import Any
 import jwt
 from fastapi import HTTPException
 from mcp.server.fastmcp import FastMCP
+from app.mcp.transport import transport_options
 from pydantic import BaseModel, Field
 
 from app.exceptions import DomainError, PermissionDeniedError
@@ -324,6 +325,7 @@ def _service_error_json(exc: Exception) -> str:
 # ---------------------------------------------------------------------------
 mcp = FastMCP(
     "SKYCloud",
+    **transport_options(),
     instructions=(
         "SKYCloud 是一个智能云盘系统。你可以通过以下工具来搜索文件、浏览文件夹、"
         "获取文件信息、创建文件夹、移动/重命名文件、删除文件、"

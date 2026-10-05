@@ -207,7 +207,8 @@ def controller(infrastructure, monkeypatch):
            "-v", "/var/run/docker.sock:/var/run/docker.sock",
            "-e", "RUNTIME_CONTROLLER_TOKEN=" + token, "-e", "OPENCODE_SERVER_SECRET=" + secret,
            "-e", "OPENCODE_IMAGE=" + image, "-e", "SKYCLOUD_DOCKER_NETWORK=" + infrastructure["runtime"],
-           "-e", "RUNTIME_CONTROLLER_BIND_HOST=runtime-controller-control", "skycloud-runtime-controller:remediation-test")
+           "-e", "RUNTIME_CONTROLLER_BIND_HOST=runtime-controller-control",
+           os.getenv('SKYCLOUD_TEST_CONTROLLER_IMAGE', 'skycloud-runtime-controller:remediation-test'))
     docker("network", "connect", infrastructure["runtime"], name)
     port = docker("port", name, "5003/tcp").stdout.strip().rsplit(":", 1)[1]
     url = "http://127.0.0.1:" + port

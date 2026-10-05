@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 from fastapi import HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.testclient import TestClient
 
 from app.api.dependencies import (
     get_current_user,
@@ -178,10 +179,10 @@ class TestCreateFastapiApp:
     def test_creates_app(self):
         with patch("app.api.factory.initialize_application"):
             app = create_fastapi_app()
-        assert app.title == "SKYCloud API"
-        # 检查路由已注册
-        routes = [r.path for r in app.routes]
-        assert "/api/health" in routes
+            assert app.title == "SKYCloud API"
+            # Check the public routing behavior; included routers may be lazy.
+            with TestClient(app) as client:
+                assert client.get('/api/health').json() == {'status': 'ok'}
 
 
 class TestLifespan:

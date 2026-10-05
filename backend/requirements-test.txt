@@ -1,2 +1,5 @@
 -r requirements.txt
+pytest>=8.0
+pytest-cov>=5.0
+pytest-asyncio>=0.24
 fakeredis[lua]==2.39.0
