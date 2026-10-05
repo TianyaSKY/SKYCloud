@@ -16,6 +16,7 @@ describe('runtime UI launch', () => {
   })
   it.each([
     `${window.location.origin}/__skycloud/launch?ticket=${nonce}`,
+    `http://${window.location.hostname}:8081/__skycloud/launch?ticket=${nonce}`,
     `javascript:alert(1)`,
     `http://user:password@r42.skycloud.localhost:8081/__skycloud/launch?ticket=${nonce}`,
     `http://r42.skycloud.localhost:8081/__skycloud/launch?token=full-session-jwt`,

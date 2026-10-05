@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
-from fastapi import HTTPException, Response
+from fastapi import HTTPException, Response, Request
 
 
 # ---------------------------------------------------------------------------
@@ -15,8 +15,9 @@ class TestAuthRouter:
         from app.features.auth.schemas import LoginRequest
 
         payload = LoginRequest(username="testuser", password="password123")
-        with patch("app.features.auth.service.login", return_value={"token": "jwt", "user": {}}) as mock:
-            result = login(payload, session)
+        from app.features.auth.service import generate_token
+        with patch("app.features.auth.service.login", return_value={"token": generate_token(test_user.id), "user": {}}) as mock:
+            result = login(payload, Request({'type': 'http', 'headers': []}), Response(), session)
         assert "token" in result
         mock.assert_called_once()
 

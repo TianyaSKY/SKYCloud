@@ -73,7 +73,7 @@ class TestGenerateToken:
         exp = _dt.datetime.fromtimestamp(payload["exp"], tz=_dt.timezone.utc)
         iat = _dt.datetime.fromtimestamp(payload["iat"], tz=_dt.timezone.utc)
         delta = exp - iat
-        assert _dt.timedelta(days=0, hours=23) < delta < _dt.timedelta(days=1, hours=1)
+        assert _dt.timedelta(minutes=14) < delta < _dt.timedelta(minutes=16)
 
     def test_generate_token_different_users(self, session, test_user, admin_user):
         """不同用户生成不同 Token。"""

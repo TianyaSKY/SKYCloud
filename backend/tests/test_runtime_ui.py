@@ -5,7 +5,7 @@ from urllib.parse import urlsplit, parse_qs
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import update
 
@@ -110,6 +110,35 @@ def test_renew_rechecks_permission_after_ticket_issuance(ui, session, test_user,
     session.commit()
     response = ui[0].get('/runtime-ui/__skycloud/renew?ticket=' + ticket, headers={'Host': host})
     assert response.status_code == 403 and 'set-cookie' not in response.headers
+
+
+def test_parent_login_logout_immediately_revokes_runtime_ui_cookie(ui, session, test_user, test_workspace):
+    from app.features.auth import refresh_sessions
+    import jwt
+    from app.infra.extensions import SECRET_KEY
+    claims = jwt.decode(generate_token(test_user.id, test_user.auth_version), SECRET_KEY, algorithms=['HS256'])
+    refresh, access = refresh_sessions.create(session, claims)
+    client, _, _ = ui
+    issued = client.post(f'/api/workspace/{test_workspace.id}/opencode/ui-ticket',
+                        headers={'Authorization': 'Bearer ' + access['token']})
+    assert issued.status_code == 200
+    url = urlsplit(issued.json()['launch_url'])
+    launch = client.get('/runtime-ui/__skycloud/launch?' + url.query,
+                        headers={'Host': url.netloc}, follow_redirects=False)
+    raw = launch.cookies[ui_tickets.COOKIE]
+    assert ui_tickets.authenticate(session, raw, url.netloc)
+    refresh_sessions.revoke(refresh)
+    with pytest.raises(HTTPException) as exc:
+        ui_tickets.authenticate(session, raw, url.netloc)
+    assert exc.value.status_code == 401
+
+
+def test_parent_and_runtime_cannot_share_cookie_host_on_different_ports(ui, test_user, test_workspace, monkeypatch):
+    runtime = ui[2]
+    monkeypatch.setenv('APP_ORIGIN', f'http://r{runtime.id}.skycloud.localhost:80')
+    response = ui[0].post(f'/api/workspace/{test_workspace.id}/opencode/ui-ticket',
+                         headers={'Authorization': 'Bearer ' + generate_token(test_user.id)})
+    assert response.status_code == 503
 
 
 @pytest.mark.parametrize('change', ['password', 'demote', 'remove', 'container', 'stop'])

@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { guardAuthenticatedRoute } from './authGuard'
 import LoginView from '../views/LoginView.vue'
 import { useAuthStore } from '../stores/auth'
 import { useWorkspaceStore } from '../stores/workspace'
@@ -79,28 +80,6 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach(async (to) => {
-  const auth = useAuthStore()
-  const wsStore = useWorkspaceStore()
-
-  if (to.path === '/' && auth.isAuthenticated) {
-    return { path: '/home' }
-  }
-
-  if (to.meta.requiresAuth && !auth.isAuthenticated) {
-    return { path: '/' }
-  }
-
-  if (to.meta.requiresAdmin && !auth.isAdmin) {
-    return { path: '/home' }
-  }
-
-  // 已登录但未加载工作空间时自动加载
-  if (auth.isAuthenticated && wsStore.workspaces.length === 0 && to.meta.requiresAuth) {
-    await wsStore.loadWorkspaces()
-  }
-
-  return true
-})
+router.beforeEach((to) => guardAuthenticatedRoute(to, useAuthStore(), useWorkspaceStore()))
 
 export default router

@@ -14,15 +14,17 @@ from app.mcp import token_service as mcp_token_service
 from app.features.auth.user_service import create_user
 
 
-def generate_token(user_id, auth_version: int = 0):
-    """签发短期会话 JWT（1 天），供 Web 登录使用。"""
+def generate_token(user_id, auth_version: int = 0, *, session_id: str | None = None):
+    """签发十五分钟访问 JWT；浏览器会话额外绑定可撤销的刷新会话。"""
     try:
         payload = {
-            "exp": _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=1),
+            "exp": _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(minutes=15),
             "iat": _dt.datetime.now(_dt.timezone.utc),
             "sub": str(user_id),
             "ver": auth_version,
         }
+        if session_id is not None:
+            payload['sid'] = session_id
         return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
     except Exception as e:

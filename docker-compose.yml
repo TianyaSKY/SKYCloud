@@ -284,6 +284,8 @@ services:
       - runtime-network
 
   frontend:
+    environment:
+      RUNTIME_UI_CSP_SOURCE: ${RUNTIME_UI_CSP_SOURCE:-http://*.skycloud.localhost:8081}
     build:
       context: ./frontend
       dockerfile: Dockerfile

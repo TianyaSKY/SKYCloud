@@ -1,6 +1,6 @@
 """工作空间路由：空间 CRUD 与成员管理。"""
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, status, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -92,12 +92,18 @@ def _docker_response(session: Session, workspace_id: int, user_id: int | None = 
 @router.post("/workspace/{workspace_id}/opencode/ui-ticket")
 def issue_ui_ticket(
         workspace_id: int,
+        request: Request,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
 ):
     """Issue a single-use UI launch credential for the caller's running runtime."""
     from app.features.workspace.ui_tickets import issue
-    return JSONResponse(issue(session, current_user.id, workspace_id),
+    import jwt
+    from app.infra.extensions import SECRET_KEY
+    # get_current_user has already checked the exact Bearer signature/scope.
+    claims = jwt.decode(request.headers['authorization'].split(' ', 1)[1], SECRET_KEY,
+                        algorithms=['HS256'], options={'verify_exp': False})
+    return JSONResponse(issue(session, current_user.id, workspace_id, parent_session=claims.get('sid')),
                         headers={"Cache-Control": "no-store"})
 
 

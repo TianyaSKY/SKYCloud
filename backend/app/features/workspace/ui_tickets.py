@@ -41,7 +41,7 @@ def ui_origin(runtime_id: int) -> str:
     def canonical(url):
         port = '' if url.port in {None, 80 if url.scheme == 'http' else 443} else ':' + str(url.port)
         return url.scheme + '://' + url.hostname.lower() + port
-    if target.hostname == other.hostname or canonical(target) == canonical(app):
+    if target.hostname == other.hostname or target.hostname == app.hostname or canonical(target) == canonical(app):
         raise HTTPException(503, 'Runtime UI requires a distinct host for each runtime')
     return canonical(target)
 
@@ -108,11 +108,13 @@ def _identity(session: Session, user_id: int, workspace_id: int, runtime_id: int
     return row
 
 
-def issue(session: Session, user_id: int, workspace_id: int):
+def issue(session: Session, user_id: int, workspace_id: int, *, parent_session: str | None = None):
     row = _identity(session, user_id, workspace_id)
     origin = ui_origin(row.id)
     payload = dict(user_id=user_id, workspace_id=workspace_id, runtime_id=row.id,
                    container_id=row.container_id, auth_version=row.auth_version, origin=origin)
+    if parent_session is not None:
+        payload['parent_session'] = parent_session
     raw = _store('ticket', payload, TICKET_TTL)
     return {'launch_url': origin + '/__skycloud/launch?ticket=' + raw, 'expires_in': TICKET_TTL}
 
@@ -125,6 +127,11 @@ def validate(session: Session, payload: dict, host: str):
         row = _identity(session, int(payload['user_id']), int(payload['workspace_id']), int(payload['runtime_id']))
         if row.auth_version != payload['auth_version'] or row.container_id != payload['container_id']:
             raise HTTPException(401, 'Runtime UI session revoked')
+        if 'parent_session' in payload:
+            from app.features.auth.refresh_sessions import access_active
+            if not access_active({'sid': payload['parent_session'], 'sub': str(payload['user_id']),
+                                  'ver': payload['auth_version']}):
+                raise HTTPException(401, 'Parent login session revoked')
     except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(401, 'Invalid runtime UI credential') from exc
     return payload

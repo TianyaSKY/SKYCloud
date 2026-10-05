@@ -69,6 +69,10 @@ The runtime builder verifies the locked official CLI archive checksum, uses an i
 
 The runtime UI uses a host-isolated HttpOnly session with a ten-minute lease. While the parent workspace is open, it redeems a new one-use ticket in a hidden iframe every five minutes and on returning to the visible page, preserving the editor. Failed renewal closes the workspace. Terminal and event streams retain bounded leases and reconnect using the current cookie; permission revocation does not depend on closing the page.
 
+Browser access tokens live only in memory for fifteen minutes. Refresh credentials use a host-only HttpOnly Strict cookie (Secure and `__Host-` on HTTPS), rotate on every use, and expire absolutely after seven days. Redis stores only hash indexes and session metadata. Replaying an old refresh credential, logout, or password changes revoke access. Browser Web Locks serialize cookie mutations across tabs. Refresh fails closed during Redis outages. Non-localhost deployments require an HTTPS `APP_ORIGIN`; upgrading clears historical localStorage authentication and requires signing in again.
+
+The parent CSP disallows inline scripts and eval; inline styles remain available to the component library. For custom runtime domains, set `RUNTIME_UI_CSP_SOURCE` to the corresponding CSP frame-source, such as `https://*.runtime.example.com`, matching `RUNTIME_UI_ORIGIN_TEMPLATE`. `/auth/refresh` and `/auth/logout` require same-origin POST, the exact Origin and `X-Skycloud-Session: 1` header.
+
 Visit `http://app.skycloud.localhost` (default port 80) and sign in using the administrator you explicitly created. The command prompts for a password in the terminal. No administrator is automatically seeded; missing, short or placeholder signing secrets prevent startup.
 
 The generator creates independent secrets, writes with mode 0600 and refuses to overwrite existing configuration. Startup requires independent master secrets and explicit infrastructure passwords of at least 12 characters, without defaults. Changing `.env` does not rotate passwords stored in existing PostgreSQL/RabbitMQ volumes: use trusted infrastructure administration tools to rotate those passwords, then update configuration.
@@ -157,7 +161,7 @@ Run isolated real security tests without a provider key:
 
 ```bash
 cd backend
-RUN_RUNTIME_SECURITY_TESTS=1 python -m pytest tests/integration/test_runtime_security.py
+SKYCLOUD_TEST_RUNTIME_IMAGE=$(docker image inspect skycloud-opencode:1.18.11 --format '{{.Id}}') RUN_RUNTIME_SECURITY_TESTS=1 python -m pytest tests/integration/test_runtime_security.py
 ```
 
 Optional model E2E tests use `OPENCODE_E2E_GATEWAY_URL`, `OPENCODE_E2E_RUNTIME_LLM_TOKEN` and `OPENCODE_E2E_MODEL`. Never provide a provider key to a Runtime.
@@ -236,3 +240,7 @@ REST authentication accepts only `Authorization: Bearer <access-token>`; URL `?t
 OpenCode UI entry uses `POST /api/workspace/{id}/opencode/ui-ticket`: a one-use 30-second ticket exchanges for an HttpOnly runtime session lasting at most ten minutes. Iframe URLs no longer contain Web JWTs. Each runtime requires its own hostname to isolate scripts, browser storage and service workers. The local default is `http://r{runtime_id}.skycloud.localhost:8081`. For deployment set `APP_ORIGIN` and `RUNTIME_UI_ORIGIN_TEMPLATE` (for example `https://r{runtime_id}.runtime.example.com`), configure wildcard DNS/TLS and forward these hosts to the frontend's port 8081 listener. The parent app rejects `/runtime-ui`; port 8081 forwards only the runtime gateway. HTTPS uses a Secure `__Host-` cookie. Every runtime request checks current editor membership, password version and container identity. Vite development requires this separate UI ingress and `APP_ORIGIN` matching the actual development page origin.
 
 Runtime ingress and the parent page must share a scheme and registrable domain for Strict SameSite cookies, for example `https://app.example.com` and `https://r{runtime_id}.runtime.example.com`. Locally open `http://app.skycloud.localhost`; for Vite use that hostname and the actual development port. Streaming responses recheck credentials every 15 seconds and close at expiry.
+
+### Authentication behavior checks
+
+From `backend`, install `python -m pip install -r requirements-test.txt` and run `python -m pytest --ignore=tests/real`. Refresh unit tests execute Lua with fakeredis. `RUN_REFRESH_SESSION_TESTS=1 python -m pytest tests/integration/test_refresh_sessions.py` verifies concurrent reuse and revocation with isolated real Redis/PostgreSQL containers, requires Docker, and removes its own resources. From `frontend`, run `npm run test:unit` and `npm run build`.

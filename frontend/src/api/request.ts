@@ -63,6 +63,18 @@ service.interceptors.response.use(
   async (error) => {
     if (axios.isCancel(error)) return Promise.reject(error)
     const status: number = error?.response?.status ?? 0
+    const config = error?.config as (AxiosRequestConfig & { sessionRetried?: boolean }) | undefined
+    if (status === 401 && config && !config.sessionRetried && !config.url?.startsWith('/auth/login')) {
+      config.sessionRetried = true
+      const auth = useAuthStore()
+      try {
+        const used = String(config.headers?.Authorization || '')
+        const fresh = auth.token && used !== `Bearer ${auth.token}`
+        if (fresh || await auth.restore(true)) return service.request(config)
+      } catch {
+        return Promise.reject(new BizError('登录会话暂时无法续期，请重试', 503))
+      }
+    }
     let data: unknown = error?.response?.data
     if (data instanceof Blob && data.size <= 65536 && data.type.includes('json')) {
       try { data = JSON.parse(await data.text()) } catch { /* Keep the bounded original payload. */ }
@@ -81,7 +93,8 @@ service.interceptors.response.use(
         Message.error({ content: '登录失败，请检查账号密码', position: 'top', closable: true })
       } else {
         Message.error({ content: '登录已过期，请重新登录', position: 'top', closable: true })
-        auth.logout()
+        auth.clear()
+        useWorkspaceStore().reset()
         router.push('/')
       }
     } else {

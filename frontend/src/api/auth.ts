@@ -1,5 +1,6 @@
 import request from './request'
 import type { LoginInput, RegisterInput } from '../schemas/auth'
+import { withBrowserSessionLock } from '../utils/authSession'
 
 /** 后端契约：/auth/login 返回，含 token 与基础用户标识 */
 export interface LoginResult {
@@ -38,7 +39,7 @@ export interface McpTokenIssuedResult extends McpTokenResult {
 }
 
 export const login = (data: LoginInput) => {
-  return request.post<LoginResult>('/auth/login', data)
+  return withBrowserSessionLock(() => request.post<LoginResult>('/auth/login', data))
 }
 
 export const register = (data: RegisterInput) => {

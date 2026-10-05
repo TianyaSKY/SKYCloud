@@ -88,7 +88,8 @@
         "Default local parent app.skycloud.localhost and per-runtime r{id}.skycloud.localhost share a site while isolating origins. Actual in-app browser sandboxed iframe cookie probe visibly returned COOKIE_OK after Strict HttpOnly cookie redemption. Production requires same-site wildcard DNS/TLS and configured parent origin.",
         "Authenticated two-hop WebSocket terminal relay implemented with host/origin/path/query scoping, bounded frames/cumulative budgets/per-process connection slots, independent expiry watchdog, periodic fresh permission checks and cleanup. Caller credentials never forwarded; redirects/proxies disabled. Real PostgreSQL/Redis/Controller/glibc OpenCode shell proves UID 10001, direct and one-use PTY-ticket connections, idle demotion closure and reconnect rejection. ",
         "Parent renews every five minutes and when returning to the visible page by minting a new one-use ticket, redeeming it in a hidden sandboxed runtime-origin iframe and rotating the HttpOnly cookie. Exact frame/origin/consumed-ticket acknowledgements prevent forged messages; denied/timeout renewal closes the workspace, and unmount cancels timers/frames/listeners and ignores late issuance. Old stream leases stay bounded at ten minutes and recheck current permissions.",
-        "Actual in-app browser ran the production renewal utility against isolated PostgreSQL/Redis/Controller/OpenCode: Strict cookie renewal acknowledged, main iframe load count stayed 1, root UI loaded, and direct same-runtime page selected /workspace and entered a draft. Browser tabs, server and disposable containers removed. Full SKYCloud WorkspaceView browser coverage with the main frontend still remains."
+        "Actual in-app browser ran the production renewal utility against isolated PostgreSQL/Redis/Controller/OpenCode: Strict cookie renewal acknowledged, main iframe load count stayed 1, root UI loaded, and direct same-runtime page selected /workspace and entered a draft. Browser tabs, server and disposable containers removed. Full SKYCloud WorkspaceView browser coverage with the main frontend still remains.",
+        "Runtime UI credentials minted from a browser login now bind that login family; logout revokes opaque UI cookies independently of the ten-minute UI lease. Both backend origin validation and frontend launch validation reject a parent/runtime shared hostname even on different ports, preserving host-only cookie isolation."
       ]
     },
     {
@@ -114,7 +115,8 @@
         "Async LLM chat/embedding accounting executes database writes in threads; chat stream usage recording also offloaded.",
         "Async Redis cacheable/cache_evict/cache_put read/write/evict moved to threads. Behavior tests hold slow accounting/Redis operations and prove event loop stays available.",
         "Complete router/service event-loop and Session ownership audit remains pending.",
-        "Workspace listing is a synchronous FastAPI handler, so its synchronous Session/Controller operations run in a worker thread instead of the event loop. Other router/service paths remain under audit."
+        "Workspace listing is a synchronous FastAPI handler, so its synchronous Session/Controller operations run in a worker thread instead of the event loop. Other router/service paths remain under audit.",
+        "Authoritative web session family + SQL version checks in async get_current_user now run in the worker threadpool. A slow-check regression proves an unrelated event-loop ticker remains responsive."
       ]
     },
     {
@@ -205,8 +207,15 @@
     {
       "id": "frontend_auth",
       "requirement": "Memory access token and HttpOnly refresh cookie; strict CSP",
-      "status": "pending",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Browser access JWT now has a fifteen-minute lifetime and stays only in Pinia memory. Historical localStorage credentials are removed without being read; profiles are also memory-only.",
+        "Login creates a hash-only Redis refresh family with a seven-day absolute expiry. Host-only Strict HttpOnly cookie uses Secure and __Host- under HTTPS; non-localhost HTTP is refused. Every refresh rotates with atomic Lua; replay revokes the family, including signed access JWTs. Password version/deleted account checks use current PostgreSQL scalar state.",
+        "Refresh/logout require the exact configured Origin plus a non-simple CSRF header. Login rejects foreign origins. Logout clears the cookie only after revocation succeeds; a signed access-family fallback handles a missing cookie. Runtime UI tickets bind the parent login family and become invalid immediately after logout.",
+        "Frontend restores via Cookie before route guards, coalesces same-tab refreshes, serializes login/refresh/logout with cross-tab Web Locks, and retries expired API requests once with a fresh header. Temporary failures retain retryable state; late refresh cannot overwrite a newer login and another-tab account switch clears identity/workspace context.",
+        "Parent nginx template applies script-src self without inline/eval, object-src none, base-uri none, frame-ancestors none and bounded explicit runtime frame sources. Component styles still require unsafe-inline. Actual nginx template substitution and nginx -t passed; the new strict CSP still needs browser document/preview compatibility checks.",
+        "1302 regular backend cases and 44 frontend behavior tests pass. Two real PostgreSQL/Redis cases prove atomic one-winner rotation, replay-family revocation, absolute TTL/hash-only records and committed password-version change rejection. Full real-browser login/reload/logout and tab-lock workflow remain to be exercised."
+      ]
     },
     {
       "id": "frontend_tests",
@@ -214,7 +223,8 @@
       "status": "in_progress",
       "evidence": [
         "Seven test files / 16 tests passed: MCP credential lifecycle, authenticated downloads, protected Markdown/raw HTML image loading, URL normalization, cancelled stale requests and object URL release. Remaining auth/guards/uploads/permissions/assistant behavior coverage pending.",
-        "Eight test files / 24 tests now pass, including opaque UI ticket URL validation, same-origin/credential-bearing URL rejection and prior download/Markdown/MCP behaviors. Remaining complete auth/route/upload/assistant behavior coverage is still pending."
+        "Eight test files / 24 tests now pass, including opaque UI ticket URL validation, same-origin/credential-bearing URL rejection and prior download/Markdown/MCP behaviors. Remaining complete auth/route/upload/assistant behavior coverage is still pending.",
+        "Twelve files / 44 tests pass: memory-only auth store, cookie transport, pending refresh cancellation/account switch/outage handling, route restoration and role redirects, concurrent expired-header refresh/retry and rejected-session cleanup. Upload/workspace/assistant broader behavior coverage remains pending."
       ]
     },
     {
@@ -262,14 +272,14 @@
   "validation": {
     "runtime": "/private/tmp/skycloud-fix-venv/bin/python",
     "targeted": "169 passed: security regressions, auth, workspace, router integration, exception/folder/MCP",
-    "unit_suite": "1283 passed, 0 failed, 34 opt-in skips; pytest --ignore=tests/real; /private/tmp/skycloud-ui-renewal-all-backend.log. Legacy tests/real require running infrastructure and are verified separately.",
+    "unit_suite": "1302 passed, 0 failed, 36 opt-in skips; pytest --ignore=tests/real; /private/tmp/skycloud-memory-auth-current-backend.log. Legacy tests/real require running infrastructure and are verified separately.",
     "baseline_log": "/private/tmp/skycloud-baseline-tests.log",
     "baseline": "Original b37e070: 1088 passed, identical 32 failing test names, 2 skipped. Failures predate this repair.",
     "latest_targeted": "147 passed: workspace HTTP list, routers, Controller, workspace service and security regressions; /private/tmp/skycloud-workspace-list-final-targeted.log",
     "docker_security": "Seven real Redis/Docker/bootstrap/network/controller cases passed with glibc runtime; Compose-only case passed separately after restoring isolated test CLI plugin discovery. /private/tmp/skycloud-runtime-native-security-real.log and /private/tmp/skycloud-runtime-compose-final.log.",
     "opencode_smoke": "1 passed with RUN_OPENCODE_E2E=1: official health/MCP/session operations without a provider key",
-    "frontend": "8 files / 28 tests passed; type-check and production build passed; /private/tmp/skycloud-ui-renewal-all-frontend.log and /private/tmp/skycloud-ui-renewal-build.log.",
-    "nginx": "Actual container nginx -t passed with WebSocket Upgrade forwarding and isolated UI ingress; /private/tmp/skycloud-ui-websocket-nginx.log.",
+    "frontend": "12 files / 44 tests passed; type-check and production build passed; /private/tmp/skycloud-memory-auth-validated-frontend.log and /private/tmp/skycloud-memory-auth-validated-build.log.",
+    "nginx": "Actual nginx container envsubst template and nginx -t passed with strict parent CSP plus runtime WebSocket forwarding; /private/tmp/skycloud-csp-nginx-test.log.",
     "postgres_bootstrap": "Real PostgreSQL initialized without seeded users; concurrent bootstrap from two separate transactions produces exactly one administrator, with complete personal workspace/membership/root",
     "async_io": "Slow accounting and cache read/write/evict/put behavior tests passed; Redis-outage root-file DB fallback test passed",
     "postgres_migrations": "14 passed with RUN_MIGRATION_TESTS=1; /private/tmp/skycloud-upload-final-postgres.log; includes shared user/workspace/daily quota admission races and atomic completion rollback.",
@@ -283,10 +293,11 @@
     "runtime_ui": "HTTP scoping, cookies, one-use ticket, expiry/revocation, caller-header stripping, origin/host/body limits, periodic stream checks and mutation revalidation passed in the full unit suite. Real OpenCode root/script + Redis scenarios: 2 passed, /private/tmp/skycloud-runtime-ui-final-real.log. Final Redis expiry rerun passed, /private/tmp/skycloud-runtime-ui-final-redis-expiry.log. Actual in-app browser Strict iframe cookie probe returned COOKIE_OK; temporary server/tab closed.",
     "runtime_terminal": "2 real PostgreSQL/Redis/Controller/OpenCode terminal cases passed (direct and UI PTY ticket), UID 10001 and idle permission revocation; /private/tmp/skycloud-ui-terminal-ticket-real.log. Temporary resources removed.",
     "runtime_image": "40 targeted runtime socket/controller/image regressions passed; /private/tmp/skycloud-runtime-image-regressions.log. Locked glibc image built successfully; local immutable ID only, no registry push.",
-    "runtime_ui_renewal": "Backend renewal scoping/revocation/rotation and frontend forged-ack/timeout/cancellation/origin-change tests passed. Real in-app browser renewal: Renewed 1; main loads: 1. Screenshot /private/tmp/skycloud-runtime-ui-renewal-browser.jpg. Opt-in browser harness and following real terminal/revocation case passed; /private/tmp/skycloud-runtime-ui-browser-real.log."
+    "runtime_ui_renewal": "Backend renewal scoping/revocation/rotation and frontend forged-ack/timeout/cancellation/origin-change tests passed. Real in-app browser renewal: Renewed 1; main loads: 1. Screenshot /private/tmp/skycloud-runtime-ui-renewal-browser.jpg. Opt-in browser harness and following real terminal/revocation case passed; /private/tmp/skycloud-runtime-ui-browser-real.log.",
+    "browser_auth": "Hash-only refresh family and cookie HTTP tests, parent-login UI revocation, CSRF, logout without cookie and event-loop responsiveness passed. Two real Redis/PostgreSQL rotation/absolute-expiry/version cases passed; /private/tmp/skycloud-refresh-real-integration.log. Full browser auth/CSP flow remains pending."
   },
   "next_work": [
-    "Complete full SKYCloud WorkspaceView browser coverage; implement frontend memory tokens and refresh cookies",
+    "Verify full browser login/reload/logout, cross-tab refresh locks, strict CSP preview compatibility and SKYCloud WorkspaceView; finish broader frontend behavior coverage",
     "Exercise complete OpenCode -> gateway -> mock-provider flow with isolated PostgreSQL and Redis",
     "Complete service/repository/API contracts, remaining frontend and real integration tests, CI, dependency locks and UTC"
   ]

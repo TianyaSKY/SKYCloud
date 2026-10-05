@@ -1,6 +1,7 @@
 """认证与用户路由：登录注册、MCP Token 管理、用户资料 CRUD。"""
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Response, Request, status
+import jwt
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -15,15 +16,38 @@ from app.features.auth.schemas import (
 from app.infra.extensions import get_db
 from app.features.auth import service as auth_service
 from app.features.auth import user_service
+from app.features.auth import refresh_sessions
+from app.infra.extensions import SECRET_KEY
 
 router = APIRouter(tags=["auth"])
 
 
 @router.post("/auth/login")
-def login(payload: LoginRequest, session: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, response: Response, session: Session = Depends(get_db)):
     """用户名密码登录，返回 JWT 与用户信息。"""
+    refresh_sessions.check_origin(request)
     result = auth_service.login(session, payload.username, payload.password)
+    raw, result = refresh_sessions.create(session, jwt.decode(result['token'], SECRET_KEY, algorithms=['HS256']))
+    refresh_sessions.revoke(refresh_sessions.credential(request))
+    refresh_sessions.set_cookie(response, raw, refresh_sessions.REFRESH_TTL)
     return {"message": "Login successful", **result}
+
+
+@router.post('/auth/refresh')
+def refresh(request: Request, response: Response, session: Session = Depends(get_db)):
+    refresh_sessions.check_origin(request, required=True)
+    raw, result, lifetime = refresh_sessions.refresh(session, refresh_sessions.credential(request))
+    refresh_sessions.set_cookie(response, raw, lifetime)
+    return result
+
+
+@router.post('/auth/logout')
+def logout(request: Request, response: Response):
+    refresh_sessions.check_origin(request, required=True)
+    refresh_sessions.revoke(refresh_sessions.credential(request))
+    refresh_sessions.revoke_access(request.headers.get('authorization', ''))
+    refresh_sessions.clear_cookie(response)
+    return {'message': 'Logged out'}
 
 
 @router.post("/auth/register")

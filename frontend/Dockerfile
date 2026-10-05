@@ -10,6 +10,7 @@ RUN npm run build
 # Production stage
 FROM nginx:stable-alpine as production-stage
 COPY --from=build-stage /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+ENV RUNTIME_UI_CSP_SOURCE=http://*.skycloud.localhost:8081
+COPY nginx.conf /etc/nginx/templates/default.conf.template
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]

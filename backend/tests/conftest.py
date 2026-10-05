@@ -269,7 +269,10 @@ def mock_redis():
     mock.get.return_value = None
     # scan_iter 返回空迭代器
     mock.scan_iter.return_value = iter([])
-    with patch("app.infra.extensions.redis_client", mock), \
+    import fakeredis
+    refresh_store = fakeredis.FakeRedis(decode_responses=True)
+    with patch("app.features.auth.refresh_sessions.redis_client", refresh_store), \
+         patch("app.infra.extensions.redis_client", mock), \
          patch("app.infra.cache.redis_client", mock), \
          patch("app.features.file.service.redis_client", mock), \
          patch("app.features.folder.service.redis_client", mock):

@@ -330,8 +330,11 @@ const handleMenuClick = (key: string) => {
   }
 }
 
-const handleLogout = () => {
-  auth.logout()
+const handleLogout = async () => {
+  try { await auth.logout() } catch {
+    Message.error('退出登录暂时失败，请重试')
+    return
+  }
   useWorkspaceStore().reset()
   router.push('/')
 }

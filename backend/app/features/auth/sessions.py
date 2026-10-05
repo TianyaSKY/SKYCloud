@@ -16,6 +16,10 @@ def valid_session(session: Session, payload: dict) -> bool:
         return False
     if user_id <= 0:
         return False
+    if 'sid' in payload:
+        from app.features.auth.refresh_sessions import access_active
+        if not access_active(payload):
+            return False
     # A scalar SELECT bypasses profile caches and existing ORM identity state.
     current = session.scalar(select(User.auth_version).where(User.id == user_id))
     return current is not None and current == version

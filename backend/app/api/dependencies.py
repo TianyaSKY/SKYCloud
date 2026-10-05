@@ -7,6 +7,7 @@ MCP 专用 JWT 额外校验库内是否仍有效（吊销后立即拒绝）。
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app.infra.extensions import SECRET_KEY, get_db
@@ -61,7 +62,7 @@ async def get_current_user(
             )
         elif payload.get("type") is None:
             from app.features.auth.sessions import valid_session
-            if not valid_session(session, payload):
+            if not await run_in_threadpool(valid_session, session, payload):
                 raise HTTPException(status_code=401, detail="Session revoked. Please log in again.")
         else:
             raise HTTPException(status_code=403, detail="Invalid token scope")
