@@ -36,7 +36,7 @@
               </a-tag>
             </div>
             <div class="ws-actions" @click.stop>
-              <a-button v-if="ws.status === 'running' && ws.access_url" type="primary" @click="openSkycode(ws)">打开 SKYcode</a-button>
+              <a-button v-if="ws.status === 'running' && ws.my_role !== 'viewer'" type="primary" @click="openSkycode(ws)">打开 SKYcode</a-button>
               <a-button v-if="ws.my_role !== 'viewer' && ws.status !== 'running'" type="primary" @click="handleStartSkycode(ws)">启动 SKYcode</a-button>
               <a-button v-if="ws.my_role !== 'viewer' && ws.status === 'running'" status="warning" @click="handleStopSkycode(ws)">停止 SKYcode</a-button>
               <a-button @click="openDetail(ws)">成员管理</a-button>
@@ -53,6 +53,7 @@
       </a-spin>
 
       <!-- 创建空间弹窗 -->
+      <RuntimeUiDialog v-model="runtimeVisible" :workspace="runtimeWorkspace" />
       <a-modal v-model:visible="showCreateModal" title="创建工作空间" @ok="handleCreate" :ok-loading="creating">
         <a-form :model="createForm" layout="vertical">
           <a-form-item label="名称" required>
@@ -119,6 +120,7 @@ import { reactive, ref } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
 import { IconPlus } from '@arco-design/web-vue/es/icon'
 import MainLayout from '@/components/MainLayout.vue'
+import RuntimeUiDialog from '@/components/RuntimeUiDialog.vue'
 import { useWorkspaceStore } from '@/stores/workspace'
 import {
   createWorkspace,
@@ -198,8 +200,11 @@ const handleStopSkycode = async (ws: WorkspaceInfo) => {
   }
 }
 
+const runtimeVisible = ref(false)
+const runtimeWorkspace = ref<WorkspaceInfo | null>(null)
 const openSkycode = (ws: WorkspaceInfo) => {
-  if (ws.access_url) window.open(ws.access_url, `skycode-workspace-${ws.id}`)
+  runtimeWorkspace.value = ws
+  runtimeVisible.value = true
 }
 
 // 成员管理

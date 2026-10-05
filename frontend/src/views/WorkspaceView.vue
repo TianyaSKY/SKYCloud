@@ -115,25 +115,7 @@
         </div>
       </div>
 
-      <!-- iframe 全屏工作区 -->
-      <a-modal
-        v-model:visible="iframeVisible"
-        :title="activeWorkspace?.name || '工作区'"
-        fullscreen
-        :footer="false"
-        :mask-closable="false"
-        unmount-on-close
-        class="workspace-modal"
-      >
-        <iframe
-          v-if="activeWorkspace"
-          :src="iframeSrc"
-          class="workspace-iframe"
-          sandbox="allow-scripts allow-same-origin allow-downloads allow-forms"
-          referrerpolicy="no-referrer"
-          allow="clipboard-write; clipboard-read"
-        />
-      </a-modal>
+      <RuntimeUiDialog v-model="iframeVisible" :workspace="activeWorkspace" />
 
       <!-- 新建工作区弹窗 -->
       <a-modal
@@ -155,7 +137,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { Message } from '@arco-design/web-vue'
 import {
   IconPlus,
@@ -181,7 +163,7 @@ import {
   restartSkycode as apiRestart,
   type WorkspaceInfo,
 } from '@/api/workspace'
-import { runtimeUiLaunchUrl, startRuntimeUiRenewal } from '@/utils/runtimeUi'
+import RuntimeUiDialog from '@/components/RuntimeUiDialog.vue'
 import { createWorkspaceSchema } from '@/schemas/workspace'
 import { formatDate } from '@/utils/format'
 import { logger } from '@/utils/logger'
@@ -201,7 +183,6 @@ const actionLoading = ref<Record<number, string>>({})
 // 反向代理兜底时的全屏 iframe 预览
 const iframeVisible = ref(false)
 const activeWorkspace = ref<WorkspaceInfo | null>(null)
-const iframeSrc = ref('')
 
 // 列表轮询定时器（仅页面可见时运行，见 visibilitychange）
 let refreshTimer: ReturnType<typeof setInterval> | null = null
@@ -294,40 +275,9 @@ const handleDelete = async (ws: WorkspaceInfo) => {
 }
 
 
-let uiGeneration = 0
-let uiOpening = false
-let stopUiRenewal: (() => void) | undefined
-watch(iframeVisible, (visible) => {
-  if (!visible) {
-    stopUiRenewal?.()
-    stopUiRenewal = undefined
-    uiGeneration += 1
-    iframeSrc.value = ''
-    activeWorkspace.value = null
-  }
-})
-
-const openWorkspace = async (ws: WorkspaceInfo) => {
-  if (uiOpening) return
-  uiOpening = true
-  const current = ++uiGeneration
-  try {
-    const url = await runtimeUiLaunchUrl(ws.id)
-    if (current !== uiGeneration) return
-    activeWorkspace.value = ws
-    iframeSrc.value = url
-    iframeVisible.value = true
-    stopUiRenewal?.()
-    stopUiRenewal = startRuntimeUiRenewal(ws.id, url, () => {
-      if (current !== uiGeneration) return
-      iframeVisible.value = false
-      Message.warning('工作区会话已失效，请重新打开')
-    })
-  } catch (error) {
-    logger.warn('工作区入口加载失败', error)
-  } finally {
-    uiOpening = false
-  }
+const openWorkspace = (ws: WorkspaceInfo) => {
+  activeWorkspace.value = ws
+  iframeVisible.value = true
 }
 
 const statusColor = (s?: string) => {
@@ -379,9 +329,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  stopUiRenewal?.()
-  uiGeneration += 1
-  iframeSrc.value = ''
   if (refreshTimer) clearInterval(refreshTimer)
   document.removeEventListener('visibilitychange', onVisibilityChange)
 })
@@ -501,15 +448,4 @@ onUnmounted(() => {
   border-top: 1px solid var(--color-border-1);
 }
 
-/* 工作区 iframe 全屏弹窗：去掉 body 内边距，占满视口 */
-.workspace-modal :deep(.arco-modal-body) {
-  padding: 0 !important;
-  height: calc(100vh - 48px);
-}
-
-.workspace-iframe {
-  width: 100%;
-  height: 100%;
-  border: none;
-}
 </style>

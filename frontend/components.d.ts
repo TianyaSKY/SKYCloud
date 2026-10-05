@@ -76,6 +76,7 @@ declare module 'vue' {
     PermissionRequestCard: typeof import('./src/components/assistant/PermissionRequestCard.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    RuntimeUiDialog: typeof import('./src/components/RuntimeUiDialog.vue')['default']
     SideBar: typeof import('./src/components/SideBar.vue')['default']
   }
 }

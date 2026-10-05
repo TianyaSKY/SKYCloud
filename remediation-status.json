@@ -214,7 +214,8 @@
         "Refresh/logout require the exact configured Origin plus a non-simple CSRF header. Login rejects foreign origins. Logout clears the cookie only after revocation succeeds; a signed access-family fallback handles a missing cookie. Runtime UI tickets bind the parent login family and become invalid immediately after logout.",
         "Frontend restores via Cookie before route guards, coalesces same-tab refreshes, serializes login/refresh/logout with cross-tab Web Locks, and retries expired API requests once with a fresh header. Temporary failures retain retryable state; late refresh cannot overwrite a newer login and another-tab account switch clears identity/workspace context.",
         "Parent nginx template applies script-src self without inline/eval, object-src none, base-uri none, frame-ancestors none and bounded explicit runtime frame sources. Component styles still require unsafe-inline. Actual nginx template substitution and nginx -t passed; the new strict CSP still needs browser document/preview compatibility checks.",
-        "1302 regular backend cases and 44 frontend behavior tests pass. Two real PostgreSQL/Redis cases prove atomic one-winner rotation, replay-family revocation, absolute TTL/hash-only records and committed password-version change rejection. Full real-browser login/reload/logout and tab-lock workflow remain to be exercised."
+        "1302 regular backend cases and 52 frontend behavior tests pass. Two real PostgreSQL/Redis cases prove atomic one-winner rotation, replay-family revocation, absolute TTL/hash-only records and committed password-version change rejection.",
+        "Actual production frontend/nginx with strict CSP, full API routes and isolated PostgreSQL/Redis/Controller/OpenCode verified in the browser: login, reload restoration, two-tab concurrent refresh, logout in one tab, other-tab refresh rejection and runtime HTTP 401 after logout. The actual /workspaces route used WorkspaceManageView, whose legacy access_url gate hid the running-runtime entry; it now opens the shared ticket/renewal dialog. Document/Office/PDF preview compatibility remains pending."
       ]
     },
     {
@@ -224,7 +225,8 @@
       "evidence": [
         "Seven test files / 16 tests passed: MCP credential lifecycle, authenticated downloads, protected Markdown/raw HTML image loading, URL normalization, cancelled stale requests and object URL release. Remaining auth/guards/uploads/permissions/assistant behavior coverage pending.",
         "Eight test files / 24 tests now pass, including opaque UI ticket URL validation, same-origin/credential-bearing URL rejection and prior download/Markdown/MCP behaviors. Remaining complete auth/route/upload/assistant behavior coverage is still pending.",
-        "Twelve files / 44 tests pass: memory-only auth store, cookie transport, pending refresh cancellation/account switch/outage handling, route restoration and role redirects, concurrent expired-header refresh/retry and rejected-session cleanup. Upload/workspace/assistant broader behavior coverage remains pending."
+        "Twelve files / 44 tests pass: memory-only auth store, cookie transport, pending refresh cancellation/account switch/outage handling, route restoration and role redirects, concurrent expired-header refresh/retry and rejected-session cleanup. Upload/workspace/assistant broader behavior coverage remains pending.",
+        "Fourteen files / 52 behavior tests pass. Shared runtime dialog tests cover close cleanup, late ticket cancellation and renewal rejection; actual WorkspaceManageView tests cover null legacy access_url, admin/editor opening, viewer restrictions, stopped-state entry and modal closing. Broader upload/assistant behavior coverage remains pending."
       ]
     },
     {
@@ -272,13 +274,13 @@
   "validation": {
     "runtime": "/private/tmp/skycloud-fix-venv/bin/python",
     "targeted": "169 passed: security regressions, auth, workspace, router integration, exception/folder/MCP",
-    "unit_suite": "1302 passed, 0 failed, 36 opt-in skips; pytest --ignore=tests/real; /private/tmp/skycloud-memory-auth-current-backend.log. Legacy tests/real require running infrastructure and are verified separately.",
+    "unit_suite": "1302 passed, 0 failed, 37 opt-in skips; pytest tests --ignore=tests/real; /private/tmp/skycloud-routed-ui-diagnostic.log. Legacy tests/real require running infrastructure and are verified separately; an unfiltered run failed fixture setup because localhost Redis was unavailable.",
     "baseline_log": "/private/tmp/skycloud-baseline-tests.log",
     "baseline": "Original b37e070: 1088 passed, identical 32 failing test names, 2 skipped. Failures predate this repair.",
     "latest_targeted": "147 passed: workspace HTTP list, routers, Controller, workspace service and security regressions; /private/tmp/skycloud-workspace-list-final-targeted.log",
     "docker_security": "Seven real Redis/Docker/bootstrap/network/controller cases passed with glibc runtime; Compose-only case passed separately after restoring isolated test CLI plugin discovery. /private/tmp/skycloud-runtime-native-security-real.log and /private/tmp/skycloud-runtime-compose-final.log.",
     "opencode_smoke": "1 passed with RUN_OPENCODE_E2E=1: official health/MCP/session operations without a provider key",
-    "frontend": "12 files / 44 tests passed; type-check and production build passed; /private/tmp/skycloud-memory-auth-validated-frontend.log and /private/tmp/skycloud-memory-auth-validated-build.log.",
+    "frontend": "14 files / 52 tests passed; type-check and production build passed; /private/tmp/skycloud-routed-ui-final-tests.log and /private/tmp/skycloud-routed-ui-final-build.log.",
     "nginx": "Actual nginx container envsubst template and nginx -t passed with strict parent CSP plus runtime WebSocket forwarding; /private/tmp/skycloud-csp-nginx-test.log.",
     "postgres_bootstrap": "Real PostgreSQL initialized without seeded users; concurrent bootstrap from two separate transactions produces exactly one administrator, with complete personal workspace/membership/root",
     "async_io": "Slow accounting and cache read/write/evict/put behavior tests passed; Redis-outage root-file DB fallback test passed",
@@ -294,10 +296,11 @@
     "runtime_terminal": "2 real PostgreSQL/Redis/Controller/OpenCode terminal cases passed (direct and UI PTY ticket), UID 10001 and idle permission revocation; /private/tmp/skycloud-ui-terminal-ticket-real.log. Temporary resources removed.",
     "runtime_image": "40 targeted runtime socket/controller/image regressions passed; /private/tmp/skycloud-runtime-image-regressions.log. Locked glibc image built successfully; local immutable ID only, no registry push.",
     "runtime_ui_renewal": "Backend renewal scoping/revocation/rotation and frontend forged-ack/timeout/cancellation/origin-change tests passed. Real in-app browser renewal: Renewed 1; main loads: 1. Screenshot /private/tmp/skycloud-runtime-ui-renewal-browser.jpg. Opt-in browser harness and following real terminal/revocation case passed; /private/tmp/skycloud-runtime-ui-browser-real.log.",
-    "browser_auth": "Hash-only refresh family and cookie HTTP tests, parent-login UI revocation, CSRF, logout without cookie and event-loop responsiveness passed. Two real Redis/PostgreSQL rotation/absolute-expiry/version cases passed; /private/tmp/skycloud-refresh-real-integration.log. Full browser auth/CSP flow remains pending."
+    "browser_auth": "Actual production frontend/nginx + full API + isolated PostgreSQL/Redis/Controller/OpenCode browser login, reload, two-tab concurrent refresh and logout passed; runtime HTTP 401 after logout confirmed in nginx logs. Manual opt-in harness passed and temporary tabs/containers removed. /private/tmp/skycloud-full-browser.log; screenshot /private/tmp/skycloud-full-browser-runtime.jpg. Document preview CSP compatibility remains pending.",
+    "routed_runtime_ui": "52 frontend tests and production build passed; /private/tmp/skycloud-routed-ui-final-tests.log and /private/tmp/skycloud-routed-ui-final-build.log. 1302 regular backend tests passed with 37 opt-in skips; /private/tmp/skycloud-routed-ui-diagnostic.log. The tests/real suite requires its separate Redis infrastructure and is not included in this regular count."
   },
   "next_work": [
-    "Verify full browser login/reload/logout, cross-tab refresh locks, strict CSP preview compatibility and SKYCloud WorkspaceView; finish broader frontend behavior coverage",
+    "Verify strict CSP document/Office/PDF preview compatibility; finish broader frontend upload/permission/assistant behavior coverage",
     "Exercise complete OpenCode -> gateway -> mock-provider flow with isolated PostgreSQL and Redis",
     "Complete service/repository/API contracts, remaining frontend and real integration tests, CI, dependency locks and UTC"
   ]
