@@ -513,7 +513,8 @@ async def stream_prepared_run(
                 if event.type != "heartbeat":
                     event_log.append(event)
 
-                cancel_requested = controller.cancel_event.is_set() or bool(run.cancel_requested)
+                cancel_requested = (event.type == "cancelled"
+                                    or controller.cancel_event.is_set() or bool(run.cancel_requested))
                 if time.monotonic() - last_cancel_poll >= 0.5:
                     cancel_requested = cancel_requested or repository.is_run_cancel_requested(
                         session, int(run.id)

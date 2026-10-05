@@ -94,8 +94,7 @@ def _text_from_messages(
 
 
 def _conversation_context(
-    session,
-    conversation: AssistantConversation,
+    conversation: "ExpertContext",
     history: Sequence[dict[str, str]],
 ) -> str:
     lines = ["以下是 SKYCloud 会话上下文，仅用于恢复上下文，不要重复回答：", ""]
@@ -158,11 +157,17 @@ class RuntimeConnection:
     base_url: str
 
 
+@dataclass(frozen=True)
+class ExpertContext:
+    title: str
+    opencode_session_id: str | None
+    source_conversation_id: int | None
+
+
 class ExpertEngine:
     def __init__(self, *, session, conversation: AssistantConversation, run: AssistantRun) -> None:
-        self.session = session
-        self.conversation = conversation
-        self.run = run
+        self.conversation_id = int(conversation.id)
+        self.run_id = int(run.id)
         # Runtime setup must not share the stream's mutable Session while the
         # consumer persists heartbeats/events. Create/close each Session in its
         # worker and return scalars, never commit-expired ORM instances.
@@ -170,6 +175,57 @@ class ExpertEngine:
         if isinstance(bind, Connection):
             bind = bind.engine
         self.runtime_session_factory = sessionmaker(bind=bind)
+
+    def _owned_run(self, session, workspace_id: int, user_id: int):
+        run = repository.get_owned_run(session, self.run_id, workspace_id, user_id)
+        if run is None or run.conversation_id != self.conversation_id or run.engine != "expert":
+            raise ServiceOperationError("专家任务不存在")
+        assert_can_write(session, workspace_id, user_id)
+        return run
+
+    def _load_context(self, workspace_id: int, user_id: int) -> ExpertContext:
+        with self.runtime_session_factory() as session:
+            run = self._owned_run(session, workspace_id, user_id)
+            conversation = session.get(AssistantConversation, run.conversation_id)
+            return ExpertContext(conversation.title, conversation.opencode_session_id,
+                                 conversation.source_conversation_id)
+
+    def _save_provider_session(self, workspace_id: int, user_id: int, runtime_id: int, session_id: str):
+        with self.runtime_session_factory() as session:
+            run = self._owned_run(session, workspace_id, user_id)
+            conversation = session.get(AssistantConversation, run.conversation_id)
+            conversation.opencode_session_id = session_id
+            conversation.opencode_runtime_id = runtime_id
+            run.opencode_session_id = session_id
+            session.commit()
+
+    def _persist_permission(self, workspace_id: int, user_id: int, payload: dict):
+        with self.runtime_session_factory() as session:
+            self._owned_run(session, workspace_id, user_id)
+            run = repository.lock_run(session, self.run_id)
+            if run.status in repository.TERMINAL_RUN_STATUSES or run.cancel_requested:
+                raise ConflictError("专家任务已取消或结束")
+            repository.set_pending_permission(run, payload)
+            session.commit()
+
+    def _permission_state(self, workspace_id: int, user_id: int, permission_id: str):
+        with self.runtime_session_factory() as session:
+            run = self._owned_run(session, workspace_id, user_id)
+            cancelled = run.cancel_requested or run.status in repository.TERMINAL_RUN_STATUSES
+            response = run.permission_response if run.pending_permission_id == permission_id else None
+            return response, bool(cancelled)
+
+    def _finish_permission(self, workspace_id: int, user_id: int, permission_id: str) -> bool:
+        with self.runtime_session_factory() as session:
+            self._owned_run(session, workspace_id, user_id)
+            run = repository.lock_run(session, self.run_id)
+            if (run.status in repository.TERMINAL_RUN_STATUSES or run.cancel_requested
+                    or run.pending_permission_id != permission_id):
+                return False
+            repository.clear_pending_permission(run)
+            run.status = "running"
+            session.commit()
+            return True
 
     def _runtime_needs_start(self, workspace_id: int, user_id: int) -> bool:
         with self.runtime_session_factory() as session:
@@ -229,7 +285,6 @@ class ExpertEngine:
         history: Sequence[dict[str, str]],
         controller: Any = None,
     ) -> AsyncIterator[AssistantEvent]:
-        del run_id
         if controller is None:
             raise ServiceOperationError("Expert run controller is unavailable")
 
@@ -244,7 +299,8 @@ class ExpertEngine:
             base_url = connection.base_url
             password = server_password(connection.runtime_id, user_id, workspace_id)
             agent = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
-            session_id = self.conversation.opencode_session_id
+            context = await run_in_threadpool(self._load_context, workspace_id, user_id)
+            session_id = context.opencode_session_id
             emitted_text = ""
             emitted_title: str | None = None
             text_state: dict[str, str] = {"__user_query": query}
@@ -273,16 +329,11 @@ class ExpertEngine:
                     session_missing = await client.get_session(session_id) is None
                 created_session = not session_id or session_missing
                 if created_session:
-                    session_id = await client.create_session(self.conversation.title)
-                    self.conversation.opencode_session_id = session_id
-                    self.conversation.opencode_runtime_id = connection.runtime_id
-                    self.run.opencode_session_id = session_id
-                    self.session.commit()
-                else:
-                    self.run.opencode_session_id = session_id
-                    self.conversation.opencode_runtime_id = connection.runtime_id
-                    self.session.commit()
-    
+                    session_id = await client.create_session(context.title)
+                await run_in_threadpool(
+                    self._save_provider_session, workspace_id, user_id, connection.runtime_id, str(session_id)
+                )
+
                 controller.set_abort_callback(lambda: client.abort_session(str(session_id)))
     
                 events = client.stream_events().__aiter__()
@@ -300,7 +351,7 @@ class ExpertEngine:
                     if created_session and history:
                         await client.prompt_async(
                             str(session_id),
-                            _conversation_context(self.session, self.conversation, history),
+                            _conversation_context(context, history),
                             agent,
                             no_reply=True,
                             system=EXPERT_SYSTEM_PROMPT,
@@ -351,8 +402,9 @@ class ExpertEngine:
                                     )
                                     continue
                                 permission_future = controller.wait_for_permission(permission_id)
-                                repository.set_pending_permission(self.run, mapped.payload)
-                                self.session.commit()
+                                await run_in_threadpool(
+                                    self._persist_permission, workspace_id, user_id, mapped.payload
+                                )
                                 yield mapped
                                 cancel_task = asyncio.create_task(controller.cancel_event.wait())
                                 try:
@@ -365,29 +417,38 @@ class ExpertEngine:
                                         if cancel_task in done_tasks:
                                             yield AssistantEvent("cancelled", {"status": "cancelled"})
                                             return
-                                        if permission_future in done_tasks:
-                                            response = permission_future.result()
-                                            break
-                                        persisted_response = repository.get_permission_response(
-                                            self.session, int(self.run.id), permission_id
+                                        persisted_response, cancelled = await run_in_threadpool(
+                                            self._permission_state, workspace_id, user_id, permission_id
                                         )
-                                        if persisted_response:
-                                            response = persisted_response
-                                            break
-                                        if repository.is_run_cancel_requested(
-                                            self.session, int(self.run.id)
-                                        ):
+                                        if cancelled:
                                             await client.abort_session(str(session_id))
                                             yield AssistantEvent("cancelled", {"status": "cancelled"})
                                             return
+                                        if persisted_response:
+                                            response = persisted_response
+                                            break
+                                        if permission_future in done_tasks:
+                                            raise ConflictError("权限回复未持久化或已失效")
+                                except BaseException:
+                                    # A revoked role, DB failure or disconnected
+                                    # waiter must not leave a live provider task.
+                                    try:
+                                        await asyncio.wait_for(client.abort_session(str(session_id)), timeout=5)
+                                    except (Exception, asyncio.CancelledError):
+                                        pass
+                                    raise
                                 finally:
                                     cancel_task.cancel()
+                                    await asyncio.gather(cancel_task, return_exceptions=True)
                                 await client.respond_permission(
                                     str(session_id), permission_id, response, remember=False
                                 )
-                                repository.clear_pending_permission(self.run)
-                                self.run.status = "running"
-                                self.session.commit()
+                                if not await run_in_threadpool(
+                                    self._finish_permission, workspace_id, user_id, permission_id
+                                ):
+                                    await client.abort_session(str(session_id))
+                                    yield AssistantEvent("cancelled", {"status": "cancelled"})
+                                    return
                                 yield AssistantEvent("status", {"content": "权限已响应，继续执行"})
                                 continue
                             elif mapped.type == "done":

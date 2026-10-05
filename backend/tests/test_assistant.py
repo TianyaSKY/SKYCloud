@@ -275,7 +275,8 @@ def test_permission_response_is_durable_and_single_use(session, test_user, test_
     assert not repository.set_permission_response(session, run.id, "perm-1", "reject")
 
 
-def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_workspace):
+@pytest.mark.parametrize("engine_cancelled", [False, True])
+def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_workspace, engine_cancelled):
     conversation = repository.create_conversation(
         session, test_workspace.id, test_user.id, "fast", "快速 Run 测试"
     )
@@ -292,6 +293,8 @@ def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_wo
     class FakeFastEngine:
         async def stream(self, **_kwargs):
             yield AssistantEvent("token", {"content": "已找到"})
+            if engine_cancelled:
+                yield AssistantEvent("cancelled", {"status": "cancelled"})
 
     async def collect():
         return [
@@ -309,12 +312,13 @@ def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_wo
     with patch("app.features.assistant.service.FastEngine", FakeFastEngine):
         events = asyncio.run(collect())
 
-    assert [event.type for event in events] == ["run_started", "token", "done"]
+    terminal = "cancelled" if engine_cancelled else "completed"
+    assert [event.type for event in events] == ["run_started", "token", "cancelled" if engine_cancelled else "done"]
     session.refresh(run)
-    assert run.status == "completed"
+    assert run.status == terminal
     message = session.get(AssistantMessage, run.assistant_message_id)
     assert message is not None
-    assert message.status == "completed"
+    assert message.status == terminal
     assert message.content == "已找到"
 
 
