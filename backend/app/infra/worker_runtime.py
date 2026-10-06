@@ -23,6 +23,7 @@ from app.infra.file_task_outbox import deliver_pending_file_tasks
 from app.infra.file_object_deletion import delete_pending_objects
 from app.infra.runtime_container_deletion import delete_pending_containers
 from app.infra.runtime_operation_cleanup import retire_cancelled_operations
+from app.infra.runtime_operations import recover_runtime_operations
 from app.infra.organize_tasks import task_execution, deliver_pending_organize_tasks, RetryTaskLater
 from sqlalchemy.exc import SQLAlchemyError
 from app.infra.task_queue import (
@@ -64,6 +65,10 @@ def run_scheduler() -> None:
             retire_cancelled_operations()
         except Exception:
             logger.exception("Error retiring cancelled runtime operations")
+        try:
+            recover_runtime_operations()
+        except Exception:
+            logger.exception("Error recovering runtime operations")
         if time.monotonic() >= next_cleanup:
             try:
                 with SessionLocal() as session:

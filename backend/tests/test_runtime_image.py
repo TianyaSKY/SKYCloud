@@ -56,7 +56,10 @@ def test_restart_recreates_runtime_using_previous_policy(session, test_workspace
     from unittest.mock import patch
     from types import SimpleNamespace
     from app.features.workspace import docker_service
-    runtime = SimpleNamespace(container_id='a' * 64)
+    from app.models.opencode_runtime import OpenCodeRuntime
+    runtime = OpenCodeRuntime(workspace_id=test_workspace.id,user_id=test_user.id,container_id='a'*64,status='running')
+    session.add(runtime)
+    session.commit()
     container = Mock()
     container.attrs = {'Config': {'Image': docker_service.OPENCODE_IMAGE,
                                  'Labels': {'skycloud.runtime_policy': '3'}}}

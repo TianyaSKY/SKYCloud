@@ -6,12 +6,14 @@ import time
 
 import httpx
 from loguru import logger
-from sqlalchemy import case, update
+from sqlalchemy import case, update, exists, select
 from sqlalchemy.orm import Session
 from app.models.mcp_runtime_token import McpRuntimeToken
 
 from app.exceptions import BusinessRuleError
-from app.features.workspace import runtime_service
+from app.features.workspace import runtime_service, runtime_operation_repository as operations
+from app.features.workspace.runtime_execution import serialized
+from app.models.runtime_operation import RuntimeOperation
 from app.features.workspace.permissions import get_member_role
 from app.features.assistant.clients.opencode_auth import server_password, server_username
 from app.infra.datetime_utils import utc_now
@@ -143,6 +145,7 @@ def _sync_mcp_via_runtime_api(
     config: dict,
     *,
     reload_config: bool = False,
+    runtime_config: dict | None = None,
 ) -> None:
     """Apply fresh MCP credentials to the live Runtime without a restart."""
 
@@ -171,6 +174,12 @@ def _sync_mcp_via_runtime_api(
 
         try:
             if reload_config:
+                # The pinned OpenCode caches global config for its lifetime.
+                # Instance disposal alone keeps the previous model JWT. Let
+                # updateGlobal write the changed config and invalidate that
+                # cache before the Controller's final normalized file write.
+                response = client.patch('/global/config',json=runtime_config)
+                response.raise_for_status()
                 # Reload the instance without restarting the container: tmpfs
                 # configuration must remain mounted, and no active run exists
                 # during provisioning.
@@ -216,6 +225,9 @@ def _sync_status(session: Session, workspace: Workspace) -> None:
 def _sync_runtime_status(session: Session, runtime: OpenCodeRuntime) -> None:
     if not runtime.container_id:
         return
+    if session.query(RuntimeOperation.generation).filter(RuntimeOperation.runtime_id == runtime.id,
+            RuntimeOperation.state.in_(['preparing','switched'])).first() is not None:
+        return  # Observing a stopped candidate is not a user stop request.
     try:
         container = _client().containers.get(runtime.container_id)
         status = "running" if container.status == "running" else "stopped"
@@ -330,6 +342,9 @@ def list_summaries(session: Session, rows: list, user_id: int) -> list[dict]:
         updated = session.execute(
             update(OpenCodeRuntime).where(
                 OpenCodeRuntime.id.in_(observed),
+                ~exists(select(RuntimeOperation.generation).where(
+                    RuntimeOperation.runtime_id == OpenCodeRuntime.id,
+                    RuntimeOperation.state.in_(['preparing','switched']))),
                 OpenCodeRuntime.container_id == case(
                     {key: runtime.container_id for key, runtime in observed.items()}, value=OpenCodeRuntime.id),
                 OpenCodeRuntime.status == case(
@@ -352,57 +367,72 @@ def list_summaries(session: Session, rows: list, user_id: int) -> list[dict]:
     return result
 
 
-def start(session: Session, workspace: Workspace, user_id: int) -> Workspace:
-    """Start the caller's per-workspace runtime and provision a fresh token."""
-
-    runtime = runtime_service.get_or_create_runtime(session, workspace.id, user_id)
-    created = False
+@serialized
+def start(session: Session, workspace: Workspace, user_id: int, *, expected_generation=None) -> Workspace:
+    """Prepare a durable generation before publishing its SQL identity."""
+    workspace_id = int(workspace.id)
+    generation = None
+    runtime = operations._runtime_with_write_access(session,workspace_id,user_id)
     try:
-        if runtime.container_id:
+        operation = None if runtime is None else session.query(RuntimeOperation).filter(
+            RuntimeOperation.runtime_id == runtime.id, RuntimeOperation.state.in_(['preparing','switched'])
+        ).populate_existing().first()
+        if expected_generation is not None and (operation is None or operation.generation != expected_generation):
+            return workspace
+        container = None
+        if operation is None and runtime is not None and runtime.container_id:
             try:
-                container = _client().containers.get(runtime.container_id)
-                if _container_uses_configured_image(container):
-                    container.start()
-                else:
-                    logger.info(
-                        "OpenCode Runtime 镜像已更新，正在重建：workspace_id={}, user_id={}, image={}",
-                        workspace.id,
-                        user_id,
-                        OPENCODE_IMAGE,
-                    )
-                    container.remove(force=True)
-                    container = _create(workspace, user_id, runtime.id)
-                    created = True
+                existing = _client().containers.get(runtime.container_id)
+                cancelled = session.query(RuntimeOperation.generation).filter(RuntimeOperation.runtime_id == runtime.id,
+                    RuntimeOperation.candidate_container_id == existing.id,RuntimeOperation.state == 'cancelled').first()
+                if cancelled is None and _container_uses_configured_image(existing):
+                    container = existing
             except ContainerNotFound:
-                container = _create(workspace, user_id, runtime.id)
-                created = True
-        else:
-            container = _create(workspace, user_id, runtime.id)
-            created = True
-
-        runtime.container_id = container.id
-        runtime.status = "running"
+                pass
+        if container is None:
+            operation = operations.admit(session,workspace_id,user_id)
+            generation = operation.generation
+            runtime_id = int(operation.runtime_id)
+            state = operation.state
+            session.commit()  # Generation is recoverable before every prepare RPC.
+            if state == 'preparing':
+                container = _client().prepare(workspace_id,user_id,runtime_id,generation)
+                operations.record_candidate(session,generation,container.id)
+                session.commit()  # Preserve candidate even if publication fails.
+            runtime = operations.switch_candidate(session,generation)
+            container_id = runtime.container_id
+            session.commit()  # Old cleanup and new identity publish atomically.
+            container = _client().containers.get(container_id)
+        runtime_id, container_id = int(runtime.id), container.id
+        runtime = operations.current_runtime(session,workspace_id,user_id,runtime_id,container_id,generation)
+        container.start()
+        runtime.status = 'running'
         runtime.error_message = None
         runtime.last_started_at = utc_now()
         runtime.last_used_at = utc_now()
         session.commit()
-        setup_mcp(
-            session,
-            workspace,
-            user_id,
-            runtime=runtime,
-            reload_runtime_config=created,
-        )
+        setup_mcp(session,workspace,user_id,runtime=runtime,reload_runtime_config=generation is not None,
+                  generation=generation)
+        if generation is not None:
+            operations.complete(session,generation)
+            session.commit()
     except DockerException as exc:
         session.rollback()
-        runtime = runtime_service.get_or_create_runtime(session, workspace.id, user_id)
-        runtime.status = "error"
-        runtime.error_message = _runtime_error_message(exc)
-        session.commit()
-        logger.exception("启动 OpenCode Runtime 失败：workspace_id={}, user_id={}, reason={}", workspace.id, user_id, exc)
+        # Never recreate a deleted owner/runtime while recording an RPC failure.
+        if generation is not None:
+            from app.infra.runtime_operations import defer_operation
+            defer_operation(session,generation,exc)
+        else:
+            runtime = operations._runtime_with_write_access(session,workspace_id,user_id)
+            if runtime is not None:
+                runtime.status = 'error'
+                runtime.error_message = _runtime_error_message(exc)
+                session.commit()
+        logger.exception('Runtime start failed: workspace_id={}, user_id={}, type={}',workspace_id,user_id,type(exc).__name__)
     return workspace
 
 
+@serialized
 def stop(
         session: Session,
         workspace: Workspace,
@@ -430,6 +460,8 @@ def stop(
     runtime = runtime_service.get_runtime(session, workspace.id, user_id)
     if not runtime:
         return workspace
+    runtime = operations._runtime_with_write_access(session,int(workspace.id),user_id)
+    operations.cancel_runtime(session,int(runtime.id))
     try:
         if runtime.container_id:
             _client().containers.get(runtime.container_id).stop(timeout=10)
@@ -448,10 +480,17 @@ def stop(
     return workspace
 
 
+@serialized
 def restart(session: Session, workspace: Workspace, user_id: int) -> Workspace:
     runtime = runtime_service.get_runtime(session, workspace.id, user_id)
     if not runtime or not runtime.container_id:
         return start(session, workspace, user_id)
+    runtime = operations._runtime_with_write_access(session,int(workspace.id),user_id)
+    if session.query(RuntimeOperation).filter(RuntimeOperation.runtime_id == runtime.id,
+            ((RuntimeOperation.state.in_(['preparing','switched'])) | (
+                (RuntimeOperation.state == 'cancelled') & (RuntimeOperation.candidate_container_id == runtime.container_id)
+            ))).first() is not None:
+        return start(session,workspace,user_id)
     try:
         container = _client().containers.get(runtime.container_id)
         if not _container_uses_configured_image(container):
@@ -505,6 +544,7 @@ def remove_runtime(runtime: OpenCodeRuntime, session: Session | None = None) -> 
     """Revoke access and stage removal in the caller's transaction."""
     if session is not None:
         from app.infra.runtime_container_deletion import stage_container_deletion_fallback
+        operations.cancel_runtime(session,int(runtime.id))
         stage_container_deletion_fallback(session, runtime.container_id)
         runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
         runtime.container_id = None
@@ -651,6 +691,7 @@ def _write_opencode_config(container, config: dict) -> None:
     container.write_config(config)
 
 
+@serialized
 def setup_mcp(
         session: Session,
         workspace: Workspace,
@@ -658,6 +699,7 @@ def setup_mcp(
         *,
         runtime: OpenCodeRuntime | None = None,
         reload_runtime_config: bool = False,
+        generation: str | None = None,
 ) -> None:
     """Issue a scoped runtime token and atomically merge its MCP config.
 
@@ -668,12 +710,15 @@ def setup_mcp(
     if runtime is None:
         runtime = runtime_service.get_runtime(session, workspace.id, user_id)
     if runtime is None:
-        runtime = runtime_service.get_or_create_runtime(session, workspace.id, user_id)
+        raise BusinessRuleError("Runtime has not been created")
 
     if runtime.status != "running" or not runtime.container_id:
         raise BusinessRuleError("SKYcode 工作区未运行")
 
-    role = get_member_role(session, workspace.id, user_id)
+    runtime_id, container_id = int(runtime.id), runtime.container_id
+    workspace_id = int(workspace.id)
+    runtime = operations.current_runtime(session,workspace_id,user_id,runtime_id,container_id,generation)
+    role = get_member_role(session, workspace_id, user_id)
     if role is None:
         raise BusinessRuleError("用户不是该工作空间成员")
 
@@ -692,7 +737,9 @@ def setup_mcp(
     try:
         container = _client().containers.get(runtime.container_id)
         existing = _read_opencode_config(container)
+        runtime = operations.current_runtime(session,workspace_id,user_id,runtime_id,container_id,generation)
         llm_token = runtime_llm_tokens.issue_token(session, runtime)
+        runtime = operations.current_runtime(session,workspace_id,user_id,runtime_id,container_id,generation)
         chat_config = _chat_api_runtime_config(llm_token)
         provider_reload_needed = _opencode_chat_provider_needs_reload(
             existing,
@@ -701,11 +748,12 @@ def setup_mcp(
         merged = merge_opencode_mcp_config(existing, config)
         merged = merge_opencode_chat_provider(merged, chat_config)
         merged = merge_opencode_expert_agent(merged)
-        _write_opencode_config(container, merged)
         _sync_mcp_via_runtime_api(
             workspace, user_id, runtime, config,
             reload_config=reload_runtime_config or provider_reload_needed,
+            runtime_config=merged,
         )
+        _write_opencode_config(container, merged)
         runtime.config_version = int(runtime.config_version or 0) + 1
         runtime.last_used_at = utc_now()
         session.commit()

@@ -76,7 +76,7 @@ jobs:
   integration:
     name: PostgreSQL, RabbitMQ, MinIO and Controller
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -120,6 +120,7 @@ jobs:
           RUN_WORKSPACE_INSIGHTS_TESTS: '1'
           RUN_OBJECT_DELETION_TESTS: '1'
           RUN_CONTAINER_DELETION_TESTS: '1'
+          RUN_WORKSPACE_LIST_TESTS: '1'
         run: >-
           python -m pytest -o addopts='' -q
           tests/integration/test_migrations.py
@@ -131,6 +132,21 @@ jobs:
           tests/integration/test_workspace_insights.py
           tests/integration/test_file_object_deletion.py
           tests/integration/test_runtime_container_deletion.py
+          tests/integration/test_workspace_runtime_list.py
+      - name: Build locked OpenCode and gateway bridge fixture
+        run: |
+          python - <<'PY'
+          import os, runpy
+          reference = runpy.run_path("scripts/build-runtime-image.py")["build"]()
+          with open(os.environ["GITHUB_ENV"], "a") as environment:
+              environment.write("SKYCLOUD_TEST_RUNTIME_IMAGE=" + reference + "\n")
+          PY
+          docker build -t skycloud-frontend:locked-test -f frontend/Dockerfile frontend
+      - name: Actual OpenCode provisioning, process crash recovery and MCP
+        working-directory: backend
+        env:
+          RUN_EXPERT_GATEWAY_TESTS: '1'
+        run: python -m pytest -o addopts='' -q tests/integration/test_expert_gateway.py
 
   images:
     name: Image (${{ matrix.image }})

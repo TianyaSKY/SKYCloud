@@ -276,7 +276,7 @@ def generation_graph(request,monkeypatch):
     # Redis declares an anonymous /data volume, incompatible with runtime
     # policy. Prepare uses our volume-free Controller image without starting
     # its process; pre-existing fixture processes continue to run Redis.
-    info = json.loads(docker('image','inspect',os.getenv('SKYCLOUD_TEST_CONTROLLER_IMAGE','skycloud-runtime-controller:remediation-test')).stdout)[0]
+    info = json.loads(docker('image','inspect',os.getenv('SKYCLOUD_TEST_GENERATION_IMAGE',os.getenv('SKYCLOUD_TEST_CONTROLLER_IMAGE','skycloud-runtime-controller:remediation-test'))).stdout)[0]
     assert not info['Config'].get('Volumes')
     monkeypatch.setenv('SKYCLOUD_TEST_PROCESS_IMAGE',os.environ['SKYCLOUD_TEST_RUNTIME_IMAGE'])
     monkeypatch.setenv('SKYCLOUD_TEST_RUNTIME_IMAGE',info['Id'])
@@ -530,3 +530,49 @@ def test_generation_retirement_sql_marker_failure_replays_durable_fence(generati
         db.execute(text('DROP TRIGGER reject_retirement_marker ON runtime_operations'))
     assert retire_cancelled_operations(session_factory=graph['factory']) == 1
     assert all(exists(graph,runtime) for runtime in graph['containers'])
+
+
+def test_production_start_sql_failure_preserves_old_and_durable_candidate(generation_graph,infrastructure):
+    from app.features.workspace import docker_service
+    from app.models.workspace import Workspace
+    graph = generation_graph
+    with graph['db'].begin() as db:
+        db.execute(text("""CREATE FUNCTION reject_start_switch() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN RAISE EXCEPTION 'injected production start switch'; END $$"""))
+        db.execute(text("CREATE TRIGGER reject_start_switch BEFORE UPDATE OF container_id ON opencode_runtimes FOR EACH ROW EXECUTE FUNCTION reject_start_switch()"))
+    with graph['factory']() as session:
+        with pytest.raises(Exception,match='injected production start switch'):
+            docker_service.start(session,session.get(Workspace,graph['id']),graph['id'])
+        session.rollback()
+    with graph['db'].connect() as db:
+        operation = db.execute(text('SELECT generation,candidate_container_id,state FROM runtime_operations')).one()
+        assert operation.state == 'preparing'
+        assert db.scalar(text('SELECT container_id FROM opencode_runtimes WHERE id=:id'),{'id':graph['id']}) == graph['containers'][graph['id']]
+        assert db.scalar(text('SELECT count(*) FROM runtime_container_deletions')) == 0
+    infrastructure['cleanup'].append(f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{operation.generation}")
+    assert graph['client'].get(operation.candidate_container_id).status == 'created'
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+    from app.features.workspace import runtime_operation_repository as repository
+    from app.infra.runtime_operation_cleanup import retire_cancelled_operations
+    with graph['factory']() as session:
+        repository.cancel_runtime(session,graph['id'])
+        session.commit()
+    assert retire_cancelled_operations(session_factory=graph['factory']) == 1
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+
+
+def test_lifecycle_pg_mutex_survives_sql_commit_and_releases_on_exit(graph):
+    from app.features.workspace.runtime_execution import execution
+    from app.exceptions import ConflictError
+    with graph['factory']() as first:
+        with execution(first,graph['id'],graph['id']):
+            first.execute(text('SELECT 1'))
+            first.commit()
+            def try_other():
+                with graph['factory']() as other:
+                    with pytest.raises(ConflictError):
+                        with execution(other,graph['id'],graph['id']): pass
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(try_other).result(timeout=10)
+        with graph['factory']() as other:
+            with execution(other,graph['id'],graph['id']): pass

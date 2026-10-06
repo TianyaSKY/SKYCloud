@@ -28,6 +28,7 @@ from app.features.workspace import docker_service
 from app.infra.extensions import get_db
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
+from app.models.runtime_operation import RuntimeOperation
 
 pytestmark = pytest.mark.skipif(os.getenv('RUN_EXPERT_GATEWAY_TESTS') != '1', reason='Opt-in isolated actual expert/model gateway integration')
 
@@ -49,8 +50,8 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response', [None, 'once', 'reject'])
-def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response):
+@pytest.mark.parametrize('permission_response,crash_before_completion', [(None,False),(None,True),('once',False),('reject',False)],ids=['cold','crash','allow','reject'])
+def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion):
     from entry.llm_gateway import app as gateway
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
@@ -109,6 +110,7 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
     bridge = infrastructure['target'] + '-gateway'
     infrastructure['cleanup'].append(bridge)
     process = None
+    boot_process = None
     observed = []
     try:
         with serve(provider) as provider_port, serve(gateway) as gateway_port:
@@ -134,10 +136,54 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
                 config = tmp_path / 'proxy.conf'
                 config.write_text(f'''server {{ listen 5002; location / {{ proxy_pass http://host.docker.internal:{gateway_port}; proxy_buffering off; proxy_read_timeout 180s; }} }}
 server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp_port}; proxy_set_header Host backend-mcp:5001; proxy_buffering off; proxy_read_timeout 180s; }} }}''')
-                docker('create', '--name', bridge, '--network', infrastructure['infra'], '--entrypoint', 'nginx', '-v', str(config) + ':/etc/nginx/conf.d/default.conf:ro', 'skycloud-frontend:locked-test', '-g', 'daemon off;')
+                docker('create', '--name', bridge, '--network', infrastructure['infra'], '--add-host','host.docker.internal:host-gateway', '--entrypoint', 'nginx', '-v', str(config) + ':/etc/nginx/conf.d/default.conf:ro', 'skycloud-frontend:locked-test', '-g', 'daemon off;')
                 docker('network', 'connect', '--gw-priority', '-1', '--alias', 'skycloud-llm-gateway', '--alias', 'backend-mcp', infrastructure['runtime'], bridge)
                 docker('start', bridge)
                 assert docker('inspect', '--format', '{{.State.Running}}', bridge).stdout.strip() == 'true'
+                if crash_before_completion:
+                    marker = tmp_path / 'configured-generation'
+                    # Interrupt an actual locked-SDK/API process after the
+                    # external config and its SQL version commit, before the
+                    # operation's completion transaction. No container mock.
+                    boot_code = """
+import json,sys,time
+from pathlib import Path
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from app.models.workspace import Workspace
+from app.features.workspace import docker_service, runtime_operation_repository as operations
+settings=json.load(sys.stdin)
+engine=create_engine(settings['database'])
+def interrupt_point(session,generation):
+    Path(settings['marker']).write_text(generation)
+    time.sleep(120)
+operations.complete=interrupt_point
+with Session(engine) as session:
+    docker_service.start(session,session.get(Workspace,settings['workspace']),settings['user'])
+"""
+                    with (tmp_path / 'boot.log').open('w') as boot_output:
+                        boot_process = subprocess.Popen([sys.executable,'-c',boot_code],env=environment,
+                            stdin=subprocess.PIPE,stdout=boot_output,stderr=subprocess.STDOUT,text=True)
+                        boot_process.stdin.write(json.dumps({'database':postgres.url.render_as_string(hide_password=False),
+                            'workspace':ws_id,'user':user_id,'marker':str(marker)}))
+                        boot_process.stdin.close()
+                        deadline = time.monotonic()+40
+                        while not marker.exists() and time.monotonic()<deadline:
+                            assert boot_process.poll() is None,(tmp_path/'boot.log').read_text()[-2000:]
+                            time.sleep(0.1)
+                        assert marker.exists(),'Startup did not reach configured interruption point'
+                        generation = marker.read_text()
+                        boot_process.kill()
+                        assert boot_process.wait(5) < 0
+                    with factory() as observer:
+                        pending = observer.get(RuntimeOperation,generation)
+                        assert pending.state == 'switched' and pending.finished_at is None
+                        candidate_id = pending.candidate_container_id
+                    from app.infra.runtime_operations import recover_runtime_operations
+                    assert recover_runtime_operations(session_factory=factory) == 1
+                    with factory() as observer:
+                        recovered = observer.get(RuntimeOperation,generation)
+                        assert recovered.state == 'complete' and recovered.candidate_container_id == candidate_id
                 with factory() as db:
                     workspace = db.get(Workspace, ws_id)
                     conversation = repository.create_conversation(db, ws_id, user_id, 'expert', 'gateway task'); db.commit()
@@ -157,6 +203,18 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                         return observed
                     events = asyncio.run(asyncio.wait_for(collect(), 120))
                     db.refresh(run)
+                    if run.status != 'completed' and run.opencode_session_id:
+                        from app.features.assistant.clients.opencode_client import OpenCodeClient
+                        from app.features.assistant.clients.opencode_auth import server_password,server_username
+                        current_runtime = docker_service.runtime_service.get_runtime(db,ws_id,user_id)
+                        async def failure_messages():
+                            async with OpenCodeClient(docker_service.get_runtime_base_url(workspace,user_id,current_runtime),server_username(),server_password(current_runtime.id,user_id,ws_id)) as failure_client:
+                                return await failure_client.get_messages(run.opencode_session_id)
+                        failures = asyncio.run(failure_messages())
+                        import re
+                        detail = json.dumps([message.get('info',{}).get('error') for message in failures])
+                        detail = re.sub(r'eyJ[A-Za-z0-9_.-]+','[redacted]',detail.replace(provider_key,'[redacted]'))
+                        raise AssertionError('OpenCode recovered task failed: '+detail[:1500])
                     assert run.status == 'completed', [(event.type, event.payload) for event in events]
                     if permission_response != 'reject':
                         assert 'E2E_GATEWAY_OK' in repository.get_messages(db, conversation.id)[-1].content
@@ -170,6 +228,9 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                             assert any('AUTHORIZED_ONLY' in str(reply) for reply in tool_replies)
 
                     runtime = docker_service.runtime_service.get_runtime(db, ws_id, user_id)
+                    operation = db.query(RuntimeOperation).filter_by(workspace_id=ws_id,user_id=user_id).one()
+                    assert operation.state == 'complete' and operation.finished_at is not None
+                    assert operation.candidate_container_id == runtime.container_id
                     container = docker_service._client().containers.get(runtime.container_id)
                     runtime_config = container.read_config()
                     assert provider_key not in json.dumps(runtime_config)
@@ -229,12 +290,23 @@ asyncio.run(main())
                         assert all('AUTHORIZED_ONLY' not in state.get('output', '') for state in states)
 
     finally:
+        # New startup names are durable generations. Retain every admitted
+        # name in fixture cleanup, including failures before candidate SQL.
+        with factory() as cleanup_db:
+            generations = cleanup_db.query(RuntimeOperation.generation).filter_by(workspace_id=ws_id,user_id=user_id).all()
+            for (generation,) in generations:
+                infrastructure['cleanup'].append(f'skycloud-opencode-w{ws_id}-u{user_id}-g{generation}')
+            current = docker_service.runtime_service.get_runtime(cleanup_db,ws_id,user_id)
+            if current and current.container_id:
+                runtime_name = current.container_id
         Path('/private/tmp/skycloud-expert-gateway-results.json').write_text(json.dumps([{'fields': list(body), 'max_tokens': body.get('max_tokens')} for body in requests]))
         Path('/private/tmp/skycloud-expert-gateway-events.json').write_text(json.dumps([{'type': event.type, 'payload': event.payload} for event in observed], ensure_ascii=False))
         for name, label in [(runtime_name, 'runtime'), (bridge, 'proxy')]:
             logs = docker('logs', name, check=False)
             Path(f'/private/tmp/skycloud-expert-gateway-{label}.log').write_text(logs.stdout + logs.stderr)
         gateway.dependency_overrides.pop(get_db, None)
+        if boot_process is not None and boot_process.poll() is None:
+            boot_process.kill(); boot_process.wait(5)
         if process is not None:
             process.terminate()
             try: process.wait(10)

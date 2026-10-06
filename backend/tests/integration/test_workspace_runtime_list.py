@@ -77,3 +77,26 @@ def test_postgres_bulk_list_and_concurrent_recreation(postgres, state):
             assert all(runtime.status == 'running' and runtime.container_id for runtime in runtimes)
         else:
             assert all(runtime.status == 'stopped' and runtime.container_id is None for runtime in runtimes)
+
+
+def test_pending_candidate_observation_preserves_operation_and_identity(postgres):
+    from app.features.workspace import runtime_operation_repository as operations
+    from app.models.runtime_operation import RuntimeOperation
+    upgrade(postgres)
+    with Session(postgres) as session:
+        user = User(username='pending-start',password_hash='isolated-test-hash',role='common')
+        session.add(user); session.commit()
+        workspace = create_workspace(session,user.id,'Pending start')
+        operation = operations.admit(session,workspace.id,user.id)
+        session.commit()
+        operations.record_candidate(session,operation.generation,'b'*64)
+        session.commit()
+        runtime = operations.switch_candidate(session,operation.generation)
+        session.commit()
+        rows = get_user_workspace_rows(session,user.id)
+        client = Mock(); client.user_snapshot.return_value=[]
+        with patch('app.features.workspace.docker_service._client',return_value=client):
+            list_summaries(session,rows,user.id)
+        session.expire_all()
+        assert runtime.container_id == 'b'*64 and runtime.status == 'provisioning'
+        assert session.get(RuntimeOperation,operation.generation).state == 'switched'

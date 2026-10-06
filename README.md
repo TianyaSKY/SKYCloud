@@ -420,12 +420,12 @@ Worker 每秒轮询到期任务，使用 SKIP LOCKED，核对当前空间/Runtim
 
 Worker 的常规身份读取失败后可尝试该受限入口，失败任务继续持久重试。旧 Controller 不支持入口时的 404 不能确认容器不存在，保留任务重试；仅已有 inspect 入口确认资源不存在才完成清理。更新时需构建部署当前 Controller 与新版 Worker，schema head 仍为 0014，无新增数据库迁移。真实 PostgreSQL/Controller/Docker 检查覆盖两种历史格式的账号删除回收、无标签基础设施保留及已有七种清理场景；容器进程仍为独立 Redis 夹具，并非 OpenCode 模型任务。
 
-已复现的后续问题：Runtime.start 在重建时先移除旧容器、创建替代容器，再保存 SQL 身份。注入该身份更新失败后，数据库仍指向已消失的旧 ID，而实际替代容器存在且没有清理任务；该创建/切换事务边界尚待修复。
+此前复现的问题：旧 Runtime.start 在重建时先移除旧容器、创建替代容器，再保存 SQL 身份。注入该身份更新失败后，数据库仍指向已消失的旧 ID，而实际替代容器存在且没有清理任务；该故障由下述生产 generation 启动路径修复。
 
 
 Controller 的 `POST /containers/prepare` 接受正数空间/用户/Runtime ID 与 32 位十六进制 generation。它用对应名称及 generation 标签创建尚未启动的独立容器，不移除旧容器。同一 generation 重试返回同一资源，并发名称冲突在两秒内重查暂不可读的容器；身份、当前镜像或沙箱不符时拒绝复用。首次创建也校验沙箱，镜像隐式声明卷等不合规资源会被拒绝并仅清理本次新容器。名称和 generation 标签必须一致；查询/状态快照可同时识别旧与新完整 ID。无此入口的旧 Controller 返回 404 时，客户端报告未确认的准备错误，不能退回破坏性创建。
 
-该接口是可恢复切换的基础：现有 `Runtime.start` 尚未接入，前述 SQL 保存失败导致旧容器丢失的问题仍待修复。后续必须先持久记录 generation/切换意图，再准备、切换或取消，并恢复失败任务；不能把临时进程内的 generation 当作可恢复记录。当前 schema head 仍为 0014。真实 Docker 检查验证新容器保持 created、旧 Redis 进程容器保留、同代重试/并发只创建一个身份、拒绝跨 Runtime 复用，以及已有清理/历史兼容路径；准备夹具用不声明卷的 Controller 镜像但不启动其进程，不表示完成 OpenCode 启动或模型工作流。
+准备接口最初作为可恢复切换的基础接入；当时 `Runtime.start` 尚未使用该接口。后续必须先持久记录 generation/切换意图，再准备、切换或取消，并恢复失败任务；不能把临时进程内的 generation 当作可恢复记录。当前 schema head 仍为 0014。真实 Docker 检查验证新容器保持 created、旧 Redis 进程容器保留、同代重试/并发只创建一个身份、拒绝跨 Runtime 复用，以及已有清理/历史兼容路径；准备夹具用不声明卷的 Controller 镜像但不启动其进程，不表示完成 OpenCode 启动或模型工作流。
 
 容器清理器在 PostgreSQL 上使用数据库 clock_timestamp() 判断到期和记录完成/失败重试时间，避免 Worker 与数据库时钟偏差影响调度；失败退避从外部操作实际失败后计算。SQLite 测试继续使用应用 UTC 时钟。真实 PostgreSQL 检查将 Worker 时钟固定到 2000 年，清理与完成时间仍依据数据库时钟正确执行。
 
@@ -440,4 +440,13 @@ Controller 的 generation 身份现持久保存在专用 `/state/generations.sql
 
 PostgreSQL 触发器在成员移除/降权、Runtime 删除、容器身份被其他操作替换或运行中 Runtime 停止时取消待完成操作，取消状态与业务变更共同提交或回滚。用户/空间级联删除后仍保留操作身份。Worker 每轮重试已提交的 cancelled 记录，通过认证退役入口清理候选并阻止后续同代准备；失败只记录异常类型，使用数据库时钟退避，完成标记提交失败后可以重复退役。迁移拒绝丢弃操作记录的降级，升级前停止旧数据库客户端并执行 `python -m entry.migrate`。
 
-这批 SQL 仓储和取消恢复尚未接入生产 Runtime.start。启动执行器还需覆盖配置过程中多次提交、进程中断后的 switched 操作恢复、停止/重启并发隔离，以及 Docker 已接受但尚未可见的迟到创建资源；不能将仓储测试作为完整启动修复的证明。
+SQL 仓储和取消恢复最初尚未接入生产 Runtime.start，后续接入见下文。启动执行器还需覆盖配置过程中多次提交、进程中断后的 switched 操作恢复、停止/重启并发隔离，以及 Docker 已接受但尚未可见的迟到创建资源；不能将仓储测试作为完整启动修复的证明。
+
+
+生产 Runtime.start 已接入 generation 操作记录：先提交准入，再准备停机候选并提交其完整 ID，最后原子提交新身份和旧容器清理意图。SQL 身份提交失败时旧物理容器仍保留，候选仍可追踪、重试或取消；原路径的先删除再保存行为已移除。配置完成后另行将操作标记为 complete；Worker 重试已提交的 preparing/switched 操作，复用同一代和同一候选，按数据库时钟退避并仅记录异常类型。恢复时匹配被选中的 generation，避免旧扫描在操作完成后重新启动。
+
+启动、停止、重启和 MCP 配置共用独立连接上的 PostgreSQL session advisory lock，锁跨配置中的 SQL 提交保持有效；同一成员的并发执行返回 409，异常退出或进程终止后释放。每个配置提交后重新锁定当前成员/Runtime/操作并校验编辑权限、候选身份和取消状态，删除后不通过错误记录路径重建 Runtime。停止和删除在 SQL 事务中取消活跃操作；已取消的候选不能继续接收配置或被当作健康容器复用。单个状态读取和批量状态更新均保护正在准备/切换的操作，避免把尚未启动的候选观察为 stopped 而取消启动；批量列表仍使用一次 SELECT。
+
+真实恢复检查强制终止一个实际启动进程：OpenCode 配置及其 SQL 版本已提交，但操作 complete 尚未提交。Worker 恢复同一完整容器 ID，完成模型请求、持久化回答和实际 MCP SDK 调用。该检查暴露并修复了凭据刷新后模型 401：所锁定 OpenCode 1.18.11 的全局配置具有进程级缓存，仅重载实例不能更新它；现在先调用 PATCH /global/config 写入并失效缓存，再重载实例、连接 MCP并保存规范化配置。参考该版本的 [配置缓存实现](https://raw.githubusercontent.com/anomalyco/opencode/v1.18.11/packages/opencode/src/config/config.ts) 和 [全局更新处理](https://raw.githubusercontent.com/anomalyco/opencode/v1.18.11/packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts)。
+
+仍须审计 Controller 在 Docker 已接受创建但尚未可见时被终止的迟到资源，以及候选被外部移除后的恢复；本批进程终止检查仅覆盖配置已提交、操作未完成的边界。外部模型服务和完整浏览器恢复也仍待验证。CI 现启用状态列表保护及实际 OpenCode/MCP/崩溃恢复检查，构建校验和锁定的 Runtime 和 Nginx 桥接夹具，并显式配置 host-gateway 供 Linux 使用；尚未执行托管 Linux CI 或推送远程。

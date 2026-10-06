@@ -14,6 +14,7 @@ from app.models.workspace import Workspace, WorkspaceMember
 from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.runtime_operation import RuntimeOperation
 from app.infra.runtime_container_deletion import stage_container_deletion_fallback
+from app.infra.datetime_utils import utc_now
 
 
 def _locked(session, model, *conditions):
@@ -91,4 +92,30 @@ def cancel_runtime(session, runtime_id):
         RuntimeOperation.state.in_(['preparing','switched'])).with_for_update().execution_options(populate_existing=True)).all()
     for operation in operations:
         operation.state = 'cancelled'
+    session.flush()
+
+
+def current_runtime(session, workspace_id, user_id, runtime_id, container_id, generation=None):
+    runtime = _runtime_with_write_access(session, workspace_id, user_id)
+    if runtime is None or runtime.id != runtime_id or runtime.container_id != container_id:
+        raise ConflictError('Runtime identity is no longer current')
+    if session.scalar(select(RuntimeOperation.generation).where(RuntimeOperation.runtime_id == runtime_id,
+            RuntimeOperation.candidate_container_id == container_id,RuntimeOperation.state == 'cancelled').limit(1)) is not None:
+        raise ConflictError('Runtime candidate has been cancelled')
+    if generation is not None:
+        operation = _locked(session, RuntimeOperation, RuntimeOperation.generation == generation)
+        if operation is None or operation.runtime_id != runtime_id or operation.state != 'switched' or operation.candidate_container_id != container_id:
+            raise ConflictError('Runtime operation is no longer active')
+    return runtime
+
+
+def complete(session, generation):
+    identity = session.execute(select(RuntimeOperation.workspace_id, RuntimeOperation.user_id,
+        RuntimeOperation.runtime_id, RuntimeOperation.candidate_container_id).where(RuntimeOperation.generation == generation)).one()
+    runtime = current_runtime(session, *identity, generation=generation)
+    operation = _locked(session, RuntimeOperation, RuntimeOperation.generation == generation)
+    runtime.status = 'running'
+    operation.state = 'complete'
+    operation.finished_at = utc_now()
+    operation.last_error_type = None
     session.flush()
