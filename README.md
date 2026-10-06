@@ -301,15 +301,22 @@ MCP JWT 鉴权在工作线程中完成 Session 创建、验证和关闭，只将
 
 RAG 分块检索同时限定分块与所属文件的工作空间，避免历史不一致记录把另一空间的内容带入回答。真实 PostgreSQL/pgvector 检查在 backend 目录运行 `RUN_VECTOR_TESTS=1 python -m pytest tests/integration/test_vector_retrieval.py`：覆盖两个用户的空间隔离、余弦排序/分页、空向量、文件/分块余弦 HNSW 参考查询计划、错误维度回滚以及真实 LangChain Document 的来源元数据。测试使用合成向量，不调用模型供应商；创建并清理自身数据库容器。距离操作符与索引用法见 [pgvector 官方说明](https://github.com/pgvector/pgvector#querying)。
 
-当前数据库版本为 `0006_user_role_type`。升级前备份数据库，在 backend 目录显式运行 `python -m entry.migrate`，再启动新版服务。该迁移将历史原生用户角色 enum 列转换为与现有 SQL 基线一致的 VARCHAR(10)，保留角色值/NULL 和 common 默认值；ORM 同步使用非原生 Enum，避免 PostgreSQL 批量插入时引用不存在的 user_roles 类型。失败会原子回滚类型、默认值及版本记录；旧 enum 类型保留，迁移拒绝反向恢复不兼容结构。
+当前数据库版本为 `0007_file_task_outbox`。升级前备份数据库，在 backend 目录显式运行 `python -m entry.migrate`，再启动新版服务。其中 `0006_user_role_type` 将历史原生用户角色 enum 列转换为与现有 SQL 基线一致的 VARCHAR(10)，保留角色值/NULL 和 common 默认值；ORM 同步使用非原生 Enum，避免 PostgreSQL 批量插入时引用不存在的 user_roles 类型。失败会原子回滚类型、默认值及版本记录；旧 enum 类型保留，迁移拒绝反向恢复不兼容结构。
 
 
 RabbitMQ 发布使用持久化消息和 publisher confirms，消费者在任务结果落库后手动确认。执行线程池满时连接线程继续处理心跳，未确认消息在连接关闭后由 broker 重投；重连后的旧 delivery tag 不会用于新 channel。语义为至少一次，任务可能重复执行。非法消息和无法持久化结果的异常任务先复制到持久化 `failed_task_queue`，等待发布确认后才确认原消息；失败队列写入失败则保留原消息。失败队列只保存来源队列、原始消息 Base64 和异常类型，需管理员核实失败原因后按原 payload 重投；整理任务重投前需核实当前空间锁状态。已持久化的文件业务失败仍通过文件状态展示。
 
-真实队列检查：在 backend 目录运行 `RUN_TASK_QUEUE_TESTS=1 python -m pytest -o addopts='' tests/integration/test_task_queue.py`。测试使用生产固定摘要的 RabbitMQ 镜像，创建并清理独立容器，覆盖不可路由发布拒绝、断线重投、旧 tag 隔离、满载心跳、完成后确认、异常任务保留及 broker 重启后的消息持久化。业务处理函数使用受控测试任务；真实文本文件索引链路见后续测试；完整 AI 整理流程、重复任务幂等性，以及数据库提交与入队之间的可靠交接仍需继续验证。确认机制参考 [RabbitMQ 官方说明](https://www.rabbitmq.com/docs/confirms)。
+真实队列检查：在 backend 目录运行 `RUN_TASK_QUEUE_TESTS=1 python -m pytest -o addopts='' tests/integration/test_task_queue.py`。测试使用生产固定摘要的 RabbitMQ 镜像，创建并清理独立容器，覆盖不可路由发布拒绝、断线重投、旧 tag 隔离、满载心跳、完成后确认、异常任务保留及 broker 重启后的消息持久化。业务处理函数使用受控测试任务；真实文本文件索引链路见后续测试；完整 AI 整理流程、重复任务幂等性，以及整理任务的可靠入队仍需继续验证；文件索引的数据库与队列交接见下文。确认机制参考 [RabbitMQ 官方说明](https://www.rabbitmq.com/docs/confirms)。
 
 
 Worker 的失败状态写入发生数据库异常时会回滚并向队列层传播，避免仅记录日志后确认任务。索引结果写入先锁定文件行，再在同一事务替换全部分块，避免并发重投互相穿插。整理锁按完整 token 和 queued/running 状态比较；过期或被替换的锁不能启动整理，也不能释放新任务的锁。这尚不保证整个 AI 整理流程只执行一次。真实 PostgreSQL/Redis 检查可在 backend 目录运行 `RUN_WORKER_OUTCOME_TESTS=1 python -m pytest -o addopts='' tests/integration/test_worker_outcomes.py`，测试会清理自身的独立容器。
 
 
 文本文件索引集成检查可在 backend 目录执行 `RUN_INDEXING_PIPELINE_TESTS=1 SKYCLOUD_TEST_MINIO_IMAGE=sha256:<已构建的 MinIO 镜像ID> python -m pytest -o addopts='' tests/integration/test_indexing_pipeline.py`。它将实际 HTTP 上传、RabbitMQ、MinIO 和 PostgreSQL 串联，在独立子进程运行生产 Worker 和锁定版本 OpenAI SDK，使用本地 HTTP 模型端点提供合成响应；上传 API 的 Redis 缓存仍使用测试替身。成功场景重复投递同一文件，核实完整向量、分块替换、Token 记录和临时文件清理。供应商拒绝、空向量响应及全零向量场景核实明确失败状态和收件箱通知。Embedding 失败不再静默填充空向量并报告成功；缺失数量、非 1024 维、非有限或全零向量都会让索引失败。
+
+
+文件索引采用数据库 outbox：文件记录（包括普通/批量/分片上传、未成功索引的秒传克隆）和待发送任务在同一事务提交。单文件重试和失败索引重建也将状态与任务一起提交。Worker 的维护线程每秒检查到期任务；发送成功需收到 RabbitMQ confirm，再标记已发送。发送失败记录异常类型，以 2 秒起、最多 300 秒退避重试。多个 Worker 用 PostgreSQL 行锁与 SKIP LOCKED 协调发送，队列暂时不可用不会丢失上传后待处理的任务。若 broker 确认后数据库提交失败，消息可能重投；这是至少一次语义，仍可能产生重复模型调用。
+
+`0007_file_task_outbox` 迁移新增 outbox，并为历史 pending/processing 文件补齐待发送记录，不自动重试已明确失败的文件。升级时先停止旧 Worker、备份数据库、运行 `python -m entry.migrate`，再启动新版进程；迁移失败会回滚新表、补齐记录和版本号。旧队列中的消息可能与补齐任务重复。文件删除会级联清理对应 outbox。上传请求不再直接连接 RabbitMQ，任务由 Worker 维护线程发送，因此需保持 Worker 运行。此机制覆盖文件索引，整理任务的 Redis 锁与入队交接仍需继续修复。
+
+真实故障检查：在 backend 目录执行 `RUN_FILE_OUTBOX_TESTS=1 python -m pytest -o addopts='' tests/integration/test_file_task_outbox.py`，覆盖连接拒绝后的重试恢复、任务插入失败的事务回滚、强制并发发送、确认后 SQL 失败的重投，以及迁移补齐/回滚/删除级联。上传和完整文本索引集成测试同时覆盖这一新路径。

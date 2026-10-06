@@ -123,6 +123,7 @@ def test_authenticated_upload_download_multipart_owner_and_limits(upload_api, po
     assert client.post('/api/files/multipart/complete', headers=headers, json={'upload_id': rid}).status_code == 409
     with postgres.connect() as conn:
         assert conn.scalar(text('SELECT count(*) FROM files')) == 2
+        assert conn.scalar(text('SELECT count(*) FROM file_task_outbox WHERE delivered_at IS NULL')) == 2
         assert conn.scalar(text('SELECT sum(attempts) FROM upload_daily_usage')) == 2
         assert conn.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
     assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == 2
@@ -155,6 +156,7 @@ def test_real_database_commit_failure_removes_uploaded_object(upload_api, postgr
     assert list(minio_storage._client.list_objects(minio_storage._bucket)) == []
     with postgres.connect() as conn:
         assert conn.scalar(text('SELECT count(*) FROM files')) == 0
+        assert conn.scalar(text('SELECT count(*) FROM file_task_outbox')) == 0
         assert conn.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
         assert conn.scalar(text('SELECT sum(attempts) FROM upload_daily_usage')) == 1
     assert not (root / 'uploads' / '.staging').exists()

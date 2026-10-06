@@ -3,7 +3,7 @@
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-EXPECTED_REVISION = "0006_user_role_type"
+EXPECTED_REVISION = "0007_file_task_outbox"
 
 
 def check_schema(database_engine):

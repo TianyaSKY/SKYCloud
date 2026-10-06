@@ -87,7 +87,7 @@ def test_multipart_ownership_resume_and_once_only_completion(session, test_works
     uid, wid = test_user.id, test_workspace.id
     monkeypatch.setattr(service, 'MULTIPART_ROOT', str(tmp_path / 'parts'))
     monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
-    monkeypatch.setattr(service, '_push_processing_queue', MagicMock())
+    monkeypatch.setattr(service, '_invalidate_processing_cache', MagicMock())
     other = User(username='other-upload', password_hash='x')
     session.add(other)
     session.commit()
@@ -120,7 +120,7 @@ def test_multipart_ownership_resume_and_once_only_completion(session, test_works
 def test_instant_upload_copies_are_charged_to_capacity(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage):
     uid, wid = test_user.id, test_workspace.id
     monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path))
-    monkeypatch.setattr(service, '_push_processing_queue', MagicMock())
+    monkeypatch.setattr(service, '_invalidate_processing_cache', MagicMock())
     monkeypatch.setattr(quota, 'USER_CAPACITY', 10)
     file = service.create_file(session, adapter(b'12345'), {'workspace_id': wid, 'uploader_id': uid})
     service.preflight_file_upload(session, wid, uid, {'filename': 'copy', 'total_size': 5, 'content_hash': file.content_hash})

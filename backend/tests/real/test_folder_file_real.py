@@ -44,7 +44,7 @@ from app.features.file.service import (
     _multipart_meta_path,
     _multipart_upload_dir,
     _normalize_content_hash,
-    _push_processing_queue,
+    _invalidate_processing_cache,
     _resolve_mime_type,
     _safe_upload_id,
     _search_files_fuzzy,
@@ -766,17 +766,13 @@ class TestFileServiceMaintenance:
         assert count == 0
         assert upload_dir.exists()
 
-    def test_push_processing_queue_empty(self):
-        """空 file_ids 不发布。"""
-        _push_processing_queue([], 1)  # 不抛异常
+    def test_invalidate_processing_cache_empty(self):
+        """空 file_ids 不失效缓存。"""
+        _invalidate_processing_cache([], 1)  # 不抛异常
 
-    def test_push_processing_queue_rabbitmq_fail(self):
-        """RabbitMQ 不可用时静默失败。
-
-        外部依赖：RabbitMQ 认证被拒绝，publish_file_tasks 抛异常，
-        _push_processing_queue 内部 try/except 捕获并记录日志。
-        """
-        _push_processing_queue([1, 2, 3], 1)  # 不抛异常（内部捕获）
+    def test_invalidate_processing_cache_without_broker(self):
+        """缓存失效与 RabbitMQ 连接无关。"""
+        _invalidate_processing_cache([1, 2, 3], 1)
 
 
 # ===========================================================================
@@ -1450,7 +1446,7 @@ class TestFileServiceExternalDeps:
 
     外部依赖清单：
     1. RabbitMQ（127.0.0.1:5672）—— 认证被拒绝，无法建立连接
-       - 影响函数：_push_processing_queue 成功路径 (L251-252)
+       - 影响函数：_invalidate_processing_cache 成功路径 (L251-252)
        - 原因：publish_file_tasks 需要有效 RabbitMQ 凭据
        - 当前处理：RabbitMQ 不可用时函数自然抛异常，已验证容错路径
 
@@ -1469,16 +1465,9 @@ class TestFileServiceExternalDeps:
        - 单线程无 Mock 环境下无法触发
     """
 
-    @skip_unless_rabbitmq
-    def test_push_processing_queue_success_clears_cache(self, session, test_workspace):
-        """RabbitMQ 可用时，发布成功后清除搜索缓存 (L251-252)。
-
-        外部依赖：RabbitMQ (127.0.0.1:5672)
-        原因：publish_file_tasks 需要有效连接和凭据
-        影响分支：_push_processing_queue 中 workspace_id 为真时的 _clear_search_cache 调用
-        环境变量：TEST_RABBITMQ=1 启用
-        """
-        _push_processing_queue([1], test_workspace.id)
+    def test_invalidate_processing_cache_success_clears_cache(self, session, test_workspace):
+        """有工作空间时失效搜索缓存；索引发送由持久化 outbox 负责。"""
+        _invalidate_processing_cache([1], test_workspace.id)
 
     @skip_unless_ai_api
     def test_search_files_vector_success(self, session, test_workspace):

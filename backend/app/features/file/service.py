@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from app.infra.extensions import UPLOAD_FOLDER, redis_client
 from app.infra.cache import cacheable, evict_cache_pattern
-from app.infra.task_queue import publish_file_tasks
+from app.infra.file_task_outbox import stage_file_tasks
 from app.infra.storage import get_storage_client
 from app.infra.upload_adapter import save_bounded
 from app.infra.upload_staging import StagedUpload, cleanup_staging
@@ -148,6 +148,9 @@ def _persist_file_record(
         vector_info=vector_info,
     )
     session.add(new_file)
+    session.flush()
+    if status != "success":
+        stage_file_tasks(session, [new_file.id])
     session.commit()
     return new_file
 
@@ -213,7 +216,7 @@ def _clone_existing_file(
 
     _log_file_created(new_file)
     if status != "success":
-        _push_processing_queue([cast(int, new_file.id)], workspace_id)
+        _invalidate_processing_cache([cast(int, new_file.id)], workspace_id)
     else:
         _clear_search_cache(workspace_id)
     return new_file
@@ -252,15 +255,10 @@ def preflight_file_upload(session: Session, workspace_id: int, uploader_id: int,
     return {"instant_upload": True, "exists": True, "file": new_file.to_dict()}
 
 
-def _push_processing_queue(file_ids: list[int], workspace_id: int | None) -> None:
-    if not file_ids:
-        return
-    try:
-        publish_file_tasks(file_ids)
-        if workspace_id:
-            _clear_search_cache(workspace_id)
-    except Exception as e:
-        logger.exception(f"Error publishing to RabbitMQ queue: {e}")
+def _invalidate_processing_cache(file_ids: list[int], workspace_id: int | None) -> None:
+    """Invalidate views; task deliveries already belong to the file transaction."""
+    if file_ids and workspace_id:
+        _clear_search_cache(workspace_id)
 
 
 def _resolve_upload_parent_id(
@@ -395,7 +393,7 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
         staging.close()
 
     _log_file_created(new_file)
-    _push_processing_queue(
+    _invalidate_processing_cache(
         [cast(int, new_file.id)], cast(int | None, new_file.workspace_id)
     )
     return new_file
@@ -476,6 +474,8 @@ def batch_create_files(
         for reservation_id, file_obj in zip(reservations, new_files):
             upload_quota.consume(session, workspace_id, uploader_id, reservation_id, file_obj.file_size)
         session.add_all(new_files)
+        session.flush()
+        stage_file_tasks(session, [file.id for file in new_files])
         session.commit()
     except Exception as exc:
         session.rollback()
@@ -500,7 +500,7 @@ def batch_create_files(
             ],
         )
 
-    _push_processing_queue([cast(int, f.id) for f in new_files], workspace_id)
+    _invalidate_processing_cache([cast(int, f.id) for f in new_files], workspace_id)
     return new_files
 
 
@@ -758,6 +758,8 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
         )
         upload_quota.consume(session, workspace_id, uploader_id, safe_upload_id, total_size)
         session.add(new_file)
+        session.flush()
+        stage_file_tasks(session, [new_file.id])
         session.commit()
     except Exception as e:
         session.rollback()
@@ -773,7 +775,7 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
 
     _log_file_created(new_file)
 
-    _push_processing_queue([cast(int, new_file.id)], workspace_id)
+    _invalidate_processing_cache([cast(int, new_file.id)], workspace_id)
     return new_file
 
 
@@ -1151,7 +1153,9 @@ def retry_embedding(session: Session, file_id: int) -> None:
     file_obj = session.get(File, file_id)
     if not file_obj:
         return
-    publish_file_tasks([cast(int, file_obj.id)])
+    file_obj.status = "pending"
+    stage_file_tasks(session, [file_obj.id])
+    session.commit()
 
 
 def rebuild_failed_indexes(session: Session, workspace_id: int | None = None) -> int:
@@ -1168,17 +1172,13 @@ def rebuild_failed_indexes(session: Session, workspace_id: int | None = None) ->
         session.query(File).filter(File.id.in_(file_ids)).update(
             {File.status: "pending"}, synchronize_session=False
         )
+        stage_file_tasks(session, file_ids)
         session.commit()
     except Exception:
         session.rollback()
         logger.exception("Failed to update file status to pending")
         return 0
 
-    try:
-        publish_file_tasks([int(file_id) for file_id in file_ids])
-    except Exception:
-        logger.exception("Failed to publish failed files to RabbitMQ")
-        return 0
     return len(file_ids)
 
 

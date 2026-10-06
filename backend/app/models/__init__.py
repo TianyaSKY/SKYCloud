@@ -18,3 +18,5 @@ from .mcp_audit_log import McpAuditLog
 from .assistant import AssistantConversation, AssistantMessage, AssistantRun
 
 from .upload_reservation import UploadReservation, UploadDailyUsage
+
+from .file_task_outbox import FileTaskOutbox

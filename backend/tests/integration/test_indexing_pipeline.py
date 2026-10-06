@@ -83,7 +83,9 @@ import json, time
 from app.infra.task_queue import RabbitMQTaskConsumer, FILE_PROCESS_QUEUE
 from app.infra.worker_runtime import WorkerRuntime, worker_step
 from app.infra.llm.sync_client import OpenAI
+from app.infra.file_task_outbox import deliver_pending_file_tasks
 assert OpenAI.__module__.startswith('openai')
+assert deliver_pending_file_tasks() >= 1
 consumer = RabbitMQTaskConsumer(.02)
 runtime = WorkerRuntime(1)
 inflight = {}

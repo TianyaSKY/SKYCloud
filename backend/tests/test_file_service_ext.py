@@ -20,7 +20,7 @@ from app.features.file.service import (
     _calculate_file_hash,
     _get_reusable_source_file,
     _persist_file_record,
-    _push_processing_queue,
+    _invalidate_processing_cache,
     _clear_search_cache,
     _multipart_upload_dir,
     _multipart_chunks_dir,
@@ -58,7 +58,7 @@ class TestRetryEmbedding:
         session.add(f)
         session.flush()
 
-        with patch("app.features.file.service.publish_file_tasks") as m:
+        with patch("app.features.file.service.stage_file_tasks") as m:
             retry_embedding(session, f.id)
         m.assert_called_once()
 
@@ -75,16 +75,16 @@ class TestRebuildFailedIndexes:
                          workspace_id=test_workspace.id, status="fail"))
         session.flush()
 
-        with patch("app.features.file.service.publish_file_tasks"):
+        with patch("app.features.file.service.stage_file_tasks"):
             count = rebuild_failed_indexes(session, test_workspace.id)
         assert count == 2
 
-    def test_publish_error(self, session, test_workspace, test_user):
+    def test_stage_error_rolls_back(self, session, test_workspace, test_user):
         session.add(File(name="f3.txt", file_path="f3.txt", file_size=10,
                          workspace_id=test_workspace.id, status="fail"))
         session.flush()
 
-        with patch("app.features.file.service.publish_file_tasks", side_effect=Exception("mq err")):
+        with patch("app.features.file.service.stage_file_tasks", side_effect=Exception("intent staging error")):
             count = rebuild_failed_indexes(session, test_workspace.id)
         assert count == 0
 
@@ -236,12 +236,13 @@ class TestInternalUtils:
         result = _get_reusable_source_file(session, "a" * 64, 100)
         assert result is None
 
-    def test_push_processing_queue_empty(self):
-        _push_processing_queue([], 1)  # 不应报错
+    def test_invalidate_processing_cache_empty(self):
+        _invalidate_processing_cache([], 1)  # 不应报错
 
-    def test_push_processing_queue_error(self):
-        with patch("app.features.file.service.publish_file_tasks", side_effect=Exception("err")):
-            _push_processing_queue([1], 1)  # 不应抛异常
+    def test_invalidate_processing_cache_calls_clear(self):
+        with patch("app.features.file.service._clear_search_cache") as clear:
+            _invalidate_processing_cache([1], 1)
+        clear.assert_called_once_with(1)
 
     def test_clear_search_cache(self):
         with patch("app.features.file.service.evict_cache_pattern") as m:

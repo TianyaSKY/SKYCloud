@@ -19,6 +19,7 @@ from app.features.folder import service as folder_service
 from app.features.folder.organize.handler import handle_organize_process
 from app.infra.indexing.handler import handle_file_indexing as handle_file_process
 from app.infra.llm.sync_client import close_sync_clients
+from app.infra.file_task_outbox import deliver_pending_file_tasks
 from app.infra.task_queue import (
     FILE_PROCESS_QUEUE,
     ORGANIZE_FILE_QUEUE,
@@ -36,13 +37,20 @@ ORGANIZE_WORKERS = max(1, int(os.getenv("WORKER_ORGANIZE_THREADS", "1")))
 def run_scheduler() -> None:
     """Run periodic upload cleanup in a daemon thread."""
     logger.info("Scheduler thread started")
+    next_cleanup = 0.0
     while True:
         try:
-            with SessionLocal() as session:
-                cleanup_expired_uploads(max_age_hours=24, session=session)
+            deliver_pending_file_tasks()
         except Exception:
-            logger.exception("Error in scheduler")
-        time.sleep(60)
+            logger.exception("Error delivering pending file tasks")
+        if time.monotonic() >= next_cleanup:
+            try:
+                with SessionLocal() as session:
+                    cleanup_expired_uploads(max_age_hours=24, session=session)
+            except Exception:
+                logger.exception("Error in upload cleanup")
+            next_cleanup = time.monotonic() + 60
+        time.sleep(1)
 
 
 def process_task(file_id: int) -> None:

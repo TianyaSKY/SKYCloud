@@ -388,7 +388,7 @@ class TestCreateFile:
 
         with patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)), \
              patch("app.features.file.service.change_log_service"), \
-             patch("app.features.file.service._push_processing_queue"):
+             patch("app.features.file.service._invalidate_processing_cache"):
             f = create_file(session, mock_upload, {
                 "workspace_id": test_workspace.id,
                 "uploader_id": test_user.id,

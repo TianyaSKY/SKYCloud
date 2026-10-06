@@ -46,7 +46,7 @@ class TestFileServiceClone:
         session.add(source)
         session.commit()
 
-        with patch("app.features.file.service._push_processing_queue") as mock_q, \
+        with patch("app.features.file.service._invalidate_processing_cache") as mock_q, \
              patch("app.features.file.service._clear_search_cache"):
             new_file = _clone_existing_file(
                 session, source,
@@ -137,7 +137,7 @@ class TestFileServiceCreate:
         upload.mimetype = "text/plain"
         upload.save = lambda p: open(p, "w").write("hello world")
 
-        with patch("app.features.file.service._push_processing_queue"), \
+        with patch("app.features.file.service._invalidate_processing_cache"), \
              patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)):
             new_file = create_file(session, upload, {
                 "workspace_id": test_workspace.id, "uploader_id": 1, "parent_id": None
@@ -165,7 +165,7 @@ class TestFileServiceCreate:
         upload.mimetype = "text/plain"
         upload.save = lambda p: open(p, "w").write("x")
 
-        with patch("app.features.file.service._push_processing_queue"), \
+        with patch("app.features.file.service._invalidate_processing_cache"), \
              patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)):
             f = create_uploaded_file(session, test_workspace.id, 1, upload)
         assert f is not None
@@ -187,7 +187,7 @@ class TestFileServiceCreate:
         upload2.mimetype = "text/plain"
         upload2.save = lambda p: open(p, "w").write("world")
 
-        with patch("app.features.file.service._push_processing_queue"), \
+        with patch("app.features.file.service._invalidate_processing_cache"), \
              patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)), \
              patch("app.features.folder.change_log.log_events_batch"):
             files = batch_create_files(session, [upload1, upload2], {"workspace_id": test_workspace.id, "uploader_id": 1})
@@ -249,7 +249,7 @@ class TestFileServiceMultipart:
                 chunk = MagicMock()
                 chunk.save = lambda p, d=b"x" * 10: open(p, "wb").write(d)
                 save_multipart_chunk(session, 1, test_workspace.id, upload_id, i, chunk)
-            with patch("app.features.file.service._push_processing_queue"):
+            with patch("app.features.file.service._invalidate_processing_cache"):
                 f = complete_multipart_upload(session, test_workspace.id, 1, upload_id)
             assert f.name == "comp.txt"
 
@@ -329,7 +329,7 @@ class TestFileServiceSearch:
         upload.filename = "retry.txt"
         upload.mimetype = "text/plain"
         upload.save = lambda p: open(p, "w").write("x")
-        with patch("app.features.file.service._push_processing_queue"), \
+        with patch("app.features.file.service._invalidate_processing_cache"), \
              patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)):
             f = create_file(session, upload, {"workspace_id": test_workspace.id, "uploader_id": 1})
             retry_embedding(session, f.id)
@@ -337,7 +337,7 @@ class TestFileServiceSearch:
 
     def test_rebuild_failed_indexes(self, session, test_workspace):
         from app.features.file.service import rebuild_failed_indexes
-        with patch("app.features.file.service.publish_file_tasks"):
+        with patch("app.features.file.service.stage_file_tasks"):
             count = rebuild_failed_indexes(session, test_workspace.id)
         assert count == 0
 
@@ -354,7 +354,7 @@ class TestFileServiceSearch:
         upload.filename = "del.txt"
         upload.mimetype = "text/plain"
         upload.save = lambda p: open(p, "w").write("delete me")
-        with patch("app.features.file.service._push_processing_queue"), \
+        with patch("app.features.file.service._invalidate_processing_cache"), \
              patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)):
             f = create_file(session, upload, {"workspace_id": test_workspace.id, "uploader_id": 1})
             delete_file(session, f.id)
@@ -408,7 +408,7 @@ class TestFileServiceSearch:
         upload.filename = "up.txt"
         upload.mimetype = "text/plain"
         upload.save = lambda p: open(p, "w").write("x")
-        with patch("app.features.file.service._push_processing_queue"), \
+        with patch("app.features.file.service._invalidate_processing_cache"), \
              patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)), \
              patch("app.features.file.service._clear_search_cache"):
             f = create_file(session, upload, {"workspace_id": test_workspace.id, "uploader_id": 1})
@@ -425,7 +425,7 @@ class TestFileServiceSearch:
         folder = Folder(name="target", workspace_id=test_workspace.id, parent_id=None)
         session.add(folder)
         session.commit()
-        with patch("app.features.file.service._push_processing_queue"), \
+        with patch("app.features.file.service._invalidate_processing_cache"), \
              patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)), \
              patch("app.features.file.service._clear_search_cache"):
             f = create_file(session, upload, {"workspace_id": test_workspace.id, "uploader_id": 1})
