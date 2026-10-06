@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import text
 
 from tests.integration.test_migrations import postgres  # noqa: F401
+from app.infra.task_queue import publish_organize_task as real_publish_organize
 from tests.integration.test_task_queue import broker  # noqa: F401
 from tests.integration.test_upload_storage import minio_storage, upload_api  # noqa: F401
 from tests.integration.test_worker_outcomes import redis_client  # noqa: F401
@@ -25,8 +26,12 @@ import time
 from app.infra.task_queue import RabbitMQTaskConsumer, ORGANIZE_FILE_QUEUE
 from app.infra.worker_runtime import WorkerRuntime, worker_step
 from app.features.folder.organize.handler import ChatOpenAI, create_react_agent
+from app.infra.organize_tasks import deliver_pending_organize_tasks
+import os
 assert ChatOpenAI.__module__.startswith('langchain_openai')
 assert create_react_agent.__module__.startswith('langgraph')
+if os.getenv("ORGANIZE_REPLAY") != "1":
+    assert deliver_pending_organize_tasks() >= 1
 consumer = RabbitMQTaskConsumer(.02)
 runtime = WorkerRuntime(1)
 inflight = {}
@@ -117,7 +122,8 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
         queued = client.post("/api/folder/organize", headers=headers)
         assert queued.status_code == 200 and queued.json()["queued"] is True
         assert client.post("/api/folder/organize", headers=headers).json()["queued"] is False
-        assert redis_client.get("organize:task:lock:1").endswith(":queued")
+        with postgres.connect() as db:
+            assert db.scalar(text("SELECT state FROM organize_tasks WHERE workspace_id=1")) == "queued"
         env = {**os.environ, "DATABASE_URL":postgres.url.render_as_string(hide_password=False),
                "REDIS_PORT":str(redis_client.connection_pool.connection_kwargs["port"]),
                "CHAT_API_URL":f"http://127.0.0.1:{server.server_port}/v1",
@@ -127,11 +133,19 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
             cwd=Path(__file__).resolve().parents[2],env=env,capture_output=True,text=True,timeout=35)
         assert result.returncode == 0, result.stderr[-5000:]
         assert "ORGANIZE_PIPELINE_FINISHED" in result.stdout
+        with postgres.connect() as db:
+            task_id = db.scalar(text("SELECT id FROM organize_tasks WHERE workspace_id=1"))
+        real_publish_organize(1, 1, task_id)
+        replay = subprocess.run([sys.executable,"-c",PROBE],
+            cwd=Path(__file__).resolve().parents[2],
+            env={**env, "ORGANIZE_REPLAY":"1"},capture_output=True,text=True,timeout=35)
+        assert replay.returncode == 0, replay.stderr[-5000:]
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
-    assert redis_client.get("organize:task:lock:1") is None
+    with postgres.connect() as db:
+        assert db.scalar(text("SELECT state FROM organize_tasks WHERE workspace_id=1")) == ("completed" if mode == "success" else "failed")
     with postgres.connect() as db:
         message = db.scalar(text("SELECT content FROM inbox WHERE user_id=1"))
         assert db.scalar(text("SELECT count(*) FROM inbox WHERE user_id=1")) == 1

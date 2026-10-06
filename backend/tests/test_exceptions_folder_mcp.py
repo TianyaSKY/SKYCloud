@@ -246,7 +246,7 @@ class TestFolderService:
 
         mock_redis.set.return_value = True  # 模拟获取锁成功
         with patch("app.features.folder.service.publish_organize_task"):
-            result = organize_files(test_workspace.id, test_user.id)
+            result = organize_files(session, test_workspace.id, test_user.id)
         assert result is True
 
     def test_organize_files_lock_taken(self, session, test_workspace, test_user, mock_redis):
@@ -254,7 +254,8 @@ class TestFolderService:
 
         # mock_redis.set 返回 None/False 表示锁已被占用
         mock_redis.set.return_value = None
-        result = organize_files(test_workspace.id, test_user.id)
+        assert organize_files(session, test_workspace.id, test_user.id)
+        result = organize_files(session, test_workspace.id, test_user.id)
         assert result is False
 
 

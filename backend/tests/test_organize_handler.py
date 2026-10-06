@@ -186,7 +186,8 @@ class TestOrganizeFiles:
         # 回退全量模式，包含 incremental_context_error 或 首次全量
         assert "incremental_context_error" in results or "全量" in results or "首次" in results
 
-    def test_validation_retry(self, session, test_workspace):
+    @pytest.mark.parametrize("eventually_clean", [True, False])
+    def test_validation_retry(self, session, test_workspace, eventually_clean):
         """校验失败后重试。"""
         from app.features.folder.organize.handler import organize_files
         mock_ctx = {
@@ -198,7 +199,7 @@ class TestOrganizeFiles:
         mock_agent.stream.return_value = iter([])
 
         # 第一次校验失败，第二次通过
-        mixed_results = [(False, "mixed error"), (True, "clean")]
+        mixed_results = [(False, "mixed error"), (eventually_clean, "clean")]
         empty_results = [(True, "clean"), (True, "clean")]
 
         with patch("app.features.folder.organize.handler.get_llm_config",
@@ -212,6 +213,10 @@ class TestOrganizeFiles:
                    side_effect=mixed_results), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    side_effect=empty_results):
+            if not eventually_clean:
+                with pytest.raises(RuntimeError, match="final structure validation"):
+                    organize_files(test_workspace.id, test_workspace.owner_id)
+                return
             usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert "校验失败" in results or "校验通过" in results
 

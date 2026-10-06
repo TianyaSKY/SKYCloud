@@ -17,6 +17,8 @@ class OrganizeScope:
     workspace_id: int
     user_id: int
     session_factory: Callable[[], Session]
+    task_id: str | None = None
+    execution_token: str | None = None
 
 
 _current_scope: ContextVar[OrganizeScope | None] = ContextVar("organize_scope", default=None)
@@ -52,3 +54,12 @@ def bind_tools(source_tools, scope: OrganizeScope):
                 return function(*args, **kwargs)
         return tool(invoke)
     return [bind(source) for source in source_tools]
+
+
+def authorize_session(session, scope):
+    if scope.task_id is not None:
+        from app.infra.organize_tasks import assert_task_claim
+        assert_task_claim(session, scope.task_id, scope.execution_token,
+                          scope.workspace_id, scope.user_id)
+    from app.features.workspace.permissions import assert_can_write
+    assert_can_write(session, scope.workspace_id, scope.user_id)

@@ -187,6 +187,13 @@ class RabbitMQTaskConsumer:
         self._channel.basic_ack(delivery_tag=message.delivery_tag)
         return True
 
+    def retry(self, message: QueueMessage) -> bool:
+        """Leave busy/transient work available to another attempt."""
+        if not self.owns_delivery(message):
+            return False
+        self._channel.basic_nack(delivery_tag=message.delivery_tag, requeue=True)
+        return True
+
     def park_failed(self, message: QueueMessage, error: Exception) -> None:
         """Keep failed payloads durably; only ack after the broker confirms the copy."""
         import base64

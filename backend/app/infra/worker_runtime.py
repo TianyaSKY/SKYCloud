@@ -20,6 +20,8 @@ from app.features.folder.organize.handler import handle_organize_process
 from app.infra.indexing.handler import handle_file_indexing as handle_file_process
 from app.infra.llm.sync_client import close_sync_clients
 from app.infra.file_task_outbox import deliver_pending_file_tasks
+from app.infra.organize_tasks import task_execution, deliver_pending_organize_tasks, RetryTaskLater
+from sqlalchemy.exc import SQLAlchemyError
 from app.infra.task_queue import (
     FILE_PROCESS_QUEUE,
     ORGANIZE_FILE_QUEUE,
@@ -43,6 +45,10 @@ def run_scheduler() -> None:
             deliver_pending_file_tasks()
         except Exception:
             logger.exception("Error delivering pending file tasks")
+        try:
+            deliver_pending_organize_tasks()
+        except Exception:
+            logger.exception("Error delivering pending organize tasks")
         if time.monotonic() >= next_cleanup:
             try:
                 with SessionLocal() as session:
@@ -63,19 +69,14 @@ def process_organize_task(
     user_id: int,
     lock_token: str | None = None,
 ) -> None:
-    """Run one long-lived organize task and always release its distributed lock."""
-    token = lock_token or f"legacy-{workspace_id}"
+    """Run under a database lease; terminal replay never calls the model again."""
     try:
-        if not folder_service.mark_organize_task_running(workspace_id, token):
-            raise RuntimeError("Organize task no longer owns its workspace lock")
-        logger.info("Starting organize_files for workspace {}", workspace_id)
-        result = handle_organize_process(workspace_id, user_id)
-        logger.info("Finished organize_files for workspace {}: {}", workspace_id, result)
-    except Exception:
-        logger.exception("Error organizing files for workspace {}", workspace_id)
-        raise
-    finally:
-        folder_service.release_organize_task_lock(workspace_id, token)
+        with task_execution(workspace_id, user_id, lock_token, session_factory=SessionLocal) as claim:
+            if claim is None:
+                return
+            handle_organize_process(workspace_id, user_id, task_id=lock_token, execution_token=claim)
+    except SQLAlchemyError as error:
+        raise RetryTaskLater("Organize database operation failed") from error
 
 
 class WorkerRuntime:
@@ -199,6 +200,11 @@ def worker_step(
         if not future.done():
             continue
         error = future.exception()
+        if isinstance(error, RetryTaskLater):
+            consumer.retry(message)
+            del inflight[future]
+            consumer.idle()
+            return
         if error is None:
             consumer.acknowledge(message)
         else:

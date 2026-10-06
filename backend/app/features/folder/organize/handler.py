@@ -12,7 +12,7 @@ from langgraph.prebuilt import create_react_agent
 
 from app.infra.extensions import SessionLocal
 from app.features.workspace.permissions import assert_can_write
-from .scope import OrganizeScope, organize_scope, bind_tools
+from .scope import OrganizeScope, organize_scope, bind_tools, authorize_session
 from app.features.folder import change_log as change_log_service
 from app.infra.llm.config import get_chat_model_config
 from app.infra.llm.sync_client import record_llm_usage
@@ -151,9 +151,9 @@ Event range: ({checkpoint_event_id}, {target_event_id}]
 """
 
 
-def organize_files(workspace_id: int, user_id: int):
+def organize_files(workspace_id: int, user_id: int, *, task_id=None, execution_token=None):
     """Bind task identity before constructing the model and its parallel tools."""
-    scope = OrganizeScope(workspace_id, user_id, SessionLocal)
+    scope = OrganizeScope(workspace_id, user_id, SessionLocal, task_id, execution_token)
     with organize_scope(scope):
         return _organize_files(workspace_id, user_id, scope)
 
@@ -191,7 +191,7 @@ def _organize_files(workspace_id: int, user_id: int, scope: OrganizeScope):
 
     session = SessionLocal()
     try:
-        assert_can_write(session, workspace_id, user_id)
+        authorize_session(session, scope)
         try:
             incremental_context = change_log_service.load_incremental_context(
                 session, workspace_id=workspace_id, max_events=MAX_INCREMENTAL_EVENTS
@@ -323,7 +323,7 @@ def _organize_files(workspace_id: int, user_id: int, scope: OrganizeScope):
     if validation_passed and checkpoint_target_event_id is not None:
         session = SessionLocal()
         try:
-            assert_can_write(session, workspace_id, user_id)
+            authorize_session(session, scope)
             change_log_service.update_checkpoint(
                 session, workspace_id, checkpoint_target_event_id, mark_full_scan=full_scan_mode
             )
@@ -331,18 +331,19 @@ def _organize_files(workspace_id: int, user_id: int, scope: OrganizeScope):
             session.close()
         results.append(
             f"已推进整理 checkpoint 至事件 ID: {checkpoint_target_event_id}")
-    elif checkpoint_target_event_id is not None:
-        results.append("整理未通过最终校验，本次未推进 checkpoint。")
+    if not validation_passed:
+        raise RuntimeError("Organization failed final structure validation")
 
     return total_usage, "\n\t".join(results)
 
 
-def handle_organize_process(workspace_id: int, user_id: int):
+def handle_organize_process(workspace_id: int, user_id: int, *, task_id=None, execution_token=None):
     """整理入口：计时、记 Token、无论成败都写收件箱（锁释放在 tasks 层）。"""
     time_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     timestamp_start = time.time()
+    succeeded = True
     try:
-        token_usage, results = organize_files(workspace_id, user_id)
+        token_usage, results = organize_files(workspace_id, user_id, task_id=task_id, execution_token=execution_token)
         content = (
             f"用时 {time.time() - timestamp_start:.2f} 秒\n"
             "Token 计费详情：\n"
@@ -353,10 +354,9 @@ def handle_organize_process(workspace_id: int, user_id: int):
             "以下为模型调用的详细操作：\n"
             f"{results}"
         )
-
-
     except Exception as exc:
         logger.exception("文件整理失败")
+        succeeded = False
         token_usage = {}
         content = "文件整理任务执行失败，请稍后重试或联系管理员。"
 
@@ -364,6 +364,11 @@ def handle_organize_process(workspace_id: int, user_id: int):
 
     session = SessionLocal()
     try:
+        if task_id:
+            from app.infra.organize_tasks import assert_task_claim
+            task = assert_task_claim(session, task_id, execution_token, workspace_id, user_id)
+            task.state = "completed" if succeeded else "failed"
+            task.finished_at = datetime.datetime.now(datetime.timezone.utc)
         inbox_service.create_inbox_message(
             session,
             {

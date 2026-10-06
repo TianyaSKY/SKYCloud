@@ -269,7 +269,7 @@ def release_organize_task_lock(workspace_id: int, lock_token: str) -> None:
     redis_client.eval(script, 1, _organize_task_lock_key(workspace_id), lock_token)
 
 
-def organize_files(workspace_id: int, user_id: int) -> bool:
-    """入队整理任务；同空间已有任务在排队/执行时返回 False。"""
-    lock_token = str(uuid.uuid4())
-    return _acquire_organize_task_lock_and_enqueue(workspace_id, user_id, lock_token)
+def organize_files(session: Session, workspace_id: int, user_id: int) -> bool:
+    """Commit one durable admitted task; broker delivery is performed by Worker."""
+    from app.infra.organize_tasks import admit_task
+    return admit_task(session, workspace_id, user_id)

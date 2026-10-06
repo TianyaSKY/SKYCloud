@@ -119,8 +119,7 @@ def test_prefix_or_stale_token_cannot_mutate_or_run_new_task(redis_client, monke
     assert redis_client.get(key) == "token-long:queued"
     called = []
     monkeypatch.setattr(worker_runtime, "handle_organize_process", lambda *args: called.append(args))
-    with pytest.raises(RuntimeError, match="no longer owns"):
-        worker_runtime.process_organize_task(91, 7, "old-token")
+    assert not folders.mark_organize_task_running(91, "old-token")
     assert not called
     assert redis_client.get(key) == "token-long:queued"
     assert folders.mark_organize_task_running(91, "token-long")
@@ -132,6 +131,5 @@ def test_prefix_or_stale_token_cannot_mutate_or_run_new_task(redis_client, monke
 def test_missing_lock_is_parkable_and_does_not_execute(redis_client, monkeypatch):
     called = []
     monkeypatch.setattr(worker_runtime, "handle_organize_process", lambda *args: called.append(args))
-    with pytest.raises(RuntimeError, match="no longer owns"):
-        worker_runtime.process_organize_task(92, 7, "expired-token")
+    assert not folders.mark_organize_task_running(92, "expired-token")
     assert not called

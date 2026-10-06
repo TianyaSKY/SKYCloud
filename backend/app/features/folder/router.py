@@ -97,11 +97,12 @@ def get_folder(
 
 @router.post("/folder/organize")
 def organize_workspace_files(
+    session: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     workspace: Workspace = Depends(require_workspace_role("editor")),
 ):
     """触发 AI 自动整理；已有任务在跑时拒绝重复入队。"""
-    queued = folder_service.organize_files(workspace.id, current_user.id)
+    queued = folder_service.organize_files(session, workspace.id, current_user.id)
     message = (
         "已开始整理文件，请留意收件箱里的通知，整理完成后会通知您"
         if queued

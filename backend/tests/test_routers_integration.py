@@ -249,7 +249,7 @@ class TestFolderRouter:
         from app.features.folder.router import organize_workspace_files
 
         with patch("app.features.folder.service.organize_files", return_value=True):
-            result = organize_workspace_files(test_user, test_workspace)
+            result = organize_workspace_files(session, test_user, test_workspace)
         assert result["queued"] is True
 
 

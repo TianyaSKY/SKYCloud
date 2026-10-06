@@ -12,7 +12,7 @@ from app.models.file import File
 from app.models.folder import Folder
 from app.features.workspace.permissions import assert_can_write
 from app.exceptions import PermissionDeniedError
-from .scope import current_scope
+from .scope import current_scope, authorize_session
 
 from loguru import logger
 
@@ -24,7 +24,7 @@ def get_session():
         raise PermissionDeniedError("Organize tools require a bound task identity")
     session = scope.session_factory()
     try:
-        assert_can_write(session, scope.workspace_id, scope.user_id)
+        authorize_session(session, scope)
         return session
     except BaseException:
         session.close()

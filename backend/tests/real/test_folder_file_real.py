@@ -202,19 +202,9 @@ class TestFolderService:
         key = _organize_task_lock_key(42)
         assert key == "organize:task:lock:42"
 
-    def test_organize_files_rabbitmq_unavailable(self, session, test_workspace, test_user, real_redis):
-        """RabbitMQ 不可用时 organize_files 抛异常（锁已获取但入队失败后释放）。
-
-        外部依赖说明：
-        - 原因：测试环境无可用 RabbitMQ（认证被拒绝）
-        - 影响：publish_organize_task 抛出 ProbableAuthenticationError
-        - 行为：锁被释放后异常向上传播
-        """
-        with pytest.raises(Exception):
-            organize_files(test_workspace.id, test_user.id)
-        # 验证锁已释放（入队失败后释放锁）
-        lock_key = _organize_task_lock_key(test_workspace.id)
-        assert real_redis.get(lock_key) is None
+    def test_organize_files_without_broker(self, session, test_workspace, test_user):
+        """请求仅提交数据库任务，不连接 broker。"""
+        assert organize_files(session, test_workspace.id, test_user.id)
 
     def test_mark_organize_task_running(self, real_redis):
         """标记任务运行中（Redis Lua 脚本）。"""

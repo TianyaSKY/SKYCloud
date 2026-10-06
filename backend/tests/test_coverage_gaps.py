@@ -298,39 +298,25 @@ class TestFolderServiceLocks:
             release_organize_task_lock(1, "token-abc")
         mock_redis.eval.assert_called_once()
 
-    def test_organize_files_no_lock(self):
-        """Redis 锁竞争失败时应返回 False。"""
+    def test_organize_files_duplicate_admission(self, session, test_workspace, test_user):
         from app.features.folder.service import organize_files
-        mock_redis = MagicMock()
-        # set nx 返回 None 表示未获取锁
-        mock_redis.set.return_value = None
-        with patch("app.features.folder.service.redis_client", mock_redis):
-            result = organize_files(1, 1)
-        assert result is False
+        assert organize_files(session, test_workspace.id, test_user.id)
+        assert not organize_files(session, test_workspace.id, test_user.id)
 
-    def test_organize_files_success(self):
-        """获取锁后应入队并返回 True。"""
+    def test_organize_files_success(self, session, test_workspace, test_user):
         from app.features.folder.service import organize_files
-        mock_redis = MagicMock()
-        mock_redis.set.return_value = True  # 获取锁成功
-        with patch("app.features.folder.service.redis_client", mock_redis), \
-             patch("app.features.folder.service.publish_organize_task") as mock_pub:
-            result = organize_files(1, 1)
-        assert result is True
-        mock_pub.assert_called_once()
+        from app.models.organize_task import OrganizeTask
+        assert organize_files(session, test_workspace.id, test_user.id)
+        row = session.query(OrganizeTask).one()
+        assert row.state == "queued" and row.user_id == test_user.id
+        assert row.delivered_at is None
 
-    def test_organize_files_publish_fail(self):
-        """入队失败应释放锁并抛异常。"""
+    def test_organize_files_commit_failure(self, session, test_workspace, test_user):
         from app.features.folder.service import organize_files
-        mock_redis = MagicMock()
-        mock_redis.set.return_value = True
-        with patch("app.features.folder.service.redis_client", mock_redis), \
-             patch("app.features.folder.service.publish_organize_task",
-                   side_effect=Exception("MQ down")), \
-             patch("app.features.folder.service.release_organize_task_lock") as mock_rel:
-            with pytest.raises(Exception):
-                organize_files(1, 1)
-        mock_rel.assert_called_once()
+        with patch.object(session, "commit", side_effect=RuntimeError("intent commit failure")):
+            with pytest.raises(RuntimeError, match="intent commit failure"):
+                organize_files(session, test_workspace.id, test_user.id)
+        session.rollback()
 
 
 # ---------------------------------------------------------------------------
