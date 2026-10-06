@@ -351,13 +351,15 @@ def test_legacy_mcp_audit_redaction_preserves_event_metadata(postgres):
     upgrade(postgres)
     with postgres.connect() as db:
         assert db.scalar(text("SELECT arguments_summary FROM mcp_audit_logs WHERE request_id='legacy'")) == 'safe-summary'
-    with pytest.raises(RuntimeError, match="pending object cleanup"):
+    with pytest.raises(RuntimeError, match="account deletion cascades"):
         with postgres.begin() as db:
             command.downgrade(migration_config(db), "0009_utc_timestamps")
     check_schema(postgres)
     from alembic.script import ScriptDirectory
     from alembic.config import Config
     config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
+    with pytest.raises(RuntimeError, match="pending object cleanup"):
+        ScriptDirectory.from_config(config).get_revision("0012_object_delete_trigger").module.downgrade()
     with pytest.raises(RuntimeError, match="cannot be reconstructed"):
         ScriptDirectory.from_config(config).get_revision("0010_redact_mcp_audit").module.downgrade()
 
@@ -406,3 +408,29 @@ def test_object_trigger_upgrade_is_atomic_preserves_queue_and_installs_once(post
         assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
         assert db.scalar(text("SELECT count(*) FROM pg_trigger WHERE tgname='stage_file_object_cleanup'")) == 1
         assert db.scalar(text("SELECT confdeltype FROM pg_constraint WHERE conname='fk_files_uploader_id_users'")) == 'n'
+
+
+def test_account_foreign_key_upgrade_rolls_back_and_preserves_existing_rows(postgres):
+    upgrade(postgres, '0012_object_delete_trigger')
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash) VALUES (1,'kept','x')"))
+        db.execute(text("INSERT INTO mcp_tokens(user_id,token_hash,token_preview,expires_at) VALUES (1,'hash','preview',now()+interval '1 day')"))
+        db.execute(text("INSERT INTO file_object_deletions(object_name,attempts) VALUES ('pending',3)"))
+        db.execute(text("ALTER TABLE shares ADD CONSTRAINT fk_shares_user_id_users CHECK (user_id > 0)"))
+        prior = db.execute(text('SELECT * FROM file_object_deletions')).all()
+    with pytest.raises(Exception, match='already exists'):
+        upgrade(postgres)
+    with postgres.begin() as db:
+        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0012_object_delete_trigger'
+        assert db.scalar(text("SELECT confdeltype FROM pg_constraint WHERE conrelid='mcp_tokens'::regclass AND contype='f'")) == 'a'
+        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
+        assert db.scalar(text('SELECT count(*) FROM mcp_tokens')) == 1
+        db.execute(text('ALTER TABLE shares DROP CONSTRAINT fk_shares_user_id_users'))
+    upgrade(postgres)
+    upgrade(postgres)
+    check_schema(postgres)
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
+        assert db.scalar(text('SELECT count(*) FROM mcp_tokens')) == 1
+        for table,column,action in [('workspaces','owner_id','c'),('mcp_tokens','user_id','c'),('shares','user_id','c'),('workspace_members','invited_by','n')]:
+            assert db.scalar(text('SELECT confdeltype FROM pg_constraint WHERE conname=:name'), {'name':f'fk_{table}_{column}_users'}) == action

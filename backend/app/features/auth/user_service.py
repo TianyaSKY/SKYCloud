@@ -1,6 +1,8 @@
 """用户资料 CRUD、缓存，以及改密/访问权限校验。"""
 
 from sqlalchemy.orm import Session
+
+from app.features.auth import account_repository
 from starlette.concurrency import run_in_threadpool
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
@@ -75,19 +77,25 @@ def update_user(session: Session, id, data):
 
 
 def delete_user(session: Session, id):
-    user = session.get(User, id)
+    # Lock the account and owned workspaces before enumerating resources.
+    # FK writers cannot add a new owned space/runtime during deletion.
+    user = account_repository.lock_user(session, id)
     if not user:
         raise ResourceNotFoundError("User not found")
-    # Database cascades cannot remove Docker containers, so clean every
-    # runtime owned by the user before deleting the account.
     from app.features.workspace import docker_service
-    from app.models.opencode_runtime import OpenCodeRuntime
 
-    runtimes = session.query(OpenCodeRuntime).filter_by(user_id=id).all()
-    for runtime in runtimes:
-        docker_service.remove_runtime(runtime, session)
-    session.delete(user)
+    owned = account_repository.lock_owned_workspaces(session, id)
+    owned_ids = {workspace.id for workspace in owned}
+    for workspace in owned:
+        docker_service.remove_container(workspace, session)
+    for runtime in account_repository.user_runtimes(session, id):
+        if runtime.workspace_id not in owned_ids:
+            docker_service.remove_runtime(runtime, session)
+    # ORM backrefs would NULL non-null ownership/membership columns. The
+    # database owns the complete cascade, including file cleanup triggers.
+    account_repository.delete_account(session, id)
     session.commit()
+    session.expire_all()
 
     evict_cache(USER_CACHE_PREFIX, id)
 

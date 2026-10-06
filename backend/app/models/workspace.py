@@ -26,7 +26,7 @@ class Workspace(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(128), nullable=False)
     description = Column(String(512))
-    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(UTCDateTime(), default=utc_now)
     updated_at = Column(UTCDateTime(), default=utc_now, onupdate=utc_now)
     # OpenCode 容器生命周期。字段保持可空，兼容既有工作空间记录。
@@ -73,7 +73,7 @@ class WorkspaceMember(Base):
     workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role = Column(String(20), nullable=False, default="viewer")  # admin / editor / viewer
-    invited_by = Column(Integer, ForeignKey("users.id"))
+    invited_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     joined_at = Column(UTCDateTime(), default=utc_now)
 
     # 关系

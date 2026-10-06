@@ -399,6 +399,11 @@ MCP 目录列表、`skycloud://folders` 资源和当前用户信息，在进入�
 `RUN_OBJECT_DELETION_TESTS=1` 配合 `SKYCLOUD_TEST_MINIO_IMAGE=sha256:...` 运行 `tests/integration/test_file_object_deletion.py`：真实 PostgreSQL/MinIO 覆盖 SQL 提交失败、共享引用、存储拒绝、删除后 SQL 失败重放、并发清理、旧秒传源拒绝、清理等待秒传、异常跨空间目录及父节点锁阻止遍历期间新增子节点。CI 构建校验摘要的 MinIO 镜像，并运行这些检查。
 
 
-当前 schema head 为 `0012_object_delete_trigger`。PostgreSQL 的 files AFTER DELETE 触发器生成清理任务，覆盖普通 ORM 删除、批量 SQL 删除及工作空间/用户的已获准级联；任务与原删除同事务，回滚不会留下清理任务。应用不再在 PostgreSQL 重复插入同一删除任务；SQLite 测试通过显式暂存维持事务验证。已有队列保留，升级不会对仍有引用的文件生成清理任务。
+`0012_object_delete_trigger`：PostgreSQL 的 files AFTER DELETE 触发器生成清理任务，覆盖普通 ORM 删除、批量 SQL 删除及工作空间/用户的已获准级联；任务与原删除同事务，回滚不会留下清理任务。应用不再在 PostgreSQL 重复插入同一删除任务；SQLite 测试通过显式暂存维持事务验证。已有队列保留，升级不会对仍有引用的文件生成清理任务。
 
-文件上传者外键改为 ON DELETE SET NULL，保持文件归工作空间的语义：删除上传者时，其他空间中的文件保留、上传者字段置空；删除所属空间的文件则由触发器暂存清理。共享对象仍由 Worker 的全局引用检查保护。升级应停止旧数据库客户端并完成迁移后启动新版，触发器安装失败会回滚迁移和版本号；拒绝绕过清理钩子的降级。SQL 级联验证不等同于用户删除 API 的完整生命周期验证，账号服务的 ORM 关系和其他引用仍需继续修复。
+文件上传者外键改为 ON DELETE SET NULL，保持文件归工作空间的语义：删除上传者时，其他空间中的文件保留、上传者字段置空；删除所属空间的文件则由触发器暂存清理。共享对象仍由 Worker 的全局引用检查保护。升级应停止旧数据库客户端并完成迁移后启动新版，触发器安装失败会回滚迁移和版本号；拒绝绕过清理钩子的降级。账号服务的数据库生命周期已由下述 0013 修复；容器清理的持久重试仍待完成。
+
+
+当前 schema head 为 `0013_account_delete_fks`。账号删除先锁定用户及其自有工作空间，再按数据库外键级联删除，避免 ORM 反向关系把非空 owner_id/user_id 置空。迁移修复空间所有权、长期 MCP 凭据及分享归属的 ON DELETE CASCADE，邀请者改为 ON DELETE SET NULL；其他空间文件保留并清除上传者标注，其他成员的邀请记录保留。删除账号的长期/Runtime 凭据、通知、用量及对话随相应归属删除；MCP 审计事件保留并置空已删除的用户/空间/Runtime 引用。文件物理清理仍由事务触发器与 Worker 负责。
+
+容器清理范围涵盖账号自有空间内所有成员 Runtime、旧空间容器，以及本人在其他空间的 Runtime，保留无关成员的 Runtime。账号与空间行锁阻止资源枚举后并发创建遗漏资源。真实 PostgreSQL/MinIO 检查包含已加载 ORM 关系、带签名令牌的 HTTP 自删/跨用户拒绝/旧令牌失效、SQL 提交故障回滚、迁移失败回滚与重试、并发创建等待；容器移除调用使用替代 Controller，未声称实际 Docker 移除验证。容器清理仍沿用提交前的 best-effort 行为：数据库失败时不能恢复已移除容器，Controller 拒绝时也缺少持久清理重试，后续需修复该边界。升级前停止旧数据库客户端，执行 `python -m entry.migrate` 后启动新版。

@@ -29,7 +29,7 @@ class File(Base):
     vector_info = Column(Vector(1024))  # 语义检索向量（余弦距离索引）
     description = Column(String(4096))  # AI 生成的文件描述
 
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     uploader_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))  # 记录上传者，用于归属标注和通知
     parent_id = Column(Integer, ForeignKey("folder.id"), nullable=True)
     created_at = Column(UTCDateTime(), default=utc_now)

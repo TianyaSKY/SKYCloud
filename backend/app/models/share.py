@@ -17,8 +17,8 @@ class Share(Base):
     token = Column(
         String(512), unique=True, nullable=False, default=lambda: str(uuid.uuid4())
     )
-    file_id = Column(Integer, ForeignKey("files.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    file_id = Column(Integer, ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(UTCDateTime(), default=utc_now)
     expires_at = Column(UTCDateTime(), nullable=True)  # 为空表示不过期
 

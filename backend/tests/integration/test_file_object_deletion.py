@@ -283,3 +283,142 @@ def test_user_database_cascade_keeps_foreign_workspace_file_and_clears_uploader(
         assert connection.execute(text('SELECT workspace_id,uploader_id FROM files')).all() == [(2,None)]
         assert connection.scalar(text('SELECT count(*) FROM file_object_deletions')) == 1
     assert clean(object_context) == 1 and storage.file_exists('shared')
+
+
+@pytest.fixture
+def account_graph(object_context, monkeypatch):
+    from types import SimpleNamespace
+    from app.features.workspace import docker_service
+    db, storage, factory = object_context
+    removed = []
+    def container(identifier):
+        return SimpleNamespace(remove=lambda **kwargs: removed.append(identifier))
+    monkeypatch.setattr(docker_service, '_client', lambda: SimpleNamespace(containers=SimpleNamespace(get=container)))
+    with db.begin() as connection:
+        for sql in (
+            "INSERT INTO users(id,username,password_hash,role) VALUES (2,'foreign','x','common'),(3,'member','x','common')",
+            "INSERT INTO workspaces(id,name,owner_id,container_id) VALUES (2,'foreign',2,NULL)",
+            "UPDATE workspaces SET container_id='legacy-own' WHERE id=1",
+            "INSERT INTO workspace_members(workspace_id,user_id,role,invited_by) VALUES (1,2,'editor',1),(2,1,'editor',2),(2,2,'admin',NULL),(2,3,'viewer',1)",
+            "INSERT INTO files(name,file_path,file_size,status,workspace_id,uploader_id) VALUES ('collaboration','shared',3,'success',2,1)",
+            "INSERT INTO opencode_runtimes(id,workspace_id,user_id,container_id,status) VALUES (1,1,2,'collaborator-own','running'),(2,2,1,'user-foreign','running'),(3,2,2,'unrelated','running')",
+            "INSERT INTO mcp_runtime_tokens(runtime_id,user_id,workspace_id,jti,token_hash,token_preview,expires_at) VALUES (1,2,1,'j1','h1','p',now()+interval '1 day'),(2,1,2,'j2','h2','p',now()+interval '1 day'),(3,2,2,'j3','h3','p',now()+interval '1 day')",
+            "INSERT INTO mcp_tokens(user_id,token_hash,token_preview,expires_at) VALUES (1,'long-1','p',now()+interval '1 day'),(2,'long-2','p',now()+interval '1 day')",
+            "INSERT INTO shares(token,file_id,user_id) VALUES ('owned-share',1,2),('foreign-file-share',2,1),('unrelated-share',2,2)",
+            "INSERT INTO inbox(user_id,content) VALUES (1,'delete'),(2,'keep')",
+            "INSERT INTO token_usage_logs(user_id,action,total_tokens) VALUES (1,'chat',7),(2,'chat',8)",
+            "INSERT INTO assistant_conversations(workspace_id,user_id,mode) VALUES (1,2,'fast'),(2,1,'fast'),(2,2,'fast')",
+            "INSERT INTO mcp_audit_logs(request_id,runtime_id,workspace_id,user_id,tool_name,success) VALUES ('retain',1,1,1,'list_files',true)",
+        ):
+            connection.execute(text(sql))
+    return removed
+
+
+def assert_account_deleted(context, removed):
+    db, storage, _ = context
+    assert sorted(removed) == ['collaborator-own','legacy-own','user-foreign']
+    with db.connect() as connection:
+        assert connection.execute(text('SELECT id FROM users ORDER BY id')).scalars().all() == [2,3]
+        assert connection.execute(text('SELECT id FROM workspaces')).scalars().all() == [2]
+        assert connection.execute(text('SELECT workspace_id,uploader_id FROM files')).all() == [(2,None)]
+        assert connection.execute(text('SELECT user_id,invited_by FROM workspace_members ORDER BY user_id')).all() == [(2,None),(3,None)]
+        assert connection.execute(text('SELECT container_id,status FROM opencode_runtimes')).all() == [('unrelated','running')]
+        for table in ('mcp_tokens','mcp_runtime_tokens','inbox','token_usage_logs','assistant_conversations','shares'):
+            assert connection.execute(text(f'SELECT user_id FROM {table}')).scalars().all() == [2], table
+        assert connection.execute(text('SELECT user_id,workspace_id,runtime_id FROM mcp_audit_logs')).all() == [(None,None,None)]
+        assert connection.scalar(text('SELECT count(*) FROM file_object_deletions')) == 1
+    assert clean(context) == 1 and storage.file_exists('shared')
+
+
+def test_account_service_deletes_loaded_graph_preserves_foreign_workspace(object_context, account_graph):
+    from app.features.auth.user_service import delete_user
+    from app.models.user import User
+    with object_context[2]() as session:
+        user = session.get(User,1)
+        # Loading backrefs must not turn the database cascade into NULL updates.
+        for relationship in ('owned_workspaces','workspace_memberships','mcp_tokens','opencode_runtimes','mcp_runtime_tokens','assistant_conversations','files'):
+            assert getattr(user,relationship)
+        delete_user(session,1)
+        assert session.get(User,1) is None
+    assert_account_deleted(object_context, account_graph)
+
+
+def test_account_http_self_delete_forbidden_other_and_old_token_rejected(object_context, account_graph):
+    from fastapi.testclient import TestClient
+    from app.api.factory import create_fastapi_app
+    from app.features.auth.service import generate_token
+    from app.infra.extensions import get_db
+    app = create_fastapi_app()
+    def database():
+        with object_context[2]() as session:
+            yield session
+    app.dependency_overrides[get_db] = database
+    client = TestClient(app)
+    headers = {'authorization':'Bearer '+generate_token(1)}
+    denied = client.delete('/api/users/2', headers=headers)
+    assert denied.status_code == 403, denied.text
+    assert account_graph == []
+    result = client.delete('/api/users/1', headers=headers)
+    assert result.status_code == 204, result.text
+    assert client.get('/api/users/1', headers=headers).status_code == 401
+    assert_account_deleted(object_context, account_graph)
+
+
+def test_account_delete_sql_failure_preserves_metadata_and_object_intents(object_context,monkeypatch):
+    from app.features.auth.user_service import delete_user
+    from app.features.workspace import docker_service
+    monkeypatch.setattr(docker_service,'remove_container',lambda *args:None)
+    db,storage,factory = object_context
+    with db.begin() as connection:
+        connection.execute(text("""CREATE FUNCTION reject_account_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN RAISE EXCEPTION 'injected account commit failure'; END $$"""))
+        connection.execute(text("""CREATE CONSTRAINT TRIGGER reject_account_delete AFTER DELETE ON users
+            DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_account_delete()"""))
+    with factory() as session:
+        with pytest.raises(Exception,match='injected account commit failure'):
+            delete_user(session,1)
+        session.rollback()
+    with db.connect() as connection:
+        assert connection.scalar(text('SELECT count(*) FROM users')) == 1
+        assert connection.scalar(text('SELECT count(*) FROM workspaces')) == 1
+        assert connection.scalar(text('SELECT count(*) FROM files')) == 1
+        assert connection.scalar(text('SELECT count(*) FROM file_object_deletions')) == 0
+    assert storage.file_exists('shared')
+
+
+@pytest.mark.parametrize('entity',['workspace','collaborator_runtime'])
+def test_account_locks_prevent_new_resources_after_cleanup_enumeration(object_context,monkeypatch,entity):
+    from app.features.auth.user_service import delete_user
+    from app.features.workspace import docker_service
+    db,storage,factory = object_context
+    with db.begin() as connection:
+        connection.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (2,'other','x','common')"))
+    enumerated,release = Event(),Event()
+    def pause(workspace,session):
+        enumerated.set()
+        assert release.wait(timeout=10)
+    monkeypatch.setattr(docker_service,'remove_container',pause)
+    def delete():
+        with factory() as session:
+            delete_user(session,1)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        task = pool.submit(delete)
+        try:
+            assert enumerated.wait(timeout=10)
+            with db.connect() as connection:
+                transaction = connection.begin()
+                connection.execute(text("SET LOCAL lock_timeout='200ms'"))
+                statement = {
+                    'workspace':"INSERT INTO workspaces(id,name,owner_id) VALUES (3,'late',1)",
+                    'collaborator_runtime':"INSERT INTO opencode_runtimes(id,workspace_id,user_id) VALUES (4,1,2)",
+                }[entity]
+                with pytest.raises(Exception,match='lock timeout'):
+                    connection.execute(text(statement))
+                transaction.rollback()
+        finally:
+            release.set()
+        task.result(timeout=10)
+    with db.connect() as connection:
+        assert connection.scalar(text('SELECT count(*) FROM workspaces')) == 0
+        assert connection.scalar(text('SELECT count(*) FROM opencode_runtimes')) == 0
+    assert clean(object_context) == 1 and not storage.file_exists('shared')

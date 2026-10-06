@@ -18,7 +18,7 @@ class McpToken(Base):
     __tablename__ = "mcp_tokens"
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(80), nullable=False, default="MCP Token")
     token_hash = Column(String(64), unique=True, nullable=False, index=True)
     token_preview = Column(String(32), nullable=False)

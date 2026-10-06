@@ -18,8 +18,8 @@ class Folder(Base):
     __tablename__ = "folder"
     id = Column(Integer, primary_key=True)
     name = Column(String(128), nullable=False)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
-    parent_id = Column(Integer, ForeignKey("folder.id"))
+    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_id = Column(Integer, ForeignKey("folder.id", ondelete="CASCADE"))
     created_at = Column(UTCDateTime(), default=utc_now)
 
     # 递归子目录，并级联删除
