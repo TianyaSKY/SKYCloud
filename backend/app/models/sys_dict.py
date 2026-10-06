@@ -4,7 +4,7 @@ from typing import cast
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
 
 
 class SysDict(Base):
@@ -37,7 +37,5 @@ class SysDict(Base):
             value=d.get("value"),
             enable=d.get("enable"),
             des=d.get("des"),
-            created_at=datetime.fromisoformat(cast(str, d.get("created_at")))
-            if cast(str | None, d.get("created_at"))
-            else None,
+            created_at=parse_legacy_datetime(cast(str | None, d.get("created_at"))),
         )

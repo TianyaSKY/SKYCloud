@@ -45,6 +45,7 @@
 <script setup lang="ts">
 import { IconDelete, IconEdit, IconMore } from '@arco-design/web-vue/es/icon'
 import type { AssistantConversation } from '@/api/assistant'
+import { formatDate } from '@/utils/format'
 
 defineProps<{
   conversations: AssistantConversation[]
@@ -61,9 +62,8 @@ defineEmits<{
 
 function formatTime(value: string | null) {
   if (!value) return '--'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '--'
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const formatted = formatDate(value)
+  return formatted === '-' ? '--' : formatted.slice(11)
 }
 </script>
 

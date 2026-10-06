@@ -1,11 +1,10 @@
 import uuid
-from datetime import datetime
 
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
 
 
 class Share(Base):
@@ -42,10 +41,6 @@ class Share(Base):
             id=d.get("id"),
             token=d.get("token"),
             file_id=d.get("file_id"),
-            created_at=datetime.fromisoformat(d.get("created_at"))
-            if d.get("created_at")
-            else None,
-            expires_at=datetime.fromisoformat(d.get("expires_at"))
-            if d.get("expires_at")
-            else None,
+            created_at=parse_legacy_datetime(d.get("created_at")),
+            expires_at=parse_legacy_datetime(d.get("expires_at")),
         )

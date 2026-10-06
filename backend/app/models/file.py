@@ -7,7 +7,7 @@ from sqlalchemy import Column, Integer, String, BigInteger, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 
 from app.infra.extensions import Base, UPLOAD_FOLDER
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
 
 
 class File(Base):
@@ -82,7 +82,5 @@ class File(Base):
             workspace_id=d.get("workspace_id"),
             uploader_id=d.get("uploader_id"),
             parent_id=d.get("parent_id"),
-            created_at=datetime.fromisoformat(cast(str, d.get("created_at")))
-            if cast(str | None, d.get("created_at"))
-            else None,
+            created_at=parse_legacy_datetime(cast(str | None, d.get("created_at"))),
         )

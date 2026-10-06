@@ -6,6 +6,7 @@ import { logger } from './logger'
 // 模块级共享 Intl 实例，避免每次调用重新构造。
 // zh-CN 默认 12 小时制，强制 hour12: false 得到 24 小时制。
 const DATE_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai',
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
@@ -22,7 +23,12 @@ const DATE_TIME_FORMATTER = new Intl.DateTimeFormat('zh-CN', {
  */
 export function formatDate(value: string | number | Date | null | undefined): string {
   if (value === null || value === undefined || value === '') return '-'
-  const date = value instanceof Date ? value : new Date(value)
+  let input = value
+  // Old API/cache timestamps omitted offsets but represent Beijing time.
+  if (typeof input === 'string' && /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/.test(input)) {
+    input = input.length === 10 ? `${input}T00:00:00+08:00` : `${input.replace(' ', 'T')}+08:00`
+  }
+  const date = input instanceof Date ? input : new Date(input)
   const time = date.getTime()
   if (!Number.isFinite(time)) return '-'
   const parts = DATE_TIME_FORMATTER.formatToParts(date)
@@ -39,9 +45,8 @@ export function formatDate(value: string | number | Date | null | undefined): st
   const minute = picked['minute'] ?? ''
   const result = `${year}-${month}-${day} ${hour}:${minute}`
   if (!year || !month || !day || !hour || !minute) {
-    // 分量缺失通常意味着宿主 Intl 数据异常，回退兜底而非输出残缺字符串。
-    logger.warn('formatDate 解析日期分量缺失，回退到 ISO 字符串', { value, result })
-    return date.toISOString().replace('T', ' ').slice(0, 16)
+    logger.warn('formatDate 解析日期分量缺失', { value, result })
+    return '-'
   }
   return result
 }

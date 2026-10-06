@@ -241,7 +241,7 @@ class TestShareModel:
         assert d["token"] == "abc-token"
         assert d["file_id"] == 10
         assert d["link"] == "/api/share/abc-token"
-        assert "2025-06-01" in d["expires_at"]
+        assert d["expires_at"] == "2025-05-31T16:00:00+00:00"
 
     def test_from_cache(self):
         d = {

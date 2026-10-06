@@ -1,10 +1,9 @@
-from datetime import datetime
 
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean, Text
 from sqlalchemy.orm import relationship, backref
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
 
 
 class Inbox(Base):
@@ -43,7 +42,5 @@ class Inbox(Base):
             content=d.get("content"),
             is_read=d.get("is_read"),
             type=d.get("type"),
-            created_at=datetime.fromisoformat(d.get("created_at"))
-            if d.get("created_at")
-            else None,
+            created_at=parse_legacy_datetime(d.get("created_at")),
         )

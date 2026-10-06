@@ -45,6 +45,12 @@ function mountList(conversations: AssistantConversation[]) {
 }
 
 describe('AssistantConversationList', () => {
+  it('shows conversation time in Beijing for UTC API timestamps', () => {
+    const row = conversation(1, 'active', '时区')
+    row.updated_at = '2026-08-02T02:00:00Z'
+    const wrapper = mountList([row])
+    expect(wrapper.find('.session-time').text()).toBe('10:00')
+  })
   it('renders active and archived sessions and emits selection', async () => {
     const wrapper = mountList([
       conversation(1, 'active', '当前专家任务'),

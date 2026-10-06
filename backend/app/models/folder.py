@@ -5,7 +5,7 @@ from sqlalchemy import Column, DateTime, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship, backref
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
 
 
 class Folder(Base):
@@ -58,7 +58,5 @@ class Folder(Base):
             name=d.get("name"),
             workspace_id=d.get("workspace_id"),
             parent_id=d.get("parent_id"),
-            created_at=datetime.fromisoformat(cast(str, d.get("created_at")))
-            if cast(str | None, d.get("created_at"))
-            else None,
+            created_at=parse_legacy_datetime(cast(str | None, d.get("created_at"))),
         )

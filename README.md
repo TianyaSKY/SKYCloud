@@ -350,3 +350,8 @@ RAG Embedding 用量身份由每次调用显式传入：原问题预计算、多
 `.github/branch-protection.json` 是供 master 使用的保护规则：要求上述检查由 GitHub Actions 应用产生并基于最新分支，管理员也需遵守，禁止强推和删除。它不会自动应用到远端。先发布工作流并取得 GitHub 上的成功运行，再应用并读取验证保护规则，避免要求一个还不存在的检查。当前阶段只完成本地定义与验证；远端发布、首次 Linux CI 运行和保护规则启用仍待完成。
 
 本次安装审计发现并更新了 Vue/server-renderer、source-map-js 和 Vue ESLint 插件所携带的 selector parser；当前锁文件审计为零。公告：[Vue SSR 属性校验](https://github.com/advisories/GHSA-g2v6-rqmx-r4w6)、[source-map-js](https://github.com/advisories/GHSA-68fv-2mgg-jv7q)、[selector parser](https://github.com/advisories/GHSA-rj75-hqrm-r3gf)。审计结果会随公告变化，CI 持续重新检查，不保证未来公告仍为零。
+
+
+时间 API 输出现在带明确 UTC 偏移（`+00:00`）。历史无时区列按北京时间解释后换算，aware 值保留原始瞬间；缓存读取同时接受旧的无偏移格式与新的 UTC 格式，并还原为现有列使用的北京时间。分享过期输入和用量范围过滤在 SQL 写入/比较前转换为这一历史表示，分享在截止瞬间即失效。前端公共日期格式化及会话列表统一按 `Asia/Shanghai` 展示，并将旧缓存的无偏移 ISO 时间按北京时间解析；不再依赖浏览器系统时区。
+
+运行 `RUN_TIME_BOUNDARY_TESTS=1 python -m pytest -o addopts='' tests/integration/test_time_boundaries.py` 可核实 PostgreSQL 会话分别使用 UTC/纽约时区时的过期和过滤行为；该检查已加入 CI。此阶段修复输入/输出及展示边界，历史 SQL 列和默认值仍为北京时间，后续 UTC 存储迁移需保留旧瞬间、更新写入/查询约定并验证历史数据，不能只修改服务器 TZ 或列类型。

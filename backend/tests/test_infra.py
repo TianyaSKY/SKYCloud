@@ -60,12 +60,12 @@ class TestLocalIsoformat:
     def test_naive_datetime(self):
         dt = datetime(2025, 3, 15, 10, 30, 0)
         result = local_isoformat(dt)
-        assert result == "2025-03-15T10:30:00"
+        assert result == "2025-03-15T02:30:00+00:00"
 
     def test_aware_datetime_converts(self):
         utc_dt = datetime(2025, 6, 1, 4, 0, 0, tzinfo=timezone.utc)
         result = local_isoformat(utc_dt)
-        assert "12:00:00" in result
+        assert result == "2025-06-01T04:00:00+00:00"
 
 
 # ---------------------------------------------------------------------------

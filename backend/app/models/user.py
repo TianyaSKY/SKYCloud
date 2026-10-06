@@ -1,10 +1,9 @@
-from datetime import datetime
 
 from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Enum
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
 
 
 class User(Base):
@@ -51,9 +50,9 @@ class User(Base):
     @classmethod
     def from_cache(cls, d: dict) -> "User":
         created_at_str = d.get("created_at")
-        created_at = datetime.fromisoformat(created_at_str) if created_at_str else None
+        created_at = parse_legacy_datetime(created_at_str)
         last_active_str = d.get("last_active_at")
-        last_active_at = datetime.fromisoformat(last_active_str) if last_active_str else None
+        last_active_at = parse_legacy_datetime(last_active_str)
         return cls(
             id=d.get("id"),
             username=d.get("username"),

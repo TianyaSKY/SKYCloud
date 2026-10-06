@@ -6,7 +6,7 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.infra.extensions import SessionLocal
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import beijing_now, local_isoformat, to_beijing_naive
 from app.models.token_usage_log import TokenUsageLog
 from app.models.user import User
 
@@ -105,14 +105,14 @@ def get_usage_logs(
 
     if start_date:
         try:
-            sd = datetime.fromisoformat(start_date)
+            sd = to_beijing_naive(datetime.fromisoformat(start_date))
             query = query.filter(TokenUsageLog.created_at >= sd)
         except ValueError:
             pass
 
     if end_date:
         try:
-            ed = datetime.fromisoformat(end_date)
+            ed = to_beijing_naive(datetime.fromisoformat(end_date))
             query = query.filter(TokenUsageLog.created_at <= ed)
         except ValueError:
             pass
@@ -211,14 +211,14 @@ def get_all_users_usage_logs(
 
     if start_date:
         try:
-            sd = datetime.fromisoformat(start_date)
+            sd = to_beijing_naive(datetime.fromisoformat(start_date))
             query = query.filter(TokenUsageLog.created_at >= sd)
         except ValueError:
             pass
 
     if end_date:
         try:
-            ed = datetime.fromisoformat(end_date)
+            ed = to_beijing_naive(datetime.fromisoformat(end_date))
             query = query.filter(TokenUsageLog.created_at <= ed)
         except ValueError:
             pass

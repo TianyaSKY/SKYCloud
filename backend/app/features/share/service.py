@@ -22,7 +22,7 @@ def create_share_link(session: Session, user_id, file_id, expires_at=None):
     share = Share(
         user_id=user_id,
         file_id=file_id,
-        expires_at=expires_at
+        expires_at=to_beijing_naive(expires_at)
     )
     session.add(share)
     session.commit()
@@ -36,7 +36,7 @@ def get_share_by_token(session: Session, token):
         return None
 
     expires_at = to_beijing_naive(share.expires_at)
-    if expires_at and expires_at < beijing_now():
+    if expires_at and expires_at <= beijing_now():
         return None
 
     return share
