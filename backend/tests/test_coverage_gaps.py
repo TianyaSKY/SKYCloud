@@ -231,8 +231,9 @@ class TestChangeLog:
         mock_session.commit.side_effect = Exception("DB fail")
         with patch.object(session, "commit", side_effect=Exception("DB fail")), \
              patch("app.features.folder.change_log.logger"):
-            update_checkpoint(session, test_workspace.id, 5)
-        # 不抛异常
+            with pytest.raises(Exception, match="DB fail"):
+                update_checkpoint(session, test_workspace.id, 5)
+        # 数据库失败必须传回整理入口。
 
     def test_load_incremental_context_no_changes(self, session, test_workspace):
         from app.features.folder.change_log import load_incremental_context

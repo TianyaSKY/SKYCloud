@@ -4,6 +4,9 @@ import json
 from typing import Any
 
 from sqlalchemy.orm import Session
+from sqlalchemy import case
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.infra.extensions import SessionLocal
 from app.infra.datetime_utils import beijing_now
@@ -185,25 +188,35 @@ def update_checkpoint(
 ) -> None:
     """推进整理检查点；last_event_id 只增不减，避免并发回退。"""
     target_event_id = max(0, int(event_id or 0))
-    checkpoint = session.query(OrganizeCheckpoint).filter_by(workspace_id=workspace_id).first()
-    if checkpoint is None:
-        checkpoint = OrganizeCheckpoint(
-            workspace_id=workspace_id, last_event_id=target_event_id)
-        if mark_full_scan:
-            checkpoint.last_full_scan_at = beijing_now()
-        session.add(checkpoint)
-    else:
-        checkpoint.last_event_id = max(
-            int(checkpoint.last_event_id or 0), target_event_id)
-        if mark_full_scan:
-            checkpoint.last_full_scan_at = beijing_now()
-
+    now = beijing_now()
+    dialect = session.get_bind().dialect.name
+    insert = {"postgresql": postgres_insert, "sqlite": sqlite_insert}.get(dialect)
+    if insert is None:
+        raise RuntimeError("Unsupported checkpoint database")
+    statement = insert(OrganizeCheckpoint).values(
+        workspace_id=workspace_id, last_event_id=target_event_id,
+        last_full_scan_at=now if mark_full_scan else None, updated_at=now,
+    )
+    values = {
+        "last_event_id": case(
+            (OrganizeCheckpoint.last_event_id < statement.excluded.last_event_id,
+             statement.excluded.last_event_id),
+            else_=OrganizeCheckpoint.last_event_id,
+        ),
+        "updated_at": now,
+    }
+    if mark_full_scan:
+        values["last_full_scan_at"] = now
+    statement = statement.on_conflict_do_update(
+        index_elements=[OrganizeCheckpoint.workspace_id], set_=values
+    )
     try:
+        session.execute(statement)
         session.commit()
-    except Exception as exc:
+    except Exception:
         session.rollback()
-        logger.warning(
-            f"Failed to update organize checkpoint for workspace {workspace_id}: {exc}")
+        logger.exception("Failed to update organize checkpoint for workspace {}", workspace_id)
+        raise
 
 
 def load_incremental_context(

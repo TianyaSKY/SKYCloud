@@ -15,6 +15,7 @@ from app.features.workspace.permissions import assert_can_write
 from .scope import OrganizeScope, organize_scope, bind_tools
 from app.features.folder import change_log as change_log_service
 from app.infra.llm.config import get_chat_model_config
+from app.infra.llm.sync_client import record_llm_usage
 from .tools import (
     check_empty_folders_internal,
     check_mixed_folders_internal,
@@ -270,6 +271,13 @@ def _organize_files(workspace_id: int, user_id: int, scope: OrganizeScope):
                             "output_tokens", 0)
                         total_usage["total_tokens"] += usage.get(
                             "total_tokens", 0)
+                        record_llm_usage(
+                            user_id=user_id, action="organize", model_name=model,
+                            prompt_tokens=usage.get("input_tokens", 0),
+                            completion_tokens=usage.get("output_tokens", 0),
+                            total_tokens=usage.get("total_tokens", 0),
+                            query_summary="文件整理模型调用",
+                        )
 
                 elif "tools" in chunk:
                     tool_message = chunk["tools"]["messages"][0]
@@ -346,22 +354,6 @@ def handle_organize_process(workspace_id: int, user_id: int):
             f"{results}"
         )
 
-        if token_usage.get("total_tokens", 0) > 0:
-            try:
-                from app.infra.llm.sync_client import record_llm_usage
-                from app.infra.llm.config import get_chat_model_config
-                chat_config = get_chat_model_config()
-                record_llm_usage(
-                    user_id=user_id,
-                    action="organize",
-                    model_name=chat_config.get("model", "unknown"),
-                    prompt_tokens=token_usage.get("input_tokens", 0),
-                    completion_tokens=token_usage.get("output_tokens", 0),
-                    total_tokens=token_usage.get("total_tokens", 0),
-                    query_summary="文件整理任务",
-                )
-            except Exception as e:
-                logger.warning(f"Failed to record organize token usage: {e}")
 
     except Exception as exc:
         logger.exception("文件整理失败")

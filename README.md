@@ -324,4 +324,9 @@ Worker 的失败状态写入发生数据库异常时会回滚并向队列层传�
 
 整理 Agent 的工具在创建时绑定发起用户、工作空间和独立 Session 工厂，绑定信息由服务端闭包保存，模型不能改成其他空间；未绑定身份的工具直接拒绝执行。工具即使在不同线程并行调用，也会显式建立并恢复各自任务上下文。每次工具调用重新查询 editor/admin 权限；用户被降权或移除后不能继续使用整理工具。文件信息查询限定任务空间，创建目录校验父目录归属，递归合并会拒绝历史跨空间父子关系和循环结构。任务开始和推进 checkpoint 时也重新校验权限。
 
-真实工具权限检查可在 backend 目录执行 `RUN_ORGANIZE_SCOPE_TESTS=1 python -m pytest -o addopts='' tests/integration/test_organize_scope.py`。它在独立子进程使用真实锁定版本 LangChain 工具、PostgreSQL 和 Redis，覆盖无身份调用、模型伪造空间、跨空间文件信息与父目录、两空间并行执行、历史错误父子关系及降权/移除后的调用。此检查没有调用真实外部模型或运行完整整理 Agent；整理任务的可靠入队、执行去重和完整模型流程仍需继续验证。
+真实工具权限检查可在 backend 目录执行 `RUN_ORGANIZE_SCOPE_TESTS=1 python -m pytest -o addopts='' tests/integration/test_organize_scope.py`。它在独立子进程使用真实锁定版本 LangChain 工具、PostgreSQL 和 Redis，覆盖无身份调用、模型伪造空间、跨空间文件信息与父目录、两空间并行执行、历史错误父子关系及降权/移除后的调用。此权限检查没有调用模型或运行完整整理 Agent；完整整理流程测试见下文，整理任务的可靠入队和执行去重仍需继续修复。
+
+
+完整整理检查可在 backend 目录执行 `RUN_ORGANIZE_PIPELINE_TESTS=1 SKYCLOUD_TEST_MINIO_IMAGE=sha256:<已构建 MinIO 镜像ID> python -m pytest -o addopts='' tests/integration/test_organize_pipeline.py`。测试通过真实 API 上传并申请整理任务，使用实际 RabbitMQ/Redis/MinIO/PostgreSQL；独立子进程运行锁定的 LangGraph Agent、ChatOpenAI 和已绑定身份的工具。仅模型端点由本地 HTTP 服务提供合成的工具调用响应。成功路径实际列文件、创建目录、移动文件，再验证结构、checkpoint、收件箱、锁释放及文件原始字节。上传 API 的认证缓存仍沿用父测试替身。
+
+Checkpoint 使用原子 upsert 保持事件位点只增不减，并发首次创建不会产生重复行；数据库写入失败会回滚并通知整理失败，不再谎报位点已推进。已返回的模型调用用量逐次记录，后续工具/数据库失败不再丢弃这些已知用量；用量数据库写入本身仍遵循现有 best-effort 记录策略。真实模型拒绝、checkpoint 触发器拒绝和并发更新场景均有覆盖。整理任务的 Redis 与 RabbitMQ 交接、崩溃恢复及执行去重仍需继续处理。
