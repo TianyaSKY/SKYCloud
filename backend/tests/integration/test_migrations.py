@@ -326,3 +326,55 @@ def test_upload_consumption_rollback_and_concurrent_completion(postgres):
         assert conn.scalar(text("SELECT count(*) FROM files")) == 1
         assert conn.scalar(text("SELECT status FROM upload_reservations WHERE id=:id"), {'id': rid}) == 'completed'
         assert conn.scalar(text("SELECT sum(attempts) FROM upload_daily_usage")) == 1
+
+
+def test_legacy_mcp_audit_redaction_preserves_event_metadata(postgres):
+    upgrade(postgres, "0009_utc_timestamps")
+    with postgres.begin() as db:
+        db.execute(text("""INSERT INTO mcp_audit_logs
+            (request_id,actor_type,tool_name,arguments_summary,entity_id,success,error_type,duration_ms)
+            VALUES ('legacy','user','upload_file',:body,42,false,'tool_error',12),
+                   ('empty','user','read_file_content',NULL,43,true,NULL,4)"""),
+            {"body": '{"args":["PRIVATE_LEGACY_BODY_AND_TOKEN"]}'})
+        events = db.execute(text("""SELECT id,request_id,actor_type,tool_name,entity_id,
+            success,error_type,duration_ms,created_at FROM mcp_audit_logs ORDER BY id""")).all()
+    upgrade(postgres)
+    check_schema(postgres)
+    with postgres.connect() as db:
+        assert db.execute(text("""SELECT id,request_id,actor_type,tool_name,entity_id,
+            success,error_type,duration_ms,created_at FROM mcp_audit_logs ORDER BY id""")).all() == events
+        assert db.execute(text("SELECT arguments_summary FROM mcp_audit_logs ORDER BY id")).scalars().all() == [
+            '{"schema":2,"legacy_redacted":true}', None]
+    # Redaction executes only once; later safe summaries are not rewritten on startup.
+    with postgres.begin() as db:
+        db.execute(text("UPDATE mcp_audit_logs SET arguments_summary='safe-summary' WHERE request_id='legacy'"))
+    upgrade(postgres)
+    with postgres.connect() as db:
+        assert db.scalar(text("SELECT arguments_summary FROM mcp_audit_logs WHERE request_id='legacy'")) == 'safe-summary'
+    with pytest.raises(RuntimeError, match="cannot be reconstructed"):
+        with postgres.begin() as db:
+            command.downgrade(migration_config(db), "0009_utc_timestamps")
+    check_schema(postgres)
+
+
+def test_mcp_audit_redaction_failure_rolls_back_and_can_retry(postgres):
+    upgrade(postgres, "0009_utc_timestamps")
+    with postgres.begin() as db:
+        db.execute(text("""INSERT INTO mcp_audit_logs(request_id,actor_type,tool_name,arguments_summary,success)
+            VALUES ('first','user','upload_file','private-one',true),
+                   ('second','user','upload_file','private-two',true)"""))
+        db.execute(text("""CREATE FUNCTION reject_audit_redaction() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN IF NEW.request_id='second' THEN RAISE EXCEPTION 'injected audit migration failure'; END IF;
+            RETURN NEW; END $$"""))
+        db.execute(text("CREATE TRIGGER reject_audit BEFORE UPDATE ON mcp_audit_logs FOR EACH ROW EXECUTE FUNCTION reject_audit_redaction()"))
+    with pytest.raises(Exception, match="injected audit migration failure"):
+        upgrade(postgres)
+    with postgres.connect() as db:
+        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0009_utc_timestamps"
+        assert db.execute(text("SELECT arguments_summary FROM mcp_audit_logs ORDER BY id")).scalars().all() == ['private-one','private-two']
+    with postgres.begin() as db:
+        db.execute(text("DROP TRIGGER reject_audit ON mcp_audit_logs"))
+    upgrade(postgres)
+    check_schema(postgres)
+    with postgres.connect() as db:
+        assert db.scalar(text("SELECT count(*) FROM mcp_audit_logs WHERE arguments_summary LIKE '%private%'")) == 0
