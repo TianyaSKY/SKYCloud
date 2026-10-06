@@ -156,13 +156,8 @@ def record_llm_usage(
 class TrackingOpenAIEmbeddings(OpenAIEmbeddings):
     """LangChain Embeddings 包装：走 embed_texts 以统一记 token。
 
-    调用前 set_tracking_user(user_id) 才能正确归属用量。
+    用户身份按每次调用传入，缓存对象不保存请求身份。
     """
-
-    _tracking_user_id: int = 0
-
-    def set_tracking_user(self, user_id: int) -> None:
-        self._tracking_user_id = user_id
 
     def _as_config(self) -> dict[str, str]:
         api_key = self.openai_api_key
@@ -177,22 +172,22 @@ class TrackingOpenAIEmbeddings(OpenAIEmbeddings):
         }
 
     async def aembed_documents(
-            self, texts: list[str], chunk_size: int | None = None
+            self, texts: list[str], chunk_size: int | None = None, *, user_id: int = 0
     ) -> list[list[float]]:
         if not texts:
             return []
         return await embed_texts(
             texts=texts,
             config=self._as_config(),
-            user_id=self._tracking_user_id,
+            user_id=user_id,
             query_summary=f"chat_rag({len(texts)} texts)",
         )
 
-    async def aembed_query(self, text: str) -> list[float]:
+    async def aembed_query(self, text: str, *, user_id: int = 0) -> list[float]:
         result = await embed_texts(
             texts=[text],
             config=self._as_config(),
-            user_id=self._tracking_user_id,
+            user_id=user_id,
             query_summary=f"chat_rag_query",
         )
         return result[0] if result else []

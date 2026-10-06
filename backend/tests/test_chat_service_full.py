@@ -56,7 +56,8 @@ class TestChatServiceModels:
         with patch("app.features.chat.service.get_embeddings_model", return_value=mock_emb), \
              patch("app.features.chat.service._vector_search_docs", return_value=[]), \
              patch("app.features.chat.rerank.rerank_documents", new_callable=AsyncMock, return_value=[]):
-            result = asyncio.run(custom_db_retriever("test", 1))
+            result = asyncio.run(custom_db_retriever("test", 1, user_id=77))
+        mock_emb.aembed_query.assert_awaited_once_with("test", user_id=77)
         assert result == []
 
 
@@ -74,14 +75,15 @@ class TestChatServiceMultiQuery:
              patch("app.features.chat.service._db_search_by_vector", return_value=[]), \
              patch("app.features.chat.service.build_retrieval_query", return_value="test"), \
              patch("app.features.chat.rerank.rerank_documents", new_callable=AsyncMock, return_value=[]):
-            result = asyncio.run(multi_query_db_retriever("test", 1, dims))
+            result = asyncio.run(multi_query_db_retriever("test", 1, dims, user_id=77))
+        assert mock_emb.aembed_documents.await_args.kwargs["user_id"] == 77
         assert result == []
 
     def test_multi_query_db_retriever_with_orig_vector(self):
         from app.features.chat.service import multi_query_db_retriever
         from app.features.chat.query_rewrite import RewriteKeywordDimensions
         dims = RewriteKeywordDimensions(
-            topic_terms=["test"], entity_terms=[], time_terms=[],
+            topic_terms=["additional"], entity_terms=[], time_terms=[],
             file_type_terms=[], action_terms=[], synonym_terms=[]
         )
         mock_emb = MagicMock()
@@ -90,7 +92,8 @@ class TestChatServiceMultiQuery:
              patch("app.features.chat.service._db_search_by_vector", return_value=[]), \
              patch("app.features.chat.service.build_retrieval_query", return_value="test"), \
              patch("app.features.chat.rerank.rerank_documents", new_callable=AsyncMock, return_value=[]):
-            result = asyncio.run(multi_query_db_retriever("test", 1, dims, original_vector=[0.1] * 1024))
+            result = asyncio.run(multi_query_db_retriever("test", 1, dims, original_vector=[0.1] * 1024, user_id=77))
+        assert mock_emb.aembed_documents.await_args.kwargs["user_id"] == 77
         assert result == []
 
     def test_embed_original_question(self):
@@ -98,7 +101,8 @@ class TestChatServiceMultiQuery:
         mock_emb = MagicMock()
         mock_emb.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         with patch("app.features.chat.service.get_embeddings_model", return_value=mock_emb):
-            result = asyncio.run(embed_original_question({"question": "test"}))
+            result = asyncio.run(embed_original_question({"question": "test", "user_id": 77}))
+        mock_emb.aembed_query.assert_awaited_once_with("test", user_id=77)
         assert len(result) == 1024
 
     def test_embed_original_question_empty(self):
@@ -114,10 +118,11 @@ class TestChatServiceMultiQuery:
             file_type_terms=[], action_terms=[], synonym_terms=[]
         )
         with patch("app.features.chat.service.require_keyword_dimensions", return_value=dims), \
-             patch("app.features.chat.service.multi_query_db_retriever", new_callable=AsyncMock, return_value=[]):
+             patch("app.features.chat.service.multi_query_db_retriever", new_callable=AsyncMock, return_value=[]) as retrieve:
             result = asyncio.run(retrieve_docs_with_rewrite({
-                "question": "test", "workspace_id": 1, "rewrite_output": {}, "original_vector": None
+                "question": "test", "workspace_id": 1, "rewrite_output": {}, "original_vector": None, "user_id": 77
             }))
+        retrieve.assert_awaited_once_with("test", 1, dims, original_vector=None, user_id=77)
         assert result == []
 
 

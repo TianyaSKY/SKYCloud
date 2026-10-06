@@ -158,10 +158,10 @@ def _fuse_docs_with_rrf(
     return fused_docs
 
 
-async def custom_db_retriever(query_text: str, workspace_id: int):
+async def custom_db_retriever(query_text: str, workspace_id: int, *, user_id: int = 0):
     """单查询向量检索 + rerank；保留兼容旧调用。"""
     embeddings = get_embeddings_model()
-    query_vector = (await embeddings.aembed_query(query_text))[:1024]
+    query_vector = (await embeddings.aembed_query(query_text, user_id=user_id))[:1024]
     docs = await asyncio.to_thread(
         _vector_search_docs,
         query_vector,
@@ -179,6 +179,7 @@ async def multi_query_db_retriever(
         workspace_id: int,
         dimensions: RewriteKeywordDimensions,
         original_vector: list[float] | None = None,
+        *, user_id: int = 0,
 ):
     """多查询并行召回 → RRF → Rerank。
 
@@ -206,7 +207,7 @@ async def multi_query_db_retriever(
     if original_vector and queries:
         additional_queries = queries[1:]  # queries[0] 始终是原始问题
         if additional_queries:
-            extra_vectors = await embeddings.aembed_documents(additional_queries)
+            extra_vectors = await embeddings.aembed_documents(additional_queries, user_id=user_id)
             all_vectors = [original_vector] + [v[:1024] for v in extra_vectors]
         else:
             all_vectors = [original_vector]
@@ -215,7 +216,7 @@ async def multi_query_db_retriever(
             f"[计时] 增量 embedding {len(additional_queries)} 条: {t2 - t1:.2f}s"
             f" (原始问题已并行预计算)")
     else:
-        all_vectors = await embeddings.aembed_documents(queries)
+        all_vectors = await embeddings.aembed_documents(queries, user_id=user_id)
         all_vectors = [v[:1024] for v in all_vectors]
         t2 = time.perf_counter()
         logger.info(f"[计时] 批量 embedding {len(queries)} 条: {t2 - t1:.2f}s")
@@ -288,7 +289,7 @@ async def embed_original_question(payload: dict) -> list[float]:
     if not question:
         return []
     embeddings = get_embeddings_model()
-    vector = await embeddings.aembed_query(question)
+    vector = await embeddings.aembed_query(question, user_id=int(payload.get("user_id") or 0))
     return vector[:1024]
 
 
@@ -300,21 +301,17 @@ async def retrieve_docs_with_rewrite(payload: dict):
 
     dimensions = require_keyword_dimensions(rewrite_output)
     return await multi_query_db_retriever(
-        question, workspace_id, dimensions, original_vector=original_vector
+        question, workspace_id, dimensions, original_vector=original_vector,
+        user_id=int(payload.get("user_id") or 0),
     )
 
 
 async def generate_chat_events(user_id: int, workspace_id: int, query: str, history: list):
     """SSE 异步生成器：关键词 → 检索状态 → 回答 token，并统一记 token 用量。"""
-    from app.infra.llm.client import record_llm_usage, TrackingOpenAIEmbeddings
+    from app.infra.llm.client import record_llm_usage
 
     llm = get_chat_model()
     formatted_history = format_history(history)
-
-    # embedding 侧设置 user_id，便于 token 追踪归属
-    emb_model = get_embeddings_model()
-    if isinstance(emb_model, TrackingOpenAIEmbeddings):
-        emb_model.set_tracking_user(user_id)
 
     # 关键词重写：多维度 JSON，便于下游拼接多路查询
     rewrite_prompt = ChatPromptTemplate.from_template("""
@@ -376,6 +373,7 @@ async def generate_chat_events(user_id: int, workspace_id: int, query: str, hist
                                ).with_config({"run_name": "embed_original"}),
                                "question": itemgetter("question"),
                                "workspace_id": itemgetter("workspace_id"),
+                               "user_id": itemgetter("user_id"),
                            } | RunnableLambda(retrieve_docs_with_rewrite).with_config(
                     {"run_name": "custom_db_retriever"}
                 ) | format_docs,

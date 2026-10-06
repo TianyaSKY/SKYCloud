@@ -337,3 +337,6 @@ Checkpoint 使用原子 upsert 保持事件位点只增不减，并发首次创�
 升级前停止旧 Worker、备份并迁移数据库，再启动新版服务。旧 Redis 锁不再作为执行依据；带用户和 task token 的历史 JSON 消息在首次执行时核对权限并建立记录，与已有活跃任务冲突则送失败队列。仅空间 ID、缺少发起用户的历史消息不能执行，需管理员核实后重新发起。迁移不会从缺少用户身份的 Redis 锁补齐记录，也拒绝丢弃任务身份的降级。
 
 真实控制检查：`RUN_ORGANIZE_TASK_TESTS=1 python -m pytest -o addopts='' tests/integration/test_organize_tasks.py`（backend 目录），覆盖并发申请、执行互斥、终态重投、旧凭据拒绝、broker 拒绝后恢复，以及杀死真实子进程后的锁释放和消息重投。执行中的崩溃可能留下已提交的目录移动或已发生的模型请求，恢复时这些操作可能再次发生；这一机制不保证外部模型请求只发生一次。最终结构校验失败会记录失败状态，不推进 checkpoint。
+
+
+RAG Embedding 用量身份由每次调用显式传入：原问题预计算、多查询补充和单路检索均携带发起用户，缓存 Embedding 对象不保存可变用户 ID。`tests/test_embedding_identity.py` 在独立进程运行真实 LangChain Runnable 管线、缓存 Embedding 包装及 OpenAI SDK，用本地 HTTP Embedding 端点和 SQLite 用量事务验证并发用户隔离与取消后的后续调用；关键词和回答模型使用合成 Runnable，向量数据库检索使用空结果适配器。它不代表外部供应商或完整 PostgreSQL RAG 检索验证。

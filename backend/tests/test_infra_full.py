@@ -663,14 +663,6 @@ class TestLLMClient:
         # embed_query 逻辑：result[0] if result else []
         assert result == []
 
-    def test_tracking_set_tracking_user(self):
-        """set_tracking_user 设置 _tracking_user_id 类属性。"""
-        from app.infra.llm import client
-        # 直接测试类属性
-        client.TrackingOpenAIEmbeddings._tracking_user_id = 42
-        assert client.TrackingOpenAIEmbeddings._tracking_user_id == 42
-
-
 class TestAppInit:
     def test_initialize_application_checks_schema_before_creating_upload_directory(self):
         from app import initialize_application
