@@ -31,3 +31,9 @@ def assert_mcp_write_permission(session, context: McpRequestContext) -> None:
     """Revalidate database membership/role in the tool-owned transaction."""
     from app.features.workspace.permissions import assert_can_write
     assert_can_write(session, context.workspace_id, context.user_id)
+
+
+def assert_mcp_read_permission(session, context: McpRequestContext):
+    """Revalidate membership before any database or cache-backed read."""
+    from app.features.workspace.permissions import assert_member
+    return assert_member(session, context.workspace_id, context.user_id)

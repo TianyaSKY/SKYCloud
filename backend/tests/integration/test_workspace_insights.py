@@ -103,3 +103,39 @@ def test_batch_delete_revalidates_after_each_committed_item(postgres, monkeypatc
             assert db.execute(text("SELECT id FROM files")).scalars().all() == [2]
     finally:
         reset_mcp_context(token)
+
+
+@pytest.mark.parametrize("operation", ["list_files","get_user_folders","get_current_user"])
+def test_remaining_reads_revalidate_before_warm_cache(postgres,monkeypatch,operation):
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'admin')"))
+        db.execute(text("INSERT INTO folder(id,name,workspace_id,parent_id) VALUES (1,'/',1,NULL),(2,'private-name',1,1)"))
+        db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id,parent_id) VALUES (1,'private-file','private',3,'success',1,1,1)"))
+    monkeypatch.setattr(server,"SessionLocal",sessionmaker(bind=postgres))
+    token = set_mcp_context(McpRequestContext(user_id=1,workspace_id=1,role="admin"))
+    try:
+        warm = json.loads(asyncio.run(getattr(server,operation)()))
+        if operation == "list_files":
+            assert warm["files"]["items"][0]["name"] == "private-file"
+        elif operation == "get_user_folders":
+            assert any(folder["name"] == "private-name" for folder in warm)
+        else:
+            assert warm["workspace_role"] == "admin"
+            with postgres.begin() as independent:
+                independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
+            assert json.loads(asyncio.run(server.get_current_user()))["workspace_role"] == "viewer"
+        from unittest.mock import MagicMock
+        cached = MagicMock(return_value=warm)
+        if operation == "list_files":
+            monkeypatch.setattr(server.folder_service,"get_root_folder_id",cached)
+        elif operation == "get_user_folders":
+            monkeypatch.setattr(server.folder_service,"get_folders",cached)
+        with postgres.begin() as independent:
+            independent.execute(text("DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1"))
+        assert json.loads(asyncio.run(getattr(server,operation)())) == {"error":"您不是该工作空间的成员"}
+        cached.assert_not_called()
+    finally:
+        reset_mcp_context(token)

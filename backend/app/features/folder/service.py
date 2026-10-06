@@ -20,7 +20,7 @@ ORGANIZE_TASK_LOCK_TTL_SECONDS = 6 * 60 * 60
 
 FOLDER_CACHE_PREFIX = "workspace:folders"
 ROOT_FOLDER_CACHE_PREFIX = "workspace:root_folder"
-ROOT_FILES_CACHE_PREFIX = "workspace:root_files"
+ROOT_FILES_CACHE_PREFIX = "workspace:root_files:v2"
 FOLDER_CACHE_EXPIRE = 3600
 
 
@@ -192,7 +192,7 @@ def get_files_in_root_folder(session: Session, workspace_id) -> List[dict]:
     if not root_folder_id:
         return []
 
-    files = session.query(File).filter_by(parent_id=root_folder_id).all()
+    files = session.query(File).filter_by(workspace_id=workspace_id, parent_id=root_folder_id).all()
     return [f.to_dict() for f in files]
 
 

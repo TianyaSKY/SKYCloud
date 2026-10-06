@@ -51,7 +51,7 @@ from app.mcp.context import (
 )
 from app.mcp import runtime_token_service
 from app.mcp.audit import audited_tool
-from app.mcp.permissions import assert_mcp_write_permission
+from app.mcp.permissions import assert_mcp_write_permission, assert_mcp_read_permission
 
 from loguru import logger
 
@@ -243,6 +243,12 @@ def _require_admin_context() -> McpRequestContext:
     return context
 
 
+def _current_read_role(session, context: McpRequestContext) -> str:
+    if is_mcp_request_active() or get_optional_mcp_context() is not None:
+        return assert_mcp_read_permission(session, context).value
+    return context.role
+
+
 def _assert_current_write_permission(session, context: McpRequestContext) -> None:
     # Only old direct unit callers lack verified context. ASGI requests always
     # set the active marker, so no real request can use this compatibility seam.
@@ -357,6 +363,7 @@ async def get_current_user() -> str:
     def _work():
         session = SessionLocal()
         try:
+            role = _current_read_role(session, context)
             from app.models.user import User
             user = session.get(User, user_id)
             if not user:
@@ -364,10 +371,12 @@ async def get_current_user() -> str:
             info = user.to_dict()
             info.pop("password_hash", None)  # 绝不经 MCP 回传哈希
             info["workspace_id"] = context.workspace_id
-            info["workspace_role"] = context.role
+            info["workspace_role"] = role
             if context.runtime_id is not None:
                 info["runtime_id"] = context.runtime_id
             return json.dumps(info, ensure_ascii=False, default=str)
+        except (DomainError, HTTPException) as exc:
+            return _service_error_json(exc)
         finally:
             session.close()
 
@@ -436,6 +445,7 @@ async def list_files(
     def _work():
         session = SessionLocal()
         try:
+            _current_read_role(session, context)
             resolved_parent_id = parent_id
             # None 表示「用户根目录内容」，需解析真实 root id，避免列出伪根自身
             if resolved_parent_id is None:
@@ -452,6 +462,8 @@ async def list_files(
                 sort_by,
                 order,
             )
+        except (DomainError, HTTPException) as exc:
+            return json.loads(_service_error_json(exc))
         finally:
             session.close()
 
@@ -1109,7 +1121,13 @@ async def upload_file(
 async def get_user_folders() -> str:
     """获取当前认证用户的所有文件夹列表。"""
     context = _require_read_context()
-    folders = await _run_sync(folder_service.get_folders, context.workspace_id)
+    def _work(session):
+        _current_read_role(session, context)
+        return folder_service.get_folders(session, context.workspace_id)
+    try:
+        folders = await _run_sync(_work)
+    except (DomainError, HTTPException) as exc:
+        return _service_error_json(exc)
     return json.dumps(folders, ensure_ascii=False, default=str)
 
 
