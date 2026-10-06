@@ -22,3 +22,5 @@ from .upload_reservation import UploadReservation, UploadDailyUsage
 from .file_task_outbox import FileTaskOutbox
 
 from .organize_task import OrganizeTask
+
+from .file_object_deletion import FileObjectDeletion

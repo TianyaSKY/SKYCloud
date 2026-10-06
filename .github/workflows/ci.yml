@@ -74,7 +74,7 @@ jobs:
         working-directory: frontend
 
   integration:
-    name: PostgreSQL and RabbitMQ
+    name: PostgreSQL, RabbitMQ and MinIO
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -87,6 +87,14 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements-test.lock
       - run: 'python -m pip install --require-hashes --only-binary=:all: -r backend/requirements-test.lock'
+      - name: Build checksum-locked MinIO fixture
+        run: |
+          python - <<'PY'
+          import os, runpy
+          reference = runpy.run_path("scripts/build-minio-image.py")["build"]()
+          with open(os.environ["GITHUB_ENV"], "a") as environment:
+              environment.write("SKYCLOUD_TEST_MINIO_IMAGE=" + reference + "\n")
+          PY
       - name: Preload fixture images before their readiness deadlines
         run: |
           docker pull pgvector/pgvector:pg15
@@ -101,6 +109,7 @@ jobs:
           RUN_TIME_BOUNDARY_TESTS: '1'
           RUN_UTC_MIGRATION_TESTS: '1'
           RUN_WORKSPACE_INSIGHTS_TESTS: '1'
+          RUN_OBJECT_DELETION_TESTS: '1'
         run: >-
           python -m pytest -o addopts='' -q
           tests/integration/test_migrations.py
@@ -110,6 +119,7 @@ jobs:
           tests/integration/test_time_boundaries.py
           tests/integration/test_utc_migration.py
           tests/integration/test_workspace_insights.py
+          tests/integration/test_file_object_deletion.py
 
   images:
     name: Image (${{ matrix.image }})

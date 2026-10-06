@@ -40,6 +40,7 @@ class File(Base):
     chunks = relationship("FileChunk", cascade="all, delete-orphan", passive_deletes=True)
 
     __table_args__ = (
+        Index("ix_files_object_reference", "file_path"),
         Index(
             "file_vector_idx",
             "vector_info",

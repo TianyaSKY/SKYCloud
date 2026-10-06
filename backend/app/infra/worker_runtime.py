@@ -20,6 +20,7 @@ from app.features.folder.organize.handler import handle_organize_process
 from app.infra.indexing.handler import handle_file_indexing as handle_file_process
 from app.infra.llm.sync_client import close_sync_clients
 from app.infra.file_task_outbox import deliver_pending_file_tasks
+from app.infra.file_object_deletion import delete_pending_objects
 from app.infra.organize_tasks import task_execution, deliver_pending_organize_tasks, RetryTaskLater
 from sqlalchemy.exc import SQLAlchemyError
 from app.infra.task_queue import (
@@ -49,6 +50,10 @@ def run_scheduler() -> None:
             deliver_pending_organize_tasks()
         except Exception:
             logger.exception("Error delivering pending organize tasks")
+        try:
+            delete_pending_objects()
+        except Exception:
+            logger.exception("Error cleaning pending file objects")
         if time.monotonic() >= next_cleanup:
             try:
                 with SessionLocal() as session:

@@ -128,3 +128,8 @@ def list_workspace_files(session: Session, workspace_id: int) -> list[File]:
 
 def status_counts(session: Session, workspace_id: int) -> dict[str, int]:
     return dict(session.query(File.status, func.count(File.id)).filter(File.workspace_id == workspace_id).group_by(File.status).all())
+
+
+def find_live_file(session: Session, file_id: int) -> File | None:
+    """Refresh an instant-clone source after reservation commit and object locking."""
+    return session.query(File).populate_existing().filter(File.id == file_id).first()

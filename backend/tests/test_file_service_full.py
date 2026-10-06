@@ -7,6 +7,12 @@ import pytest
 
 
 class TestFileServiceClone:
+    @pytest.fixture(autouse=True)
+    def existing_source_object(self, monkeypatch):
+        storage = MagicMock()
+        storage.file_exists.return_value = True
+        monkeypatch.setattr("app.features.file.service.get_storage_client", lambda: storage)
+
     def test_clone_existing_file_success(self, session, test_workspace):
         from app.features.file.service import _clone_existing_file
         from app.models.file import File

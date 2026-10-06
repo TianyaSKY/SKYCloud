@@ -5,7 +5,7 @@ from typing import List
 
 from sqlalchemy.orm import Session
 
-from app.exceptions import PermissionDeniedError, ResourceNotFoundError
+from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
 from app.infra.extensions import redis_client
 from app.infra.cache import cacheable, evict_cache
 from app.infra.task_queue import publish_organize_task
@@ -105,7 +105,7 @@ def update_folder(session: Session, id, data):
 
 
 def delete_folder(session: Session, id):
-    folder = session.get(Folder, id)
+    folder = session.query(Folder).filter(Folder.id == id).with_for_update().first()
     if not folder:
         raise ResourceNotFoundError("Folder not found")
     workspace_id = folder.workspace_id
@@ -136,9 +136,15 @@ def delete_folder(session: Session, id):
         raise e
 
 
-def _delete_folder_recursive(session: Session, folder, deleted_events: list[dict]):
-    files = session.query(File).filter_by(parent_id=folder.id).all()
+def _delete_folder_recursive(session: Session, folder, deleted_events: list[dict], visited=None):
+    visited = set() if visited is None else visited
+    if folder.id in visited:
+        raise BusinessRuleError("Invalid folder hierarchy")
+    visited.add(folder.id)
+    files = session.query(File).filter_by(parent_id=folder.id).order_by(File.id).with_for_update().all()
     for file in files:
+        if file.workspace_id != folder.workspace_id:
+            raise PermissionDeniedError("Folder contains a file from another workspace")
         deleted_events.append(
             {
                 "entity_type": "file",
@@ -153,9 +159,11 @@ def _delete_folder_recursive(session: Session, folder, deleted_events: list[dict
         # 递归删除时不单独 commit，由最外层 delete_folder 统一 commit
         delete_file(session, file.id, commit=False, log_event=False)
 
-    subfolders = session.query(Folder).filter_by(parent_id=folder.id).all()
+    subfolders = session.query(Folder).filter_by(parent_id=folder.id).order_by(Folder.id).with_for_update().all()
     for subfolder in subfolders:
-        _delete_folder_recursive(session, subfolder, deleted_events)
+        if subfolder.workspace_id != folder.workspace_id:
+            raise PermissionDeniedError("Folder contains a folder from another workspace")
+        _delete_folder_recursive(session, subfolder, deleted_events, visited)
         deleted_events.append(
             {
                 "entity_type": "folder",

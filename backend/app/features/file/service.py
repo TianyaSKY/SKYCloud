@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.infra.extensions import UPLOAD_FOLDER, redis_client
 from app.infra.cache import cacheable, evict_cache_pattern
 from app.infra.file_task_outbox import stage_file_tasks
+from app.infra.file_object_deletion import stage_object_deletion, lock_object_path
 from app.infra.storage import get_storage_client
 from app.infra import multipart_storage
 from app.infra.upload_adapter import save_bounded
@@ -171,17 +172,21 @@ def _clone_existing_file(
         content_hash: str,
 ) -> File:
     """秒传：复用已有物理文件路径；仅 success 状态才继承 description/vector。"""
-    resolved_mime = mime_type or cast(str | None, source_file.mime_type)
-    source_status = cast(str | None, source_file.status)
-    status = source_status or "pending"
-    description = (
-        cast(str | None, source_file.description) if status == "success" else None
-    )
-    vector_info = source_file.vector_info if status == "success" else None
+    source_id = source_file.id
+    object_name = cast(str, source_file.file_path)
+    file_size = int(source_file.file_size or 0)
 
-    reservation = upload_quota.reserve(session, workspace_id, uploader_id, int(source_file.file_size or 0), kind="instant")
+    reservation = upload_quota.reserve(session, workspace_id, uploader_id, file_size, kind="instant")
     reservation_id = reservation.id
     try:
+        lock_object_path(session, object_name)
+        source_file = repository.find_live_file(session, source_id)
+        if source_file is None or source_file.file_path != object_name or not get_storage_client().file_exists(object_name):
+            raise ConflictError("Reusable file no longer available; retry upload")
+        resolved_mime = mime_type or cast(str | None, source_file.mime_type)
+        status = cast(str | None, source_file.status) or "pending"
+        description = cast(str | None, source_file.description) if status == "success" else None
+        vector_info = source_file.vector_info if status == "success" else None
         upload_quota.consume(session, workspace_id, uploader_id, reservation_id, int(source_file.file_size or 0))
         new_file = _persist_file_record(session, 
             name=filename,
@@ -199,6 +204,8 @@ def _clone_existing_file(
     except Exception as e:
         session.rollback()
         upload_quota.cancel(session, workspace_id, uploader_id, reservation_id, missing_ok=True)
+        if isinstance(e, DomainError):
+            raise
         logger.exception(f"Failed to create instant upload record: {e}")
         raise ServiceOperationError("Failed to save file metadata")
 
@@ -822,7 +829,7 @@ def update_file(session: Session, id: int, data: dict[str, Any]) -> File:
 
 
 def delete_file(session: Session, id: int, commit: bool = True, log_event: bool = True) -> None:
-    """删除文件记录；对象存储中的文件仅在无其它记录引用同一 path 时才删除。
+    """原子删除文件记录并暂存对象清理意图；Worker 在无共享引用时删除对象。
 
     commit/log_event=False 供递归批量删除时由外层统一提交。
     """
@@ -836,16 +843,7 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
     entity_id = file_obj.id
     object_name = cast(str, file_obj.file_path)
 
-    try:
-        # 秒传共享同一 file_path，有引用则不能删对象存储文件
-        remaining_ref = repository.has_other_object_reference(session, object_name, file_obj.id)
-        if not remaining_ref:
-            storage = get_storage_client()
-            if storage.file_exists(object_name):
-                storage.delete_file(object_name)
-    except Exception as e:
-        logger.error(f"Error deleting file from MinIO {object_name}: {e}")
-
+    stage_object_deletion(session, object_name)
     repository.remove_file(session, file_obj)
     if commit:
         session.commit()

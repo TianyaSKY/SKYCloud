@@ -351,10 +351,15 @@ def test_legacy_mcp_audit_redaction_preserves_event_metadata(postgres):
     upgrade(postgres)
     with postgres.connect() as db:
         assert db.scalar(text("SELECT arguments_summary FROM mcp_audit_logs WHERE request_id='legacy'")) == 'safe-summary'
-    with pytest.raises(RuntimeError, match="cannot be reconstructed"):
+    with pytest.raises(RuntimeError, match="pending object cleanup"):
         with postgres.begin() as db:
             command.downgrade(migration_config(db), "0009_utc_timestamps")
     check_schema(postgres)
+    from alembic.script import ScriptDirectory
+    from alembic.config import Config
+    config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
+    with pytest.raises(RuntimeError, match="cannot be reconstructed"):
+        ScriptDirectory.from_config(config).get_revision("0010_redact_mcp_audit").module.downgrade()
 
 
 def test_mcp_audit_redaction_failure_rolls_back_and_can_retry(postgres):
