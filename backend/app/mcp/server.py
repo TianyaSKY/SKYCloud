@@ -37,6 +37,7 @@ from app.features.file import service as file_service
 from app.features.folder import service as folder_service
 from app.features.share import service as share_service
 from app.features.workspace.permissions import get_member_role, assert_member
+from app.features.workspace import insights as workspace_insights
 from app.mcp.context import (
     McpRequestContext,
     get_optional_mcp_context,
@@ -840,64 +841,12 @@ async def get_storage_overview() -> str:
     """获取用户的云盘存储概览，包括文件总数、各状态文件数、总存储大小等。"""
     context = _require_read_context()
 
-    def _work():
-        session = SessionLocal()
-        try:
-            from sqlalchemy import func
-            from app.models.file import File
-            from app.models.folder import Folder
-
-            file_stats = (
-                session.query(
-                    func.count(File.id).label("total_files"),
-                    func.coalesce(func.sum(File.file_size), 0).label("total_size"),
-                )
-                .filter(File.workspace_id == context.workspace_id)
-                .first()
-            )
-            status_rows = (
-                session.query(File.status, func.count(File.id))
-                .filter(File.workspace_id == context.workspace_id)
-                .group_by(File.status)
-                .all()
-            )
-            status_counts = dict(status_rows)
-
-            folder_count = (
-                               session.query(func.count(Folder.id))
-                               .filter(Folder.workspace_id == context.workspace_id)
-                               .scalar()
-                           ) or 0
-
-            total_size = int(file_stats.total_size) if file_stats else 0
-
-            def _human_size(size_bytes: int) -> str:
-                for unit in ("B", "KB", "MB", "GB", "TB"):
-                    if abs(size_bytes) < 1024:
-                        return f"{size_bytes:.1f} {unit}"
-                    size_bytes /= 1024
-                return f"{size_bytes:.1f} PB"
-
-            return json.dumps(
-                {
-                    "total_files": file_stats.total_files if file_stats else 0,
-                    "total_folders": folder_count,
-                    "total_size_bytes": total_size,
-                    "total_size_human": _human_size(total_size),
-                    "status_breakdown": {
-                        "success": status_counts.get("success", 0),
-                        "pending": status_counts.get("pending", 0),
-                        "processing": status_counts.get("processing", 0),
-                        "fail": status_counts.get("fail", 0),
-                    },
-                },
-                ensure_ascii=False,
-                default=str,
-            )
-        finally:
-            session.close()
-
-    return await asyncio.to_thread(_work)
+    try:
+        result = await _run_sync(workspace_insights.storage_overview,
+                                 context.workspace_id, context.user_id)
+    except (DomainError, HTTPException) as exc:
+        return _service_error_json(exc)
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 class BatchDeleteItem(BaseModel):
@@ -961,46 +910,12 @@ async def get_folder_tree(max_depth: int = 3) -> str:
     """
     context = _require_read_context()
 
-    def _work():
-        session = SessionLocal()
-        try:
-            from app.models.folder import Folder
-
-            depth = max(1, min(max_depth, 10))
-            all_folders = (
-                session.query(Folder)
-                .filter(Folder.workspace_id == context.workspace_id)
-                .all()
-            )
-
-            children_map: dict[int | None, list] = {}
-            for f in all_folders:
-                pid = f.parent_id
-                if pid not in children_map:
-                    children_map[pid] = []
-                children_map[pid].append(f)
-
-            def _build_tree(parent_id: int | None, current_depth: int) -> list[dict]:
-                if current_depth > depth:
-                    return []
-                nodes = []
-                for f in children_map.get(parent_id, []):
-                    node: dict[str, Any] = {
-                        "id": f.id,
-                        "name": f.name,
-                    }
-                    sub = _build_tree(f.id, current_depth + 1)
-                    if sub:
-                        node["children"] = sub
-                    nodes.append(node)
-                return nodes
-
-            tree = _build_tree(None, 1)
-            return json.dumps(tree, ensure_ascii=False, default=str)
-        finally:
-            session.close()
-
-    return await asyncio.to_thread(_work)
+    try:
+        result = await _run_sync(workspace_insights.folder_tree,
+                                 context.workspace_id, context.user_id, max_depth)
+    except (DomainError, HTTPException) as exc:
+        return _service_error_json(exc)
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 @mcp.tool()

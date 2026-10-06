@@ -373,3 +373,8 @@ RAG Embedding 用量身份由每次调用显式传入：原问题预计算、多
 MCP 审计参数使用 `app/mcp/audit_payload.py` 的有界元数据契约：字符串/字节只记录长度，集合只记录数量，不序列化文档正文、凭据、嵌套内容、文件名、搜索文本或任意对象。只有明确声明的 ID/分页/深度等数字控制参数可记录值；实体 ID 按声明的 file_id/folder_id/id 或批量 items 中的 ID 提取，不再把 max_depth 误记为实体。无效或额外参数只记录数量。工具取消记为失败并继续传播取消。
 
 当前 schema head 为 `0010_redact_mcp_audit`。该迁移将所有非空历史参数摘要替换为明确的 legacy_redacted 标记，保留审计事件的其他列及原 NULL；无法恢复被清除的原始参数，拒绝降级。升级前停止旧数据库客户端（尤其旧 MCP 写入进程），运行 `python -m entry.migrate` 后启动新版。已有数据库备份仍可能包含旧摘要，需按既有敏感数据保管流程处理；迁移不修改备份。真实 PostgreSQL 检查涵盖事件保留、原子失败回滚、重新执行与拒绝降级，并已由 CI 的迁移测试任务覆盖。
+
+
+MCP 空间概览和目录树已委托给 `features/workspace/insights.py`，SQL 读取集中在 `insights_repository.py`；repository 只使用调用方 Session，不提交事务或访问外部资源。服务在数据读取前核对当前成员资格，按空间聚合文件数量/大小/状态及目录，目录树保持 1–10 层深度限制并按 ID 稳定排序。协议入口通过 `_run_sync` 在同一线程创建、查询和关闭 Session，仅返回普通字典/列表；权限错误使用已有结构化 MCP 错误。即使保留旧的已认证上下文，独立事务移除成员后也不能继续从这两个入口读取。
+
+`RUN_WORKSPACE_INSIGHTS_TESTS=1 python -m pytest -o addopts='' tests/integration/test_workspace_insights.py` 验证真实 PostgreSQL 上的空间隔离和独立事务撤权，已加入 CI；常规检查覆盖状态聚合、目录深度及 Session/SQL 线程归属。其他 MCP 工具入口和全局 API 类型契约仍需继续拆分和审计。

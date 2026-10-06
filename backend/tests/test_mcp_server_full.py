@@ -401,32 +401,20 @@ class TestMCPTools:
         assert data["success"] is True
 
     def test_get_storage_overview(self, session, test_workspace, test_user, mcp_user_ctx):
+        from sqlalchemy.orm import Session
         from app.mcp.server import get_storage_overview
         from app.models.file import File
-        from app.models.folder import Folder
-        f = File(name="store.txt", file_path="store.txt", file_size=1024,
-                 mime_type="text/plain", workspace_id=test_workspace.id,
-                 uploader_id=1, parent_id=None,
-                 content_hash="r" * 64, status="success")
-        session.add(f)
+        session.add(File(name="store.txt", file_path="store.txt", file_size=1024,
+                         workspace_id=test_workspace.id, uploader_id=test_user.id, status="success"))
         session.flush()
-        # MCP server 使用 Folder.user_id（模型上不存在），需 mock session.query 和 Folder.user_id
-        mock_file_stats = MagicMock()
-        mock_file_stats.total_files = 1
-        mock_file_stats.total_size = 1024
-        mock_query = MagicMock()
-        mock_query.filter.return_value = mock_query
-        mock_query.first.return_value = mock_file_stats
-        mock_query.scalar.return_value = 0
-        mock_query.all.return_value = []
-        mock_query.group_by.return_value = mock_query
-        with patch("app.mcp.server.SessionLocal", return_value=session), \
-             patch.object(Folder, "user_id", create=True, new=MagicMock()), \
-             patch.object(session, "query", return_value=mock_query):
-            result = asyncio.run(get_storage_overview())
-        data = json.loads(result)
-        assert "total_files" in data
-        assert "total_size_human" in data
+        with patch("app.mcp.server.SessionLocal", side_effect=lambda: Session(
+                bind=session.get_bind(), join_transaction_mode="create_savepoint")):
+            data = json.loads(asyncio.run(get_storage_overview()))
+        assert data["total_files"] == 1
+        assert data["total_size_bytes"] == 1024
+        assert data["total_size_human"] == "1.0 KB"
+        assert data["status_breakdown"]["success"] == 1
+
 
     def test_batch_delete(self, session, test_workspace, test_user, mcp_user_ctx):
         from app.mcp.server import batch_delete, BatchDeleteItem
@@ -468,24 +456,21 @@ class TestMCPTools:
         assert private not in result
 
     def test_get_folder_tree_tool(self, session, test_workspace, test_user, mcp_user_ctx):
-        from app.mcp.server import get_folder_tree as mcp_get_folder_tree
+        from sqlalchemy.orm import Session
+        from app.mcp.server import get_folder_tree
         from app.models.folder import Folder
-        f1 = Folder(name="t1", workspace_id=test_workspace.id, parent_id=None)
-        session.add(f1)
+        first = Folder(name="t1", workspace_id=test_workspace.id, parent_id=None)
+        session.add(first)
         session.flush()
-        f2 = Folder(name="t2", workspace_id=test_workspace.id, parent_id=f1.id)
-        session.add(f2)
+        second = Folder(name="t2", workspace_id=test_workspace.id, parent_id=first.id)
+        session.add(second)
         session.flush()
-        # MCP server 使用 Folder.user_id（模型上不存在），需 mock session.query 和 Folder.user_id
-        mock_query = MagicMock()
-        mock_query.filter.return_value = mock_query
-        mock_query.all.return_value = [f1, f2]
-        with patch("app.mcp.server.SessionLocal", return_value=session), \
-             patch.object(Folder, "user_id", create=True, new=MagicMock()), \
-             patch.object(session, "query", return_value=mock_query):
-            result = asyncio.run(mcp_get_folder_tree(max_depth=3))
-        data = json.loads(result)
-        assert isinstance(data, list)
+        with patch("app.mcp.server.SessionLocal", side_effect=lambda: Session(
+                bind=session.get_bind(), join_transaction_mode="create_savepoint")):
+            data = json.loads(asyncio.run(get_folder_tree(max_depth=3)))
+        assert next(node for node in data if node["id"] == first.id) == {
+            "id": first.id, "name": "t1", "children": [{"id": second.id, "name": "t2"}]}
+
 
     def test_get_upload_url(self, mcp_user_ctx):
         from app.mcp.server import get_upload_url

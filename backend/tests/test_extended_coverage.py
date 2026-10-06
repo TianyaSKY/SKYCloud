@@ -386,34 +386,16 @@ class TestMcpDeleteFolder:
 
 class TestMcpGetStorageOverview:
     async def test_success(self):
-        # 完全 mock session 和查询，避免 Folder.user_id 不存在的问题
-        mock_session = MagicMock()
-
-        # 模拟文件统计查询
-        mock_file_stats = MagicMock()
-        mock_file_stats.total_files = 10
-        mock_file_stats.total_size = 1024
-
-        # 配置查询链
-        mock_query = MagicMock()
-        mock_session.query.return_value = mock_query
-        mock_query.filter.return_value.first.return_value = mock_file_stats
-        mock_query.filter.return_value.group_by.return_value.all.return_value = [("success", 8), ("fail", 2)]
-        mock_query.filter.return_value.scalar.return_value = 5
-
-        # 创建带 user_id 属性的 Mock Folder
-        mock_folder_cls = MagicMock()
-        mock_folder_cls.user_id = MagicMock()
-
+        from app.mcp import server
         token = _current_user_id.set(1)
         try:
-            with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
-                 patch("app.models.folder.Folder", mock_folder_cls):
-                result = await get_storage_overview()
-            parsed = json.loads(result)
-            assert "total_files" in parsed
+            with patch("app.mcp.server._run_sync", new_callable=AsyncMock,
+                       return_value={"total_files": 10}) as worker:
+                assert json.loads(await get_storage_overview()) == {"total_files": 10}
+            worker.assert_awaited_once_with(server.workspace_insights.storage_overview, 1, 1)
         finally:
             _current_user_id.reset(token)
+
 
 
 class TestMcpBatchDelete:
@@ -437,30 +419,16 @@ class TestMcpBatchDelete:
 
 class TestMcpGetFolderTree:
     async def test_success(self):
-        # 完全 mock session 和查询，避免 Folder.user_id 不存在的问题
-        mock_folder = MagicMock()
-        mock_folder.id = 1
-        mock_folder.name = "root"
-        mock_folder.parent_id = None
-
-        mock_session = MagicMock()
-        mock_query = MagicMock()
-        mock_session.query.return_value = mock_query
-        mock_query.filter.return_value.all.return_value = [mock_folder]
-
-        # 创建带 user_id 属性的 Mock Folder
-        mock_folder_cls = MagicMock()
-        mock_folder_cls.user_id = MagicMock()
-
+        from app.mcp import server
         token = _current_user_id.set(1)
         try:
-            with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
-                 patch("app.models.folder.Folder", mock_folder_cls):
-                result = await mcp_get_folder_tree()
-            parsed = json.loads(result)
-            assert isinstance(parsed, list)
+            with patch("app.mcp.server._run_sync", new_callable=AsyncMock,
+                       return_value=[{"id": 1, "name": "root"}]) as worker:
+                assert json.loads(await mcp_get_folder_tree()) == [{"id": 1, "name": "root"}]
+            worker.assert_awaited_once_with(server.workspace_insights.folder_tree, 1, 1, 3)
         finally:
             _current_user_id.reset(token)
+
 
 
 class TestMcpGetUploadUrl:
