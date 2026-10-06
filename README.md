@@ -459,3 +459,7 @@ Controller 对已记录 ready 身份、但对应物理资源已消失的准备�
 容器 ID 清理任务也查询持久操作记录：即使 inspect 已确认旧 ID 不存在，已知 generation 仍需通过退役 RPC 确认后才完成任务；若物理资源仍存在，须匹配完整 ID 和 generation/空间/用户/Runtime 标签。未确认退役保留任务重试，当前引用仍保护资源。该路径覆盖已运行完毕后被解除归属的 generation，避免仅凭旧 ID 的缺失遗漏迟到创建。
 
 本批检查使用独立私有网络的测试代理暂缓一个已接收的创建 RPC，强制终止并重启 Controller，先在物理资源缺失时退役，再放行请求，使真实 Docker 资源随后出现；新版持续核对将其回收，旧镜像仍留下该资源。它模拟下游迟到执行，未观测 Docker 守护进程内部的挂起点。另有准备完成但候选 ID 尚未提交、及已发布候选丢失两条真实 OpenCode -> 模型网关 -> 合成模型 -> 持久回答/MCP 路径，均通过新代恢复。当前 PostgreSQL schema head 仍为 0015；仅 Controller 私有日志新增游标表，兼容已有状态卷。已有完成清理记录的历史核对、更复杂并发故障、外部模型服务与完整浏览器恢复仍需审计。
+
+当前 schema head 已更新为 `0016_generation_retirement`。升级前停止旧数据库客户端并执行 `python -m entry.migrate`。迁移将没有任何 Runtime 或旧 Workspace 容器引用的 complete generation 重新标记为 cancelled，并清空其 finished_at，使现有 Worker 通过认证退役入口确认 Controller 围栏；旧容器清理任务的 completed_at 保留，不能作为 generation 退役证明。迁移不执行 Docker RPC，失败时数据库版本、回填和 DDL 一起回滚；拒绝丢弃这些意图的降级。
+
+新增的 PostgreSQL AFTER DELETE/容器 ID 变更触发器覆盖 Runtime 和旧 Workspace，最后一个引用解除后在同一业务事务中保存已完成 generation 的退役意图。仅改变运行状态为 stopped 不会退役已完成且仍归属的容器；其他引用存在时也不退役。删除/替换回滚同时恢复归属和 generation 状态。新增 candidate_container_id 索引支持按旧完整 ID 查找历史 generation；Worker 沿用失败退避和完成标记重放，Controller 继续只删除匹配的资源。该补回解决历史“容器清理已完成但 generation 未围栏”的遗漏；更复杂生命周期并发、已有专家会话在换代后的恢复、外部模型和完整浏览器流程仍待验证。

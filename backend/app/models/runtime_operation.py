@@ -23,6 +23,7 @@ class RuntimeOperation(Base):
     last_error_type = Column(String(96))
 
     __table_args__ = (
+        Index('ix_runtime_operations_candidate', 'candidate_container_id'),
         CheckConstraint("state IN ('preparing','switched','complete','cancelled')", name='ck_runtime_operation_state'),
         Index('uq_runtime_operation_active', 'runtime_id', unique=True,
               postgresql_where=state.in_(['preparing', 'switched']),

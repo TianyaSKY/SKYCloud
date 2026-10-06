@@ -3,7 +3,7 @@
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-EXPECTED_REVISION = "0015_runtime_operations"
+EXPECTED_REVISION = "0016_generation_retirement"
 
 
 def check_schema(database_engine):
