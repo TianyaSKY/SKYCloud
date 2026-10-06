@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements-test.lock
+      - name: Native libraries for real OpenCV imports
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+      - run: 'python -m pip install --require-hashes --only-binary=:all: -r backend/requirements-test.lock'
+      - name: Validate GitHub Actions workflow
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/actionlint.tar.gz"
+          printf '%s  %s\n' \
+            '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
+            "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/ci.yml
+      - run: python scripts/check-python-runtime.py
+      - name: Regular backend suite
+        working-directory: backend
+        run: python -m pytest -o addopts='' --ignore=tests/real -q
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run audit
+        working-directory: frontend
+      - run: npm run lint:check
+        working-directory: frontend
+      - run: npm run type-check
+        working-directory: frontend
+      - run: npm run test:unit
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+
+  integration:
+    name: PostgreSQL and RabbitMQ
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements-test.lock
+      - run: 'python -m pip install --require-hashes --only-binary=:all: -r backend/requirements-test.lock'
+      - name: Preload fixture images before their readiness deadlines
+        run: |
+          docker pull pgvector/pgvector:pg15
+          docker pull rabbitmq:3.13-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
+      - name: Migrations, delivery and crash recovery
+        working-directory: backend
+        env:
+          RUN_MIGRATION_TESTS: '1'
+          RUN_TASK_QUEUE_TESTS: '1'
+          RUN_FILE_OUTBOX_TESTS: '1'
+          RUN_ORGANIZE_TASK_TESTS: '1'
+        run: >-
+          python -m pytest -o addopts='' -q
+          tests/integration/test_migrations.py
+          tests/integration/test_task_queue.py
+          tests/integration/test_file_task_outbox.py
+          tests/integration/test_organize_tasks.py
+
+  images:
+    name: Image (${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [backend, controller, frontend, runtime, minio]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build and verify image
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          case "$IMAGE" in
+            backend)
+              docker build -t skycloud-ci-backend backend
+              docker run --rm --network none \
+                -v "$PWD/scripts/check-python-runtime.py:/app/scripts/check-python-runtime.py:ro" \
+                skycloud-ci-backend python /app/scripts/check-python-runtime.py
+              ;;
+            controller)
+              docker build -t skycloud-ci-controller -f backend/runtime_controller/Dockerfile backend
+              docker run --rm --network none \
+                -e PYTHONPYCACHEPREFIX=/tmp/pycache \
+                skycloud-ci-controller python -m compileall -q runtime_controller
+              ;;
+            frontend)
+              docker build -t skycloud-ci-frontend frontend
+              docker run --rm --network none skycloud-ci-frontend nginx -t
+              ;;
+            runtime) python3 scripts/build-runtime-image.py ;;
+            minio) python3 scripts/build-minio-image.py ;;
+            *) exit 1 ;;
+          esac
+
+  quality-gate:
+    name: CI quality gate
+    if: ${{ always() }}
+    needs: [backend, frontend, integration, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every prerequisite to succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ',') }}
+        run: test "$RESULTS" = 'success,success,success,success'

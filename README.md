@@ -343,3 +343,10 @@ RAG Embedding 用量身份由每次调用显式传入：原问题预计算、多
 
 
 对话流逐层关闭嵌套生成器：旧 `/chat` 流、FastEngine 和 RAG LangChain 事件迭代器在提前关闭时立即等待底层收尾及已知用量记录。Assistant 心跳转发只缓存一条事件，以背压限制慢客户端下的应用层预读；取消不会向已满队列再写入结束标记，避免收尾卡住。`tests/test_rag_stream_cleanup.py` 覆盖暂停时关闭、等待模型时取消、旧接口关闭传播、用量收尾和队列满时退出，并在独立进程使用真实 LangChain 管线与合成流式模型核实任务结束；没有调用外部模型供应商。
+
+
+仓库 CI 定义在 `.github/workflows/ci.yml`，对所有 PR、master 推送及手动运行执行。后端安装带哈希的测试锁，检查真实 API/MCP/Agent 依赖，再跑常规测试；前端从 lockfile 安装并执行依赖审计、lint、类型、行为测试和构建。独立集成任务运行 PostgreSQL 迁移及 RabbitMQ 交付/outbox/崩溃恢复检查。五个镜像（backend/controller/frontend/runtime/minio）独立构建；backend 还在禁用网络的容器中运行真实依赖冒烟检查。Actions 固定到已核实的提交 SHA，默认仅 contents:read，checkout 不保留凭据；actionlint 下载验证摘要后检查工作流。汇总检查固定为 `CI quality gate`，任一前置任务失败或跳过都不能通过。
+
+`.github/branch-protection.json` 是供 master 使用的保护规则：要求上述检查由 GitHub Actions 应用产生并基于最新分支，管理员也需遵守，禁止强推和删除。它不会自动应用到远端。先发布工作流并取得 GitHub 上的成功运行，再应用并读取验证保护规则，避免要求一个还不存在的检查。当前阶段只完成本地定义与验证；远端发布、首次 Linux CI 运行和保护规则启用仍待完成。
+
+本次安装审计发现并更新了 Vue/server-renderer、source-map-js 和 Vue ESLint 插件所携带的 selector parser；当前锁文件审计为零。公告：[Vue SSR 属性校验](https://github.com/advisories/GHSA-g2v6-rqmx-r4w6)、[source-map-js](https://github.com/advisories/GHSA-68fv-2mgg-jv7q)、[selector parser](https://github.com/advisories/GHSA-rj75-hqrm-r3gf)。审计结果会随公告变化，CI 持续重新检查，不保证未来公告仍为零。
