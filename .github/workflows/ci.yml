@@ -74,7 +74,7 @@ jobs:
         working-directory: frontend
 
   integration:
-    name: PostgreSQL, RabbitMQ and MinIO
+    name: PostgreSQL, RabbitMQ, MinIO and Controller
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -99,6 +99,15 @@ jobs:
         run: |
           docker pull pgvector/pgvector:pg15
           docker pull rabbitmq:3.13-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
+      - name: Build Controller and pin disposable cleanup fixture
+        run: |
+          docker build -t skycloud-ci-cleanup-controller -f backend/runtime_controller/Dockerfile backend
+          fixture='redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499'
+          docker pull "$fixture"
+          reference=$(docker image inspect "$fixture" --format '{{.Id}}')
+          echo "SKYCLOUD_TEST_RUNTIME_IMAGE=$reference" >> "$GITHUB_ENV"
+          echo "SKYCLOUD_TEST_INFRA_IMAGE=$reference" >> "$GITHUB_ENV"
+          echo "SKYCLOUD_TEST_CONTROLLER_IMAGE=skycloud-ci-cleanup-controller" >> "$GITHUB_ENV"
       - name: Migrations, delivery and crash recovery
         working-directory: backend
         env:
@@ -110,6 +119,7 @@ jobs:
           RUN_UTC_MIGRATION_TESTS: '1'
           RUN_WORKSPACE_INSIGHTS_TESTS: '1'
           RUN_OBJECT_DELETION_TESTS: '1'
+          RUN_CONTAINER_DELETION_TESTS: '1'
         run: >-
           python -m pytest -o addopts='' -q
           tests/integration/test_migrations.py
@@ -120,6 +130,7 @@ jobs:
           tests/integration/test_utc_migration.py
           tests/integration/test_workspace_insights.py
           tests/integration/test_file_object_deletion.py
+          tests/integration/test_runtime_container_deletion.py
 
   images:
     name: Image (${{ matrix.image }})

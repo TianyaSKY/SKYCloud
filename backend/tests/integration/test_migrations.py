@@ -351,13 +351,15 @@ def test_legacy_mcp_audit_redaction_preserves_event_metadata(postgres):
     upgrade(postgres)
     with postgres.connect() as db:
         assert db.scalar(text("SELECT arguments_summary FROM mcp_audit_logs WHERE request_id='legacy'")) == 'safe-summary'
-    with pytest.raises(RuntimeError, match="account deletion cascades"):
+    with pytest.raises(RuntimeError, match="pending container cleanup"):
         with postgres.begin() as db:
             command.downgrade(migration_config(db), "0009_utc_timestamps")
     check_schema(postgres)
     from alembic.script import ScriptDirectory
     from alembic.config import Config
     config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
+    with pytest.raises(RuntimeError, match="account deletion cascades"):
+        ScriptDirectory.from_config(config).get_revision("0013_account_delete_fks").module.downgrade()
     with pytest.raises(RuntimeError, match="pending object cleanup"):
         ScriptDirectory.from_config(config).get_revision("0012_object_delete_trigger").module.downgrade()
     with pytest.raises(RuntimeError, match="cannot be reconstructed"):
@@ -434,3 +436,38 @@ def test_account_foreign_key_upgrade_rolls_back_and_preserves_existing_rows(post
         assert db.scalar(text('SELECT count(*) FROM mcp_tokens')) == 1
         for table,column,action in [('workspaces','owner_id','c'),('mcp_tokens','user_id','c'),('shares','user_id','c'),('workspace_members','invited_by','n')]:
             assert db.scalar(text('SELECT confdeltype FROM pg_constraint WHERE conname=:name'), {'name':f'fk_{table}_{column}_users'}) == action
+
+
+def test_container_cleanup_migration_atomic_retry_and_capture_hooks(postgres):
+    upgrade(postgres,'0013_account_delete_fks')
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash) VALUES (1,'retained','x')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id,container_id) VALUES (1,'retained',1,'legacy')"))
+        db.execute(text("INSERT INTO opencode_runtimes(id,workspace_id,user_id,container_id) VALUES (1,1,1,'runtime')"))
+        db.execute(text("INSERT INTO file_object_deletions(object_name,attempts) VALUES ('pending',3)"))
+        prior = db.execute(text('SELECT * FROM file_object_deletions')).all()
+        db.execute(text("CREATE FUNCTION stage_detached_runtime_container() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN OLD; END $$"))
+    with pytest.raises(Exception,match='already exists'):
+        upgrade(postgres)
+    with postgres.begin() as db:
+        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0013_account_delete_fks'
+        assert db.scalar(text("SELECT to_regclass('runtime_container_deletions')")) is None
+        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
+        db.execute(text('DROP FUNCTION stage_detached_runtime_container()'))
+    upgrade(postgres)
+    upgrade(postgres)
+    check_schema(postgres)
+    with postgres.connect() as db:
+        assert db.scalar(text('SELECT count(*) FROM runtime_container_deletions')) == 0
+        assert db.scalar(text("SELECT count(*) FROM pg_trigger WHERE tgname IN ('stage_workspaces_container_delete','stage_workspaces_container_detach','stage_opencode_runtimes_container_delete','stage_opencode_runtimes_container_detach')")) == 4
+        tx = db.begin_nested()
+        db.execute(text('DELETE FROM users WHERE id=1'))
+        assert sorted(db.execute(text('SELECT container_id FROM runtime_container_deletions')).scalars().all()) == ['legacy','runtime']
+        tx.rollback()
+        assert db.scalar(text('SELECT count(*) FROM runtime_container_deletions')) == 0
+        assert db.scalar(text('SELECT count(*) FROM opencode_runtimes')) == 1
+    with postgres.begin() as db:
+        db.execute(text("UPDATE workspaces SET container_id='new-legacy' WHERE id=1"))
+        db.execute(text('UPDATE opencode_runtimes SET container_id=NULL WHERE id=1'))
+        assert sorted(db.execute(text('SELECT container_id FROM runtime_container_deletions')).scalars().all()) == ['legacy','runtime']
+        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior

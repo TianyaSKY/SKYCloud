@@ -21,6 +21,7 @@ from app.infra.indexing.handler import handle_file_indexing as handle_file_proce
 from app.infra.llm.sync_client import close_sync_clients
 from app.infra.file_task_outbox import deliver_pending_file_tasks
 from app.infra.file_object_deletion import delete_pending_objects
+from app.infra.runtime_container_deletion import delete_pending_containers
 from app.infra.organize_tasks import task_execution, deliver_pending_organize_tasks, RetryTaskLater
 from sqlalchemy.exc import SQLAlchemyError
 from app.infra.task_queue import (
@@ -54,6 +55,10 @@ def run_scheduler() -> None:
             delete_pending_objects()
         except Exception:
             logger.exception("Error cleaning pending file objects")
+        try:
+            delete_pending_containers()
+        except Exception:
+            logger.exception("Error cleaning pending runtime containers")
         if time.monotonic() >= next_cleanup:
             try:
                 with SessionLocal() as session:

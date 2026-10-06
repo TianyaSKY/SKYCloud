@@ -19,7 +19,7 @@ from redis import Redis
 from app.features.runtime_llm import quota
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_RUNTIME_SECURITY_TESTS") != "1", reason="Opt-in isolated Docker integration tests")
-IMAGE = "redis:7-alpine"
+IMAGE = os.getenv("SKYCLOUD_TEST_INFRA_IMAGE", "redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499")
 
 
 def docker(*args, check=True):

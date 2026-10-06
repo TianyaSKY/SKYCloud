@@ -478,44 +478,42 @@ def restart(session: Session, workspace: Workspace, user_id: int) -> Workspace:
 
 
 def remove_container(workspace: Workspace, session: Session | None = None) -> None:
-    """Best-effort cleanup for all runtimes before workspace deletion."""
-
+    """Detach resources atomically; the Worker removes committed identities."""
     if session is not None:
-        runtimes = runtime_service.list_runtimes(session, int(workspace.id))
-        for runtime in runtimes:
-            if runtime.container_id:
-                try:
-                    _client().containers.get(runtime.container_id).remove(force=True, v=True)
-                except (ContainerNotFound, DockerException) as exc:
-                    logger.warning("清理 OpenCode Runtime 失败：runtime_id={}, reason={}", runtime.id, exc)
-            runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
-            runtime.container_id = None
-            runtime.status = "stopped"
-        if runtimes:
-            session.flush()
-
+        from app.infra.runtime_container_deletion import stage_container_deletion_fallback
+        for runtime in runtime_service.list_runtimes(session, int(workspace.id)):
+            remove_runtime(runtime, session)
+        stage_container_deletion_fallback(session, workspace.container_id)
+        workspace.container_id = None
+        workspace.status = "stopped"
+        workspace.error_message = None
+        session.flush()
+        return
+    # Explicit nontransactional callers retain the synchronous RPC contract.
     if workspace.container_id:
-        try:
-            _client().containers.get(workspace.container_id).remove(force=True, v=True)
-        except (ContainerNotFound, DockerException) as exc:
-            logger.warning("清理旧 OpenCode 容器失败：workspace_id={}, reason={}", workspace.id, exc)
+        _remove_container_now(workspace.container_id)
+
+
+def _remove_container_now(container_id: str) -> None:
+    try:
+        _client().containers.get(container_id).remove(force=True, v=True)
+    except ContainerNotFound:
+        pass
 
 
 def remove_runtime(runtime: OpenCodeRuntime, session: Session | None = None) -> None:
-    """Remove exactly one member runtime and revoke its credentials."""
-
-    if runtime.container_id:
-        try:
-            _client().containers.get(runtime.container_id).remove(force=True, v=True)
-        except (ContainerNotFound, DockerException) as exc:
-            logger.warning("清理 OpenCode Runtime 失败：runtime_id={}, reason={}", runtime.id, exc)
+    """Revoke access and stage removal in the caller's transaction."""
     if session is not None:
+        from app.infra.runtime_container_deletion import stage_container_deletion_fallback
+        stage_container_deletion_fallback(session, runtime.container_id)
         runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
         runtime.container_id = None
         runtime.status = "stopped"
         runtime.error_message = None
         runtime.last_used_at = utc_now()
         session.flush()
+    elif runtime.container_id:
+        _remove_container_now(runtime.container_id)
 
 
 def get_access_url(entity: Workspace | OpenCodeRuntime) -> str | None:

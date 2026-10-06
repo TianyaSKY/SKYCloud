@@ -11,6 +11,7 @@ from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.folder import Folder
 from app.models.inbox import Inbox
 from app.features.workspace.permissions import WorkspaceRole, assert_admin, assert_can_write
+from app.features.workspace import lifecycle_repository
 
 
 def create_workspace(session: Session, owner_id: int, name: str, description: str | None = None) -> Workspace:
@@ -124,15 +125,18 @@ def update_workspace(session: Session, workspace_id: int, user_id: int, name: st
 
 def delete_workspace(session: Session, workspace_id: int, user_id: int) -> None:
     """删除工作空间（仅 owner）。"""
-    workspace = get_workspace(session, workspace_id)
+    workspace = lifecycle_repository.lock_workspace(session, workspace_id)
+    if workspace is None:
+        raise ResourceNotFoundError("工作空间不存在")
     if workspace.owner_id != user_id:
         raise PermissionDeniedError("只有空间所有者可以删除空间")
 
-    # 容器不受数据库外键约束，删除协作空间前需显式释放 Docker 资源。
+    # 容器清理意图随数据库删除提交，由 Worker 异步释放资源。
     from app.features.workspace import docker_service
     docker_service.remove_container(workspace, session)
-    session.delete(workspace)
+    lifecycle_repository.delete_workspace(session, workspace_id)
     session.commit()
+    session.expire_all()
     logger.info("删除工作空间：ws_id={}, user={}", workspace_id, user_id)
 
 

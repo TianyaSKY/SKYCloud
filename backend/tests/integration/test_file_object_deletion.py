@@ -292,8 +292,10 @@ def account_graph(object_context, monkeypatch):
     db, storage, factory = object_context
     removed = []
     def container(identifier):
-        return SimpleNamespace(remove=lambda **kwargs: removed.append(identifier))
-    monkeypatch.setattr(docker_service, '_client', lambda: SimpleNamespace(containers=SimpleNamespace(get=container)))
+        return SimpleNamespace(id=identifier, remove=lambda **kwargs: removed.append(identifier))
+    from app.infra import runtime_container_deletion
+    monkeypatch.setattr(runtime_container_deletion, 'controller_client', lambda: SimpleNamespace(containers=SimpleNamespace(get=container)))
+    monkeypatch.setattr(docker_service, '_client', lambda: pytest.fail('Controller removal before SQL commit'))
     with db.begin() as connection:
         for sql in (
             "INSERT INTO users(id,username,password_hash,role) VALUES (2,'foreign','x','common'),(3,'member','x','common')",
@@ -316,6 +318,9 @@ def account_graph(object_context, monkeypatch):
 
 def assert_account_deleted(context, removed):
     db, storage, _ = context
+    from app.infra.runtime_container_deletion import delete_pending_containers
+    assert removed == []
+    assert delete_pending_containers(session_factory=context[2]) == 3
     assert sorted(removed) == ['collaborator-own','legacy-own','user-foreign']
     with db.connect() as connection:
         assert connection.execute(text('SELECT id FROM users ORDER BY id')).scalars().all() == [2,3]

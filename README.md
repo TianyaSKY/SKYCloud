@@ -401,9 +401,16 @@ MCP 目录列表、`skycloud://folders` 资源和当前用户信息，在进入�
 
 `0012_object_delete_trigger`：PostgreSQL 的 files AFTER DELETE 触发器生成清理任务，覆盖普通 ORM 删除、批量 SQL 删除及工作空间/用户的已获准级联；任务与原删除同事务，回滚不会留下清理任务。应用不再在 PostgreSQL 重复插入同一删除任务；SQLite 测试通过显式暂存维持事务验证。已有队列保留，升级不会对仍有引用的文件生成清理任务。
 
-文件上传者外键改为 ON DELETE SET NULL，保持文件归工作空间的语义：删除上传者时，其他空间中的文件保留、上传者字段置空；删除所属空间的文件则由触发器暂存清理。共享对象仍由 Worker 的全局引用检查保护。升级应停止旧数据库客户端并完成迁移后启动新版，触发器安装失败会回滚迁移和版本号；拒绝绕过清理钩子的降级。账号服务的数据库生命周期已由下述 0013 修复；容器清理的持久重试仍待完成。
+文件上传者外键改为 ON DELETE SET NULL，保持文件归工作空间的语义：删除上传者时，其他空间中的文件保留、上传者字段置空；删除所属空间的文件则由触发器暂存清理。共享对象仍由 Worker 的全局引用检查保护。升级应停止旧数据库客户端并完成迁移后启动新版，触发器安装失败会回滚迁移和版本号；拒绝绕过清理钩子的降级。账号服务的数据库生命周期由下述 0013 修复，容器清理由 0014 持久化。
 
 
-当前 schema head 为 `0013_account_delete_fks`。账号删除先锁定用户及其自有工作空间，再按数据库外键级联删除，避免 ORM 反向关系把非空 owner_id/user_id 置空。迁移修复空间所有权、长期 MCP 凭据及分享归属的 ON DELETE CASCADE，邀请者改为 ON DELETE SET NULL；其他空间文件保留并清除上传者标注，其他成员的邀请记录保留。删除账号的长期/Runtime 凭据、通知、用量及对话随相应归属删除；MCP 审计事件保留并置空已删除的用户/空间/Runtime 引用。文件物理清理仍由事务触发器与 Worker 负责。
+`0013_account_delete_fks`：账号删除先锁定用户及其自有工作空间，再按数据库外键级联删除，避免 ORM 反向关系把非空 owner_id/user_id 置空。迁移修复空间所有权、长期 MCP 凭据及分享归属的 ON DELETE CASCADE，邀请者改为 ON DELETE SET NULL；其他空间文件保留并清除上传者标注，其他成员的邀请记录保留。删除账号的长期/Runtime 凭据、通知、用量及对话随相应归属删除；MCP 审计事件保留并置空已删除的用户/空间/Runtime 引用。文件物理清理仍由事务触发器与 Worker 负责。
 
-容器清理范围涵盖账号自有空间内所有成员 Runtime、旧空间容器，以及本人在其他空间的 Runtime，保留无关成员的 Runtime。账号与空间行锁阻止资源枚举后并发创建遗漏资源。真实 PostgreSQL/MinIO 检查包含已加载 ORM 关系、带签名令牌的 HTTP 自删/跨用户拒绝/旧令牌失效、SQL 提交故障回滚、迁移失败回滚与重试、并发创建等待；容器移除调用使用替代 Controller，未声称实际 Docker 移除验证。容器清理仍沿用提交前的 best-effort 行为：数据库失败时不能恢复已移除容器，Controller 拒绝时也缺少持久清理重试，后续需修复该边界。升级前停止旧数据库客户端，执行 `python -m entry.migrate` 后启动新版。
+容器清理范围涵盖账号自有空间内所有成员 Runtime、旧空间容器，以及本人在其他空间的 Runtime，保留无关成员的 Runtime。账号与空间行锁阻止资源枚举后并发创建遗漏资源。真实 PostgreSQL/MinIO 检查包含已加载 ORM 关系、带签名令牌的 HTTP 自删/跨用户拒绝/旧令牌失效、SQL 提交故障回滚、迁移失败回滚与重试、并发创建等待；容器移除调用使用替代 Controller，未声称实际 Docker 移除验证。容器清理由下述 0014 改为提交后持久重试。升级前停止旧数据库客户端，执行 `python -m entry.migrate` 后启动新版。
+
+
+当前 schema head 为 `0014_container_deletions`。账号删除、空间删除及成员移除在 SQL 事务中撤销 Runtime 凭据并解除容器归属；PostgreSQL 的 workspaces/opencode_runtimes UPDATE/DELETE 触发器把旧 container_id 写入无外键的 runtime_container_deletions，因此批量删除及用户/空间级联也不会丢失清理身份。SQL 回滚会同时恢复身份/凭据并撤销任务，事务提交前不调用移除 RPC。空间删除通过受锁保护的数据库级联保留这一边界，避免已加载对话关系产生非空外键置空错误。
+
+Worker 每秒轮询到期任务，使用 SKIP LOCKED，核对当前空间/Runtime 没有该容器引用后，经认证 Controller 移除精确完整 ID。拒绝解析到不同完整 ID 的名称/短 ID 别名；Controller 的管理身份校验继续生效。尚有引用则完成本次任务，最后一次解绑生成新任务。Controller 失败只保存异常类型并以 2–300 秒退避；容器已不存在视为成功，完成标记 SQL 写入失败可重放。物理删除是异步的，Worker 必须运行，API 撤权不等待容器进程退出。迁移不删除仍在用的容器，安装失败回滚表/触发器/版本，拒绝丢弃队列的降级。升级前停止旧数据库客户端，执行 `python -m entry.migrate` 后启动新版 API/MCP/Worker。
+
+`RUN_CONTAINER_DELETION_TESTS=1` 运行 `tests/integration/test_runtime_container_deletion.py`，还需固定 SKYCLOUD_TEST_RUNTIME_IMAGE、SKYCLOUD_TEST_INFRA_IMAGE 和 SKYCLOUD_TEST_CONTROLLER_IMAGE。真实 PostgreSQL/认证 Controller/Docker 覆盖 SQL 回滚保留容器、拒绝后重试、删除后的 SQL 标记失败、并发重复任务、现存引用保护、空间带对话删除和成员移除。容器进程使用带正确管理名称/标签的独立 Redis 夹具，验证实际移除链路，不代表完整 OpenCode 模型流程。CI 构建当前 Controller，并按生产 Redis 摘要固定夹具。历史无有效管理标签或完整 ID 的旧容器不会绕过 Controller 策略；相关任务保留失败记录，该历史资源的受限回收路径仍需继续审计。Runtime 创建/重建时其他外部操作的 SQL 失败边界也仍待检查。
