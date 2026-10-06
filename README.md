@@ -421,3 +421,10 @@ Worker 每秒轮询到期任务，使用 SKIP LOCKED，核对当前空间/Runtim
 Worker 的常规身份读取失败后可尝试该受限入口，失败任务继续持久重试。旧 Controller 不支持入口时的 404 不能确认容器不存在，保留任务重试；仅已有 inspect 入口确认资源不存在才完成清理。更新时需构建部署当前 Controller 与新版 Worker，schema head 仍为 0014，无新增数据库迁移。真实 PostgreSQL/Controller/Docker 检查覆盖两种历史格式的账号删除回收、无标签基础设施保留及已有七种清理场景；容器进程仍为独立 Redis 夹具，并非 OpenCode 模型任务。
 
 已复现的后续问题：Runtime.start 在重建时先移除旧容器、创建替代容器，再保存 SQL 身份。注入该身份更新失败后，数据库仍指向已消失的旧 ID，而实际替代容器存在且没有清理任务；该创建/切换事务边界尚待修复。
+
+
+Controller 的 `POST /containers/prepare` 接受正数空间/用户/Runtime ID 与 32 位十六进制 generation。它用对应名称及 generation 标签创建尚未启动的独立容器，不移除旧容器。同一 generation 重试返回同一资源，并发名称冲突在两秒内重查暂不可读的容器；身份、当前镜像或沙箱不符时拒绝复用。首次创建也校验沙箱，镜像隐式声明卷等不合规资源会被拒绝并仅清理本次新容器。名称和 generation 标签必须一致；查询/状态快照可同时识别旧与新完整 ID。无此入口的旧 Controller 返回 404 时，客户端报告未确认的准备错误，不能退回破坏性创建。
+
+该接口是可恢复切换的基础：现有 `Runtime.start` 尚未接入，前述 SQL 保存失败导致旧容器丢失的问题仍待修复。后续必须先持久记录 generation/切换意图，再准备、切换或取消，并恢复失败任务；不能把临时进程内的 generation 当作可恢复记录。当前 schema head 仍为 0014。真实 Docker 检查验证新容器保持 created、旧 Redis 进程容器保留、同代重试/并发只创建一个身份、拒绝跨 Runtime 复用，以及已有清理/历史兼容路径；准备夹具用不声明卷的 Controller 镜像但不启动其进程，不表示完成 OpenCode 启动或模型工作流。
+
+容器清理器在 PostgreSQL 上使用数据库 clock_timestamp() 判断到期和记录完成/失败重试时间，避免 Worker 与数据库时钟偏差影响调度；失败退避从外部操作实际失败后计算。SQLite 测试继续使用应用 UTC 时钟。真实 PostgreSQL 检查将 Worker 时钟固定到 2000 年，清理与完成时间仍依据数据库时钟正确执行。

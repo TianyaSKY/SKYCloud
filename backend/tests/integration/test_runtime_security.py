@@ -54,7 +54,7 @@ def infrastructure():
         client.close()
     finally:
         for name in reversed(cleanup):
-            docker("rm", "-f", name, check=False)
+            docker("rm", "-f", "-v", name, check=False)
         for name in (runtime, control, infra):
             docker("network", "rm", name, check=False)
 
@@ -191,7 +191,7 @@ def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
     finally:
         if engine:
             engine.dispose()
-        docker("rm", "-f", name, check=False)
+        docker("rm", "-f", "-v", name, check=False)
 
 
 @pytest.fixture

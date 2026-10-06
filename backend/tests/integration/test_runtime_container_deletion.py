@@ -37,7 +37,7 @@ def graph(postgres, infrastructure, controller):
                         '--label','skycloud.component=opencode-runtime',
                         '--label',f'skycloud.workspace_id={workspace}',
                         '--label',f'skycloud.user_id={user}',
-                        '--label',f'skycloud.runtime_id={runtime}',os.environ['SKYCLOUD_TEST_RUNTIME_IMAGE'])
+                        '--label',f'skycloud.runtime_id={runtime}',os.getenv('SKYCLOUD_TEST_PROCESS_IMAGE',os.environ['SKYCLOUD_TEST_RUNTIME_IMAGE']))
         containers[runtime] = result.stdout.strip()
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (:id,'delete','x','common'),(:other,'keep','x','common')"),{'id':identity,'other':other})
@@ -231,3 +231,65 @@ def test_cleanup_cannot_remove_unlabeled_infrastructure_even_with_full_id(postgr
     assert docker('inspect',ref,check=False).returncode == 0
     with postgres.connect() as db:
         assert db.execute(text('SELECT completed_at,attempts,last_error_type FROM runtime_container_deletions')).all() == [(None,1,'ControllerError')]
+
+
+def test_generation_prepare_preserves_old_runtime_and_replays_stopped_identity(generation_graph,infrastructure):
+    graph = generation_graph
+    generation = uuid.uuid4().hex
+    name = f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
+    infrastructure['cleanup'].append(name)
+    prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    assert prepared.id != graph['containers'][graph['id']]
+    assert prepared.status == 'created'
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+    replay = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    assert replay.id == prepared.id and replay.status == 'created'
+    rows = graph['client'].user_snapshot(graph['id'])
+    assert {row['id'] for row in rows if row['runtime_id'] == graph['id']} == {prepared.id,graph['containers'][graph['id']]}
+    with graph['db'].connect() as db:
+        assert db.scalar(text('SELECT container_id FROM opencode_runtimes WHERE id=:id'),{'id':graph['id']}) == graph['containers'][graph['id']]
+    from runtime_controller.client import ControllerError
+    with pytest.raises(ControllerError): graph['client'].prepare(graph['id'],graph['id'],graph['id']+9,generation)
+    prepared.remove()
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+
+
+def test_overlapping_generation_prepares_create_only_one_stopped_container(generation_graph,infrastructure):
+    graph = generation_graph
+    generation = uuid.uuid4().hex
+    name = f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
+    infrastructure['cleanup'].append(name)
+    barrier = Barrier(2)
+    def invoke(_):
+        barrier.wait(timeout=10)
+        return ControllerClient().prepare(graph['id'],graph['id'],graph['id'],generation)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rows = list(pool.map(invoke,range(2)))
+    assert rows[0].id == rows[1].id and rows[0].status == rows[1].status == 'created'
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+    rows[0].remove()
+
+
+@pytest.fixture
+def generation_graph(request,monkeypatch):
+    import json
+    # Redis declares an anonymous /data volume, incompatible with runtime
+    # policy. Prepare uses our volume-free Controller image without starting
+    # its process; pre-existing fixture processes continue to run Redis.
+    info = json.loads(docker('image','inspect',os.getenv('SKYCLOUD_TEST_CONTROLLER_IMAGE','skycloud-runtime-controller:remediation-test')).stdout)[0]
+    assert not info['Config'].get('Volumes')
+    monkeypatch.setenv('SKYCLOUD_TEST_PROCESS_IMAGE',os.environ['SKYCLOUD_TEST_RUNTIME_IMAGE'])
+    monkeypatch.setenv('SKYCLOUD_TEST_RUNTIME_IMAGE',info['Id'])
+    return request.getfixturevalue('graph')
+
+
+
+def test_container_cleanup_uses_database_clock_despite_worker_clock_skew(graph,monkeypatch):
+    from datetime import datetime,timezone
+    from app.infra import runtime_container_deletion
+    monkeypatch.setattr(runtime_container_deletion,'utc_now',lambda:datetime(2000,1,1,tzinfo=timezone.utc))
+    with graph['db'].begin() as db:
+        db.execute(text('DELETE FROM opencode_runtimes WHERE id=:id'),{'id':graph['id']})
+    assert cleanup(graph) == 1 and not exists(graph,graph['id'])
+    with graph['db'].connect() as db:
+        assert db.scalar(text("SELECT completed_at > now()-interval '1 minute' FROM runtime_container_deletions"))

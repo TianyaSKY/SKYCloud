@@ -33,6 +33,10 @@ class CreateRequest(BaseModel):
     runtime_id: int = Field(gt=0, le=2**63 - 1)
 
 
+class PrepareRequest(CreateRequest):
+    generation: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
 class AuthAndBodyLimit:
     def __init__(self, app, token):
         self.app, self.token = app, token.encode()
@@ -109,6 +113,10 @@ def create_app(settings=None, engine=None):
     @app.post("/containers/create")
     def create(payload: CreateRequest):
         return engine.create(**payload.model_dump())
+
+    @app.post("/containers/prepare")
+    def prepare(payload: PrepareRequest):
+        return engine.prepare(**payload.model_dump())
 
     @app.get("/users/{user_id}/containers")
     def user_snapshot(user_id: int):

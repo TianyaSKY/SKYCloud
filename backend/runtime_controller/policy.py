@@ -84,3 +84,16 @@ class Settings:
 
 def container_name(workspace_id: int, user_id: int) -> str:
     return f"skycloud-opencode-w{workspace_id}-u{user_id}"
+
+
+def generation_name(workspace_id: int, user_id: int, generation: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{32}", generation):
+        raise ValueError("Invalid runtime generation")
+    return container_name(workspace_id,user_id) + "-g" + generation
+
+
+def matches_runtime_name(name: str, workspace_id: int, user_id: int, labels: dict) -> bool:
+    generation = labels.get("skycloud.generation")
+    if generation is None:
+        return name == container_name(workspace_id,user_id)
+    return isinstance(generation,str) and bool(re.fullmatch(r"[0-9a-f]{32}", generation)) and name == generation_name(workspace_id,user_id,generation)

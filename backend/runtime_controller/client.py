@@ -54,6 +54,13 @@ class ControllerClient:
     def get(self, ref):
         return RemoteContainer(self, self.call("GET", "/containers/" + quote(str(ref), safe="")))
 
+    def prepare(self, workspace_id, user_id, runtime_id, generation):
+        try:
+            data = self.call("POST", "/containers/prepare", json={"workspace_id":int(workspace_id), "user_id":int(user_id), "runtime_id":int(runtime_id), "generation":generation})
+        except ControllerNotFound as exc:
+            raise ControllerError("Runtime generation preparation could not be confirmed") from exc
+        return RemoteContainer(self,data)
+
     def remove_legacy(self, ref):
         try:
             return self.call("POST", "/retired-containers/" + quote(str(ref), safe="") + "/remove")

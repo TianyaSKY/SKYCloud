@@ -2,6 +2,7 @@
 from datetime import timedelta
 from loguru import logger
 from sqlalchemy.orm import Session
+from sqlalchemy import func, select
 
 from app.infra.datetime_utils import utc_now
 from app.infra.extensions import SessionLocal
@@ -21,11 +22,16 @@ def stage_container_deletion_fallback(session: Session, container_id: str | None
         session.add(RuntimeContainerDeletion(container_id=container_id))
 
 
+def _clock(session: Session):
+    # Queue defaults and Worker processes may have different wall clocks.
+    return session.scalar(select(func.clock_timestamp())) if session.get_bind().dialect.name == 'postgresql' else utc_now()
+
+
 def delete_pending_containers(*, session_factory=SessionLocal, controller_factory=None, limit: int = 20) -> int:
     completed = 0
     for _ in range(limit):
         with session_factory() as session:
-            now = utc_now()
+            now = _clock(session)
             intent = session.query(RuntimeContainerDeletion).filter(
                 RuntimeContainerDeletion.completed_at.is_(None), RuntimeContainerDeletion.next_attempt_at <= now
             ).order_by(RuntimeContainerDeletion.id).with_for_update(skip_locked=True).first()
@@ -55,11 +61,11 @@ def delete_pending_containers(*, session_factory=SessionLocal, controller_factor
                         pass  # Already removed, including a completed-marker replay.
             except Exception as error:
                 intent.last_error_type = type(error).__name__[:96]
-                intent.next_attempt_at = now + timedelta(seconds=min(300, 2 ** min(intent.attempts, 9)))
+                intent.next_attempt_at = _clock(session) + timedelta(seconds=min(300, 2 ** min(intent.attempts, 9)))
                 session.commit()
                 logger.warning('Container cleanup {} deferred ({})', intent.id, intent.last_error_type)
             else:
-                intent.completed_at = utc_now()
+                intent.completed_at = _clock(session)
                 intent.last_error_type = None
                 session.commit()
                 completed += 1

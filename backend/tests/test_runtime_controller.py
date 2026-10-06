@@ -298,3 +298,77 @@ def test_unsupported_legacy_cleanup_route_404_is_not_confirmed_absence(monkeypat
     with pytest.raises(ControllerError) as failure:
         ControllerClient().remove_legacy('a'*64)
     assert not isinstance(failure.value,ControllerNotFound)
+
+
+def test_prepare_schema_requires_generation_and_forbids_docker_options(settings):
+    engine = Mock()
+    engine.prepare.return_value = {'id':'a'*64}
+    http = TestClient(create_app(settings,engine))
+    headers = {'X-Runtime-Controller-Token':settings.token}
+    body = {'workspace_id':2,'user_id':3,'runtime_id':4,'generation':'a'*32}
+    assert http.post('/containers/prepare',json=body).status_code == 401
+    for extra in ({'generation':'../bad'},{'generation':'a'*33},{'volumes':['/']},{'runtime_id':0}):
+        assert http.post('/containers/prepare',json={**body,**extra},headers=headers).status_code == 422
+    engine.prepare.assert_not_called()
+    assert http.post('/containers/prepare',json=body,headers=headers).status_code == 200
+    engine.prepare.assert_called_once_with(**body)
+
+
+@pytest.mark.parametrize('tamper',['missing_generation','wrong_generation','wrong_name','bad_generation'])
+def test_generated_name_must_match_generation_label(settings,managed_container,tamper):
+    from runtime_controller.policy import generation_name
+    managed_container.name = generation_name(2,3,'a'*32)
+    labels = managed_container.attrs['Config']['Labels']
+    labels['skycloud.generation'] = 'a'*32
+    if tamper == 'missing_generation': del labels['skycloud.generation']
+    elif tamper == 'wrong_generation': labels['skycloud.generation'] = 'b'*32
+    elif tamper == 'wrong_name': managed_container.name = container_name(2,3)
+    elif tamper == 'bad_generation': labels['skycloud.generation'] = '../bad'
+    client = Mock()
+    client.containers.get.return_value = managed_container
+    with pytest.raises(PolicyViolation): Engine(settings,client).inspect('a'*64)
+
+
+def test_prepare_replay_requires_same_runtime_and_current_sandbox(settings,managed_container):
+    from runtime_controller.policy import generation_name
+    managed_container.name = generation_name(2,3,'a'*32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
+    client = Mock()
+    client.networks.get.return_value.attrs = {'Internal':True}
+    client.containers.get.return_value = managed_container
+    engine = Engine(settings,client)
+    assert engine.prepare(2,3,4,'a'*32)['id'] == managed_container.id
+    with pytest.raises(PolicyViolation): engine.prepare(2,3,5,'a'*32)
+    managed_container.attrs['HostConfig']['Privileged'] = True
+    with pytest.raises(PolicyViolation): engine.prepare(2,3,4,'a'*32)
+    managed_container.remove.assert_not_called()
+    managed_container.start.assert_not_called()
+    client.containers.create.assert_not_called()
+
+
+def test_prepare_rejects_implicit_image_volume_and_cleans_only_new_container(settings,managed_container):
+    from runtime_controller.policy import generation_name
+    managed_container.name = generation_name(2,3,'a'*32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
+    managed_container.attrs['Mounts'] = [{'Type':'volume','Destination':'/data'}]
+    client = Mock()
+    client.networks.get.return_value.attrs = {'Internal':True}
+    client.containers.get.side_effect = [MissingRuntime('absent'),managed_container]
+    client.containers.create.return_value = managed_container
+    with pytest.raises(PolicyViolation): Engine(settings,client).prepare(2,3,4,'a'*32)
+    managed_container.remove.assert_called_once_with(force=True,v=True)
+    managed_container.start.assert_not_called()
+    client.containers.run.assert_not_called()
+
+
+def test_prepare_unknown_endpoint_404_never_requests_destructive_create(monkeypatch):
+    from runtime_controller.client import ControllerNotFound
+    monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN','T'*48)
+    requests = []
+    def unavailable(method,url,**kwargs):
+        requests.append(url)
+        return httpx.Response(404,json={'detail':'Not Found'})
+    monkeypatch.setattr(httpx,'request',unavailable)
+    with pytest.raises(ControllerError) as failure: ControllerClient().prepare(2,3,4,'a'*32)
+    assert not isinstance(failure.value,ControllerNotFound)
+    assert len(requests) == 1 and requests[0].endswith('/containers/prepare')

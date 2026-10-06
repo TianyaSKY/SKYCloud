@@ -6,10 +6,11 @@ import os
 import re
 import shlex
 import uuid
+import time
 
 import docker
 
-from runtime_controller.policy import CONFIG_PATH, POLICY_VERSION, RUNTIME_USER, container_name
+from runtime_controller.policy import CONFIG_PATH, POLICY_VERSION, RUNTIME_USER, container_name, generation_name, matches_runtime_name
 
 
 class ControllerError(RuntimeError):
@@ -44,7 +45,7 @@ class Engine:
             self.client.images.pull(self.settings.image)
 
     def managed(self, ref: str, *, require_policy=False):
-        if not re.fullmatch(r"(?:[0-9a-f]{12,64}|skycloud-opencode-w[1-9][0-9]*-u[1-9][0-9]*)", ref):
+        if not re.fullmatch(r"(?:[0-9a-f]{12,64}|skycloud-opencode-w[1-9][0-9]*-u[1-9][0-9]*(?:-g[0-9a-f]{32})?)", ref):
             raise PolicyViolation("Invalid runtime reference")
         try:
             container = self.client.containers.get(ref)
@@ -55,7 +56,7 @@ class Engine:
             ids = [int(labels[f"skycloud.{key}"]) for key in ("workspace_id", "user_id", "runtime_id")]
         except (KeyError, ValueError, TypeError) as exc:
             raise PolicyViolation("Container is not a managed runtime") from exc
-        if min(ids) <= 0 or labels.get("skycloud.component") != "opencode-runtime" or container.name != container_name(ids[0], ids[1]):
+        if min(ids) <= 0 or labels.get("skycloud.component") != "opencode-runtime" or not matches_runtime_name(container.name, ids[0], ids[1], labels):
             raise PolicyViolation("Container identity does not match runtime labels")
         if require_policy:
             host = container.attrs.get("HostConfig", {})
@@ -75,7 +76,7 @@ class Engine:
         labels = container.attrs["Config"]["Labels"]
         # Never expose environment variables or arbitrary Docker attributes.
         return {"id": container.id, "name": container.name, "status": container.status,
-                "image": container.attrs["Config"].get("Image"), "labels": {key: value for key, value in labels.items() if key in {"skycloud.component", "skycloud.workspace_id", "skycloud.user_id", "skycloud.runtime_id", "skycloud.runtime_policy"}},
+                "image": container.attrs["Config"].get("Image"), "labels": {key: value for key, value in labels.items() if key in {"skycloud.component", "skycloud.workspace_id", "skycloud.user_id", "skycloud.runtime_id", "skycloud.runtime_policy", "skycloud.generation"}},
                 "ports": container.attrs.get("NetworkSettings", {}).get("Ports", {})}
 
     def user_snapshot(self, user_id):
@@ -94,7 +95,7 @@ class Engine:
                 continue
             if (min(workspace_id, owner_id, runtime_id) <= 0 or owner_id != user_id
                     or labels.get("skycloud.component") != "opencode-runtime"
-                    or "/" + container_name(workspace_id, owner_id) not in row.get("Names", [])
+                    or not any(matches_runtime_name(name.lstrip("/"),workspace_id,owner_id,labels) for name in row.get("Names", []))
                     or not re.fullmatch(r"[0-9a-f]{64}", row.get("Id", ""))):
                 continue
             result.append({"id": row["Id"], "workspace_id": workspace_id,
@@ -116,6 +117,57 @@ class Engine:
             existing.remove(force=True, v=True)
         container = self.client.containers.run(**self.settings.container_options(workspace_id, user_id, runtime_id))
         container.reload()
+        return self.inspect(container.id)
+
+    def prepare(self, workspace_id, user_id, runtime_id, generation):
+        """Idempotently create a stopped generation without replacing old resources."""
+        if min(workspace_id,user_id,runtime_id) <= 0 or max(workspace_id,user_id,runtime_id) > 2**63 - 1:
+            raise PolicyViolation("Invalid runtime identity")
+        try:
+            name = generation_name(workspace_id,user_id,generation)
+        except (ValueError,TypeError) as exc:
+            raise PolicyViolation("Invalid runtime generation") from exc
+        network = self.client.networks.get(self.settings.network)
+        if not network.attrs.get("Internal"):
+            raise PolicyViolation("Runtime network must be internal")
+        self.ensure_image()
+        def existing():
+            container = self.managed(name, require_policy=True)
+            labels = container.attrs['Config']['Labels']
+            if int(labels['skycloud.runtime_id']) != runtime_id:
+                raise PolicyViolation("Generation belongs to another runtime")
+            return self.inspect(container.id)
+        try:
+            return existing()
+        except MissingRuntime:
+            pass
+        options = self.settings.container_options(workspace_id,user_id,runtime_id)
+        options['name'] = name
+        options['labels']['skycloud.generation'] = generation
+        options.pop('detach')  # create, not run: no process before SQL admission.
+        try:
+            container = self.client.containers.create(**options)
+        except _docker_error('APIError') as exc:
+            if getattr(exc,'status_code',None) != 409:
+                raise
+            # Docker reserves the name before the container becomes readable.
+            # Retry only transient absence, never a mismatched policy/identity.
+            deadline = time.monotonic() + 2
+            while True:
+                try:
+                    return existing()
+                except MissingRuntime:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
+        container.reload()
+        try:
+            self.managed(container.id, require_policy=True)
+        except PolicyViolation:
+            # An image may declare implicit volumes. Reject the new resource
+            # before admission and remove only the container just created.
+            container.remove(force=True, v=True)
+            raise
         return self.inspect(container.id)
 
     def action(self, ref, action):
