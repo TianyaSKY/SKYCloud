@@ -18,8 +18,8 @@ TEST_IMAGE = 'test/runtime@sha256:' + 'a' * 64
 
 
 @pytest.fixture
-def settings():
-    return Settings("T" * 48, "S" * 48, TEST_IMAGE, "isolated-runtime-net", "1g", 100000, "skycloud")
+def settings(tmp_path):
+    return Settings("T" * 48, "S" * 48, TEST_IMAGE, "isolated-runtime-net", "1g", 100000, "skycloud", str(tmp_path / "controller-state"))
 
 
 @pytest.fixture
@@ -372,3 +372,68 @@ def test_prepare_unknown_endpoint_404_never_requests_destructive_create(monkeypa
     with pytest.raises(ControllerError) as failure: ControllerClient().prepare(2,3,4,'a'*32)
     assert not isinstance(failure.value,ControllerNotFound)
     assert len(requests) == 1 and requests[0].endswith('/containers/prepare')
+
+
+def test_retire_before_prepare_persists_across_engine_recreation(settings):
+    client = Mock()
+    client.containers.get.side_effect = MissingRuntime('absent')
+    first = Engine(settings,client)
+    first.retire_generation(2,3,4,'a'*32)
+    second = Engine(settings,client)
+    with pytest.raises(PolicyViolation,match='retired'): second.prepare(2,3,4,'a'*32)
+    with pytest.raises(PolicyViolation,match='another identity'): second.prepare(2,3,5,'a'*32)
+    client.containers.create.assert_not_called()
+    client.containers.run.assert_not_called()
+
+
+def test_generation_remove_fences_replay_and_preserves_stable_containers(settings,managed_container):
+    from runtime_controller.policy import generation_name
+    managed_container.name = generation_name(2,3,'a'*32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
+    client = Mock()
+    client.networks.get.return_value.attrs = {'Internal':True}
+    client.containers.get.return_value = managed_container
+    engine = Engine(settings,client)
+    assert engine.prepare(2,3,4,'a'*32)['id'] == managed_container.id
+    engine.action(managed_container.id,'remove')
+    with pytest.raises(PolicyViolation,match='retired'): Engine(settings,client).prepare(2,3,4,'a'*32)
+    managed_container.remove.assert_called_once_with(force=True,v=True)
+    client.containers.create.assert_not_called()
+
+
+def test_journal_failure_prevents_any_docker_creation(settings,tmp_path):
+    from dataclasses import replace
+    state = tmp_path/'unwritable-parent'
+    state.write_text('not a directory')
+    client = Mock()
+    with pytest.raises(OSError): Engine(replace(settings,state_path=str(state)),client).prepare(2,3,4,'a'*32)
+    client.containers.create.assert_not_called()
+    client.networks.get.assert_not_called()
+
+
+def test_controller_journal_committed_intent_survives_process_exit(tmp_path):
+    import subprocess,sys
+    from runtime_controller.generation_journal import GenerationJournal
+    directory = str(tmp_path/'journal')
+    code = "from runtime_controller.generation_journal import GenerationJournal; import os,sys\nwith GenerationJournal(sys.argv[1]).locked('a'*32,(2,3,4)) as record:\n os._exit(17)\n"
+    assert subprocess.run([sys.executable,'-c',code,directory],check=False).returncode == 17
+    with GenerationJournal(directory).locked('a'*32,(2,3,4)) as record:
+        assert record.read()['state'] == 'preparing'
+        record.retire()
+    with GenerationJournal(directory).locked('a'*32,(2,3,4)) as record:
+        assert record.read()['state'] == 'retired'
+    assert (tmp_path/'journal'/'generations.sqlite').stat().st_mode & 0o777 == 0o600
+
+
+def test_failed_generation_remove_keeps_retirement_fence_and_can_retry(settings,managed_container):
+    from runtime_controller.policy import generation_name
+    managed_container.name = generation_name(2,3,'a'*32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
+    managed_container.remove.side_effect = [RuntimeError('injected removal failure'),None]
+    client = Mock()
+    client.containers.get.return_value = managed_container
+    with pytest.raises(RuntimeError): Engine(settings,client).retire_generation(2,3,4,'a'*32)
+    with pytest.raises(PolicyViolation,match='retired'): Engine(settings,client).prepare(2,3,4,'a'*32)
+    Engine(settings,client).retire_generation(2,3,4,'a'*32)
+    assert managed_container.remove.call_count == 2
+    client.containers.create.assert_not_called()

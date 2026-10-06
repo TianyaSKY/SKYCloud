@@ -118,6 +118,11 @@ def create_app(settings=None, engine=None):
     def prepare(payload: PrepareRequest):
         return engine.prepare(**payload.model_dump())
 
+    @app.post("/containers/retire-generation")
+    def retire_generation(payload: PrepareRequest):
+        engine.retire_generation(**payload.model_dump())
+        return {"success": True}
+
     @app.get("/users/{user_id}/containers")
     def user_snapshot(user_id: int):
         if user_id <= 0 or user_id > 2**63 - 1:

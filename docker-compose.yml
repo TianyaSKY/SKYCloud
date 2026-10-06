@@ -240,6 +240,7 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=16m
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - runtime_controller_state:/state
     environment:
       RUNTIME_CONTROLLER_TOKEN: ${RUNTIME_CONTROLLER_TOKEN:?Generate .env with scripts/generate-env.py}
       OPENCODE_SERVER_SECRET: ${OPENCODE_SERVER_SECRET:?Generate .env with scripts/generate-env.py}
@@ -315,3 +316,4 @@ volumes:
   redis_data:
   rabbitmq_data:
   minio_data:
+  runtime_controller_state:

@@ -293,3 +293,86 @@ def test_container_cleanup_uses_database_clock_despite_worker_clock_skew(graph,m
     assert cleanup(graph) == 1 and not exists(graph,graph['id'])
     with graph['db'].connect() as db:
         assert db.scalar(text("SELECT completed_at > now()-interval '1 minute' FROM runtime_container_deletions"))
+
+
+def test_retired_generation_survives_controller_restart_and_rejects_late_prepare(generation_graph,infrastructure,controller,monkeypatch):
+    from runtime_controller.client import ControllerError
+    graph = generation_graph
+    generation = uuid.uuid4().hex
+    name = f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
+    infrastructure['cleanup'].append(name)
+    prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    prepared.remove()
+    docker('restart',controller['name'])
+    port = docker('port',controller['name'],'5003/tcp').stdout.strip().rsplit(':',1)[1]
+    controller['url'] = 'http://127.0.0.1:'+port
+    monkeypatch.setenv('RUNTIME_CONTROLLER_URL',controller['url'])
+    import httpx,time
+    deadline = time.monotonic()+15
+    while time.monotonic()<deadline:
+        try:
+            if httpx.get(controller['url']+'/health',headers={'X-Runtime-Controller-Token':controller['token']},timeout=1).status_code == 200: break
+        except httpx.HTTPError: pass
+        time.sleep(0.1)
+    else: raise AssertionError('Controller restart did not recover: '+docker('logs',controller['name'],check=False).stderr)
+    with pytest.raises(ControllerError): graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    assert docker('inspect',name,check=False).returncode != 0
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+
+
+def test_retire_before_late_prepare_never_creates_container(generation_graph,infrastructure):
+    from runtime_controller.client import ControllerError
+    graph = generation_graph
+    generation = uuid.uuid4().hex
+    name = f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
+    infrastructure['cleanup'].append(name)
+    graph['client'].retire_generation(graph['id'],graph['id'],graph['id'],generation)
+    with pytest.raises(ControllerError): graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    assert docker('inspect',name,check=False).returncode != 0
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+
+
+def test_parallel_prepare_and_retire_end_with_durable_retirement(generation_graph,infrastructure):
+    from runtime_controller.client import ControllerError
+    graph = generation_graph
+    generation = uuid.uuid4().hex
+    name = f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
+    infrastructure['cleanup'].append(name)
+    barrier = Barrier(2)
+    def prepare():
+        barrier.wait(timeout=10)
+        try: return graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation).id
+        except ControllerError: return None
+    def retire():
+        barrier.wait(timeout=10)
+        return graph['client'].retire_generation(graph['id'],graph['id'],graph['id'],generation)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        tasks = [pool.submit(prepare),pool.submit(retire)]
+        for task in tasks: task.result(timeout=20)
+    assert docker('inspect',name,check=False).returncode != 0
+    with pytest.raises(ControllerError): graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+
+
+def test_prepared_generation_replays_same_identity_after_controller_restart(generation_graph,infrastructure,controller,monkeypatch):
+    graph = generation_graph
+    generation = uuid.uuid4().hex
+    name = f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
+    infrastructure['cleanup'].append(name)
+    prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    docker('restart',controller['name'])
+    port = docker('port',controller['name'],'5003/tcp').stdout.strip().rsplit(':',1)[1]
+    controller['url'] = 'http://127.0.0.1:'+port
+    monkeypatch.setenv('RUNTIME_CONTROLLER_URL',controller['url'])
+    import httpx,time
+    deadline = time.monotonic()+15
+    while time.monotonic()<deadline:
+        try:
+            if httpx.get(controller['url']+'/health',headers={'X-Runtime-Controller-Token':controller['token']},timeout=1).status_code == 200: break
+        except httpx.HTTPError: pass
+        time.sleep(0.1)
+    else: raise AssertionError('Controller restart did not recover')
+    replay = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    assert replay.id == prepared.id and replay.status == 'created'
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+    replay.remove()

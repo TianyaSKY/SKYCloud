@@ -55,6 +55,8 @@ def infrastructure():
     finally:
         for name in reversed(cleanup):
             docker("rm", "-f", "-v", name, check=False)
+            if name.endswith('-controller'):
+                docker('volume','rm',name+'-state',check=False)
         for name in (runtime, control, infra):
             docker("network", "rm", name, check=False)
 
@@ -210,6 +212,7 @@ def controller(infrastructure, monkeypatch):
     docker("run", "-d", "--name", name, "--network", infrastructure["control"], "--network-alias", "runtime-controller-control",
            "-p", "127.0.0.1::5003", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--group-add", gid,
            "-v", "/var/run/docker.sock:/var/run/docker.sock",
+           "-v", name + "-state:/state",
            "-e", "RUNTIME_CONTROLLER_TOKEN=" + token, "-e", "OPENCODE_SERVER_SECRET=" + secret,
            "-e", "OPENCODE_IMAGE=" + image, "-e", "SKYCLOUD_DOCKER_NETWORK=" + infrastructure["runtime"],
            "-e", "RUNTIME_CONTROLLER_BIND_HOST=runtime-controller-control",

@@ -27,6 +27,7 @@ class Settings:
     memory: str
     cpu_quota: int
     username: str
+    state_path: str = "/state"
 
     @classmethod
     def from_env(cls):
@@ -47,6 +48,7 @@ class Settings:
             token, server_secret,
             image, os.getenv("SKYCLOUD_DOCKER_NETWORK", "skycloud_runtime-network"),
             memory, cpu, os.getenv("OPENCODE_SERVER_USERNAME", "skycloud"),
+            "/state",
         )
 
     def password(self, runtime_id: int, user_id: int, workspace_id: int) -> str:

@@ -61,6 +61,12 @@ class ControllerClient:
             raise ControllerError("Runtime generation preparation could not be confirmed") from exc
         return RemoteContainer(self,data)
 
+    def retire_generation(self, workspace_id, user_id, runtime_id, generation):
+        try:
+            return self.call("POST", "/containers/retire-generation", json={"workspace_id":int(workspace_id), "user_id":int(user_id), "runtime_id":int(runtime_id), "generation":generation})
+        except ControllerNotFound as exc:
+            raise ControllerError("Runtime generation retirement could not be confirmed") from exc
+
     def remove_legacy(self, ref):
         try:
             return self.call("POST", "/retired-containers/" + quote(str(ref), safe="") + "/remove")

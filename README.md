@@ -428,3 +428,10 @@ Controller 的 `POST /containers/prepare` 接受正数空间/用户/Runtime ID �
 该接口是可恢复切换的基础：现有 `Runtime.start` 尚未接入，前述 SQL 保存失败导致旧容器丢失的问题仍待修复。后续必须先持久记录 generation/切换意图，再准备、切换或取消，并恢复失败任务；不能把临时进程内的 generation 当作可恢复记录。当前 schema head 仍为 0014。真实 Docker 检查验证新容器保持 created、旧 Redis 进程容器保留、同代重试/并发只创建一个身份、拒绝跨 Runtime 复用，以及已有清理/历史兼容路径；准备夹具用不声明卷的 Controller 镜像但不启动其进程，不表示完成 OpenCode 启动或模型工作流。
 
 容器清理器在 PostgreSQL 上使用数据库 clock_timestamp() 判断到期和记录完成/失败重试时间，避免 Worker 与数据库时钟偏差影响调度；失败退避从外部操作实际失败后计算。SQLite 测试继续使用应用 UTC 时钟。真实 PostgreSQL 检查将 Worker 时钟固定到 2000 年，清理与完成时间仍依据数据库时钟正确执行。
+
+
+Controller 的 generation 身份现持久保存在专用 `/state/generations.sqlite` 中。Compose 为 Controller 挂载 `runtime_controller_state` 命名卷，镜像将目录权限设为 0700、属主设为运行用户 10002；Runtime 容器仍不挂载卷。升级、替换或恢复 Controller 时必须保留该卷，并将其纳入备份；删除状态卷会丢失退役记录。其他部署方式也需为 `/state` 提供持久可写目录。记录只含 generation、空间/用户/Runtime ID、状态与容器 ID，不保存配置或密钥；写入失败会在创建前中止。
+
+准备请求先提交 preparing 意图，再调用 Docker，并记录候选容器完整 ID；同一 generation 的进程间请求持有文件锁，重启后继续读取同一身份。已有候选 ID 消失时拒绝重新创建，需退役该代并使用新代。认证入口 `POST /containers/retire-generation` 先持久写入 retired，再移除对应资源；可以先退役尚未准备的 generation，之后的准备请求会被拒绝。移除失败保留退役状态，重复退役可重试移除；常规 generation 容器移除也经过这一机制。旧 Controller 不支持退役入口的 404 视为未确认错误。
+
+本批验证为 1478 项后端测试及 17 项真实 PostgreSQL/Controller/Docker 检查，包含重启后恢复候选身份、重启后拒绝退役代的迟到准备、先退役后准备以及并发准备/退役。旧镜像在重启后的退役代准备检查中复现重新创建。子进程退出测试验证 preparing 意图已持久写入，未验证 Docker 守护进程接受创建期间 Controller 被杀后的所有交错。此机制仍是基础：生产 Runtime.start 的 SQL 操作记录、可恢复身份切换/取消以及迟到 Docker 创建资源的回收尚未接入，原重建 SQL 回滚问题仍待修复；schema head 仍为 0014。
