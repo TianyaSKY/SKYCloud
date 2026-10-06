@@ -25,3 +25,9 @@ def require_mcp_admin_context() -> McpRequestContext:
     if context.role != "admin":
         raise PermissionError("Workspace administrator permission required")
     return context
+
+
+def assert_mcp_write_permission(session, context: McpRequestContext) -> None:
+    """Revalidate database membership/role in the tool-owned transaction."""
+    from app.features.workspace.permissions import assert_can_write
+    assert_can_write(session, context.workspace_id, context.user_id)

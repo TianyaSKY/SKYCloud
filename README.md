@@ -378,3 +378,8 @@ MCP 审计参数使用 `app/mcp/audit_payload.py` 的有界元数据契约：字
 MCP 空间概览和目录树已委托给 `features/workspace/insights.py`，SQL 读取集中在 `insights_repository.py`；repository 只使用调用方 Session，不提交事务或访问外部资源。服务在数据读取前核对当前成员资格，按空间聚合文件数量/大小/状态及目录，目录树保持 1–10 层深度限制并按 ID 稳定排序。协议入口通过 `_run_sync` 在同一线程创建、查询和关闭 Session，仅返回普通字典/列表；权限错误使用已有结构化 MCP 错误。即使保留旧的已认证上下文，独立事务移除成员后也不能继续从这两个入口读取。
 
 `RUN_WORKSPACE_INSIGHTS_TESTS=1 python -m pytest -o addopts='' tests/integration/test_workspace_insights.py` 验证真实 PostgreSQL 上的空间隔离和独立事务撤权，已加入 CI；常规检查覆盖状态聚合、目录深度及 Session/SQL 线程归属。其他 MCP 工具入口和全局 API 类型契约仍需继续拆分和审计。
+
+
+MCP 创建目录、移动/重命名文件及目录、删除文件及目录、批量删除和内联上传，均在各自工作线程的 Session 中通过 `assert_mcp_write_permission` 重新核对当前成员资格与 editor/admin 权限。请求认证时保存的角色不能代替此检查。批量删除逐项核对；已经提交的项目保留成功结果，期间成员被降级后，后续项目返回权限错误并保留数据。旧的无 verified context 直接单元调用兼容分支仍仅用于测试；实际 ASGI 请求设置 active 标记，必须执行当前 SQL 权限检查。
+
+空间集成检查现在还覆盖七种 MCP 写操作的独立事务降级拒绝，以及首项删除提交后降级、第二项保留的真实 PostgreSQL 批量场景。被拒绝的上传不会创建上传预约，目录和文件不会发生变更；现有 editor 跨上传者文件更新检查继续通过。

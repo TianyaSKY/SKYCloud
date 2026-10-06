@@ -51,6 +51,7 @@ from app.mcp.context import (
 )
 from app.mcp import runtime_token_service
 from app.mcp.audit import audited_tool
+from app.mcp.permissions import assert_mcp_write_permission
 
 from loguru import logger
 
@@ -240,6 +241,13 @@ def _require_admin_context() -> McpRequestContext:
     if context.role != "admin":
         raise PermissionError("Workspace administrator permission required")
     return context
+
+
+def _assert_current_write_permission(session, context: McpRequestContext) -> None:
+    # Only old direct unit callers lack verified context. ASGI requests always
+    # set the active marker, so no real request can use this compatibility seam.
+    if is_mcp_request_active() or get_optional_mcp_context() is not None:
+        assert_mcp_write_permission(session, context)
 
 
 def _get_authorized_file(session, context: McpRequestContext, file_id: int):
@@ -491,6 +499,7 @@ async def create_folder(
     def _work():
         session = SessionLocal()
         try:
+            _assert_current_write_permission(session, context)
             # 与 list_files 一致：避免 parent_id=None 造出第二套「伪根」
             resolved_parent_id = parent_id
             if resolved_parent_id is None:
@@ -536,6 +545,7 @@ async def move_file(
     def _work():
         session = SessionLocal()
         try:
+            _assert_current_write_permission(session, context)
             _get_authorized_file(session, context, file_id)
 
             update_data: dict[str, Any] = {}
@@ -571,6 +581,7 @@ async def delete_file(file_id: int) -> str:
     def _work():
         session = SessionLocal()
         try:
+            _assert_current_write_permission(session, context)
             _get_authorized_file(session, context, file_id)
 
             file_service.delete_file(session, file_id)
@@ -784,6 +795,7 @@ async def move_folder(
     def _work():
         session = SessionLocal()
         try:
+            _assert_current_write_permission(session, context)
             folder = _get_authorized_folder(session, context, folder_id)
 
             update_data: dict[str, Any] = {}
@@ -819,6 +831,7 @@ async def delete_folder(folder_id: int) -> str:
     def _work():
         session = SessionLocal()
         try:
+            _assert_current_write_permission(session, context)
             folder = _get_authorized_folder(session, context, folder_id)
 
             folder_name = folder.name
@@ -876,6 +889,7 @@ async def batch_delete(
                 item_id = item.id
                 is_folder = item.is_folder
                 try:
+                    _assert_current_write_permission(session, context)
                     if is_folder:
                         _get_authorized_folder(session, context, item_id)
                         folder_service.delete_folder(session, item_id)
@@ -1064,6 +1078,7 @@ async def upload_file(
 
     def _work(session):
         try:
+            _assert_current_write_permission(session, context)
             file_obj = file_service.create_uploaded_file(
                 session,
                 context.workspace_id,
