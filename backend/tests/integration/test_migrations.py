@@ -383,3 +383,26 @@ def test_mcp_audit_redaction_failure_rolls_back_and_can_retry(postgres):
     check_schema(postgres)
     with postgres.connect() as db:
         assert db.scalar(text("SELECT count(*) FROM mcp_audit_logs WHERE arguments_summary LIKE '%private%'")) == 0
+
+
+def test_object_trigger_upgrade_is_atomic_preserves_queue_and_installs_once(postgres):
+    upgrade(postgres,'0011_object_deletions')
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO file_object_deletions(object_name,attempts,last_error_type) VALUES ('pending',2,'TimeoutError')"))
+        prior = db.execute(text('SELECT * FROM file_object_deletions')).all()
+        db.execute(text("""CREATE FUNCTION stage_deleted_file_object() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN RETURN OLD; END $$"""))
+    with pytest.raises(Exception,match='already exists'):
+        upgrade(postgres)
+    with postgres.begin() as db:
+        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0011_object_deletions'
+        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
+        assert db.scalar(text("SELECT count(*) FROM pg_trigger WHERE tgname='stage_file_object_cleanup'")) == 0
+        db.execute(text('DROP FUNCTION stage_deleted_file_object()'))
+    upgrade(postgres)
+    check_schema(postgres)
+    upgrade(postgres)
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
+        assert db.scalar(text("SELECT count(*) FROM pg_trigger WHERE tgname='stage_file_object_cleanup'")) == 1
+        assert db.scalar(text("SELECT confdeltype FROM pg_constraint WHERE conname='fk_files_uploader_id_users'")) == 'n'

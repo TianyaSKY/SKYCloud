@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from app.infra.extensions import UPLOAD_FOLDER, redis_client
 from app.infra.cache import cacheable, evict_cache_pattern
 from app.infra.file_task_outbox import stage_file_tasks
-from app.infra.file_object_deletion import stage_object_deletion, lock_object_path
+from app.infra.file_object_deletion import stage_object_deletion_fallback, lock_object_path
 from app.infra.storage import get_storage_client
 from app.infra import multipart_storage
 from app.infra.upload_adapter import save_bounded
@@ -843,7 +843,7 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
     entity_id = file_obj.id
     object_name = cast(str, file_obj.file_path)
 
-    stage_object_deletion(session, object_name)
+    stage_object_deletion_fallback(session, object_name)
     repository.remove_file(session, file_obj)
     if commit:
         session.commit()

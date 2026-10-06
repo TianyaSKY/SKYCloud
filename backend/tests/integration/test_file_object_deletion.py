@@ -231,3 +231,55 @@ def test_recursive_root_lock_blocks_new_foreign_child_during_enumeration(object_
             release.set()
         task.result(timeout=10)
     assert clean(object_context) == 1
+
+
+@pytest.mark.parametrize('entity',['file','workspace','user'])
+def test_bulk_and_database_cascades_stage_cleanup_in_same_transaction(object_context,entity):
+    db,storage,_ = object_context
+    statement = {'file':'DELETE FROM files WHERE id=1','workspace':'DELETE FROM workspaces WHERE id=1',
+                 'user':'DELETE FROM users WHERE id=1'}[entity]
+    # A rolled back cascade must leave both metadata and bytes; no intent survives.
+    with db.connect() as connection:
+        transaction = connection.begin()
+        connection.execute(text(statement))
+        assert connection.scalar(text('SELECT count(*) FROM file_object_deletions')) == 1
+        transaction.rollback()
+    with db.connect() as connection:
+        assert connection.scalar(text('SELECT count(*) FROM files')) == 1
+        assert connection.scalar(text('SELECT count(*) FROM file_object_deletions')) == 0
+    with db.begin() as connection:
+        connection.execute(text(statement))
+    assert storage.file_exists('shared')
+    with db.connect() as connection:
+        assert connection.scalar(text('SELECT count(*) FROM files')) == 0
+        assert connection.scalar(text('SELECT count(*) FROM file_object_deletions')) == 1
+    assert clean(object_context) == 1 and not storage.file_exists('shared')
+
+
+def test_workspace_service_cascade_retains_shared_foreign_object(object_context,monkeypatch):
+    from app.features.workspace import service as workspaces,docker_service
+    db,storage,factory = object_context
+    monkeypatch.setattr(docker_service,'remove_container',lambda workspace,session:None)
+    with db.begin() as connection:
+        connection.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (2,'foreign','x','common')"))
+        connection.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (2,'foreign',2)"))
+        connection.execute(text("INSERT INTO files(name,file_path,file_size,status,workspace_id,uploader_id) VALUES ('foreign','shared',3,'success',2,2)"))
+    with factory() as session:
+        workspaces.delete_workspace(session,1,1)
+    with db.connect() as connection:
+        assert connection.execute(text('SELECT workspace_id FROM files')).scalars().all() == [2]
+        assert connection.scalar(text('SELECT count(*) FROM file_object_deletions')) == 1
+    assert clean(object_context) == 1 and storage.file_exists('shared')
+
+
+def test_user_database_cascade_keeps_foreign_workspace_file_and_clears_uploader(object_context):
+    db,storage,_ = object_context
+    with db.begin() as connection:
+        connection.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (2,'foreign','x','common')"))
+        connection.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (2,'foreign',2)"))
+        connection.execute(text("INSERT INTO files(name,file_path,file_size,status,workspace_id,uploader_id) VALUES ('collaboration','shared',3,'success',2,1)"))
+        connection.execute(text('DELETE FROM users WHERE id=1'))
+    with db.connect() as connection:
+        assert connection.execute(text('SELECT workspace_id,uploader_id FROM files')).all() == [(2,None)]
+        assert connection.scalar(text('SELECT count(*) FROM file_object_deletions')) == 1
+    assert clean(object_context) == 1 and storage.file_exists('shared')

@@ -3,7 +3,7 @@
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-EXPECTED_REVISION = "0011_object_deletions"
+EXPECTED_REVISION = "0012_object_delete_trigger"
 
 
 def check_schema(database_engine):

@@ -24,8 +24,10 @@ def lock_object_path(session: Session, object_name: str) -> None:
         session.execute(text("SELECT pg_advisory_xact_lock(731948214, :key)"), {"key": key})
 
 
-def stage_object_deletion(session: Session, object_name: str) -> None:
-    session.add(FileObjectDeletion(object_name=object_name))
+def stage_object_deletion_fallback(session: Session, object_name: str) -> None:
+    """Non-PG test bridge; PostgreSQL AFTER DELETE owns staging for every path."""
+    if session.get_bind().dialect.name != "postgresql":
+        session.add(FileObjectDeletion(object_name=object_name))
 
 
 def delete_pending_objects(*, session_factory=SessionLocal, storage_factory=get_storage_client,
