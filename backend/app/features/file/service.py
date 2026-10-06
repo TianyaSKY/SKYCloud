@@ -6,7 +6,6 @@
 
 import asyncio
 import hashlib
-import json
 import math
 import mimetypes
 import os
@@ -32,9 +31,10 @@ from app.infra.extensions import UPLOAD_FOLDER, redis_client
 from app.infra.cache import cacheable, evict_cache_pattern
 from app.infra.file_task_outbox import stage_file_tasks
 from app.infra.storage import get_storage_client
+from app.infra import multipart_storage
 from app.infra.upload_adapter import save_bounded
 from app.infra.upload_staging import StagedUpload, cleanup_staging
-from app.infra.upload_limits import FILE_LIMIT, AVATAR_LIMIT, copy_bounded, positive_limit
+from app.infra.upload_limits import FILE_LIMIT, AVATAR_LIMIT, positive_limit
 from app.models.file import File
 from app.features.folder import change_log as change_log_service
 from app.infra.llm.config import get_embedding_model_config
@@ -266,15 +266,15 @@ def _resolve_upload_parent_id(
 
 
 def _multipart_upload_dir(workspace_id: int, upload_id: str) -> str:
-    return os.path.join(MULTIPART_ROOT, str(workspace_id), upload_id)
+    return multipart_storage.upload_directory(MULTIPART_ROOT, workspace_id, upload_id)
 
 
 def _multipart_chunks_dir(upload_dir: str) -> str:
-    return os.path.join(upload_dir, "chunks")
+    return multipart_storage.chunks_directory(upload_dir)
 
 
 def _multipart_meta_path(upload_dir: str) -> str:
-    return os.path.join(upload_dir, "meta.json")
+    return multipart_storage.metadata_path(upload_dir)
 
 
 def _safe_upload_id(upload_id: str) -> str:
@@ -285,17 +285,7 @@ def _safe_upload_id(upload_id: str) -> str:
 
 
 def _list_uploaded_chunks(chunks_dir: str) -> list[int]:
-    uploaded = []
-    if not os.path.isdir(chunks_dir):
-        return uploaded
-    for name in os.listdir(chunks_dir):
-        if not name.endswith(".part"):
-            continue
-        idx = name[:-5]
-        if idx.isdigit():
-            uploaded.append(int(idx))
-    uploaded.sort()
-    return uploaded
+    return multipart_storage.list_chunks(chunks_dir)
 
 
 def _load_multipart_meta(workspace_id: int, upload_id: str) -> dict[str, Any]:
@@ -305,8 +295,7 @@ def _load_multipart_meta(workspace_id: int, upload_id: str) -> dict[str, Any]:
     if not os.path.exists(meta_path):
         raise ResourceNotFoundError("Upload session not found")
     try:
-        with open(meta_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
+        meta = multipart_storage.read_metadata(meta_path)
     except Exception as e:
         logger.exception(f"Failed to read upload metadata: {e}")
         raise ServiceOperationError("Upload session corrupted")
@@ -317,8 +306,7 @@ def _load_multipart_meta(workspace_id: int, upload_id: str) -> dict[str, Any]:
 
 
 def _write_multipart_meta(meta_path: str, meta: dict[str, Any]) -> None:
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False)
+    multipart_storage.write_metadata(meta_path, meta)
 
 
 
@@ -631,32 +619,13 @@ def save_multipart_chunk(
 
     upload_dir = _multipart_upload_dir(workspace_id, safe_upload_id)
     chunks_dir = _multipart_chunks_dir(upload_dir)
-    os.makedirs(chunks_dir, exist_ok=True)
-
-    part_path = os.path.join(chunks_dir, f"{idx}.part")
-    tmp_part_path = f"{part_path}.{uuid.uuid4().hex}.tmp"
-
     expected_size = chunk_size
     if idx == total_chunks - 1:
         expected_size = total_size - (idx * chunk_size)
         if expected_size <= 0:
             expected_size = chunk_size
 
-    try:
-        save_bounded(chunk_obj, tmp_part_path, min(expected_size, MAX_CHUNK_SIZE))
-        actual_size = os.path.getsize(tmp_part_path)
-    except BaseException:
-        if os.path.exists(tmp_part_path):
-            os.remove(tmp_part_path)
-        raise
-
-    if actual_size != expected_size:
-        os.remove(tmp_part_path)
-        raise BusinessRuleError(
-            f"Invalid chunk size for index {idx}: expected {expected_size}, got {actual_size}"
-        )
-
-    os.replace(tmp_part_path, part_path)
+    multipart_storage.save_chunk(chunks_dir, idx, chunk_obj, expected_size, MAX_CHUNK_SIZE)
     session.commit()
 
     return {
@@ -694,27 +663,9 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
     unique_filename = meta["object_name"]
     staging = StagedUpload(UPLOAD_FOLDER, filename, stage_id=meta["stage_id"])
     final_path = staging.path
-    tmp_final_path = f"{final_path}.assembling"
-
-    if os.path.exists(tmp_final_path):
-        os.remove(tmp_final_path)
-
     try:
-        with open(tmp_final_path, "wb") as target:
-            for idx in range(total_chunks):
-                part_path = os.path.join(chunks_dir, f"{idx}.part")
-                with open(part_path, "rb") as source:
-                    expected = min(int(meta["chunk_size"]), total_size - idx * int(meta["chunk_size"]))
-                    if copy_bounded(source, target, expected) != expected:
-                        raise BusinessRuleError("Invalid stored chunk size")
-
-        assembled_size = os.path.getsize(tmp_final_path)
-        if assembled_size != total_size:
-            os.remove(tmp_final_path)
-            raise BusinessRuleError(
-                f"Assembled file size mismatch: expected {total_size}, got {assembled_size}"
-            )
-        os.replace(tmp_final_path, final_path)
+        multipart_storage.assemble(chunks_dir, final_path, total_chunks=total_chunks,
+                                   chunk_size=int(meta["chunk_size"]), total_size=total_size)
     except DomainError:
         staging.close()
         raise
@@ -722,6 +673,9 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
         staging.close()
         logger.exception(f"Failed to merge chunks: {e}")
         raise ServiceOperationError("Failed to merge chunks")
+    except BaseException:
+        staging.close()
+        raise
 
     storage = None
     try:
