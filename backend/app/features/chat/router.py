@@ -5,6 +5,7 @@ Assistant FastEngine 适配器执行同一条 RAG 管线。
 """
 
 import json
+from contextlib import aclosing
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -32,19 +33,21 @@ async def chat(
 
     async def stream():
         engine = FastEngine(legacy_generator=generate_chat_events)
-        async for event in engine.stream(
+        iterator = engine.stream(
             run_id=0,
             user_id=current_user.id,
             workspace_id=workspace.id,
             query=payload.query,
             history=payload.history,
-        ):
-            legacy_payload = {"type": event.type, **event.payload}
-            if event.type == "error":
-                legacy_payload = {
-                    "type": "status",
-                    "content": f"出错了: {event.payload.get('message', '请求失败')}",
-                }
-            yield f"data: {json.dumps(legacy_payload, ensure_ascii=False)}\n\n"
+        )
+        async with aclosing(iterator):
+            async for event in iterator:
+                legacy_payload = {"type": event.type, **event.payload}
+                if event.type == "error":
+                    legacy_payload = {
+                        "type": "status",
+                        "content": f"出错了: {event.payload.get('message', '请求失败')}",
+                    }
+                yield f"data: {json.dumps(legacy_payload, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(stream(), media_type="text/event-stream")

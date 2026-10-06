@@ -398,15 +398,19 @@ async def _engine_events_with_heartbeats(
 ) -> AsyncIterator[AssistantEvent]:
     """Forward provider events while keeping reverse proxies' idle timers warm."""
 
-    queue: asyncio.Queue[tuple[str, AssistantEvent | BaseException | None]] = asyncio.Queue()
+    queue: asyncio.Queue[tuple[str, AssistantEvent | BaseException | None]] = asyncio.Queue(maxsize=1)
 
     async def produce() -> None:
         try:
-            async for event in engine_iterator:
-                await queue.put(("event", event))
+            async with aclosing(engine_iterator):
+                async for event in engine_iterator:
+                    await queue.put(("event", event))
+        except asyncio.CancelledError:
+            # The consumer is gone; do not block on a full queue during cleanup.
+            raise
         except BaseException as exc:  # forwarded to the consumer below
             await queue.put(("error", exc))
-        finally:
+        else:
             await queue.put(("done", None))
 
     producer = asyncio.create_task(produce())

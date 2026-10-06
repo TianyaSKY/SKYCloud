@@ -1,6 +1,7 @@
 """Adapter from the existing SKYCloud RAG SSE generator to AssistantEvent."""
 
 import json
+from contextlib import aclosing
 from collections.abc import AsyncIterator, Sequence
 from collections.abc import Callable
 from typing import Any
@@ -54,28 +55,30 @@ class FastEngine:
         controller: object | None = None,
     ) -> AsyncIterator[AssistantEvent]:
         del controller
-        async for chunk in self.legacy_generator(
+        iterator = self.legacy_generator(
             user_id,
             workspace_id,
             query,
             list(history),
-        ):
-            for legacy in _decode_legacy_sse(chunk):
-                event_type = str(legacy.get("type") or "status")
-                content = legacy.get("content")
-                payload = dict(legacy.get("payload") or {})
-                if event_type == "sources" and isinstance(legacy.get("sources"), list):
-                    payload["sources"] = legacy["sources"]
-                if event_type == "usage":
-                    for key in ("prompt_tokens", "completion_tokens", "total_tokens", "model_name"):
-                        if key in legacy:
-                            payload[key] = legacy[key]
-                if content is not None:
-                    if event_type in {"token", "keywords", "status"}:
-                        payload["content"] = content
-                    elif isinstance(content, dict):
-                        payload.update(content)
-                if event_type == "status" and isinstance(content, str) and content.startswith("出错了:"):
-                    event_type = "error"
-                    payload = {"message": content[4:].strip()}
-                yield AssistantEvent(type=event_type, payload=payload, run_id=run_id)
+        )
+        async with aclosing(iterator):
+            async for chunk in iterator:
+                for legacy in _decode_legacy_sse(chunk):
+                    event_type = str(legacy.get("type") or "status")
+                    content = legacy.get("content")
+                    payload = dict(legacy.get("payload") or {})
+                    if event_type == "sources" and isinstance(legacy.get("sources"), list):
+                        payload["sources"] = legacy["sources"]
+                    if event_type == "usage":
+                        for key in ("prompt_tokens", "completion_tokens", "total_tokens", "model_name"):
+                            if key in legacy:
+                                payload[key] = legacy[key]
+                    if content is not None:
+                        if event_type in {"token", "keywords", "status"}:
+                            payload["content"] = content
+                        elif isinstance(content, dict):
+                            payload.update(content)
+                    if event_type == "status" and isinstance(content, str) and content.startswith("出错了:"):
+                        event_type = "error"
+                        payload = {"message": content[4:].strip()}
+                    yield AssistantEvent(type=event_type, payload=payload, run_id=run_id)

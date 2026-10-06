@@ -340,3 +340,6 @@ Checkpoint 使用原子 upsert 保持事件位点只增不减，并发首次创�
 
 
 RAG Embedding 用量身份由每次调用显式传入：原问题预计算、多查询补充和单路检索均携带发起用户，缓存 Embedding 对象不保存可变用户 ID。`tests/test_embedding_identity.py` 在独立进程运行真实 LangChain Runnable 管线、缓存 Embedding 包装及 OpenAI SDK，用本地 HTTP Embedding 端点和 SQLite 用量事务验证并发用户隔离与取消后的后续调用；关键词和回答模型使用合成 Runnable，向量数据库检索使用空结果适配器。它不代表外部供应商或完整 PostgreSQL RAG 检索验证。
+
+
+对话流逐层关闭嵌套生成器：旧 `/chat` 流、FastEngine 和 RAG LangChain 事件迭代器在提前关闭时立即等待底层收尾及已知用量记录。Assistant 心跳转发只缓存一条事件，以背压限制慢客户端下的应用层预读；取消不会向已满队列再写入结束标记，避免收尾卡住。`tests/test_rag_stream_cleanup.py` 覆盖暂停时关闭、等待模型时取消、旧接口关闭传播、用量收尾和队列满时退出，并在独立进程使用真实 LangChain 管线与合成流式模型核实任务结束；没有调用外部模型供应商。
