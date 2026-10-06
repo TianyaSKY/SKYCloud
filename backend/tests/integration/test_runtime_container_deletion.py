@@ -576,3 +576,111 @@ def test_lifecycle_pg_mutex_survives_sql_commit_and_releases_on_exit(graph):
                 pool.submit(try_other).result(timeout=10)
         with graph['factory']() as other:
             with execution(other,graph['id'],graph['id']): pass
+
+
+@pytest.fixture
+def delayed_generation_graph(request,infrastructure,monkeypatch):
+    from pathlib import Path
+    name = infrastructure['target']+'-daemon-proxy'
+    infrastructure['cleanup'].append(name)
+    gid = docker('run','--rm','--entrypoint','stat','-v','/var/run/docker.sock:/var/run/docker.sock',
+                 os.environ['SKYCLOUD_TEST_INFRA_IMAGE'],'-c','%g','/var/run/docker.sock').stdout.strip()
+    code=(Path(__file__).parent/'docker_delayed_proxy.py').read_text()
+    docker('run','-d','--name',name,'--network',infrastructure['control'],'--network-alias','delayed-daemon',
+           '--read-only','--cap-drop','ALL','--security-opt','no-new-privileges:true','--group-add',gid,
+           '--tmpfs','/tmp:rw,nosuid,nodev,size=1m,mode=1777','-v','/var/run/docker.sock:/var/run/docker.sock',
+           '--entrypoint','python',os.environ['SKYCLOUD_TEST_CONTROLLER_IMAGE'],'-u','-c',code)
+    monkeypatch.setenv('SKYCLOUD_TEST_DOCKER_PROXY_HOST','tcp://delayed-daemon:2375')
+    graph=request.getfixturevalue('generation_graph')
+    graph['proxy']=name
+    return graph
+
+
+def test_killed_controller_retirement_collects_create_delayed_until_after_fence(delayed_generation_graph,infrastructure,controller,monkeypatch):
+    import httpx,re,time
+    from runtime_controller.client import ControllerError
+    graph=delayed_generation_graph
+    generation=uuid.uuid4().hex
+    name=f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
+    infrastructure['cleanup'].append(name)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        preparing=pool.submit(graph['client'].prepare,graph['id'],graph['id'],graph['id'],generation)
+        deadline=time.monotonic()+10
+        while 'CREATE_HELD' not in docker('logs',graph['proxy']).stdout:
+            assert time.monotonic()<deadline
+            time.sleep(0.1)
+        docker('kill','--signal','KILL',controller['name'])
+        with pytest.raises(ControllerError): preparing.result(timeout=10)
+        docker('start',controller['name'])
+        port=docker('port',controller['name'],'5003/tcp').stdout.strip().rsplit(':',1)[1]
+        controller['url']='http://127.0.0.1:'+port
+        monkeypatch.setenv('RUNTIME_CONTROLLER_URL',controller['url'])
+        deadline=time.monotonic()+15
+        while time.monotonic()<deadline:
+            try:
+                if httpx.get(controller['url']+'/health',headers={'X-Runtime-Controller-Token':controller['token']},timeout=1).status_code==200: break
+            except httpx.HTTPError: pass
+            time.sleep(0.1)
+        else: raise AssertionError('Killed Controller failed to recover')
+        # The accepted downstream create is still held and physically absent.
+        graph['client'].retire_generation(graph['id'],graph['id'],graph['id'],generation)
+        assert docker('inspect',name,check=False).returncode!=0
+        docker('exec',graph['proxy'],'python','-c',"from pathlib import Path; Path('/tmp/release-create').write_text('release')")
+        deadline=time.monotonic()+15
+        identity=None
+        while time.monotonic()<deadline:
+            completed=re.search(r'CREATE_COMPLETED:([0-9a-f]{64})',docker('logs',graph['proxy']).stdout)
+            if completed:
+                identity=completed.group(1)
+                if docker('inspect',identity,check=False).returncode!=0: break
+            time.sleep(0.1)
+        assert identity is not None,'Delayed request never created a real Docker resource'
+        assert docker('inspect',identity,check=False).returncode!=0,'Retired late resource was not reconciled'
+    with pytest.raises(ControllerError): graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+
+
+def test_missing_ready_candidate_reports_exact_identity_without_recreating(generation_graph,infrastructure):
+    from runtime_controller.client import ControllerGenerationMissing
+    graph=generation_graph
+    generation=uuid.uuid4().hex
+    name=f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
+    infrastructure['cleanup'].append(name)
+    prepared=graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    docker('rm','-f',prepared.id)  # External disappearance bypasses retirement.
+    with pytest.raises(ControllerGenerationMissing) as error:
+        graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    assert error.value.generation==generation and error.value.container_id==prepared.id
+    assert docker('inspect',name,check=False).returncode!=0
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+
+
+def test_detached_completed_generation_is_fenced_even_when_physical_id_already_missing(generation_graph,infrastructure):
+    from app.features.workspace import runtime_operation_repository as operations
+    from app.models.runtime_operation import RuntimeOperation
+    graph=generation_graph
+    with graph['factory']() as session:
+        operation=operations.admit(session,graph['id'],graph['id'])
+        generation=operation.generation
+        session.commit()
+    name=f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
+    infrastructure['cleanup'].append(name)
+    prepared=graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    with graph['factory']() as session:
+        operations.record_candidate(session,generation,prepared.id); session.commit()
+        operations.switch_candidate(session,generation); session.commit()
+        # Configuration isn't exercised here: mark the lifecycle as completed
+        # so this tests ID-queue retirement independent of active cancellation.
+        operation=session.get(RuntimeOperation,generation)
+        operation.state='complete'
+        from app.infra.datetime_utils import utc_now
+        operation.finished_at=utc_now()
+        session.commit()
+    assert cleanup(graph)==1 and not exists(graph,graph['id'])
+    docker('rm','-f',prepared.id)
+    with graph['db'].begin() as db:
+        db.execute(text('UPDATE opencode_runtimes SET container_id=NULL WHERE id=:id'),{'id':graph['id']})
+    assert cleanup(graph)==1
+    from runtime_controller.client import ControllerError
+    with pytest.raises(ControllerError): graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    assert all(exists(graph,runtime) for runtime in graph['containers'] if runtime!=graph['id'])

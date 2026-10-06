@@ -437,3 +437,102 @@ def test_failed_generation_remove_keeps_retirement_fence_and_can_retry(settings,
     Engine(settings,client).retire_generation(2,3,4,'a'*32)
     assert managed_container.remove.call_count == 2
     client.containers.create.assert_not_called()
+
+
+def test_retired_scan_collects_late_generation_and_advances_persistent_cursor(settings,managed_container):
+    from runtime_controller.generation_journal import GenerationJournal
+    from runtime_controller.policy import generation_name
+    journal = GenerationJournal(settings.state_path)
+    with journal.locked('a'*32,(2,3,4)) as record:
+        record.ready('a'*64)
+        record.retire()
+    managed_container.id = 'b'*64
+    managed_container.name = generation_name(2,3,'a'*32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
+    client = Mock()
+    def get(ref):
+        if ref == 'a'*64: raise MissingRuntime('old candidate gone')
+        return managed_container
+    client.containers.get.side_effect = get
+    client.api.containers.return_value = [{'Id':'b'*64,'Labels':{'skycloud.generation':'a'*32}}]
+    assert Engine(settings,client).reconcile_retired() == 1
+    managed_container.remove.assert_called_once_with(force=True,v=True)
+    rows = [{'Id':f'{i:064x}','Labels':{'skycloud.generation':'a'*32}} for i in range(1,4)]
+    for i in range(1,5):
+        assert GenerationJournal(settings.state_path).retired_candidates(rows,limit=1) == [(2,3,4,'a'*32)]
+        import sqlite3
+        with sqlite3.connect(journal.directory/'generations.sqlite') as db:
+            assert db.execute('SELECT container_id FROM reconciliation_cursor').fetchone()[0] == f'{(i-1)%3+1:064x}'
+
+
+def test_retired_scan_preserves_identity_mismatch_and_active_generation(settings,managed_container):
+    from runtime_controller.generation_journal import GenerationJournal
+    from runtime_controller.policy import generation_name
+    with GenerationJournal(settings.state_path).locked('a'*32,(2,3,4)) as record: record.retire()
+    managed_container.name = generation_name(2,3,'a'*32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
+    managed_container.attrs['Config']['Labels']['skycloud.runtime_id'] = '5'
+    client = Mock(); client.containers.get.return_value = managed_container
+    client.api.containers.return_value = [{'Id':'a'*64,'Labels':{'skycloud.generation':'a'*32}},
+                                         {'Id':'b'*64,'Labels':{'skycloud.generation':'b'*32}}]
+    assert Engine(settings,client).reconcile_retired() == 0
+    managed_container.remove.assert_not_called()
+
+
+@pytest.mark.parametrize('payload', [
+    {'code':'generation_candidate_missing','generation':'b'*32,'container_id':'a'*64},
+    {'code':'generation_candidate_missing','generation':'a'*32,'container_id':'short'},
+    {'code':'unknown','generation':'a'*32,'container_id':'a'*64},
+])
+def test_missing_candidate_rpc_rejects_unconfirmed_payload(monkeypatch,payload):
+    import httpx
+    from runtime_controller.client import ControllerClient,ControllerError,ControllerGenerationMissing
+    monkeypatch.setattr(httpx,'request',lambda *args,**kwargs:httpx.Response(409,json=payload))
+    with pytest.raises(ControllerError) as error: ControllerClient().prepare(2,3,4,'a'*32)
+    assert not isinstance(error.value,ControllerGenerationMissing)
+
+
+def test_missing_recorded_candidate_is_typed_without_recreating(settings):
+    from runtime_controller.generation_journal import GenerationJournal
+    from runtime_controller.engine import MissingGenerationCandidate
+    with GenerationJournal(settings.state_path).locked('a'*32,(2,3,4)) as record: record.ready('a'*64)
+    client=Mock(); client.containers.get.side_effect=MissingRuntime('gone')
+    engine=Engine(settings,client)
+    with pytest.raises(MissingGenerationCandidate): engine.prepare(2,3,4,'a'*32)
+    client.containers.create.assert_not_called()
+    from runtime_controller.app import create_app
+    from fastapi.testclient import TestClient
+    response=TestClient(create_app(settings,engine)).post('/containers/prepare',headers={'X-Runtime-Controller-Token':settings.token},
+        json={'workspace_id':2,'user_id':3,'runtime_id':4,'generation':'a'*32})
+    assert response.status_code==409 and response.json()['container_id']=='a'*64
+
+
+@pytest.mark.parametrize('action',['start','restart'])
+def test_retired_but_not_removed_generation_cannot_be_started(settings,managed_container,action):
+    from runtime_controller.generation_journal import GenerationJournal
+    from runtime_controller.policy import generation_name
+    managed_container.name=generation_name(2,3,'a'*32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation']='a'*32
+    with GenerationJournal(settings.state_path).locked('a'*32,(2,3,4)) as record:
+        record.ready(managed_container.id)
+        record.retire()
+    client=Mock(); client.containers.get.return_value=managed_container
+    with pytest.raises(PolicyViolation): Engine(settings,client).action(managed_container.id,action)
+    managed_container.start.assert_not_called()
+    managed_container.restart.assert_not_called()
+
+
+def test_retired_scan_skips_busy_shard_then_retries_without_losing_fence(settings,managed_container):
+    from runtime_controller.generation_journal import GenerationJournal
+    from runtime_controller.policy import generation_name
+    managed_container.name=generation_name(2,3,'a'*32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation']='a'*32
+    client=Mock(); client.containers.get.return_value=managed_container
+    client.api.containers.return_value=[{'Id':managed_container.id,'Labels':{'skycloud.generation':'a'*32}}]
+    journal=GenerationJournal(settings.state_path)
+    with journal.locked('a'*32,(2,3,4)) as record:
+        record.retire()
+        assert Engine(settings,client).reconcile_retired()==0
+        managed_container.remove.assert_not_called()
+    assert Engine(settings,client).reconcile_retired()==1
+    managed_container.remove.assert_called_once_with(force=True,v=True)

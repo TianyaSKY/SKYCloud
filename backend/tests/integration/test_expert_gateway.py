@@ -50,8 +50,8 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion', [(None,False),(None,True),('once',False),('reject',False)],ids=['cold','crash','allow','reject'])
-def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion):
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched'])
+def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
@@ -140,6 +140,25 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                 docker('network', 'connect', '--gw-priority', '-1', '--alias', 'skycloud-llm-gateway', '--alias', 'backend-mcp', infrastructure['runtime'], bridge)
                 docker('start', bridge)
                 assert docker('inspect', '--format', '{{.State.Running}}', bridge).stdout.strip() == 'true'
+                if missing_candidate:
+                    from app.features.workspace import runtime_operation_repository as operations
+                    with factory() as bootstrap:
+                        old = operations.admit(bootstrap,ws_id,user_id)
+                        old_generation,rt_id = old.generation,int(old.runtime_id)
+                        bootstrap.commit()
+                        prepared = docker_service._client().prepare(ws_id,user_id,rt_id,old_generation)
+                        if missing_candidate == 'switched':
+                            operations.record_candidate(bootstrap,old_generation,prepared.id)
+                            bootstrap.commit()
+                            operations.switch_candidate(bootstrap,old_generation)
+                            bootstrap.commit()
+                    docker('rm','-f',prepared.id)
+                    from app.infra.runtime_operations import recover_runtime_operations
+                    recover_runtime_operations(session_factory=factory)
+                    with factory() as observer:
+                        assert observer.get(RuntimeOperation,old_generation).state == 'cancelled'
+                        replacement = observer.query(RuntimeOperation).filter_by(workspace_id=ws_id,user_id=user_id,state='complete').one()
+                        assert replacement.generation != old_generation and replacement.candidate_container_id != prepared.id
                 if crash_before_completion:
                     marker = tmp_path / 'configured-generation'
                     # Interrupt an actual locked-SDK/API process after the
@@ -228,7 +247,7 @@ with Session(engine) as session:
                             assert any('AUTHORIZED_ONLY' in str(reply) for reply in tool_replies)
 
                     runtime = docker_service.runtime_service.get_runtime(db, ws_id, user_id)
-                    operation = db.query(RuntimeOperation).filter_by(workspace_id=ws_id,user_id=user_id).one()
+                    operation = db.query(RuntimeOperation).filter_by(workspace_id=ws_id,user_id=user_id,state='complete').one()
                     assert operation.state == 'complete' and operation.finished_at is not None
                     assert operation.candidate_container_id == runtime.container_id
                     container = docker_service._client().containers.get(runtime.container_id)

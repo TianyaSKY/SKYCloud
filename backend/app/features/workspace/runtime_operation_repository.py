@@ -119,3 +119,29 @@ def complete(session, generation):
     operation.finished_at = utc_now()
     operation.last_error_type = None
     session.flush()
+
+
+def replace_missing(session, generation, missing_container_id):
+    if not isinstance(missing_container_id,str) or not re.fullmatch(r'[0-9a-f]{64}',missing_container_id):
+        raise ConflictError('Missing candidate requires full container identity')
+    identity = session.execute(select(RuntimeOperation.workspace_id,RuntimeOperation.user_id)
+        .where(RuntimeOperation.generation == generation)).one()
+    runtime = _runtime_with_write_access(session,*identity)
+    operation = _locked(session,RuntimeOperation,RuntimeOperation.generation == generation)
+    if runtime is None or runtime.id != operation.runtime_id or operation.state not in ('preparing','switched'):
+        raise ConflictError('Runtime operation is no longer active')
+    if operation.candidate_container_id not in (None,missing_container_id):
+        raise ConflictError('Missing identity does not match runtime candidate')
+    if operation.state == 'switched' and runtime.container_id != missing_container_id:
+        raise ConflictError('Runtime identity changed after switching')
+    if operation.state == 'preparing' and runtime.container_id != operation.previous_container_id:
+        raise ConflictError('Runtime identity changed before switching')
+    operation.state = 'cancelled'
+    if runtime.container_id == missing_container_id:
+        from app.mcp.runtime_token_service import revoke_runtime_tokens
+        stage_container_deletion_fallback(session,missing_container_id)
+        revoke_runtime_tokens(session,int(runtime.id))
+        runtime.container_id = None
+        runtime.status = 'stopped'
+    session.flush()  # Lifecycle triggers cannot cancel the new admission.
+    return admit(session,*identity)

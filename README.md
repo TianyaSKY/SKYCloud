@@ -449,4 +449,13 @@ SQL 仓储和取消恢复最初尚未接入生产 Runtime.start，后续接入�
 
 真实恢复检查强制终止一个实际启动进程：OpenCode 配置及其 SQL 版本已提交，但操作 complete 尚未提交。Worker 恢复同一完整容器 ID，完成模型请求、持久化回答和实际 MCP SDK 调用。该检查暴露并修复了凭据刷新后模型 401：所锁定 OpenCode 1.18.11 的全局配置具有进程级缓存，仅重载实例不能更新它；现在先调用 PATCH /global/config 写入并失效缓存，再重载实例、连接 MCP并保存规范化配置。参考该版本的 [配置缓存实现](https://raw.githubusercontent.com/anomalyco/opencode/v1.18.11/packages/opencode/src/config/config.ts) 和 [全局更新处理](https://raw.githubusercontent.com/anomalyco/opencode/v1.18.11/packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts)。
 
-仍须审计 Controller 在 Docker 已接受创建但尚未可见时被终止的迟到资源，以及候选被外部移除后的恢复；本批进程终止检查仅覆盖配置已提交、操作未完成的边界。外部模型服务和完整浏览器恢复也仍待验证。CI 现启用状态列表保护及实际 OpenCode/MCP/崩溃恢复检查，构建校验和锁定的 Runtime 和 Nginx 桥接夹具，并显式配置 host-gateway 供 Linux 使用；尚未执行托管 Linux CI 或推送远程。
+该批进程终止检查仅覆盖配置已提交、操作未完成的边界；迟到创建与候选丢失的后续处理见下文。外部模型服务和完整浏览器恢复也仍待验证。CI 现启用状态列表保护及实际 OpenCode/MCP/崩溃恢复检查，构建校验和锁定的 Runtime 和 Nginx 桥接夹具，并显式配置 host-gateway 供 Linux 使用；尚未执行托管 Linux CI 或推送远程。
+
+
+Controller 现通过 lifespan 后台循环持续核对 Docker 中可见的 Runtime 与持久 generation 退役记录。每轮最多核对 20 个可见资源，游标保存到私有 SQLite，使持续存在或身份不符的资源不会阻挡后续检查；已结束的历史 generation 不逐条扫描。只有 generation 已退役、名称和空间/用户/Runtime 标签均匹配时才移除资源；身份不符的资源保留并仅记录错误类型。繁忙的锁分片会跳过并在后续循环重试。若已记录的旧容器 ID 不存在，会按同一 generation 名称重新查找并校验身份，以回收后续才出现的新 ID。已退役或尚未记录 ready 身份的 generation 不能启动或重启。Controller 重启恢复后台核对；关闭时等待正在执行的批次结束，Docker RPC 超时/失败仍由后续启动重试。状态卷必须持续保留。
+
+Controller 对已记录 ready 身份、但对应物理资源已消失的准备请求返回明确的 409 generation_candidate_missing，包含匹配的 generation 与完整旧 ID；不在同一代重建。客户端仅识别字段齐全、代号匹配的该错误，旧接口 404、其他 409 或身份拒绝不作为自动替换依据。生产 start 在重新锁定当前权限、Runtime 与操作后，原子取消旧代并保存新代；若已切换的候选消失则同步解除该 SQL 归属并撤销凭据，未发布候选消失则保留此前容器归属。提交后先退役旧代，再执行新代，一次调用最多自动替换一次，反复消失会保留可重试操作。旧代的取消和新代的准入在退役 RPC 失败后仍可恢复。
+
+容器 ID 清理任务也查询持久操作记录：即使 inspect 已确认旧 ID 不存在，已知 generation 仍需通过退役 RPC 确认后才完成任务；若物理资源仍存在，须匹配完整 ID 和 generation/空间/用户/Runtime 标签。未确认退役保留任务重试，当前引用仍保护资源。该路径覆盖已运行完毕后被解除归属的 generation，避免仅凭旧 ID 的缺失遗漏迟到创建。
+
+本批检查使用独立私有网络的测试代理暂缓一个已接收的创建 RPC，强制终止并重启 Controller，先在物理资源缺失时退役，再放行请求，使真实 Docker 资源随后出现；新版持续核对将其回收，旧镜像仍留下该资源。它模拟下游迟到执行，未观测 Docker 守护进程内部的挂起点。另有准备完成但候选 ID 尚未提交、及已发布候选丢失两条真实 OpenCode -> 模型网关 -> 合成模型 -> 持久回答/MCP 路径，均通过新代恢复。当前 PostgreSQL schema head 仍为 0015；仅 Controller 私有日志新增游标表，兼容已有状态卷。已有完成清理记录的历史核对、更复杂并发故障、外部模型服务与完整浏览器恢复仍需审计。

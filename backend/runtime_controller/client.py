@@ -1,6 +1,7 @@
 """Application-side RPC client. It has no Docker SDK or socket access."""
 
 import os
+import re
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -13,6 +14,12 @@ class ControllerError(RuntimeError):
 
 class ControllerNotFound(ControllerError):
     pass
+
+
+class ControllerGenerationMissing(ControllerError):
+    def __init__(self, generation, container_id):
+        self.generation, self.container_id = generation, container_id
+        super().__init__('Recorded runtime candidate is missing')
 
 
 def controller_url():
@@ -47,6 +54,16 @@ class ControllerClient:
             raise ControllerError("Runtime controller is unavailable") from exc
         if response.status_code == 404:
             raise ControllerNotFound("Runtime not found")
+        if response.status_code == 409 and path == '/containers/prepare':
+            try:
+                detail = response.json()
+                if (detail.get('code') == 'generation_candidate_missing' and
+                    detail.get('generation') == kwargs.get('json',{}).get('generation') and
+                    re.fullmatch(r'[0-9a-f]{32}',detail.get('generation','')) and
+                    re.fullmatch(r'[0-9a-f]{64}',detail.get('container_id',''))):
+                    raise ControllerGenerationMissing(detail['generation'],detail['container_id'])
+            except (ValueError,AttributeError,TypeError):
+                pass
         if response.status_code >= 400:
             raise ControllerError("Runtime controller rejected operation")
         return response.json()

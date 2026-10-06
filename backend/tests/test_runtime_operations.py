@@ -186,3 +186,35 @@ def test_summary_observation_cannot_cancel_pending_start(session,test_workspace,
     session.expire_all()
     assert runtime.status == 'provisioning' and runtime.container_id == 'b'*64
     assert operation.state == 'switched'
+
+
+def test_missing_candidate_replacement_cancels_old_and_preserves_previous_container(session,test_workspace,test_user):
+    runtime=OpenCodeRuntime(workspace_id=test_workspace.id,user_id=test_user.id,container_id='a'*64,status='running')
+    session.add(runtime); session.commit()
+    old=repository.admit(session,test_workspace.id,test_user.id); session.commit()
+    repository.record_candidate(session,old.generation,'b'*64); session.commit()
+    replacement=repository.replace_missing(session,old.generation,'b'*64)
+    session.commit()
+    assert old.state=='cancelled' and replacement.generation!=old.generation
+    assert replacement.previous_container_id=='a'*64 and runtime.container_id=='a'*64
+    assert session.query(RuntimeContainerDeletion).count()==0
+
+
+def test_missing_switched_candidate_replacement_rollback_is_atomic(session,test_workspace,test_user):
+    old=repository.admit(session,test_workspace.id,test_user.id); session.commit()
+    repository.record_candidate(session,old.generation,'b'*64); session.commit()
+    runtime=repository.switch_candidate(session,old.generation); session.commit()
+    replacement=repository.replace_missing(session,old.generation,'b'*64)
+    generation=replacement.generation
+    assert runtime.container_id is None and old.state=='cancelled'
+    session.rollback()
+    assert runtime.container_id=='b'*64 and old.state=='switched'
+    assert session.get(RuntimeOperation,generation) is None
+    assert session.query(RuntimeContainerDeletion).count()==0
+
+
+def test_missing_candidate_cannot_replace_another_identity(session,test_workspace,test_user):
+    old=repository.admit(session,test_workspace.id,test_user.id); session.commit()
+    repository.record_candidate(session,old.generation,'b'*64); session.commit()
+    with pytest.raises(ConflictError): repository.replace_missing(session,old.generation,'c'*64)
+    assert old.state=='preparing' and session.query(RuntimeOperation).count()==1

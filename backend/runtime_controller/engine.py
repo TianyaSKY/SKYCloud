@@ -7,6 +7,7 @@ import re
 import shlex
 import uuid
 import time
+import logging
 
 import docker
 
@@ -20,6 +21,12 @@ class ControllerError(RuntimeError):
 
 class MissingRuntime(ControllerError):
     pass
+
+
+class MissingGenerationCandidate(ControllerError):
+    def __init__(self, generation, container_id):
+        self.generation, self.container_id = generation, container_id
+        super().__init__('Recorded generation candidate is missing')
 
 
 class PolicyViolation(ControllerError):
@@ -120,14 +127,14 @@ class Engine:
         container.reload()
         return self.inspect(container.id)
 
-    def _generation_record(self, workspace_id, user_id, runtime_id, generation):
+    def _generation_record(self, workspace_id, user_id, runtime_id, generation, *, nonblocking=False):
         if min(workspace_id,user_id,runtime_id) <= 0 or max(workspace_id,user_id,runtime_id) > 2**63 - 1:
             raise PolicyViolation("Invalid runtime identity")
         try:
             generation_name(workspace_id,user_id,generation)
         except (ValueError,TypeError) as exc:
             raise PolicyViolation("Invalid runtime generation") from exc
-        return GenerationJournal(self.settings.state_path).locked(generation,(workspace_id,user_id,runtime_id))
+        return GenerationJournal(self.settings.state_path).locked(generation,(workspace_id,user_id,runtime_id),nonblocking=nonblocking)
 
     def prepare(self, workspace_id, user_id, runtime_id, generation):
         try:
@@ -136,7 +143,10 @@ class Engine:
                 if state['state'] == 'retired':
                     raise PolicyViolation("Runtime generation is retired")
                 if state['container_id']:
-                    container = self.managed(state['container_id'],require_policy=True)
+                    try:
+                        container = self.managed(state['container_id'],require_policy=True)
+                    except MissingRuntime as error:
+                        raise MissingGenerationCandidate(generation,state['container_id']) from error
                     labels = container.attrs['Config']['Labels']
                     if labels.get('skycloud.generation') != generation or tuple(int(labels[f'skycloud.{key}']) for key in ('workspace_id','user_id','runtime_id')) != (workspace_id,user_id,runtime_id):
                         raise PolicyViolation("Recorded generation identity does not match")
@@ -147,16 +157,23 @@ class Engine:
         except JournalIdentityError as exc:
             raise PolicyViolation(str(exc)) from exc
 
-    def retire_generation(self, workspace_id, user_id, runtime_id, generation):
+    def retire_generation(self, workspace_id, user_id, runtime_id, generation, *, _nonblocking=False):
         try:
-            with self._generation_record(workspace_id,user_id,runtime_id,generation) as record:
+            with self._generation_record(workspace_id,user_id,runtime_id,generation,nonblocking=_nonblocking) as record:
                 record.retire()
                 state = record.read()
                 ref = state['container_id'] or generation_name(workspace_id,user_id,generation)
                 try:
                     container = self.managed(ref)
                 except MissingRuntime:
-                    return
+                    if not state['container_id']:
+                        return
+                    # A daemon-accepted create can appear after retirement's
+                    # first absence observation, with no recorded full ID.
+                    try:
+                        container = self.managed(generation_name(workspace_id,user_id,generation))
+                    except MissingRuntime:
+                        return
                 labels = container.attrs['Config']['Labels']
                 if labels.get('skycloud.generation') != generation or tuple(int(labels[f'skycloud.{key}']) for key in ('workspace_id','user_id','runtime_id')) != (workspace_id,user_id,runtime_id):
                     raise PolicyViolation("Retired generation identity does not match")
@@ -166,6 +183,18 @@ class Engine:
                     pass
         except JournalIdentityError as exc:
             raise PolicyViolation(str(exc)) from exc
+
+    def reconcile_retired(self, limit=20):
+        rows = self.client.api.containers(all=True,filters={'label':['skycloud.component=opencode-runtime']})
+        identities = GenerationJournal(self.settings.state_path).retired_candidates(rows,limit)
+        removed = 0
+        for identity in identities:
+            try:
+                self.retire_generation(*identity,_nonblocking=True)
+                removed += 1
+            except Exception as error:
+                logging.warning('Retired generation reconciliation deferred (%s)',type(error).__name__)
+        return removed
 
     def _prepare_container(self, workspace_id, user_id, runtime_id, generation):
         """Idempotently create a stopped generation without replacing old resources."""
@@ -223,6 +252,15 @@ class Engine:
         labels = container.attrs['Config']['Labels']
         if action == 'remove' and labels.get('skycloud.generation'):
             return self.retire_generation(*(int(labels[f'skycloud.{key}']) for key in ('workspace_id','user_id','runtime_id')),labels['skycloud.generation'])
+        if action in ('start','restart') and labels.get('skycloud.generation'):
+            identity = tuple(int(labels[f'skycloud.{key}']) for key in ('workspace_id','user_id','runtime_id'))
+            with self._generation_record(*identity,labels['skycloud.generation']) as record:
+                state = record.read()
+                if state['state'] != 'ready' or state['container_id'] != container.id:
+                    raise PolicyViolation('Runtime generation is not active')
+                if action == 'start': container.start()
+                else: container.restart(timeout=3)
+            return
         if action == "start":
             container.start()
         elif action == "stop":

@@ -27,6 +27,7 @@ from app.models.workspace import Workspace
 from runtime_controller.client import (
     ControllerClient, ControllerError as DockerException,
     ControllerNotFound as ContainerNotFound, ControllerNotFound as ImageNotFound,
+    ControllerGenerationMissing,
     auth_headers as controller_auth_headers, runtime_url,
 )
 from runtime_controller.policy import POLICY_VERSION
@@ -368,7 +369,7 @@ def list_summaries(session: Session, rows: list, user_id: int) -> list[dict]:
 
 
 @serialized
-def start(session: Session, workspace: Workspace, user_id: int, *, expected_generation=None) -> Workspace:
+def start(session: Session, workspace: Workspace, user_id: int, *, expected_generation=None, _replacement_attempt=0) -> Workspace:
     """Prepare a durable generation before publishing its SQL identity."""
     workspace_id = int(workspace.id)
     generation = None
@@ -396,13 +397,19 @@ def start(session: Session, workspace: Workspace, user_id: int, *, expected_gene
             state = operation.state
             session.commit()  # Generation is recoverable before every prepare RPC.
             if state == 'preparing':
-                container = _client().prepare(workspace_id,user_id,runtime_id,generation)
+                try:
+                    container = _client().prepare(workspace_id,user_id,runtime_id,generation)
+                except ControllerGenerationMissing as error:
+                    return _replace_missing(session,workspace,user_id,generation,error.container_id,_replacement_attempt)
                 operations.record_candidate(session,generation,container.id)
                 session.commit()  # Preserve candidate even if publication fails.
             runtime = operations.switch_candidate(session,generation)
             container_id = runtime.container_id
             session.commit()  # Old cleanup and new identity publish atomically.
-            container = _client().containers.get(container_id)
+            try:
+                container = _client().containers.get(container_id)
+            except ContainerNotFound:
+                return _replace_missing(session,workspace,user_id,generation,container_id,_replacement_attempt)
         runtime_id, container_id = int(runtime.id), container.id
         runtime = operations.current_runtime(session,workspace_id,user_id,runtime_id,container_id,generation)
         container.start()
@@ -430,6 +437,18 @@ def start(session: Session, workspace: Workspace, user_id: int, *, expected_gene
                 session.commit()
         logger.exception('Runtime start failed: workspace_id={}, user_id={}, type={}',workspace_id,user_id,type(exc).__name__)
     return workspace
+
+
+def _replace_missing(session, workspace, user_id, generation, container_id, attempt):
+    if attempt >= 1:
+        raise DockerException('Repeated candidate disappearance; retry later')
+    operation = operations.replace_missing(session,generation,container_id)
+    replacement = operation.generation
+    runtime_id = int(operation.runtime_id)
+    workspace_id = int(workspace.id)
+    session.commit()  # Old cancellation + new intent survive retirement failure.
+    _client().retire_generation(workspace_id,user_id,runtime_id,generation)
+    return start(session,workspace,user_id,expected_generation=replacement,_replacement_attempt=attempt+1)
 
 
 @serialized

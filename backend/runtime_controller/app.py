@@ -7,6 +7,7 @@ import logging
 import os
 import socket
 import time
+from contextlib import asynccontextmanager
 from typing import Literal
 
 import httpx
@@ -16,7 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
-from runtime_controller.engine import Engine, MissingRuntime, PolicyViolation
+from runtime_controller.engine import Engine, MissingRuntime, PolicyViolation, MissingGenerationCandidate
 from runtime_controller.policy import Settings
 from runtime_controller.socket_relay import direct_connect, pump, terminal_path, SocketSlots, MAX_MESSAGE
 from urllib.parse import urlencode
@@ -81,7 +82,26 @@ def create_app(settings=None, engine=None):
     settings = settings or Settings.from_env()
     engine = engine or Engine(settings)
     socket_slots = SocketSlots()
-    app = FastAPI(title="SKYCloud Runtime Controller", docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(_):
+        stopping = asyncio.Event()
+        async def reconcile():
+            while not stopping.is_set():
+                try:
+                    await run_in_threadpool(engine.reconcile_retired)
+                except Exception as error:
+                    logging.warning('Runtime retirement scan deferred (%s)',type(error).__name__)
+                try:
+                    await asyncio.wait_for(stopping.wait(),timeout=1)
+                except asyncio.TimeoutError:
+                    pass
+        task = asyncio.create_task(reconcile())
+        try:
+            yield
+        finally:
+            stopping.set()
+            await task  # Drain bounded Docker RPCs before releasing the engine.
+    app = FastAPI(title="SKYCloud Runtime Controller", docs_url=None, redoc_url=None, openapi_url=None,lifespan=lifespan)
     app.add_middleware(AuthAndBodyLimit, token=settings.token)
 
     @app.exception_handler(RequestValidationError)
@@ -91,6 +111,11 @@ def create_app(settings=None, engine=None):
     @app.exception_handler(MissingRuntime)
     async def missing(_, exc):
         return JSONResponse({"detail": "Runtime not found"}, status_code=404)
+
+    @app.exception_handler(MissingGenerationCandidate)
+    async def missing_generation(_, exc):
+        return JSONResponse({'code':'generation_candidate_missing','generation':exc.generation,
+            'container_id':exc.container_id,'detail':'Recorded generation candidate is missing'},status_code=409)
 
     @app.exception_handler(PolicyViolation)
     async def forbidden(_, exc):

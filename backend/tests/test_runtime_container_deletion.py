@@ -92,3 +92,36 @@ def test_old_controller_missing_legacy_route_keeps_cleanup_pending(session,monke
     session.expire_all()
     row = session.query(RuntimeContainerDeletion).one()
     assert row.completed_at is None and row.attempts == 1 and row.last_error_type == 'ControllerError'
+
+
+def test_missing_full_id_still_retires_known_generation_before_completion(session,test_workspace,test_user):
+    from app.models.runtime_operation import RuntimeOperation
+    runtime,token=seed_runtime(session,test_workspace,test_user)
+    generation='b'*32
+    session.add(RuntimeOperation(generation=generation,workspace_id=test_workspace.id,user_id=test_user.id,
+        runtime_id=runtime.id,candidate_container_id=runtime.container_id,state='complete',finished_at=utc_now()))
+    session.commit()
+    remove_runtime(runtime,session); session.commit()
+    calls=[]
+    def missing(ref): raise ControllerNotFound('old ID absent')
+    client=SimpleNamespace(containers=SimpleNamespace(get=missing),
+        retire_generation=lambda *args:calls.append(args))
+    assert reaper(session,lambda:client)==1
+    assert calls==[(test_workspace.id,test_user.id,runtime.id,generation)]
+
+
+def test_missing_id_generation_retirement_failure_keeps_intent(session,test_workspace,test_user):
+    from app.models.runtime_operation import RuntimeOperation
+    from runtime_controller.client import ControllerError
+    runtime,token=seed_runtime(session,test_workspace,test_user)
+    session.add(RuntimeOperation(generation='b'*32,workspace_id=test_workspace.id,user_id=test_user.id,
+        runtime_id=runtime.id,candidate_container_id=runtime.container_id,state='complete',finished_at=utc_now()))
+    session.commit()
+    remove_runtime(runtime,session); session.commit()
+    def missing(ref): raise ControllerNotFound('old ID absent')
+    def unsupported(*args): raise ControllerError('unsupported retirement')
+    client=SimpleNamespace(containers=SimpleNamespace(get=missing),retire_generation=unsupported)
+    assert reaper(session,lambda:client)==0
+    session.expire_all()
+    intent=session.query(RuntimeContainerDeletion).one()
+    assert intent.completed_at is None and intent.last_error_type=='ControllerError'
