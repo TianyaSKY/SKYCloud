@@ -471,3 +471,24 @@ def test_container_cleanup_migration_atomic_retry_and_capture_hooks(postgres):
         db.execute(text('UPDATE opencode_runtimes SET container_id=NULL WHERE id=1'))
         assert sorted(db.execute(text('SELECT container_id FROM runtime_container_deletions')).scalars().all()) == ['legacy','runtime']
         assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
+
+
+def test_runtime_operation_upgrade_rollback_preserves_cleanup_and_retry_installs_once(postgres):
+    upgrade(postgres,'0014_container_deletions')
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO runtime_container_deletions(container_id) VALUES (:id)"),{'id':'a'*64})
+        prior = db.execute(text('SELECT * FROM runtime_container_deletions')).all()
+        db.execute(text('CREATE TABLE runtime_operations (sentinel TEXT)'))
+    with pytest.raises(Exception,match='already exists'):
+        upgrade(postgres)
+    with postgres.begin() as db:
+        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0014_container_deletions'
+        assert db.execute(text('SELECT * FROM runtime_container_deletions')).all() == prior
+        assert db.scalar(text("SELECT count(*) FROM pg_trigger WHERE tgname='cancel_deleted_runtime_operation'")) == 0
+        db.execute(text('DROP TABLE runtime_operations'))
+    upgrade(postgres)
+    upgrade(postgres)
+    check_schema(postgres)
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT * FROM runtime_container_deletions')).all() == prior
+        assert db.scalar(text("SELECT count(*) FROM pg_trigger WHERE tgname='cancel_deleted_runtime_operation'")) == 1

@@ -409,7 +409,7 @@ MCP 目录列表、`skycloud://folders` 资源和当前用户信息，在进入�
 容器清理范围涵盖账号自有空间内所有成员 Runtime、旧空间容器，以及本人在其他空间的 Runtime，保留无关成员的 Runtime。账号与空间行锁阻止资源枚举后并发创建遗漏资源。真实 PostgreSQL/MinIO 检查包含已加载 ORM 关系、带签名令牌的 HTTP 自删/跨用户拒绝/旧令牌失效、SQL 提交故障回滚、迁移失败回滚与重试、并发创建等待；容器移除调用使用替代 Controller，未声称实际 Docker 移除验证。容器清理由下述 0014 改为提交后持久重试。升级前停止旧数据库客户端，执行 `python -m entry.migrate` 后启动新版。
 
 
-当前 schema head 为 `0014_container_deletions`。账号删除、空间删除及成员移除在 SQL 事务中撤销 Runtime 凭据并解除容器归属；PostgreSQL 的 workspaces/opencode_runtimes UPDATE/DELETE 触发器把旧 container_id 写入无外键的 runtime_container_deletions，因此批量删除及用户/空间级联也不会丢失清理身份。SQL 回滚会同时恢复身份/凭据并撤销任务，事务提交前不调用移除 RPC。空间删除通过受锁保护的数据库级联保留这一边界，避免已加载对话关系产生非空外键置空错误。
+容器清理迁移 `0014_container_deletions`：账号删除、空间删除及成员移除在 SQL 事务中撤销 Runtime 凭据并解除容器归属；PostgreSQL 的 workspaces/opencode_runtimes UPDATE/DELETE 触发器把旧 container_id 写入无外键的 runtime_container_deletions，因此批量删除及用户/空间级联也不会丢失清理身份。SQL 回滚会同时恢复身份/凭据并撤销任务，事务提交前不调用移除 RPC。空间删除通过受锁保护的数据库级联保留这一边界，避免已加载对话关系产生非空外键置空错误。
 
 Worker 每秒轮询到期任务，使用 SKIP LOCKED，核对当前空间/Runtime 没有该容器引用后，经认证 Controller 移除精确完整 ID。拒绝解析到不同完整 ID 的名称/短 ID 别名；Controller 的管理身份校验继续生效。尚有引用则完成本次任务，最后一次解绑生成新任务。Controller 失败只保存异常类型并以 2–300 秒退避；容器已不存在视为成功，完成标记 SQL 写入失败可重放。物理删除是异步的，Worker 必须运行，API 撤权不等待容器进程退出。迁移不删除仍在用的容器，安装失败回滚表/触发器/版本，拒绝丢弃队列的降级。升级前停止旧数据库客户端，执行 `python -m entry.migrate` 后启动新版 API/MCP/Worker。
 
@@ -434,4 +434,10 @@ Controller 的 generation 身份现持久保存在专用 `/state/generations.sql
 
 准备请求先提交 preparing 意图，再调用 Docker，并记录候选容器完整 ID；同一 generation 的进程间请求持有文件锁，重启后继续读取同一身份。已有候选 ID 消失时拒绝重新创建，需退役该代并使用新代。认证入口 `POST /containers/retire-generation` 先持久写入 retired，再移除对应资源；可以先退役尚未准备的 generation，之后的准备请求会被拒绝。移除失败保留退役状态，重复退役可重试移除；常规 generation 容器移除也经过这一机制。旧 Controller 不支持退役入口的 404 视为未确认错误。
 
-本批验证为 1478 项后端测试及 17 项真实 PostgreSQL/Controller/Docker 检查，包含重启后恢复候选身份、重启后拒绝退役代的迟到准备、先退役后准备以及并发准备/退役。旧镜像在重启后的退役代准备检查中复现重新创建。子进程退出测试验证 preparing 意图已持久写入，未验证 Docker 守护进程接受创建期间 Controller 被杀后的所有交错。此机制仍是基础：生产 Runtime.start 的 SQL 操作记录、可恢复身份切换/取消以及迟到 Docker 创建资源的回收尚未接入，原重建 SQL 回滚问题仍待修复；schema head 仍为 0014。
+该批验证为 1478 项后端测试及 17 项真实 PostgreSQL/Controller/Docker 检查，包含重启后恢复候选身份、重启后拒绝退役代的迟到准备、先退役后准备以及并发准备/退役。旧镜像在重启后的退役代准备检查中复现重新创建。子进程退出测试验证 preparing 意图已持久写入，未验证 Docker 守护进程接受创建期间 Controller 被杀后的所有交错。此机制仍是基础：生产 Runtime.start 的 SQL 操作记录、可恢复身份切换/取消以及迟到 Docker 创建资源的回收尚未接入，原重建 SQL 回滚问题仍待修复；该批 schema head 为 0014。
+
+当前 schema head 为 `0015_runtime_operations`。新增的 runtime_operations 不设父记录外键，持久保存 generation、原容器与候选容器完整 ID，以及 preparing/switched/complete/cancelled 状态；每个 Runtime 只能有一个 preparing 或 switched 操作。SQL 仓储在调用方事务中重新锁定用户、空间、成员和 Runtime 并检查当前编辑权限；准入重试复用同一操作，候选 ID 不能被替换，切换前须匹配原容器 ID。调用方必须先提交准入，再调用 Controller.prepare；随后提交候选 ID，最后另行提交身份切换。切换和旧容器清理意图处于同一 SQL 事务，回滚同时恢复原身份。仓储不调用 Docker，也不自行提交事务。
+
+PostgreSQL 触发器在成员移除/降权、Runtime 删除、容器身份被其他操作替换或运行中 Runtime 停止时取消待完成操作，取消状态与业务变更共同提交或回滚。用户/空间级联删除后仍保留操作身份。Worker 每轮重试已提交的 cancelled 记录，通过认证退役入口清理候选并阻止后续同代准备；失败只记录异常类型，使用数据库时钟退避，完成标记提交失败后可以重复退役。迁移拒绝丢弃操作记录的降级，升级前停止旧数据库客户端并执行 `python -m entry.migrate`。
+
+这批 SQL 仓储和取消恢复尚未接入生产 Runtime.start。启动执行器还需覆盖配置过程中多次提交、进程中断后的 switched 操作恢复、停止/重启并发隔离，以及 Docker 已接受但尚未可见的迟到创建资源；不能将仓储测试作为完整启动修复的证明。

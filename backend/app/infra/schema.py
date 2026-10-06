@@ -3,7 +3,7 @@
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-EXPECTED_REVISION = "0014_container_deletions"
+EXPECTED_REVISION = "0015_runtime_operations"
 
 
 def check_schema(database_engine):

@@ -376,3 +376,157 @@ def test_prepared_generation_replays_same_identity_after_controller_restart(gene
     assert replay.id == prepared.id and replay.status == 'created'
     assert all(exists(graph,runtime) for runtime in graph['containers'])
     replay.remove()
+
+
+def test_durable_candidate_survives_sql_switch_failure_and_can_be_retired(generation_graph,infrastructure):
+    from app.features.workspace import runtime_operation_repository as repository
+    from app.infra.runtime_operation_cleanup import retire_cancelled_operations
+    from app.models.runtime_operation import RuntimeOperation
+    graph = generation_graph
+    with graph['factory']() as session:
+        operation = repository.admit(session,graph['id'],graph['id'])
+        generation = operation.generation
+        session.commit()
+    infrastructure['cleanup'].append(f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}")
+    prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    with graph['factory']() as session:
+        repository.record_candidate(session,generation,prepared.id)
+        session.commit()
+    with graph['db'].begin() as db:
+        db.execute(text("""CREATE FUNCTION reject_operation_switch() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN RAISE EXCEPTION 'injected operation switch'; END $$"""))
+        db.execute(text("CREATE TRIGGER reject_operation_switch BEFORE UPDATE OF container_id ON opencode_runtimes FOR EACH ROW EXECUTE FUNCTION reject_operation_switch()"))
+    with graph['factory']() as session:
+        with pytest.raises(Exception,match='injected operation switch'):
+            repository.switch_candidate(session,generation)
+            session.commit()
+        session.rollback()
+        operation = session.get(RuntimeOperation,generation)
+        assert operation.state == 'preparing' and operation.candidate_container_id == prepared.id
+        repository.cancel_runtime(session,graph['id'])
+        session.commit()
+    with graph['db'].connect() as db:
+        assert db.scalar(text('SELECT container_id FROM opencode_runtimes WHERE id=:id'),{'id':graph['id']}) == graph['containers'][graph['id']]
+        assert db.scalar(text('SELECT count(*) FROM runtime_container_deletions')) == 0
+    assert graph['client'].get(prepared.id).status == 'created'
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+    assert retire_cancelled_operations(session_factory=graph['factory']) == 1
+    with pytest.raises(ControllerNotFound): graph['client'].get(prepared.id)
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+
+
+def test_member_demotion_cancels_generation_atomically_and_worker_retires(generation_graph,infrastructure):
+    from app.features.workspace import runtime_operation_repository as repository
+    from app.infra.runtime_operation_cleanup import retire_cancelled_operations
+    from app.models.runtime_operation import RuntimeOperation
+    from runtime_controller.client import ControllerError
+    graph = generation_graph
+    with graph['factory']() as session:
+        operation = repository.admit(session,graph['id'],graph['id'])
+        generation = operation.generation
+        session.commit()
+    infrastructure['cleanup'].append(f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}")
+    prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    with graph['db'].connect() as db:
+        db.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=:id AND user_id=:id"),{'id':graph['id']})
+        assert db.scalar(text('SELECT state FROM runtime_operations')) == 'cancelled'
+        db.rollback()
+        assert db.scalar(text('SELECT state FROM runtime_operations')) == 'preparing'
+    assert retire_cancelled_operations(session_factory=graph['factory']) == 0
+    with graph['db'].begin() as db:
+        db.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=:id AND user_id=:id"),{'id':graph['id']})
+    assert retire_cancelled_operations(session_factory=graph['factory']) == 1
+    with pytest.raises(ControllerNotFound): graph['client'].get(prepared.id)
+    with pytest.raises(ControllerError): graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+
+
+def test_owner_cascade_retains_cancelled_generation_without_foreign_keys(generation_graph,infrastructure):
+    from app.features.workspace import runtime_operation_repository as repository
+    from app.infra.runtime_operation_cleanup import retire_cancelled_operations
+    graph = generation_graph
+    with graph['factory']() as session:
+        operation = repository.admit(session,graph['id'],graph['id'])
+        generation = operation.generation
+        session.commit()
+    infrastructure['cleanup'].append(f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}")
+    prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    delete_account(graph)
+    with graph['db'].connect() as db:
+        assert db.execute(text('SELECT generation,state,finished_at FROM runtime_operations')).one() == (generation,'cancelled',None)
+    assert retire_cancelled_operations(session_factory=graph['factory']) == 1
+    with pytest.raises(ControllerNotFound): graph['client'].get(prepared.id)
+    assert cleanup(graph) == 3
+    assert exists(graph,graph['other'])
+
+
+def test_parallel_sql_admission_commits_only_one_replayable_generation(graph):
+    from app.features.workspace import runtime_operation_repository as repository
+    barrier = Barrier(2)
+    def admit(_):
+        barrier.wait(timeout=10)
+        with graph['factory']() as session:
+            generation = repository.admit(session,graph['id'],graph['id']).generation
+            session.commit()
+            return generation
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        generations = list(pool.map(admit,range(2)))
+    assert generations[0] == generations[1]
+    with graph['db'].connect() as db:
+        assert db.scalar(text('SELECT count(*) FROM runtime_operations')) == 1
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
+
+
+def test_committed_candidate_switch_captures_only_old_identity_and_stop_cancels(generation_graph,infrastructure):
+    from app.features.workspace import runtime_operation_repository as repository
+    from app.infra.runtime_operation_cleanup import retire_cancelled_operations
+    graph = generation_graph
+    with graph['factory']() as session:
+        operation = repository.admit(session,graph['id'],graph['id'])
+        generation = operation.generation
+        session.commit()
+    infrastructure['cleanup'].append(f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}")
+    prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    with graph['factory']() as session:
+        repository.record_candidate(session,generation,prepared.id)
+        session.commit()
+        repository.switch_candidate(session,generation)
+        session.commit()
+    with graph['db'].connect() as db:
+        assert db.scalar(text('SELECT state FROM runtime_operations')) == 'switched'
+        assert db.execute(text('SELECT container_id FROM runtime_container_deletions')).scalars().all() == [graph['containers'][graph['id']]]
+    assert cleanup(graph) == 1 and not exists(graph,graph['id'])
+    assert graph['client'].get(prepared.id).status == 'created'
+    with graph['db'].begin() as db:
+        db.execute(text("UPDATE opencode_runtimes SET status='stopped' WHERE id=:id"),{'id':graph['id']})
+        assert db.scalar(text('SELECT state FROM runtime_operations')) == 'cancelled'
+    assert retire_cancelled_operations(session_factory=graph['factory']) == 1
+    with pytest.raises(ControllerNotFound): graph['client'].get(prepared.id)
+    assert all(exists(graph,runtime) for runtime in graph['containers'] if runtime != graph['id'])
+
+
+def test_generation_retirement_sql_marker_failure_replays_durable_fence(generation_graph,infrastructure):
+    from app.features.workspace import runtime_operation_repository as repository
+    from app.infra.runtime_operation_cleanup import retire_cancelled_operations
+    graph = generation_graph
+    with graph['factory']() as session:
+        operation = repository.admit(session,graph['id'],graph['id'])
+        generation = operation.generation
+        session.commit()
+    infrastructure['cleanup'].append(f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}")
+    prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
+    with graph['factory']() as session:
+        repository.cancel_runtime(session,graph['id'])
+        session.commit()
+    with graph['db'].begin() as db:
+        db.execute(text("""CREATE FUNCTION reject_retirement_marker() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN RAISE EXCEPTION 'injected retirement marker'; END $$"""))
+        db.execute(text("CREATE TRIGGER reject_retirement_marker BEFORE UPDATE OF finished_at ON runtime_operations FOR EACH ROW WHEN (NEW.finished_at IS NOT NULL) EXECUTE FUNCTION reject_retirement_marker()"))
+    with pytest.raises(Exception,match='injected retirement marker'):
+        retire_cancelled_operations(session_factory=graph['factory'])
+    with pytest.raises(ControllerNotFound): graph['client'].get(prepared.id)
+    with graph['db'].begin() as db:
+        assert db.scalar(text('SELECT finished_at FROM runtime_operations')) is None
+        db.execute(text('DROP TRIGGER reject_retirement_marker ON runtime_operations'))
+    assert retire_cancelled_operations(session_factory=graph['factory']) == 1
+    assert all(exists(graph,runtime) for runtime in graph['containers'])
