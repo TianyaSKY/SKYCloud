@@ -1,8 +1,9 @@
-from sqlalchemy import Column, DateTime, ForeignKey, Integer
+from app.infra.utc_datetime import UTCDateTime
+from sqlalchemy import Column, ForeignKey, Integer
 from sqlalchemy.orm import relationship
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import utc_now, local_isoformat
 
 
 class OrganizeCheckpoint(Base):
@@ -12,8 +13,8 @@ class OrganizeCheckpoint(Base):
 
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), primary_key=True)
     last_event_id = Column(Integer, nullable=False, default=0)  # 已处理的最大 event id
-    last_full_scan_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=beijing_now, onupdate=beijing_now)
+    last_full_scan_at = Column(UTCDateTime(), nullable=True)
+    updated_at = Column(UTCDateTime(), default=utc_now, onupdate=utc_now)
 
     workspace = relationship("Workspace", backref="organize_checkpoint")
 

@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.infra.extensions import SessionLocal
-from app.infra.datetime_utils import beijing_now
+from app.infra.datetime_utils import utc_now
 from app.models.file import File
 from app.models.file_change_event import FileChangeEvent
 from app.models.folder import Folder
@@ -188,7 +188,7 @@ def update_checkpoint(
 ) -> None:
     """推进整理检查点；last_event_id 只增不减，避免并发回退。"""
     target_event_id = max(0, int(event_id or 0))
-    now = beijing_now()
+    now = utc_now()
     dialect = session.get_bind().dialect.name
     insert = {"postgresql": postgres_insert, "sqlite": sqlite_insert}.get(dialect)
     if insert is None:

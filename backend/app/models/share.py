@@ -1,10 +1,11 @@
+from app.infra.utc_datetime import UTCDateTime
 import uuid
 
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
+from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
 
 
 class Share(Base):
@@ -18,8 +19,8 @@ class Share(Base):
     )
     file_id = Column(Integer, ForeignKey("files.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime, default=beijing_now)
-    expires_at = Column(DateTime, nullable=True)  # 为空表示不过期
+    created_at = Column(UTCDateTime(), default=utc_now)
+    expires_at = Column(UTCDateTime(), nullable=True)  # 为空表示不过期
 
     file = relationship("File", back_populates="shares")
     user = relationship("User")

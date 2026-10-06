@@ -1,9 +1,22 @@
-"""北京时区时间工具：DB 列多为无时区 naive datetime，统一按 Asia/Shanghai 处理。"""
+"""UTC instants with explicit conversion for legacy Beijing inputs and presentation."""
 
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def to_utc_datetime(value: datetime | None, *, naive_is_utc=False) -> datetime | None:
+    """Legacy naive inputs mean Beijing time; UTC-naive reservation inputs are explicit."""
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=timezone.utc if naive_is_utc else BEIJING_TZ)
+    return value.astimezone(timezone.utc)
 
 
 def beijing_now() -> datetime:
@@ -22,13 +35,10 @@ def to_beijing_naive(value: datetime | None) -> datetime | None:
 
 def local_isoformat(value: datetime | None) -> str | None:
     """Serialize an instant as explicit UTC; legacy naive DB values are Beijing time."""
-    if value is None:
-        return None
-    if value.tzinfo is None or value.utcoffset() is None:
-        value = value.replace(tzinfo=BEIJING_TZ)
-    return value.astimezone(timezone.utc).isoformat()
+    value = to_utc_datetime(value)
+    return value.isoformat() if value is not None else None
 
 
 def parse_legacy_datetime(value: str | None) -> datetime | None:
-    """Read old naive or new offset-bearing cache dates into legacy SQL wall time."""
-    return to_beijing_naive(datetime.fromisoformat(value)) if value else None
+    """Read old naive or new offset-bearing cache dates into UTC instants."""
+    return to_utc_datetime(datetime.fromisoformat(value)) if value else None

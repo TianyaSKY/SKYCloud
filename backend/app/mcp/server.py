@@ -27,7 +27,7 @@ from app.mcp.transport import transport_options
 from pydantic import BaseModel, Field
 
 from app.exceptions import DomainError, PermissionDeniedError
-from app.infra.datetime_utils import beijing_now
+from app.infra.datetime_utils import utc_now
 from app.infra.extensions import SECRET_KEY, SessionLocal
 from app.infra.storage import get_storage_client
 from app.infra.upload_adapter import Base64UploadAdapter
@@ -654,7 +654,7 @@ async def get_file_download_url(
 
             # 最长 7 天，防止永久分享链接被 MCP 客户端无意创建
             hours = max(1, min(expires_hours, 168))
-            expires_at = beijing_now() + timedelta(hours=hours)
+            expires_at = utc_now() + timedelta(hours=hours)
 
             share = share_service.create_share_link(
                 session, context.user_id, file_id, expires_at

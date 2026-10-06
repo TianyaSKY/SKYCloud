@@ -2,7 +2,7 @@
 
 Reservations commit before object IO; consuming a reservation and inserting its
 file share a transaction. Daily admission charges survive aborts and IO failures.
-All deadlines and day boundaries are UTC, stored as UTC naive timestamps.
+All deadlines and day boundaries are UTC, stored as UTC instants.
 """
 from datetime import datetime, timedelta, timezone
 import uuid
@@ -25,7 +25,7 @@ TTL_SECONDS = positive_limit('UPLOAD_RESERVATION_TTL_SECONDS', 3600)
 
 
 def utc_now():
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(timezone.utc)
 
 
 def lock_owners(session, workspace_id, user_id):

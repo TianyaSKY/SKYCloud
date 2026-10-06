@@ -1,7 +1,8 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text
+from app.infra.utc_datetime import UTCDateTime
+from sqlalchemy import Column, Integer, String, Text
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import utc_now, local_isoformat
 
 
 class TokenUsageLog(Base):
@@ -21,7 +22,7 @@ class TokenUsageLog(Base):
     query_summary = Column(String(200), default=None)
     # 可选：附加信息，如检索文件数、rerank 结果数等
     extra_info = Column(Text, default=None)
-    created_at = Column(DateTime, default=beijing_now)
+    created_at = Column(UTCDateTime(), default=utc_now)
 
     def to_dict(self):
         return {

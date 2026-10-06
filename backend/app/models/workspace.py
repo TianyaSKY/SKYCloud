@@ -3,15 +3,16 @@
 每个用户注册时自动创建一个私人工作空间，文件/文件夹归属于工作空间而非用户。
 用户通过 workspace_members 表的成员关系访问工作空间内的资源。
 """
+from app.infra.utc_datetime import UTCDateTime
 
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, Index, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, UniqueConstraint, Index, Text
 from sqlalchemy.orm import relationship
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import utc_now, local_isoformat
 
 
 class Workspace(Base):
@@ -26,8 +27,8 @@ class Workspace(Base):
     name = Column(String(128), nullable=False)
     description = Column(String(512))
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime, default=beijing_now)
-    updated_at = Column(DateTime, default=beijing_now, onupdate=beijing_now)
+    created_at = Column(UTCDateTime(), default=utc_now)
+    updated_at = Column(UTCDateTime(), default=utc_now, onupdate=utc_now)
     # OpenCode 容器生命周期。字段保持可空，兼容既有工作空间记录。
     container_id = Column(String(64), nullable=True)
     status = Column(String(20), nullable=False, default="stopped")
@@ -73,7 +74,7 @@ class WorkspaceMember(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     role = Column(String(20), nullable=False, default="viewer")  # admin / editor / viewer
     invited_by = Column(Integer, ForeignKey("users.id"))
-    joined_at = Column(DateTime, default=beijing_now)
+    joined_at = Column(UTCDateTime(), default=utc_now)
 
     # 关系
     workspace = relationship("Workspace", back_populates="members")

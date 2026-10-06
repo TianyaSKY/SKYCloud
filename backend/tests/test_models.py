@@ -76,7 +76,8 @@ class TestUserModel:
         assert restored.username == "cache_user"
         assert restored.role == "common"
         assert restored.total_tokens == 300
-        assert restored.created_at == datetime(2025, 3, 15, 10, 30, 0)
+        from datetime import timezone
+        assert restored.created_at == datetime(2025, 3, 15, 2, 30, 0, tzinfo=timezone.utc)
         assert restored.last_active_at is None
 
     def test_repr(self):

@@ -1,5 +1,6 @@
 """Durable upload capacity reservations and UTC daily admission usage."""
-from sqlalchemy import BigInteger, Column, Date, DateTime, ForeignKey, Index, Integer, JSON, String
+from app.infra.utc_datetime import UTCDateTime
+from sqlalchemy import BigInteger, Column, Date, ForeignKey, Index, Integer, JSON, String
 from app.infra.extensions import Base
 
 
@@ -11,9 +12,9 @@ class UploadReservation(Base):
     size = Column(BigInteger, nullable=False)
     kind = Column(String(20), nullable=False)
     status = Column(String(20), nullable=False, default='active')
-    created_at = Column(DateTime, nullable=False)
-    expires_at = Column(DateTime, nullable=False)
-    cleaned_at = Column(DateTime, nullable=True)
+    created_at = Column(UTCDateTime(naive_is_utc=True), nullable=False)
+    expires_at = Column(UTCDateTime(naive_is_utc=True), nullable=False)
+    cleaned_at = Column(UTCDateTime(naive_is_utc=True), nullable=True)
     details = Column(JSON, nullable=False, default=dict)
     __table_args__ = (
         Index('idx_upload_user_active', 'user_id', 'status', 'expires_at'),

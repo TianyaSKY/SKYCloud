@@ -1,5 +1,5 @@
 """Preserve absolute instants across the legacy Beijing-naive SQL boundary."""
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -17,13 +17,13 @@ def assert_share_and_usage_times(session, user_id, workspace_id):
     session.flush()
     share = shares.create_share(session, user_id, file.id, "2025-06-01T04:30:00Z")
     session.refresh(share)
-    assert share.expires_at == datetime(2025, 6, 1, 12, 30)
+    assert share.expires_at == datetime(2025, 6, 1, 4, 30, tzinfo=timezone.utc)
     assert share.to_dict()["expires_at"] == "2025-06-01T04:30:00+00:00"
-    with patch.object(shares, "beijing_now", return_value=datetime(2025, 6, 1, 12)):
+    with patch.object(shares, "utc_now", return_value=datetime(2025, 6, 1, 4, tzinfo=timezone.utc)):
         assert shares.get_share_by_token(session, share.token) is not None
-    with patch.object(shares, "beijing_now", return_value=datetime(2025, 6, 1, 13)):
+    with patch.object(shares, "utc_now", return_value=datetime(2025, 6, 1, 5, tzinfo=timezone.utc)):
         assert shares.get_share_by_token(session, share.token) is None
-    with patch.object(shares, "beijing_now", return_value=datetime(2025, 6, 1, 12, 30)):
+    with patch.object(shares, "utc_now", return_value=datetime(2025, 6, 1, 4, 30, tzinfo=timezone.utc)):
         assert shares.get_share_by_token(session, share.token) is None
 
     session.add(TokenUsageLog(user_id=user_id, action="chat", total_tokens=5,
@@ -47,7 +47,8 @@ def test_serialized_user_cache_roundtrip_keeps_midnight_instant(value):
     user = User(id=1, username="clock", role="common", created_at=value)
     cached = user.to_dict()
     restored = User.from_cache(cached)
-    assert restored.created_at == value
+    from app.infra.datetime_utils import to_utc_datetime
+    assert restored.created_at == to_utc_datetime(value)
     assert restored.to_dict()["created_at"] == cached["created_at"]
     assert cached["created_at"].endswith("+00:00")
 
@@ -60,4 +61,16 @@ def test_model_cache_accepts_legacy_and_utc_midnight(model_name, cached_time):
              "inbox": "Inbox", "sys_dict": "SysDict"}
     model = getattr(importlib.import_module("app.models." + model_name), names[model_name])
     restored = model.from_cache({"id": 1, "created_at": cached_time})
-    assert restored.created_at == datetime(2025, 6, 1)
+    assert restored.created_at == datetime(2025, 5, 31, 16, tzinfo=timezone.utc)
+
+
+def test_legacy_reservation_naive_inputs_are_utc(session, test_user, test_workspace):
+    from app.models.upload_reservation import UploadReservation
+    row = UploadReservation(id="utc-input", user_id=test_user.id,
+        workspace_id=test_workspace.id, size=1, kind="file", status="active",
+        created_at=datetime(2025, 6, 1, 4), expires_at=datetime(2025, 6, 1, 5))
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    assert row.created_at == datetime(2025, 6, 1, 4, tzinfo=timezone.utc)
+    assert row.expires_at == datetime(2025, 6, 1, 5, tzinfo=timezone.utc)

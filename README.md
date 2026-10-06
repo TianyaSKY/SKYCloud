@@ -301,7 +301,7 @@ MCP JWT 鉴权在工作线程中完成 Session 创建、验证和关闭，只将
 
 RAG 分块检索同时限定分块与所属文件的工作空间，避免历史不一致记录把另一空间的内容带入回答。真实 PostgreSQL/pgvector 检查在 backend 目录运行 `RUN_VECTOR_TESTS=1 python -m pytest tests/integration/test_vector_retrieval.py`：覆盖两个用户的空间隔离、余弦排序/分页、空向量、文件/分块余弦 HNSW 参考查询计划、错误维度回滚以及真实 LangChain Document 的来源元数据。测试使用合成向量，不调用模型供应商；创建并清理自身数据库容器。距离操作符与索引用法见 [pgvector 官方说明](https://github.com/pgvector/pgvector#querying)。
 
-当前数据库版本为 `0008_organize_tasks`。升级前备份数据库，在 backend 目录显式运行 `python -m entry.migrate`，再启动新版服务。其中 `0006_user_role_type` 将历史原生用户角色 enum 列转换为与现有 SQL 基线一致的 VARCHAR(10)，保留角色值/NULL 和 common 默认值；ORM 同步使用非原生 Enum，避免 PostgreSQL 批量插入时引用不存在的 user_roles 类型。失败会原子回滚类型、默认值及版本记录；旧 enum 类型保留，迁移拒绝反向恢复不兼容结构。
+当前数据库版本为 `0009_utc_timestamps`。升级前备份数据库，在 backend 目录显式运行 `python -m entry.migrate`，再启动新版服务。其中 `0006_user_role_type` 将历史原生用户角色 enum 列转换为与现有 SQL 基线一致的 VARCHAR(10)，保留角色值/NULL 和 common 默认值；ORM 同步使用非原生 Enum，避免 PostgreSQL 批量插入时引用不存在的 user_roles 类型。失败会原子回滚类型、默认值及版本记录；旧 enum 类型保留，迁移拒绝反向恢复不兼容结构。
 
 
 RabbitMQ 发布使用持久化消息和 publisher confirms，消费者在任务结果落库后手动确认。执行线程池满时连接线程继续处理心跳，未确认消息在连接关闭后由 broker 重投；重连后的旧 delivery tag 不会用于新 channel。语义为至少一次，任务可能重复执行。非法消息和无法持久化结果的异常任务先复制到持久化 `failed_task_queue`，等待发布确认后才确认原消息；失败队列写入失败则保留原消息。失败队列只保存来源队列、原始消息 Base64 和异常类型，需管理员核实失败原因后按原 payload 重投；整理任务重投时保留原 task ID，终态任务会跳过执行。已持久化的文件业务失败仍通过文件状态展示。
@@ -352,6 +352,13 @@ RAG Embedding 用量身份由每次调用显式传入：原问题预计算、多
 本次安装审计发现并更新了 Vue/server-renderer、source-map-js 和 Vue ESLint 插件所携带的 selector parser；当前锁文件审计为零。公告：[Vue SSR 属性校验](https://github.com/advisories/GHSA-g2v6-rqmx-r4w6)、[source-map-js](https://github.com/advisories/GHSA-68fv-2mgg-jv7q)、[selector parser](https://github.com/advisories/GHSA-rj75-hqrm-r3gf)。审计结果会随公告变化，CI 持续重新检查，不保证未来公告仍为零。
 
 
-时间 API 输出现在带明确 UTC 偏移（`+00:00`）。历史无时区列按北京时间解释后换算，aware 值保留原始瞬间；缓存读取同时接受旧的无偏移格式与新的 UTC 格式，并还原为现有列使用的北京时间。分享过期输入和用量范围过滤在 SQL 写入/比较前转换为这一历史表示，分享在截止瞬间即失效。前端公共日期格式化及会话列表统一按 `Asia/Shanghai` 展示，并将旧缓存的无偏移 ISO 时间按北京时间解析；不再依赖浏览器系统时区。
+时间 API 输出现在带明确 UTC 偏移（`+00:00`）。历史无时区列按北京时间解释后换算，aware 值保留原始瞬间；缓存读取同时接受旧的无偏移格式与新的 UTC 格式，并还原为 UTC 时间。分享过期输入和用量范围过滤在 SQL 写入/比较前转换为 UTC，分享在截止瞬间即失效。前端公共日期格式化及会话列表统一按 `Asia/Shanghai` 展示，并将旧缓存的无偏移 ISO 时间按北京时间解析；不再依赖浏览器系统时区。
 
-运行 `RUN_TIME_BOUNDARY_TESTS=1 python -m pytest -o addopts='' tests/integration/test_time_boundaries.py` 可核实 PostgreSQL 会话分别使用 UTC/纽约时区时的过期和过滤行为；该检查已加入 CI。此阶段修复输入/输出及展示边界，历史 SQL 列和默认值仍为北京时间，后续 UTC 存储迁移需保留旧瞬间、更新写入/查询约定并验证历史数据，不能只修改服务器 TZ 或列类型。
+运行 `RUN_TIME_BOUNDARY_TESTS=1 python -m pytest -o addopts='' tests/integration/test_time_boundaries.py` 可核实 PostgreSQL 会话分别使用 UTC/纽约时区时的过期和过滤行为；该检查已加入 CI。历史 SQL 列现在通过下述 0009 迁移保留瞬间并转换为带时区列，不能只修改服务器 TZ 或列类型。
+
+
+`0009_utc_timestamps` 把历史无时区时间列迁移为 PostgreSQL TIMESTAMPTZ：原北京列使用 `AT TIME ZONE 'Asia/Shanghai'`，原上传预约列使用 `AT TIME ZONE 'UTC'`，已经带时区的列保持原瞬间。非空历史默认值改为 `now()`；NULL 和截止时间保留。升级前停止访问数据库的旧 API、MCP、Worker、模型网关等进程并备份，然后运行 `python -m entry.migrate`，再启动新版进程。迁移需要表锁与可能的数据重写，应安排维护窗口；任一步失败会回滚所有列、数据、默认值和版本号，拒绝不兼容列类型及丢弃时区语义的降级。
+
+模型通过 UTCDateTime 统一读写 UTC aware 时间；SQLite 测试存 UTC 无偏移值并在读取时补回 UTC。旧 API/缓存的 naive 输入仍明确按北京时间解释，上传预约旧 naive 输入明确按 UTC 解释。业务时钟、Token 截止、Assistant 恢复、分享、Runtime 活动、checkpoint 与用量记录均改用 UTC。每日用量展示明确按北京时间归组，不依赖数据库会话时区；上传配额的每日额度继续按 UTC 日计算。通知时间明确标示北京时间或带偏移。
+
+真实迁移验证：`RUN_UTC_MIGRATION_TESTS=1 python -m pytest -o addopts='' tests/integration/test_utc_migration.py`，覆盖北京历史列/UTC 预约/已带时区列、NULL、默认值、重复升级、故障原子回滚、两种数据库会话时区及北京时间用量归组；已加入 CI。

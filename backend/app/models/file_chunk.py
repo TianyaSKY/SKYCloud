@@ -1,9 +1,10 @@
 """文件内容分块索引模型。"""
+from app.infra.utc_datetime import UTCDateTime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, Text, UniqueConstraint
+from sqlalchemy import Column, ForeignKey, Index, Integer, Text, UniqueConstraint
 from pgvector.sqlalchemy import Vector
 
-from app.infra.datetime_utils import beijing_now
+from app.infra.datetime_utils import utc_now
 from app.infra.extensions import Base
 
 
@@ -19,7 +20,7 @@ class FileChunk(Base):
     page_number = Column(Integer, nullable=True)
     content = Column(Text, nullable=False)
     vector_info = Column(Vector(1024), nullable=True)
-    created_at = Column(DateTime, default=beijing_now, nullable=False)
+    created_at = Column(UTCDateTime(), default=utc_now, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("file_id", "chunk_index", name="uq_file_chunks_file_index"),

@@ -1,8 +1,9 @@
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from app.infra.utc_datetime import UTCDateTime
+from sqlalchemy import Column, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import utc_now, local_isoformat
 
 
 class FileChangeEvent(Base):
@@ -21,7 +22,7 @@ class FileChangeEvent(Base):
     old_name = Column(String(255), nullable=True)
     new_name = Column(String(255), nullable=True)
     payload = Column(Text, nullable=True)  # 可选扩展 JSON/文本
-    created_at = Column(DateTime, default=beijing_now, nullable=False, index=True)
+    created_at = Column(UTCDateTime(), default=utc_now, nullable=False, index=True)
 
     workspace = relationship("Workspace", backref="file_change_events")
 

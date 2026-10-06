@@ -5,6 +5,8 @@
 """
 
 import datetime
+
+from app.infra.datetime_utils import utc_now, BEIJING_TZ
 import time
 
 from langchain_openai import ChatOpenAI
@@ -339,7 +341,7 @@ def _organize_files(workspace_id: int, user_id: int, scope: OrganizeScope):
 
 def handle_organize_process(workspace_id: int, user_id: int, *, task_id=None, execution_token=None):
     """整理入口：计时、记 Token、无论成败都写收件箱（锁释放在 tasks 层）。"""
-    time_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    time_start = utc_now().astimezone(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S 北京时间")
     timestamp_start = time.time()
     succeeded = True
     try:

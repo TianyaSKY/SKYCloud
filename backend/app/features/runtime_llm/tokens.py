@@ -8,7 +8,7 @@ import jwt
 from sqlalchemy.orm import Session
 
 from app.features.workspace.permissions import assert_can_write, check_role_level
-from app.infra.datetime_utils import beijing_now
+from app.infra.datetime_utils import utc_now
 from app.infra.extensions import SECRET_KEY
 from app.infra.llm.config import get_chat_model_config
 from app.mcp.runtime_token_service import validate_bound_token
@@ -47,7 +47,7 @@ def issue_token(session: Session, runtime: OpenCodeRuntime) -> str:
         runtime_id=runtime.id, user_id=runtime.user_id, workspace_id=runtime.workspace_id,
         jti=jti, token_hash=McpRuntimeToken.hash_token(raw),
         token_preview=McpRuntimeToken.preview_token(raw),
-        expires_at=beijing_now() + dt.timedelta(seconds=ttl),
+        expires_at=utc_now() + dt.timedelta(seconds=ttl),
     ))
     session.commit()
     return raw

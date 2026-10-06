@@ -9,7 +9,7 @@ import jwt
 from sqlalchemy.orm import Session
 
 from app.features.workspace.permissions import get_member_role
-from app.infra.datetime_utils import beijing_now
+from app.infra.datetime_utils import utc_now
 from app.infra.extensions import SECRET_KEY
 from app.models.mcp_runtime_token import McpRuntimeToken
 from app.models.opencode_runtime import OpenCodeRuntime
@@ -67,7 +67,7 @@ def issue_runtime_token(
 ) -> tuple[McpRuntimeToken, str]:
     """Revoke prior runtime tokens and issue exactly one new token."""
 
-    now = beijing_now()
+    now = utc_now()
     session.query(McpRuntimeToken).filter(
         McpRuntimeToken.runtime_id == runtime.id,
         McpRuntimeToken.revoked_at.is_(None),
@@ -124,7 +124,7 @@ def get_active_runtime_token(session: Session, token: str) -> McpRuntimeToken | 
     )
     if not record or not record.is_active:
         return None
-    record.last_used_at = beijing_now()
+    record.last_used_at = utc_now()
     session.commit()
     return record
 
@@ -188,7 +188,7 @@ def revoke_runtime_tokens(session: Session, runtime_id: int) -> int:
     result = session.query(McpRuntimeToken).filter(
         McpRuntimeToken.runtime_id == runtime_id,
         McpRuntimeToken.revoked_at.is_(None),
-    ).update({McpRuntimeToken.revoked_at: beijing_now()}, synchronize_session="fetch")
+    ).update({McpRuntimeToken.revoked_at: utc_now()}, synchronize_session="fetch")
     return int(result or 0)
 
 
@@ -196,5 +196,5 @@ def revoke_workspace_runtime_tokens(session: Session, workspace_id: int) -> int:
     result = session.query(McpRuntimeToken).filter(
         McpRuntimeToken.workspace_id == workspace_id,
         McpRuntimeToken.revoked_at.is_(None),
-    ).update({McpRuntimeToken.revoked_at: beijing_now()}, synchronize_session="fetch")
+    ).update({McpRuntimeToken.revoked_at: utc_now()}, synchronize_session="fetch")
     return int(result or 0)

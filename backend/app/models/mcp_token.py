@@ -1,10 +1,11 @@
+from app.infra.utc_datetime import UTCDateTime
 import hashlib
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Column, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat, to_beijing_naive
+from app.infra.datetime_utils import utc_now, local_isoformat, to_utc_datetime
 
 
 class McpToken(Base):
@@ -21,10 +22,10 @@ class McpToken(Base):
     name = Column(String(80), nullable=False, default="MCP Token")
     token_hash = Column(String(64), unique=True, nullable=False, index=True)
     token_preview = Column(String(32), nullable=False)
-    created_at = Column(DateTime, default=beijing_now)
-    expires_at = Column(DateTime, nullable=False)
-    last_used_at = Column(DateTime, nullable=True)
-    revoked_at = Column(DateTime, nullable=True)
+    created_at = Column(UTCDateTime(), default=utc_now)
+    expires_at = Column(UTCDateTime(), nullable=False)
+    last_used_at = Column(UTCDateTime(), nullable=True)
+    revoked_at = Column(UTCDateTime(), nullable=True)
 
     user = relationship("User", backref="mcp_tokens")
 
@@ -42,8 +43,8 @@ class McpToken(Base):
 
     @property
     def is_expired(self) -> bool:
-        expires_at = to_beijing_naive(self.expires_at)
-        return bool(expires_at and expires_at <= beijing_now())
+        expires_at = to_utc_datetime(self.expires_at)
+        return bool(expires_at and expires_at <= utc_now())
 
     @property
     def is_active(self) -> bool:

@@ -14,7 +14,7 @@ from app.exceptions import BusinessRuleError
 from app.features.workspace import runtime_service
 from app.features.workspace.permissions import get_member_role
 from app.features.assistant.clients.opencode_auth import server_password, server_username
-from app.infra.datetime_utils import beijing_now
+from app.infra.datetime_utils import utc_now
 from app.infra.llm.config import get_chat_model_config
 from app.features.runtime_llm import tokens as runtime_llm_tokens
 from app.mcp import runtime_token_service
@@ -221,12 +221,12 @@ def _sync_runtime_status(session: Session, runtime: OpenCodeRuntime) -> None:
         status = "running" if container.status == "running" else "stopped"
         if runtime.status != status:
             runtime.status = status
-            runtime.last_used_at = beijing_now()
+            runtime.last_used_at = utc_now()
             session.commit()
     except ContainerNotFound:
         runtime.container_id = None
         runtime.status = "stopped"
-        runtime.last_used_at = beijing_now()
+        runtime.last_used_at = utc_now()
         runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
         session.commit()
     except DockerException as exc:
@@ -323,7 +323,7 @@ def list_summaries(session: Session, rows: list, user_id: int) -> list[dict]:
                        "status": status, "error_message": runtime.error_message,
                        "config_version": runtime.config_version, "access_url": None})
     if changed_status:
-        now = beijing_now()
+        now = utc_now()
         # Compare the observed container too: a concurrent recreation must not
         # be overwritten or have its new credentials revoked by an old snapshot.
         observed = {runtime.id: runtime for runtime in runtimes if runtime.id in changed_status}
@@ -383,8 +383,8 @@ def start(session: Session, workspace: Workspace, user_id: int) -> Workspace:
         runtime.container_id = container.id
         runtime.status = "running"
         runtime.error_message = None
-        runtime.last_started_at = beijing_now()
-        runtime.last_used_at = beijing_now()
+        runtime.last_started_at = utc_now()
+        runtime.last_used_at = utc_now()
         session.commit()
         setup_mcp(
             session,
@@ -435,7 +435,7 @@ def stop(
             _client().containers.get(runtime.container_id).stop(timeout=10)
         runtime.status = "stopped"
         runtime.error_message = None
-        runtime.last_used_at = beijing_now()
+        runtime.last_used_at = utc_now()
     except ContainerNotFound:
         runtime.container_id = None
         runtime.status = "stopped"
@@ -459,8 +459,8 @@ def restart(session: Session, workspace: Workspace, user_id: int) -> Workspace:
         container.restart(timeout=3)
         runtime.status = "running"
         runtime.error_message = None
-        runtime.last_started_at = beijing_now()
-        runtime.last_used_at = beijing_now()
+        runtime.last_started_at = utc_now()
+        runtime.last_used_at = utc_now()
         session.commit()
         setup_mcp(session, workspace, user_id, runtime=runtime)
     except ContainerNotFound:
@@ -514,7 +514,7 @@ def remove_runtime(runtime: OpenCodeRuntime, session: Session | None = None) -> 
         runtime.container_id = None
         runtime.status = "stopped"
         runtime.error_message = None
-        runtime.last_used_at = beijing_now()
+        runtime.last_used_at = utc_now()
         session.flush()
 
 
@@ -709,7 +709,7 @@ def setup_mcp(
             reload_config=reload_runtime_config or provider_reload_needed,
         )
         runtime.config_version = int(runtime.config_version or 0) + 1
-        runtime.last_used_at = beijing_now()
+        runtime.last_used_at = utc_now()
         session.commit()
         logger.info(
             "已配置 OpenCode MCP：workspace_id={}, user_id={}, runtime_id={}, token_id={}, config_version={}",

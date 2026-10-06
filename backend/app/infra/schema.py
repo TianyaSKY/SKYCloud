@@ -3,7 +3,7 @@
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-EXPECTED_REVISION = "0008_organize_tasks"
+EXPECTED_REVISION = "0009_utc_timestamps"
 
 
 def check_schema(database_engine):

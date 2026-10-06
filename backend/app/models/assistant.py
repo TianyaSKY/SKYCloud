@@ -6,6 +6,7 @@ conversation is backed by an OpenCode session.  Keeping the records in the
 database lets the UI recover after a browser refresh or an interrupted SSE
 connection without mixing the two execution models.
 """
+from app.infra.utc_datetime import UTCDateTime
 
 import json
 from datetime import datetime
@@ -15,7 +16,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
-    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -25,7 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import utc_now, local_isoformat
 from app.infra.extensions import Base
 
 
@@ -66,9 +66,9 @@ class AssistantConversation(Base):
         nullable=True,
     )
     opencode_session_id = Column(String(128), nullable=True)
-    created_at = Column(DateTime, default=beijing_now, nullable=False)
-    updated_at = Column(DateTime, default=beijing_now, onupdate=beijing_now, nullable=False)
-    last_message_at = Column(DateTime, nullable=True)
+    created_at = Column(UTCDateTime(), default=utc_now, nullable=False)
+    updated_at = Column(UTCDateTime(), default=utc_now, onupdate=utc_now, nullable=False)
+    last_message_at = Column(UTCDateTime(), nullable=True)
 
     workspace = relationship("Workspace", backref="assistant_conversations")
     user = relationship("User", backref="assistant_conversations")
@@ -133,8 +133,8 @@ class AssistantMessage(Base):
     metadata_json = Column(Text, nullable=True)
     usage_json = Column(Text, nullable=True)
     sequence = Column(Integer, nullable=False)
-    created_at = Column(DateTime, default=beijing_now, nullable=False)
-    updated_at = Column(DateTime, default=beijing_now, onupdate=beijing_now, nullable=False)
+    created_at = Column(UTCDateTime(), default=utc_now, nullable=False)
+    updated_at = Column(UTCDateTime(), default=utc_now, onupdate=utc_now, nullable=False)
 
     conversation = relationship("AssistantConversation", back_populates="messages")
 
@@ -213,9 +213,9 @@ class AssistantRun(Base):
     error_code = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)
     metadata_json = Column(Text, nullable=True)
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=beijing_now, nullable=False)
+    started_at = Column(UTCDateTime(), nullable=True)
+    completed_at = Column(UTCDateTime(), nullable=True)
+    created_at = Column(UTCDateTime(), default=utc_now, nullable=False)
 
     conversation = relationship("AssistantConversation", back_populates="runs")
     user_message = relationship("AssistantMessage", foreign_keys=[user_message_id])

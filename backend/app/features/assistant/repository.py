@@ -6,7 +6,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.features.assistant.event_protocol import AssistantEvent
-from app.infra.datetime_utils import beijing_now
+from app.infra.datetime_utils import utc_now
 from app.models.assistant import AssistantConversation, AssistantMessage, AssistantRun
 from app.models.workspace import WorkspaceMember
 
@@ -158,8 +158,8 @@ def create_message(
     message.metadata_dict = metadata or {}
     message.usage = usage
     session.add(message)
-    conversation.last_message_at = beijing_now()
-    conversation.updated_at = beijing_now()
+    conversation.last_message_at = utc_now()
+    conversation.updated_at = utc_now()
     session.flush()
     return message
 
@@ -230,10 +230,10 @@ def update_run_status(
 ) -> None:
     run.status = status
     if status == "running" and run.started_at is None:
-        run.started_at = beijing_now()
+        run.started_at = utc_now()
     if status in TERMINAL_RUN_STATUSES:
         clear_pending_permission(run)
-        run.completed_at = beijing_now()
+        run.completed_at = utc_now()
     if error_code is not None:
         run.error_code = error_code
     if error_message is not None:

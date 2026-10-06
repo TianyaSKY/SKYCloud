@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.exceptions import ServiceOperationError
-from app.infra.datetime_utils import beijing_now
+from app.infra.datetime_utils import utc_now
 from app.models.mcp_token import McpToken
 
 
@@ -21,7 +21,7 @@ def _issue_jwt(user_id: int, expires_at: datetime) -> str:
 
 def _revoke_all_active(session: Session, user_id: int) -> None:
     """撤销用户所有未撤销的 Token，保证「有且只有一个」。"""
-    now = beijing_now()
+    now = utc_now()
     (
         session.query(McpToken)
         .filter(McpToken.user_id == user_id, McpToken.revoked_at.is_(None))
@@ -45,7 +45,7 @@ def _create_token_record(
 
 def get_active_record(session: Session, user_id: int) -> McpToken | None:
     """返回用户当前有效的 MCP Token（未撤销且未过期）；历史多条时只保留最新。"""
-    now = beijing_now()
+    now = utc_now()
     records = (
         session.query(McpToken)
         .filter(
@@ -84,7 +84,7 @@ def refresh_user_mcp_token(session: Session, user_id: int) -> tuple[McpToken, st
     if session.query(User.id).filter(User.id == user_id).with_for_update().one_or_none() is None:
         raise ResourceNotFoundError("User not found")
     jwt_expires = datetime.now(timezone.utc) + timedelta(days=365)
-    db_expires = beijing_now() + timedelta(days=365)
+    db_expires = utc_now() + timedelta(days=365)
     token = _issue_jwt(user_id, jwt_expires)
 
     _revoke_all_active(session, user_id)
@@ -113,7 +113,7 @@ def get_active_mcp_token(session: Session, token: str) -> McpToken | None:
     )
     if not token_record or token_record.is_revoked or token_record.is_expired:
         return None
-    token_record.last_used_at = beijing_now()
+    token_record.last_used_at = utc_now()
     session.commit()
     return token_record
 

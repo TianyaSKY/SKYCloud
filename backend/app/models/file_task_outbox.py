@@ -1,7 +1,8 @@
 """File indexing deliveries committed alongside file metadata."""
+from app.infra.utc_datetime import UTCDateTime
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import Column, ForeignKey, Index, Integer, String
 
 from app.infra.extensions import Base
 
@@ -15,9 +16,9 @@ class FileTaskOutbox(Base):
 
     id = Column(Integer, primary_key=True)
     file_id = Column(Integer, ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    next_attempt_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    delivered_at = Column(DateTime(timezone=True))
+    created_at = Column(UTCDateTime(), nullable=False, default=utc_now)
+    next_attempt_at = Column(UTCDateTime(), nullable=False, default=utc_now)
+    delivered_at = Column(UTCDateTime())
     attempts = Column(Integer, nullable=False, default=0)
     last_error_type = Column(String(96))
 

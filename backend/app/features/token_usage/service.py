@@ -6,11 +6,17 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.infra.extensions import SessionLocal
-from app.infra.datetime_utils import beijing_now, local_isoformat, to_beijing_naive
+from app.infra.datetime_utils import utc_now, local_isoformat, to_utc_datetime
 from app.models.token_usage_log import TokenUsageLog
 from app.models.user import User
 
 from loguru import logger
+
+
+def _usage_day(session):
+    if session.get_bind().dialect.name == "postgresql":
+        return func.date(func.timezone("Asia/Shanghai", TokenUsageLog.created_at))
+    return func.date(TokenUsageLog.created_at, "+8 hours")
 
 
 def record_usage(
@@ -61,7 +67,7 @@ def record_usage(
                 "ct": completion_tokens,
                 "tt": total_tokens,
                 "uid": user_id,
-                "now": beijing_now(),
+                "now": utc_now(),
             },
         )
         session.commit()
@@ -105,14 +111,14 @@ def get_usage_logs(
 
     if start_date:
         try:
-            sd = to_beijing_naive(datetime.fromisoformat(start_date))
+            sd = to_utc_datetime(datetime.fromisoformat(start_date))
             query = query.filter(TokenUsageLog.created_at >= sd)
         except ValueError:
             pass
 
     if end_date:
         try:
-            ed = to_beijing_naive(datetime.fromisoformat(end_date))
+            ed = to_utc_datetime(datetime.fromisoformat(end_date))
             query = query.filter(TokenUsageLog.created_at <= ed)
         except ValueError:
             pass
@@ -135,10 +141,10 @@ def get_usage_logs(
 
 def get_daily_stats(session: Session, user_id: int, days: int = 30) -> list[dict]:
     """用户最近 N 天每日聚合统计。"""
-    since = beijing_now() - timedelta(days=days)
+    since = utc_now() - timedelta(days=days)
     rows = (
         session.query(
-            func.date(TokenUsageLog.created_at).label("date"),
+            _usage_day(session).label("date"),
             func.sum(TokenUsageLog.prompt_tokens).label("prompt_tokens"),
             func.sum(TokenUsageLog.completion_tokens).label("completion_tokens"),
             func.sum(TokenUsageLog.total_tokens).label("total_tokens"),
@@ -148,8 +154,8 @@ def get_daily_stats(session: Session, user_id: int, days: int = 30) -> list[dict
             TokenUsageLog.user_id == user_id,
             TokenUsageLog.created_at >= since,
         )
-        .group_by(func.date(TokenUsageLog.created_at))
-        .order_by(func.date(TokenUsageLog.created_at))
+        .group_by(_usage_day(session))
+        .order_by(_usage_day(session))
         .all()
     )
     return [
@@ -211,14 +217,14 @@ def get_all_users_usage_logs(
 
     if start_date:
         try:
-            sd = to_beijing_naive(datetime.fromisoformat(start_date))
+            sd = to_utc_datetime(datetime.fromisoformat(start_date))
             query = query.filter(TokenUsageLog.created_at >= sd)
         except ValueError:
             pass
 
     if end_date:
         try:
-            ed = to_beijing_naive(datetime.fromisoformat(end_date))
+            ed = to_utc_datetime(datetime.fromisoformat(end_date))
             query = query.filter(TokenUsageLog.created_at <= ed)
         except ValueError:
             pass
@@ -247,18 +253,18 @@ def get_all_users_usage_logs(
 
 def get_all_users_daily_stats(session: Session, days: int = 30) -> list[dict]:
     """全站合计最近 N 天每日统计（admin）。"""
-    since = beijing_now() - timedelta(days=days)
+    since = utc_now() - timedelta(days=days)
     rows = (
         session.query(
-            func.date(TokenUsageLog.created_at).label("date"),
+            _usage_day(session).label("date"),
             func.sum(TokenUsageLog.prompt_tokens).label("prompt_tokens"),
             func.sum(TokenUsageLog.completion_tokens).label("completion_tokens"),
             func.sum(TokenUsageLog.total_tokens).label("total_tokens"),
             func.count(TokenUsageLog.id).label("request_count"),
         )
         .filter(TokenUsageLog.created_at >= since)
-        .group_by(func.date(TokenUsageLog.created_at))
-        .order_by(func.date(TokenUsageLog.created_at))
+        .group_by(_usage_day(session))
+        .order_by(_usage_day(session))
         .all()
     )
     return [
@@ -275,12 +281,12 @@ def get_all_users_daily_stats(session: Session, days: int = 30) -> list[dict]:
 
 def get_per_user_daily_stats(session: Session, days: int = 30) -> list[dict]:
     """按用户拆分的最近 N 天每日统计（admin）。"""
-    since = beijing_now() - timedelta(days=days)
+    since = utc_now() - timedelta(days=days)
     rows = (
         session.query(
             TokenUsageLog.user_id,
             User.username,
-            func.date(TokenUsageLog.created_at).label("date"),
+            _usage_day(session).label("date"),
             func.sum(TokenUsageLog.prompt_tokens).label("prompt_tokens"),
             func.sum(TokenUsageLog.completion_tokens).label("completion_tokens"),
             func.sum(TokenUsageLog.total_tokens).label("total_tokens"),
@@ -288,8 +294,8 @@ def get_per_user_daily_stats(session: Session, days: int = 30) -> list[dict]:
         )
         .outerjoin(User, TokenUsageLog.user_id == User.id)
         .filter(TokenUsageLog.created_at >= since)
-        .group_by(TokenUsageLog.user_id, User.username, func.date(TokenUsageLog.created_at))
-        .order_by(func.date(TokenUsageLog.created_at))
+        .group_by(TokenUsageLog.user_id, User.username, _usage_day(session))
+        .order_by(_usage_day(session))
         .all()
     )
     return [

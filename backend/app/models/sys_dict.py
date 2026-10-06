@@ -1,10 +1,11 @@
+from app.infra.utc_datetime import UTCDateTime
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String
+from sqlalchemy import Boolean, Column, Integer, String
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
+from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
 
 
 class SysDict(Base):
@@ -17,7 +18,7 @@ class SysDict(Base):
     value = Column(String(255), nullable=False)
     des = Column(String(2048))  # 配置说明
     enable = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=beijing_now)
+    created_at = Column(UTCDateTime(), default=utc_now)
 
     def to_dict(self):
         return {

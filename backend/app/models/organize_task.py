@@ -1,7 +1,8 @@
 """Durable organize admission, delivery and execution identity."""
+from app.infra.utc_datetime import UTCDateTime
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import Column, ForeignKey, Index, Integer, String
 
 from app.infra.extensions import Base
 
@@ -18,12 +19,12 @@ class OrganizeTask(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     state = Column(String(20), nullable=False, default="queued")
     execution_token = Column(String(64))
-    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    next_attempt_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
-    delivered_at = Column(DateTime(timezone=True))
+    created_at = Column(UTCDateTime(), nullable=False, default=utc_now)
+    next_attempt_at = Column(UTCDateTime(), nullable=False, default=utc_now)
+    delivered_at = Column(UTCDateTime())
     attempts = Column(Integer, nullable=False, default=0)
     last_error_type = Column(String(96))
-    finished_at = Column(DateTime(timezone=True))
+    finished_at = Column(UTCDateTime())
 
     __table_args__ = (
         Index("uq_organize_active_workspace", "workspace_id", unique=True,

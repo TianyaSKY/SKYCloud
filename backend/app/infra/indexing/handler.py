@@ -9,6 +9,8 @@ session is held while a file is downloaded or an LLM is running.
 
 from __future__ import annotations
 
+from app.infra.datetime_utils import utc_now, BEIJING_TZ
+
 import datetime
 import os
 import math
@@ -123,7 +125,7 @@ def _mark_file_failed(session, file_id: int, error: Exception) -> None:
                     "title": "文件处理失败",
                     "content": (
                         "处理文件时出现了错误\n"
-                        f"时间:{datetime.datetime.now()}\n"
+                        f"时间:{utc_now().astimezone(BEIJING_TZ).isoformat()}\n"
                         f"文件id:{file_id}\n"
                         "请稍后重试或联系管理员。\n"
                     ),

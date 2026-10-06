@@ -21,7 +21,7 @@ from app.features.assistant import repository
 from app.features.assistant.engines.fast_engine import FastEngine
 from app.features.assistant.event_protocol import AssistantEvent, heartbeat_event
 from app.features.workspace.permissions import assert_can_write, assert_member
-from app.infra.datetime_utils import beijing_now
+from app.infra.datetime_utils import utc_now, to_utc_datetime
 from app.models.assistant import AssistantConversation, AssistantMessage, AssistantRun
 from app.models.workspace import Workspace
 
@@ -132,7 +132,7 @@ def _recover_abandoned_run(session: Session, run: AssistantRun) -> bool:
     run = repository.lock_run(session, int(run.id))
     if run is None or run.status in repository.TERMINAL_RUN_STATUSES:
         return False
-    started_at = run.started_at or run.created_at
+    started_at = to_utc_datetime(run.started_at or run.created_at)
     if started_at is None:
         return False
     try:
@@ -144,7 +144,7 @@ def _recover_abandoned_run(session: Session, run: AssistantRun) -> bool:
         age = time.time() - heartbeat
         if -5 <= age < grace_seconds:
             return False
-    if (beijing_now() - started_at).total_seconds() < grace_seconds:
+    if (utc_now() - started_at).total_seconds() < grace_seconds:
         return False
 
     assistant_message = session.get(AssistantMessage, run.assistant_message_id)

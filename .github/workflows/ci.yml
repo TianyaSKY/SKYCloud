@@ -99,6 +99,7 @@ jobs:
           RUN_FILE_OUTBOX_TESTS: '1'
           RUN_ORGANIZE_TASK_TESTS: '1'
           RUN_TIME_BOUNDARY_TESTS: '1'
+          RUN_UTC_MIGRATION_TESTS: '1'
         run: >-
           python -m pytest -o addopts='' -q
           tests/integration/test_migrations.py
@@ -106,6 +107,7 @@ jobs:
           tests/integration/test_file_task_outbox.py
           tests/integration/test_organize_tasks.py
           tests/integration/test_time_boundaries.py
+          tests/integration/test_utc_migration.py
 
   images:
     name: Image (${{ matrix.image }})

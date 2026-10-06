@@ -1,11 +1,12 @@
 """Audit records for MCP tool calls."""
+from app.infra.utc_datetime import UTCDateTime
 
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, Column, ForeignKey, Index, Integer, String, Text
 
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import utc_now, local_isoformat
 from app.infra.extensions import Base
 
 
@@ -33,7 +34,7 @@ class McpAuditLog(Base):
     success = Column(Boolean, nullable=False, default=False)
     error_type = Column(String(100), nullable=True)
     duration_ms = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=beijing_now)
+    created_at = Column(UTCDateTime(), default=utc_now)
 
     __table_args__ = (
         Index("idx_mcp_audit_workspace_created", "workspace_id", "created_at"),

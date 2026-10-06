@@ -1,9 +1,10 @@
+from app.infra.utc_datetime import UTCDateTime
 
-from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Enum
+from sqlalchemy import Column, Integer, BigInteger, String, Enum
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
+from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
 
 
 class User(Base):
@@ -17,13 +18,13 @@ class User(Base):
     auth_version = Column(Integer, nullable=False, default=0, server_default="0")
     role = Column(Enum("admin", "common", name="user_roles", native_enum=False, length=10), default="common")
     avatar = Column(String(255), default=None)  # 头像 URL，可为空
-    created_at = Column(DateTime, default=beijing_now)
+    created_at = Column(UTCDateTime(), default=utc_now)
 
     # ---- Token 用量累计（由 LLM 调用明细汇总写入）----
     total_prompt_tokens = Column(BigInteger, default=0)
     total_completion_tokens = Column(BigInteger, default=0)
     total_tokens = Column(BigInteger, default=0)
-    last_active_at = Column(DateTime, default=None)
+    last_active_at = Column(UTCDateTime(), default=None)
 
     def __repr__(self):
         return f"<User {self.username}>"

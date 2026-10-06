@@ -1,9 +1,10 @@
+from app.infra.utc_datetime import UTCDateTime
 
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Text
 from sqlalchemy.orm import relationship, backref
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
+from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
 
 
 class Inbox(Base):
@@ -17,7 +18,7 @@ class Inbox(Base):
     content = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False)
     type = Column(String(50), default="system")  # 如 system、notification
-    created_at = Column(DateTime, default=beijing_now)
+    created_at = Column(UTCDateTime(), default=utc_now)
     is_deleted = Column(Boolean, default=False)  # 软删除标记
 
     user = relationship("User", backref=backref("inbox_messages", lazy="dynamic"))

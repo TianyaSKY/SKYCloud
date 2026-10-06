@@ -1,11 +1,12 @@
+from app.infra.utc_datetime import UTCDateTime
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Column, DateTime, Integer, String, ForeignKey
+from sqlalchemy import Column, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship, backref
 
 from app.infra.extensions import Base
-from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
+from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
 
 
 class Folder(Base):
@@ -19,7 +20,7 @@ class Folder(Base):
     name = Column(String(128), nullable=False)
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
     parent_id = Column(Integer, ForeignKey("folder.id"))
-    created_at = Column(DateTime, default=beijing_now)
+    created_at = Column(UTCDateTime(), default=utc_now)
 
     # 递归子目录，并级联删除
     sub_folder = relationship(

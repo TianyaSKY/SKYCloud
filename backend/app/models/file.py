@@ -1,13 +1,14 @@
+from app.infra.utc_datetime import UTCDateTime
 import os
 from datetime import datetime
 from typing import cast
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, Integer, String, BigInteger, DateTime, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, BigInteger, ForeignKey, Index
 from sqlalchemy.orm import relationship
 
 from app.infra.extensions import Base, UPLOAD_FOLDER
-from app.infra.datetime_utils import beijing_now, local_isoformat, parse_legacy_datetime
+from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
 
 
 class File(Base):
@@ -31,7 +32,7 @@ class File(Base):
     workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
     uploader_id = Column(Integer, ForeignKey("users.id"))  # 记录上传者，用于归属标注和通知
     parent_id = Column(Integer, ForeignKey("folder.id"), nullable=True)
-    created_at = Column(DateTime, default=beijing_now)
+    created_at = Column(UTCDateTime(), default=utc_now)
 
     uploader = relationship("User", backref="files")
     # 文件删除时级联清理分享记录

@@ -112,10 +112,10 @@ def change_password(
     user.auth_version += 1
     from app.mcp.token_service import _revoke_all_active
     from app.models.mcp_runtime_token import McpRuntimeToken
-    from app.infra.datetime_utils import beijing_now
+    from app.infra.datetime_utils import utc_now
     _revoke_all_active(session, user_id)
     session.query(McpRuntimeToken).filter_by(user_id=user_id).filter(McpRuntimeToken.revoked_at.is_(None)).update(
-        {McpRuntimeToken.revoked_at: beijing_now()}, synchronize_session=False
+        {McpRuntimeToken.revoked_at: utc_now()}, synchronize_session=False
     )
     session.commit()
     evict_cache(USER_CACHE_PREFIX, user_id)

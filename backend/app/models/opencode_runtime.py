@@ -1,12 +1,13 @@
 """Per-user, per-workspace OpenCode runtime records."""
+from app.infra.utc_datetime import UTCDateTime
 
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Column, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
-from app.infra.datetime_utils import beijing_now, local_isoformat
+from app.infra.datetime_utils import utc_now, local_isoformat
 from app.infra.extensions import Base
 
 
@@ -24,10 +25,10 @@ class OpenCodeRuntime(Base):
     status = Column(String(20), nullable=False, default="stopped")
     error_message = Column(Text, nullable=True)
     config_version = Column(Integer, nullable=False, default=0)
-    last_started_at = Column(DateTime, nullable=True)
-    last_used_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=beijing_now)
-    updated_at = Column(DateTime, default=beijing_now, onupdate=beijing_now)
+    last_started_at = Column(UTCDateTime(), nullable=True)
+    last_used_at = Column(UTCDateTime(), nullable=True)
+    created_at = Column(UTCDateTime(), default=utc_now)
+    updated_at = Column(UTCDateTime(), default=utc_now, onupdate=utc_now)
 
     workspace = relationship("Workspace", back_populates="opencode_runtimes")
     user = relationship("User", backref="opencode_runtimes")
