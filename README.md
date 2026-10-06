@@ -362,3 +362,6 @@ RAG Embedding 用量身份由每次调用显式传入：原问题预计算、多
 模型通过 UTCDateTime 统一读写 UTC aware 时间；SQLite 测试存 UTC 无偏移值并在读取时补回 UTC。旧 API/缓存的 naive 输入仍明确按北京时间解释，上传预约旧 naive 输入明确按 UTC 解释。业务时钟、Token 截止、Assistant 恢复、分享、Runtime 活动、checkpoint 与用量记录均改用 UTC。每日用量展示明确按北京时间归组，不依赖数据库会话时区；上传配额的每日额度继续按 UTC 日计算。通知时间明确标示北京时间或带偏移。
 
 真实迁移验证：`RUN_UTC_MIGRATION_TESTS=1 python -m pytest -o addopts='' tests/integration/test_utc_migration.py`，覆盖北京历史列/UTC 预约/已带时区列、NULL、默认值、重复升级、故障原子回滚、两种数据库会话时区及北京时间用量归组；已加入 CI。
+
+
+文件元数据访问集中在 `backend/app/features/file/repository.py`：目录分页、字面名称搜索、向量排序、共享对象引用查询和批量状态更新均使用调用方传入的 Session。repository 不创建或关闭 Session，也不提交事务、访问缓存、对象存储或模型；返回的 ORM 行须在调用方 Session 内序列化。文件服务继续负责权限、上传配额、外部资源、outbox 与提交/回滚，上传预约读取由配额模块负责。`tests/test_file_repository.py` 验证文件夹优先分页、空间隔离、通配符转义和调用方回滚。此批只拆分文件元数据持久化；上传编排、MCP/Runtime 服务及整体 API 类型契约仍待完成。

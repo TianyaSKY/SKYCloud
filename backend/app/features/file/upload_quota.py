@@ -28,6 +28,17 @@ def utc_now():
     return datetime.now(timezone.utc)
 
 
+def find_reservation(session, reservation_id):
+    """Lookup only; callers must apply owned() before replaying upload details."""
+    return session.get(UploadReservation, reservation_id)
+
+
+def active_reservation_ids(session):
+    return {(str(row.workspace_id), row.id) for row in session.query(
+        UploadReservation.workspace_id, UploadReservation.id).filter(
+        UploadReservation.status == 'active', UploadReservation.expires_at > utc_now()).all()}
+
+
 def lock_owners(session, workspace_id, user_id):
     # Every admission/completion uses this order, including cross-workspace uploads.
     if session.scalar(select(User.id).where(User.id == user_id).with_for_update()) is None:

@@ -15,7 +15,6 @@ import shutil
 import uuid
 from typing import Any, cast
 
-from sqlalchemy import func
 from werkzeug.utils import secure_filename
 
 from app.exceptions import (
@@ -37,12 +36,11 @@ from app.infra.upload_adapter import save_bounded
 from app.infra.upload_staging import StagedUpload, cleanup_staging
 from app.infra.upload_limits import FILE_LIMIT, AVATAR_LIMIT, copy_bounded, positive_limit
 from app.models.file import File
-from app.models.folder import Folder
 from app.features.folder import change_log as change_log_service
 from app.infra.llm.config import get_embedding_model_config
 from app.features.workspace.permissions import assert_member
-from app.features.file import upload_quota
-from app.models.upload_reservation import UploadReservation
+from app.features.file import upload_quota, repository
+from app.features.file.repository import escape_like as _escape_like
 
 from loguru import logger
 
@@ -80,11 +78,6 @@ def _resolve_mime_type(path: str, provided: str | None = None) -> str | None:
     return mimetypes.guess_type(path)[0]
 
 
-def _escape_like(value: str) -> str:
-    """转义 LIKE/ILIKE 通配符，防止用户输入被当作模式。"""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
 def _normalize_content_hash(content_hash: str | None) -> str | None:
     if not content_hash:
         return None
@@ -106,11 +99,7 @@ def _calculate_file_hash(path: str) -> str:
 
 
 def _get_reusable_source_file(session: Session, content_hash: str, file_size: int) -> File | None:
-    source_file = (
-        session.query(File).filter_by(content_hash=content_hash, file_size=file_size)
-        .order_by(File.id.asc())
-        .first()
-    )
+    source_file = repository.find_reusable_file(session, content_hash, file_size)
     if not source_file:
         return None
     storage = get_storage_client()
@@ -147,8 +136,7 @@ def _persist_file_record(
         description=description,
         vector_info=vector_info,
     )
-    session.add(new_file)
-    session.flush()
+    repository.insert_file(session, new_file)
     if status != "success":
         stage_file_tasks(session, [new_file.id])
     session.commit()
@@ -271,7 +259,7 @@ def _resolve_upload_parent_id(
 
         return folder_service.get_root_folder_id(session, workspace_id)
 
-    parent = session.get(Folder, parent_id)
+    parent = repository.find_folder(session, parent_id)
     if not parent or parent.workspace_id != workspace_id:
         raise PermissionDeniedError("Parent folder belongs to another workspace")
     return parent_id
@@ -473,8 +461,7 @@ def batch_create_files(
     try:
         for reservation_id, file_obj in zip(reservations, new_files):
             upload_quota.consume(session, workspace_id, uploader_id, reservation_id, file_obj.file_size)
-        session.add_all(new_files)
-        session.flush()
+        repository.insert_files(session, new_files)
         stage_file_tasks(session, [file.id for file in new_files])
         session.commit()
     except Exception as exc:
@@ -570,7 +557,7 @@ def init_multipart_upload(session: Session, workspace_id: int, uploader_id: int,
     chunks_dir = _multipart_chunks_dir(upload_dir)
     meta_path = _multipart_meta_path(upload_dir)
 
-    existing = session.get(UploadReservation, upload_id)
+    existing = upload_quota.find_reservation(session, upload_id)
     metadata = {
         "upload_id": upload_id, "workspace_id": workspace_id, "uploader_id": uploader_id,
         "filename": filename, "total_size": total_size, "chunk_size": chunk_size,
@@ -757,8 +744,7 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
             parent_id=parent_id,
         )
         upload_quota.consume(session, workspace_id, uploader_id, safe_upload_id, total_size)
-        session.add(new_file)
-        session.flush()
+        repository.insert_file(session, new_file)
         stage_file_tasks(session, [new_file.id])
         session.commit()
     except Exception as e:
@@ -787,7 +773,7 @@ def abort_multipart_upload(session: Session, workspace_id: int, uploader_id: int
 
 
 def get_file(session: Session, id: int) -> File:
-    file_obj = session.get(File, id)
+    file_obj = repository.find_file(session, id)
     if not file_obj:
         raise ResourceNotFoundError("File not found")
     return file_obj
@@ -828,63 +814,19 @@ def get_files_and_folders(
     if page < 1:
         page = 1
 
-    folder_query = session.query(Folder).filter_by(workspace_id=workspace_id, parent_id=parent_id)
-    if name:
-        folder_query = folder_query.filter(Folder.name.ilike(f"%{_escape_like(name)}%", escape="\\"))
-    if order == "asc":
-        folder_query = folder_query.order_by(Folder.name.asc())
-    else:
-        folder_query = folder_query.order_by(Folder.name.desc())
-
-    file_query = session.query(File).filter_by(workspace_id=workspace_id, parent_id=parent_id)
-    if name:
-        file_query = file_query.filter(File.name.ilike(f"%{_escape_like(name)}%", escape="\\"))
-
-    if sort_by == "name":
-        sort_column = File.name
-    elif sort_by == "size":
-        sort_column = File.file_size
-    else:
-        sort_column = File.created_at
-
-    if order == "asc":
-        file_query = file_query.order_by(sort_column.asc())
-    else:
-        file_query = file_query.order_by(sort_column.desc())
-
-    total_folders = folder_query.order_by(None).with_entities(func.count()).scalar() or 0
-    total_files = file_query.order_by(None).with_entities(func.count()).scalar() or 0
-    total_items = total_folders + total_files
-    total_pages = (total_items + page_size - 1) // page_size if page_size > 0 else 1
-    offset = (page - 1) * page_size
-
-    folders_result = []
-    files_result = []
-
-    if offset < total_folders:
-        folders_result = folder_query.offset(offset).limit(page_size).all()
-        fetched_folders_count = len(folders_result)
-        if fetched_folders_count < page_size:
-            remaining_slots = page_size - fetched_folders_count
-            files_result = file_query.offset(0).limit(remaining_slots).all()
-    else:
-        file_offset = offset - total_folders
-        files_result = file_query.offset(file_offset).limit(page_size).all()
-
+    rows = repository.list_directory(session, workspace_id, parent_id, page, page_size, name, sort_by, order)
     return {
-        "folders": [folder.to_dict() for folder in folders_result],
+        "folders": [folder.to_dict() for folder in rows.folders],
         "files": {
-            "items": [file_obj.to_dict() for file_obj in files_result],
-            "total": total_items,
-            "page": page,
-            "page_size": page_size,
-            "pages": total_pages,
+            "items": [file.to_dict() for file in rows.files], "total": rows.total,
+            "page": page, "page_size": page_size,
+            "pages": (rows.total + page_size - 1) // page_size if page_size > 0 else 1,
         },
     }
 
 
 def update_file(session: Session, id: int, data: dict[str, Any]) -> File:
-    file_obj = session.get(File, id)
+    file_obj = repository.find_file(session, id)
     if not file_obj:
         raise ResourceNotFoundError("File not found")
 
@@ -892,7 +834,7 @@ def update_file(session: Session, id: int, data: dict[str, Any]) -> File:
     old_parent_id = file_obj.parent_id
 
     if "parent_id" in data and data["parent_id"] is not None:
-        target_folder = session.get(Folder, data["parent_id"])
+        target_folder = repository.find_folder(session, data["parent_id"])
         if not target_folder or target_folder.workspace_id != file_obj.workspace_id:
             raise PermissionDeniedError("Parent folder belongs to another workspace")
 
@@ -930,7 +872,7 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
 
     commit/log_event=False 供递归批量删除时由外层统一提交。
     """
-    file_obj = session.get(File, id)
+    file_obj = repository.find_file(session, id)
     if not file_obj:
         raise ResourceNotFoundError("File not found")
 
@@ -942,9 +884,7 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
 
     try:
         # 秒传共享同一 file_path，有引用则不能删对象存储文件
-        remaining_ref = session.query(File).filter(
-            File.file_path == file_obj.file_path, File.id != file_obj.id
-        ).first()
+        remaining_ref = repository.has_other_object_reference(session, object_name, file_obj.id)
         if not remaining_ref:
             storage = get_storage_client()
             if storage.file_exists(object_name):
@@ -952,7 +892,7 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
     except Exception as e:
         logger.error(f"Error deleting file from MinIO {object_name}: {e}")
 
-    session.delete(file_obj)
+    repository.remove_file(session, file_obj)
     if commit:
         session.commit()
         if log_event:
@@ -1014,19 +954,9 @@ def _search_files_fuzzy(
         session: Session,
         workspace_id: int, query: str, page: int, page_size: int
 ) -> dict[str, Any]:
-    base_query = session.query(File).filter(
-        File.workspace_id == workspace_id, File.name.ilike(f"%{_escape_like(query)}%", escape="\\")
-    )
-    total = base_query.count()
-    offset = (page - 1) * page_size
-    items = base_query.offset(offset).limit(page_size).all()
-
-    return {
-        "items": [file_obj.to_dict() for file_obj in items],
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-    }
+    rows = repository.search_names(session, workspace_id, query, page, page_size)
+    return {"items": [file.to_dict() for file in rows.items], "total": rows.total,
+            "page": page, "page_size": page_size}
 
 
 def _search_files_vector_by_embedding(
@@ -1042,25 +972,9 @@ def _search_files_vector_by_embedding(
             "error": "No embeddings returned",
         }
 
-    offset = (page - 1) * page_size
-    items = (
-        session.query(File).filter(File.workspace_id == workspace_id, File.vector_info.isnot(None))
-        .order_by(File.vector_info.cosine_distance(embeddings))
-        .limit(page_size)
-        .offset(offset)
-        .all()
-    )
-
-    total = session.query(File).filter(
-        File.workspace_id == workspace_id, File.vector_info.isnot(None)
-    ).count()
-
-    return {
-        "items": [file_obj.to_dict() for file_obj in items],
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-    }
+    rows = repository.search_vectors(session, workspace_id, embeddings, page, page_size)
+    return {"items": [file.to_dict() for file in rows.items], "total": rows.total,
+            "page": page, "page_size": page_size}
 
 
 def _clear_search_cache(workspace_id: int | None) -> None:
@@ -1076,7 +990,7 @@ def get_root_file_id(session: Session, workspace_id: int) -> int | None:
     except Exception:
         logger.warning("Root-file cache unavailable for workspace {}", workspace_id)
 
-    root_file = session.query(File).filter_by(workspace_id=workspace_id, parent_id=None).first()
+    root_file = repository.find_root_file(session, workspace_id)
     if root_file:
         try:
             redis_client.set(cache_key, root_file.id, ex=CACHE_EXPIRATION)
@@ -1091,13 +1005,12 @@ def upload_avatar(session: Session, img_file: Any, user_id: int) -> dict[str, An
     from app.features.share import service as share_service
     from app.features.auth import user_service
 
-    from app.models.workspace import Workspace
-    workspace = session.query(Workspace).filter_by(owner_id=user_id).order_by(Workspace.id).first()
+    workspace = repository.find_owned_workspace(session, user_id)
     if workspace is None:
         raise ResourceNotFoundError("Personal workspace not found")
-    root_folder = session.query(Folder).filter_by(workspace_id=workspace.id, parent_id=None).first()
+    root_folder = repository.find_child_folder(session, workspace.id, None)
     root_folder_id = root_folder.id if root_folder else None
-    folder = session.query(Folder).filter_by(workspace_id=workspace.id, parent_id=root_folder_id, name="所有用户头像").first()
+    folder = repository.find_child_folder(session, workspace.id, root_folder_id, "所有用户头像")
     if folder is None:
         folder = folder_service.create_folder(session, {"name": "所有用户头像", "parent_id": root_folder_id, "workspace_id": workspace.id})
     avatar = create_file(session, img_file, {"workspace_id": workspace.id, "uploader_id": user_id, "parent_id": folder.id, "max_bytes": AVATAR_LIMIT})
@@ -1150,7 +1063,7 @@ async def embedding_desc(desc: str, config: dict[str, str], user_id: int = 0) ->
 
 
 def retry_embedding(session: Session, file_id: int) -> None:
-    file_obj = session.get(File, file_id)
+    file_obj = repository.find_file(session, file_id)
     if not file_obj:
         return
     file_obj.status = "pending"
@@ -1159,19 +1072,11 @@ def retry_embedding(session: Session, file_id: int) -> None:
 
 
 def rebuild_failed_indexes(session: Session, workspace_id: int | None = None) -> int:
-    query = session.query(File).filter(File.status == "fail")
-    if workspace_id is not None:
-        query = query.filter(File.workspace_id == workspace_id)
-
-    failed_files = query.all()
-    if not failed_files:
+    file_ids = repository.failed_file_ids(session, workspace_id)
+    if not file_ids:
         return 0
-
-    file_ids = [f.id for f in failed_files]
     try:
-        session.query(File).filter(File.id.in_(file_ids)).update(
-            {File.status: "pending"}, synchronize_session=False
-        )
+        repository.mark_pending(session, file_ids)
         stage_file_tasks(session, file_ids)
         session.commit()
     except Exception:
@@ -1183,7 +1088,7 @@ def rebuild_failed_indexes(session: Session, workspace_id: int | None = None) ->
 
 
 def get_all_files(session: Session, workspace_id: int) -> list[File]:
-    return session.query(File).filter_by(workspace_id=workspace_id).all()
+    return repository.list_workspace_files(session, workspace_id)
 
 
 async def process_status(session: Session, workspace_id: int) -> dict[str, int]:
@@ -1192,13 +1097,7 @@ async def process_status(session: Session, workspace_id: int) -> dict[str, int]:
 
 def _process_status(session: Session, workspace_id: int) -> dict[str, int]:
     """按状态聚合统计；用 GROUP BY 避免把空间全部文件载入内存。"""
-    rows = (
-        session.query(File.status, func.count(File.id))
-        .filter(File.workspace_id == workspace_id)
-        .group_by(File.status)
-        .all()
-    )
-    cnt = dict(rows)
+    cnt = repository.status_counts(session, workspace_id)
     return {
         "处理中": cnt.get("pending", 0) + cnt.get("processing", 0),
         "成功": cnt.get("success", 0),
@@ -1216,8 +1115,7 @@ def cleanup_expired_uploads(max_age_hours: int = 24, *, session: Session | None 
         return count
     active_ids = set()
     if session is not None:
-        active_ids = {(str(row.workspace_id), row.id) for row in session.query(UploadReservation).filter(
-            UploadReservation.status == "active", UploadReservation.expires_at > upload_quota.utc_now()).all()}
+        active_ids = upload_quota.active_reservation_ids(session)
     now = time.time()
     expiration = max_age_hours * 3600
 
