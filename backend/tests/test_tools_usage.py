@@ -70,6 +70,7 @@ class TestCreateFolderTool:
         mock_existing.id = 5
 
         mock_session = MagicMock()
+        mock_session.get.return_value.workspace_id = 1
         mock_session.query.return_value.filter_by.return_value.first.return_value = mock_existing
         with patch("app.features.folder.organize.tools.get_session", return_value=mock_session):
             result = create_folder.invoke({"name": "docs", "parent_id": 1, "workspace_id": 1})
@@ -77,6 +78,7 @@ class TestCreateFolderTool:
 
     def test_create_new(self):
         mock_session = MagicMock()
+        mock_session.get.return_value.workspace_id = 1
         mock_session.query.return_value.filter_by.return_value.first.return_value = None
         mock_new_folder = MagicMock()
         mock_new_folder.id = 10
@@ -153,7 +155,7 @@ class TestMoveFileTool:
 class TestGetFileInformationTool:
     def test_file_not_found(self):
         mock_session = MagicMock()
-        mock_session.get.return_value = None
+        mock_session.query.return_value.filter.return_value.first.return_value = None
         with patch("app.features.folder.organize.tools.get_session", return_value=mock_session):
             result = get_file_information.invoke({"file_id": 999})
         assert "不存在" in result
@@ -168,7 +170,7 @@ class TestGetFileInformationTool:
         mock_file.description = "A test file"
 
         mock_session = MagicMock()
-        mock_session.get.return_value = mock_file
+        mock_session.query.return_value.filter.return_value.first.return_value = mock_file
         with patch("app.features.folder.organize.tools.get_session", return_value=mock_session):
             result = get_file_information.invoke({"file_id": 1})
         assert "test.txt" in result

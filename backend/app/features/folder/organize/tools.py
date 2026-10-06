@@ -10,13 +10,25 @@ from sqlalchemy import func
 from app.infra.extensions import SessionLocal, redis_client
 from app.models.file import File
 from app.models.folder import Folder
+from app.features.workspace.permissions import assert_can_write
+from app.exceptions import PermissionDeniedError
+from .scope import current_scope
 
 from loguru import logger
 
 
 def get_session():
     """工具执行用独立 session，调用方负责 finally 关闭。"""
-    return SessionLocal()
+    scope = current_scope()
+    if scope is None:
+        raise PermissionDeniedError("Organize tools require a bound task identity")
+    session = scope.session_factory()
+    try:
+        assert_can_write(session, scope.workspace_id, scope.user_id)
+        return session
+    except BaseException:
+        session.close()
+        raise
 
 
 def clear_workspace_cache(workspace_id):
@@ -168,6 +180,10 @@ def create_folder(name: str, parent_id: int, workspace_id: int) -> str:
     session = get_session()
     try:
         pid = parent_id if parent_id and parent_id != 0 else None
+        if pid is not None:
+            parent = session.get(Folder, pid)
+            if parent is None or parent.workspace_id != workspace_id:
+                return "权限错误：父文件夹不属于当前工作空间"
         existing_folder = session.query(Folder).filter_by(
             name=name,
             workspace_id=workspace_id,
@@ -260,7 +276,11 @@ def get_file_information(file_id: int) -> str:
     """读取文件元数据与截断描述，供内容不明确时分类。"""
     session = get_session()
     try:
-        file = session.get(File, file_id)
+        scope = current_scope()
+        query = session.query(File).filter(File.id == file_id)
+        if scope:
+            query = query.filter(File.workspace_id == scope.workspace_id)
+        file = query.first()
         if not file:
             return f"文件 {file_id} 不存在"
 
@@ -334,11 +354,17 @@ def merge_folders(source_folder_id: int, target_folder_id: int, workspace_id: in
             return "不能合并同一个文件夹"
 
         current = target
+        seen = set()
         while current and current.parent_id:
+            if current.id in seen:
+                return "目录结构无效，无法合并"
+            seen.add(current.id)
             if current.parent_id == source.id:
                 return "无法合并：目标文件夹是源文件夹的子文件夹"
             current = session.get(Folder, current.parent_id)
 
+        _assert_consistent_tree(session, source, workspace_id)
+        _assert_consistent_tree(session, target, workspace_id)
         files = session.query(File).filter_by(parent_id=source.id).all()
         for f in files:
             f.parent_id = target.id
@@ -372,6 +398,22 @@ def merge_folders(source_folder_id: int, target_folder_id: int, workspace_id: in
         return f"合并失败: 请稍后重试"
     finally:
         session.close()
+
+
+def _assert_consistent_tree(session, root: Folder, workspace_id: int):
+    """Reject historical cross-workspace parent links before recursive mutation."""
+    pending = [root]
+    seen = set()
+    while pending:
+        node = pending.pop()
+        if node.id in seen or node.workspace_id != workspace_id:
+            raise ValueError("Inconsistent folder tree")
+        seen.add(node.id)
+        children = session.query(Folder).filter_by(parent_id=node.id).all()
+        files = session.query(File).filter_by(parent_id=node.id).all()
+        if any(file.workspace_id != workspace_id for file in files):
+            raise ValueError("Inconsistent file ownership")
+        pending.extend(children)
 
 
 def _merge_folder_contents(session, source: Folder, target: Folder):
@@ -450,7 +492,11 @@ def move_folder(folder_id: int, target_folder_id: int, workspace_id: int) -> str
             return f"权限错误：目标文件夹 {target_folder_id} 不属于工作空间 {workspace_id}"
 
         current = target
+        seen = set()
         while current:
+            if current.id in seen:
+                return "目录结构无效，无法移动"
+            seen.add(current.id)
             if current.id == folder.id:
                 return "无法移动：目标文件夹是源文件夹的子文件夹"
             if current.parent_id:

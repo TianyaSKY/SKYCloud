@@ -1,4 +1,6 @@
 """organize/handler.py 和 description.py 单元测试。"""
+from sqlalchemy.orm import Session
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -70,11 +72,11 @@ class TestOrganizeFiles:
         }
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
-             patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
+             patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint") as m_upd:
-            usage, results = organize_files(test_workspace.id)
+            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         m_upd.assert_called_once()
         assert "跳过" in results or "跳过" in results
 
@@ -91,7 +93,7 @@ class TestOrganizeFiles:
 
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
-             patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
+             patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
@@ -100,7 +102,7 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id)
+            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert usage["input_tokens"] == 0
 
     def test_incremental_mode(self, session, test_workspace):
@@ -122,7 +124,7 @@ class TestOrganizeFiles:
 
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
-             patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
+             patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
@@ -131,7 +133,7 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id)
+            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert "增量" in results
 
     def test_overflow_full_scan(self, session, test_workspace):
@@ -151,7 +153,7 @@ class TestOrganizeFiles:
 
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
-             patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
+             patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
@@ -160,7 +162,7 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id)
+            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert "全量" in results
 
     def test_load_context_fallback(self, session, test_workspace):
@@ -171,7 +173,7 @@ class TestOrganizeFiles:
 
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
-             patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
+             patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    side_effect=Exception("Context error")), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
@@ -180,7 +182,7 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id)
+            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         # 回退全量模式，包含 incremental_context_error 或 首次全量
         assert "incremental_context_error" in results or "全量" in results or "首次" in results
 
@@ -201,7 +203,7 @@ class TestOrganizeFiles:
 
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
-             patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
+             patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
@@ -210,7 +212,7 @@ class TestOrganizeFiles:
                    side_effect=mixed_results), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    side_effect=empty_results):
-            usage, results = organize_files(test_workspace.id)
+            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert "校验失败" in results or "校验通过" in results
 
     def test_recursion_error_handling(self, session, test_workspace):
@@ -230,7 +232,7 @@ class TestOrganizeFiles:
 
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
-             patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
+             patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
@@ -240,7 +242,7 @@ class TestOrganizeFiles:
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
             # GraphRecursionError 名称含 "RecursionError" -> 被捕获不抛出
-            usage, results = organize_files(test_workspace.id)
+            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert "最大步数限制" in results or "校验通过" in results
 
 
@@ -250,7 +252,7 @@ class TestHandleOrganizeProcess:
         from app.features.folder.organize.handler import handle_organize_process
         with patch("app.features.folder.organize.handler.organize_files",
                    return_value=({"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}, "done")), \
-             patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
+             patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
              patch("app.infra.llm.sync_client.record_llm_usage") as m_rec, \
              patch("app.infra.llm.config.get_chat_model_config", return_value={"model": "test"}), \
              patch("app.features.inbox.service.create_inbox_message") as m_inbox:
@@ -263,7 +265,7 @@ class TestHandleOrganizeProcess:
         from app.features.folder.organize.handler import handle_organize_process
         with patch("app.features.folder.organize.handler.organize_files",
                    return_value=({"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}, "done")), \
-             patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
+             patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
              patch("app.infra.llm.sync_client.record_llm_usage"), \
              patch("app.infra.llm.config.get_chat_model_config", return_value={"model": "test"}), \
              patch("app.features.inbox.service.create_inbox_message"):
@@ -275,7 +277,7 @@ class TestHandleOrganizeProcess:
         from app.features.folder.organize.handler import handle_organize_process
         with patch("app.features.folder.organize.handler.organize_files",
                    side_effect=Exception("Organize failed")), \
-             patch("app.features.folder.organize.handler.SessionLocal", return_value=session), \
+             patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
              patch("app.infra.llm.sync_client.record_llm_usage"), \
              patch("app.infra.llm.config.get_chat_model_config", return_value={"model": "test"}), \
              patch("app.features.inbox.service.create_inbox_message") as m_inbox:

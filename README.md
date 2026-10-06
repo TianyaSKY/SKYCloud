@@ -320,3 +320,8 @@ Worker 的失败状态写入发生数据库异常时会回滚并向队列层传�
 `0007_file_task_outbox` 迁移新增 outbox，并为历史 pending/processing 文件补齐待发送记录，不自动重试已明确失败的文件。升级时先停止旧 Worker、备份数据库、运行 `python -m entry.migrate`，再启动新版进程；迁移失败会回滚新表、补齐记录和版本号。旧队列中的消息可能与补齐任务重复。文件删除会级联清理对应 outbox。上传请求不再直接连接 RabbitMQ，任务由 Worker 维护线程发送，因此需保持 Worker 运行。此机制覆盖文件索引，整理任务的 Redis 锁与入队交接仍需继续修复。
 
 真实故障检查：在 backend 目录执行 `RUN_FILE_OUTBOX_TESTS=1 python -m pytest -o addopts='' tests/integration/test_file_task_outbox.py`，覆盖连接拒绝后的重试恢复、任务插入失败的事务回滚、强制并发发送、确认后 SQL 失败的重投，以及迁移补齐/回滚/删除级联。上传和完整文本索引集成测试同时覆盖这一新路径。
+
+
+整理 Agent 的工具在创建时绑定发起用户、工作空间和独立 Session 工厂，绑定信息由服务端闭包保存，模型不能改成其他空间；未绑定身份的工具直接拒绝执行。工具即使在不同线程并行调用，也会显式建立并恢复各自任务上下文。每次工具调用重新查询 editor/admin 权限；用户被降权或移除后不能继续使用整理工具。文件信息查询限定任务空间，创建目录校验父目录归属，递归合并会拒绝历史跨空间父子关系和循环结构。任务开始和推进 checkpoint 时也重新校验权限。
+
+真实工具权限检查可在 backend 目录执行 `RUN_ORGANIZE_SCOPE_TESTS=1 python -m pytest -o addopts='' tests/integration/test_organize_scope.py`。它在独立子进程使用真实锁定版本 LangChain 工具、PostgreSQL 和 Redis，覆盖无身份调用、模型伪造空间、跨空间文件信息与父目录、两空间并行执行、历史错误父子关系及降权/移除后的调用。此检查没有调用真实外部模型或运行完整整理 Agent；整理任务的可靠入队、执行去重和完整模型流程仍需继续验证。

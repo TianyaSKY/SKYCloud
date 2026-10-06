@@ -11,6 +11,8 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
 from app.infra.extensions import SessionLocal
+from app.features.workspace.permissions import assert_can_write
+from .scope import OrganizeScope, organize_scope, bind_tools
 from app.features.folder import change_log as change_log_service
 from app.infra.llm.config import get_chat_model_config
 from .tools import (
@@ -148,7 +150,14 @@ Event range: ({checkpoint_event_id}, {target_event_id}]
 """
 
 
-def organize_files(workspace_id: int):
+def organize_files(workspace_id: int, user_id: int):
+    """Bind task identity before constructing the model and its parallel tools."""
+    scope = OrganizeScope(workspace_id, user_id, SessionLocal)
+    with organize_scope(scope):
+        return _organize_files(workspace_id, user_id, scope)
+
+
+def _organize_files(workspace_id: int, user_id: int, scope: OrganizeScope):
     """Run the ReAct organization flow synchronously in the worker thread."""
     url, key, model = get_llm_config()
     llm = ChatOpenAI(
@@ -172,7 +181,7 @@ def organize_files(workspace_id: int):
         find_mixed_content_folders,
         find_empty_folders,
     ]
-    agent_executor = create_react_agent(llm, tools)
+    agent_executor = create_react_agent(llm, bind_tools(tools, scope))
 
     results: list[str] = []
     total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -181,6 +190,7 @@ def organize_files(workspace_id: int):
 
     session = SessionLocal()
     try:
+        assert_can_write(session, workspace_id, user_id)
         try:
             incremental_context = change_log_service.load_incremental_context(
                 session, workspace_id=workspace_id, max_events=MAX_INCREMENTAL_EVENTS
@@ -305,6 +315,7 @@ def organize_files(workspace_id: int):
     if validation_passed and checkpoint_target_event_id is not None:
         session = SessionLocal()
         try:
+            assert_can_write(session, workspace_id, user_id)
             change_log_service.update_checkpoint(
                 session, workspace_id, checkpoint_target_event_id, mark_full_scan=full_scan_mode
             )
@@ -323,7 +334,7 @@ def handle_organize_process(workspace_id: int, user_id: int):
     time_start = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     timestamp_start = time.time()
     try:
-        token_usage, results = organize_files(workspace_id)
+        token_usage, results = organize_files(workspace_id, user_id)
         content = (
             f"用时 {time.time() - timestamp_start:.2f} 秒\n"
             "Token 计费详情：\n"
