@@ -131,6 +131,30 @@ class Engine:
         else:
             raise PolicyViolation("Unsupported runtime action")
 
+    def remove_legacy(self, ref: str):
+        """Remove only an exact historical SKYCloud identity, never relay to it."""
+        if not re.fullmatch(r"[0-9a-f]{64}", ref):
+            raise PolicyViolation("Legacy cleanup requires a full container ID")
+        try:
+            container = self.client.containers.get(ref)
+        except _docker_error("NotFound") as exc:
+            raise MissingRuntime("Runtime not found") from exc
+        labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
+        try:
+            workspace = int(labels["skycloud.workspace_id"])
+            user = int(labels["skycloud.user_id"])
+        except (KeyError, ValueError, TypeError) as exc:
+            raise PolicyViolation("Container is not a historical SKYCloud runtime") from exc
+        if (container.id != ref or min(workspace, user) <= 0 or max(workspace,user) > 2**63 - 1
+                or labels.get("skycloud.component") != "opencode-runtime"
+                or labels.get("skycloud.runtime_id") not in ("", "0")
+                or container.name not in (f"skycloud-workspace-{workspace}", container_name(workspace,user))):
+            raise PolicyViolation("Historical container identity does not match its labels")
+        try:
+            container.remove(force=True, v=True)
+        except _docker_error("NotFound") as exc:
+            raise MissingRuntime("Runtime not found") from exc
+
     def read_config(self, ref):
         container = self.managed(ref, require_policy=True)
         result = container.exec_run(["cat", CONFIG_PATH], user=RUNTIME_USER)

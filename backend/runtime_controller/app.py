@@ -125,6 +125,11 @@ def create_app(settings=None, engine=None):
         engine.action(ref, action)
         return {"success": True}
 
+    @app.post("/retired-containers/{ref}/remove")
+    def remove_legacy(ref: str):
+        engine.remove_legacy(ref)
+        return {"success": True}
+
     @app.get("/containers/{ref}/config")
     def read_config(ref: str):
         return engine.read_config(ref)

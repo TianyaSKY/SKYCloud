@@ -75,3 +75,20 @@ def test_live_reference_is_retained_then_detach_stages_new_cleanup(session,test_
     remove_runtime(runtime,session)
     session.commit()
     assert reaper(session,factory) == 1 and removed == [True]
+
+
+def test_old_controller_missing_legacy_route_keeps_cleanup_pending(session,monkeypatch):
+    import httpx
+    from runtime_controller.client import ControllerClient
+    monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN','T'*48)
+    def response(method,url,**kwargs):
+        if '/retired-containers/' in url:
+            return httpx.Response(404,json={'detail':'Not Found'})
+        return httpx.Response(403,json={'detail':'Historical identity rejected'})
+    monkeypatch.setattr(httpx,'request',response)
+    session.add(RuntimeContainerDeletion(container_id='a'*64))
+    session.commit()
+    assert reaper(session,ControllerClient) == 0
+    session.expire_all()
+    row = session.query(RuntimeContainerDeletion).one()
+    assert row.completed_at is None and row.attempts == 1 and row.last_error_type == 'ControllerError'

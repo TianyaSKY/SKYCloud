@@ -38,10 +38,19 @@ def delete_pending_containers(*, session_factory=SessionLocal, controller_factor
                 workspace = session.query(Workspace.id).filter(Workspace.container_id == intent.container_id).first()
                 if runtime is None and workspace is None:
                     try:
-                        container = (controller_factory or controller_client)().containers.get(intent.container_id)
-                        if container.id != intent.container_id:
-                            raise ControllerError('Container cleanup requires exact identity')
-                        container.remove(force=True, v=True)
+                        client = (controller_factory or controller_client)()
+                        try:
+                            container = client.containers.get(intent.container_id)
+                        except ControllerNotFound:
+                            raise
+                        except ControllerError:
+                            # This endpoint accepts only exact, known historical
+                            # names/labels. Auth and ownership refusals still fail.
+                            client.remove_legacy(intent.container_id)
+                        else:
+                            if container.id != intent.container_id:
+                                raise ControllerError('Container cleanup requires exact identity')
+                            container.remove(force=True, v=True)
                     except ControllerNotFound:
                         pass  # Already removed, including a completed-marker replay.
             except Exception as error:

@@ -247,3 +247,54 @@ async def test_websocket_redirect_never_reaches_another_host():
                 async with direct_connect(f'ws://127.0.0.1:{origin_port}/terminal', {'Authorization': 'Bearer test-only-secret'}):
                     raise AssertionError('Redirect was followed')
     assert hits == []
+
+
+@pytest.mark.parametrize('name',['skycloud-workspace-2','skycloud-opencode-w2-u3'])
+def test_legacy_cleanup_exact_identity_is_authenticated_and_removal_only(settings,managed_container,name):
+    managed_container.name = name
+    managed_container.attrs['Config']['Labels']['skycloud.runtime_id'] = ''
+    managed_container.attrs['Config']['Labels'].pop('skycloud.runtime_policy')
+    client = Mock()
+    client.containers.get.return_value = managed_container
+    engine = Engine(settings,client)
+    http = TestClient(create_app(settings,engine))
+    path = '/retired-containers/'+managed_container.id+'/remove'
+    assert http.post(path).status_code == 401
+    managed_container.remove.assert_not_called()
+    assert http.post(path,headers={'X-Runtime-Controller-Token':settings.token}).json() == {'success':True}
+    managed_container.remove.assert_called_once_with(force=True,v=True)
+    for action in ('start','stop','restart'):
+        with pytest.raises(PolicyViolation): engine.action(managed_container.id,action)
+    with pytest.raises(PolicyViolation): engine.target(managed_container.id)
+    with pytest.raises(PolicyViolation): engine.read_config(managed_container.id)
+
+
+@pytest.mark.parametrize('tamper',['short','alias','id','name','component','workspace','user','missing_user','missing_runtime','modern_runtime'])
+def test_legacy_cleanup_rejects_ambiguous_or_unmanaged_identity(settings,managed_container,tamper):
+    managed_container.name = 'skycloud-workspace-2'
+    labels = managed_container.attrs['Config']['Labels']
+    labels['skycloud.runtime_id'] = ''
+    ref = managed_container.id
+    if tamper == 'short': ref = ref[:12]
+    elif tamper == 'alias': ref = managed_container.name
+    elif tamper == 'id': managed_container.id = 'b'*64
+    elif tamper == 'name': managed_container.name = 'redis'
+    elif tamper == 'component': labels['skycloud.component'] = 'database'
+    elif tamper == 'workspace': labels['skycloud.workspace_id'] = '0'
+    elif tamper == 'user': labels['skycloud.user_id'] = '0'
+    elif tamper == 'missing_user': del labels['skycloud.user_id']
+    elif tamper == 'missing_runtime': del labels['skycloud.runtime_id']
+    elif tamper == 'modern_runtime': labels['skycloud.runtime_id'] = '4'
+    client = Mock()
+    client.containers.get.return_value = managed_container
+    with pytest.raises(PolicyViolation): Engine(settings,client).remove_legacy(ref)
+    managed_container.remove.assert_not_called()
+
+
+def test_unsupported_legacy_cleanup_route_404_is_not_confirmed_absence(monkeypatch):
+    from runtime_controller.client import ControllerNotFound
+    monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN','T'*48)
+    monkeypatch.setattr(httpx,'request',lambda *args,**kwargs:httpx.Response(404,json={'detail':'Not Found'}))
+    with pytest.raises(ControllerError) as failure:
+        ControllerClient().remove_legacy('a'*64)
+    assert not isinstance(failure.value,ControllerNotFound)

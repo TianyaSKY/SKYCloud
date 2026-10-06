@@ -54,6 +54,15 @@ class ControllerClient:
     def get(self, ref):
         return RemoteContainer(self, self.call("GET", "/containers/" + quote(str(ref), safe="")))
 
+    def remove_legacy(self, ref):
+        try:
+            return self.call("POST", "/retired-containers/" + quote(str(ref), safe="") + "/remove")
+        except ControllerNotFound as exc:
+            # Old Controllers return 404 for an unsupported route as well as
+            # absent containers. Only the established inspect route can prove
+            # absence; retry there instead of discarding an unconfirmed intent.
+            raise ControllerError("Legacy cleanup outcome could not be confirmed") from exc
+
     def user_snapshot(self, user_id):
         return self.call("GET", f"/users/{int(user_id)}/containers")
 

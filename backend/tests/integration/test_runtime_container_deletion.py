@@ -195,3 +195,39 @@ def test_member_removal_revokes_now_and_cleans_only_members_runtime_after_commit
     assert cleanup(graph) == 1
     for runtime in graph['containers']:
         assert exists(graph,runtime) == (runtime != target)
+
+
+@pytest.mark.parametrize('legacy_name',['workspace','per_user'])
+def test_account_retirement_cleans_known_legacy_format_through_authenticated_controller(postgres,infrastructure,controller,legacy_name):
+    upgrade(postgres)
+    identity = int(uuid.uuid4().hex[:6],16) + 1000
+    name = f'skycloud-workspace-{identity}' if legacy_name == 'workspace' else f'skycloud-opencode-w{identity}-u{identity}'
+    infrastructure['cleanup'].append(name)
+    ref = docker('run','-d','--name',name,'--network',infrastructure['runtime'],
+                 '--label','skycloud.component=opencode-runtime',
+                 '--label',f'skycloud.workspace_id={identity}',
+                 '--label',f'skycloud.user_id={identity}',
+                 '--label','skycloud.runtime_id=',os.environ['SKYCLOUD_TEST_RUNTIME_IMAGE']).stdout.strip()
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (:id,'legacy','x','common')"),{'id':identity})
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id,container_id) VALUES (:id,'legacy',:id,:container)"),{'id':identity,'container':ref})
+    factory = sessionmaker(bind=postgres)
+    with factory() as session: delete_user(session,identity)
+    assert docker('inspect',ref,check=False).returncode == 0
+    assert delete_pending_containers(session_factory=factory) == 1
+    assert docker('inspect',ref,check=False).returncode != 0
+    assert delete_pending_containers(session_factory=factory) == 0
+    with postgres.connect() as db:
+        assert db.scalar(text('SELECT completed_at FROM runtime_container_deletions')) is not None
+
+
+def test_cleanup_cannot_remove_unlabeled_infrastructure_even_with_full_id(postgres,infrastructure,controller):
+    import json
+    upgrade(postgres)
+    ref = json.loads(docker('inspect',infrastructure['target']).stdout)[0]['Id']
+    with postgres.begin() as db:
+        db.execute(text('INSERT INTO runtime_container_deletions(container_id) VALUES (:id)'),{'id':ref})
+    assert delete_pending_containers(session_factory=sessionmaker(bind=postgres)) == 0
+    assert docker('inspect',ref,check=False).returncode == 0
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT completed_at,attempts,last_error_type FROM runtime_container_deletions')).all() == [(None,1,'ControllerError')]

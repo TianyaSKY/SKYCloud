@@ -413,4 +413,11 @@ MCP 目录列表、`skycloud://folders` 资源和当前用户信息，在进入�
 
 Worker 每秒轮询到期任务，使用 SKIP LOCKED，核对当前空间/Runtime 没有该容器引用后，经认证 Controller 移除精确完整 ID。拒绝解析到不同完整 ID 的名称/短 ID 别名；Controller 的管理身份校验继续生效。尚有引用则完成本次任务，最后一次解绑生成新任务。Controller 失败只保存异常类型并以 2–300 秒退避；容器已不存在视为成功，完成标记 SQL 写入失败可重放。物理删除是异步的，Worker 必须运行，API 撤权不等待容器进程退出。迁移不删除仍在用的容器，安装失败回滚表/触发器/版本，拒绝丢弃队列的降级。升级前停止旧数据库客户端，执行 `python -m entry.migrate` 后启动新版 API/MCP/Worker。
 
-`RUN_CONTAINER_DELETION_TESTS=1` 运行 `tests/integration/test_runtime_container_deletion.py`，还需固定 SKYCLOUD_TEST_RUNTIME_IMAGE、SKYCLOUD_TEST_INFRA_IMAGE 和 SKYCLOUD_TEST_CONTROLLER_IMAGE。真实 PostgreSQL/认证 Controller/Docker 覆盖 SQL 回滚保留容器、拒绝后重试、删除后的 SQL 标记失败、并发重复任务、现存引用保护、空间带对话删除和成员移除。容器进程使用带正确管理名称/标签的独立 Redis 夹具，验证实际移除链路，不代表完整 OpenCode 模型流程。CI 构建当前 Controller，并按生产 Redis 摘要固定夹具。历史无有效管理标签或完整 ID 的旧容器不会绕过 Controller 策略；相关任务保留失败记录，该历史资源的受限回收路径仍需继续审计。Runtime 创建/重建时其他外部操作的 SQL 失败边界也仍待检查。
+`RUN_CONTAINER_DELETION_TESTS=1` 运行 `tests/integration/test_runtime_container_deletion.py`，还需固定 SKYCLOUD_TEST_RUNTIME_IMAGE、SKYCLOUD_TEST_INFRA_IMAGE 和 SKYCLOUD_TEST_CONTROLLER_IMAGE。真实 PostgreSQL/认证 Controller/Docker 覆盖 SQL 回滚保留容器、拒绝后重试、删除后的 SQL 标记失败、并发重复任务、现存引用保护、空间带对话删除和成员移除。容器进程使用带正确管理名称/标签的独立 Redis 夹具，验证实际移除链路，不代表完整 OpenCode 模型流程。CI 构建当前 Controller，并按生产 Redis 摘要固定夹具。历史缺少可验证管理标签或完整 ID 的容器仍保留失败任务；下述入口支持已知历史格式。Runtime 创建/重建的 SQL 失败边界仍待修复。
+
+
+历史 Runtime 回收通过经认证的 `POST /retired-containers/{full_id}/remove` 执行。该入口只接受 64 位十六进制完整 ID，要求返回的完整身份一致、component=opencode-runtime、正数空间/用户标签、明确为空或 0 的历史 runtime_id，以及与标签对应的 `skycloud-workspace-{workspace_id}` 或 `skycloud-opencode-w{workspace_id}-u{user_id}` 名称。它仅允许固定的移除操作；正常启动、配置及流量转发仍遵守现有 Runtime 策略。基础设施、无标签容器、名称/标签不符、名称/短 ID 别名及现代 Runtime 的错误历史身份均被拒绝。
+
+Worker 的常规身份读取失败后可尝试该受限入口，失败任务继续持久重试。旧 Controller 不支持入口时的 404 不能确认容器不存在，保留任务重试；仅已有 inspect 入口确认资源不存在才完成清理。更新时需构建部署当前 Controller 与新版 Worker，schema head 仍为 0014，无新增数据库迁移。真实 PostgreSQL/Controller/Docker 检查覆盖两种历史格式的账号删除回收、无标签基础设施保留及已有七种清理场景；容器进程仍为独立 Redis 夹具，并非 OpenCode 模型任务。
+
+已复现的后续问题：Runtime.start 在重建时先移除旧容器、创建替代容器，再保存 SQL 身份。注入该身份更新失败后，数据库仍指向已消失的旧 ID，而实际替代容器存在且没有清理任务；该创建/切换事务边界尚待修复。
