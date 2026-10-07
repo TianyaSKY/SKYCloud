@@ -46,7 +46,7 @@ class RunController:
         self.cancel_event.set()
         if self.abort_callback:
             try:
-                await self.abort_callback()
+                await asyncio.wait_for(self.abort_callback(), timeout=5)
             except Exception:
                 # The run is still marked cancelled in the database.  The
                 # provider abort is best effort during client disconnects.
@@ -472,6 +472,7 @@ async def _stream_persisted(worker, persistence, history):
                 renew = time.monotonic() - last_lease >= 10
                 terminal, cancelled = await worker.call(persistence.poll, renew, time.time())
                 if terminal:
+                    await controller.request_cancel()
                     return
                 if renew:
                     last_lease = time.monotonic()
@@ -482,6 +483,7 @@ async def _stream_persisted(worker, persistence, history):
                 if event.type != "heartbeat":
                     event_log.append(event)
                 if event.type == "cancelled" or controller.cancel_event.is_set() or cancelled:
+                    await controller.request_cancel()
                     status = await finish("cancelled")
                     if status == "cancelled":
                         yield AssistantEvent("cancelled", {"status": status}, run_id=run_id, message_id=message_id)
@@ -515,6 +517,11 @@ async def _stream_persisted(worker, persistence, history):
     except (asyncio.CancelledError, GeneratorExit):
         await finish("cancelled")
         raise
+    except PermissionDeniedError:
+        await controller.request_cancel()
+        status = await finish("cancelled")
+        if status == "cancelled":
+            yield AssistantEvent("cancelled", {"status": status}, run_id=run_id, message_id=message_id)
     except Exception as exc:
         status = await finish("failed", exc.__class__.__name__)
         if status == "failed":

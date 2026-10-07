@@ -72,3 +72,28 @@ def test_heartbeat_and_recovery_serialize_on_the_same_run_row(postgres):
         finally:
             worker.commit()
         assert pending.result(timeout=5) is False
+
+
+@pytest.mark.parametrize('change',['demote','remove'])
+def test_stream_poll_observes_committed_permission_loss_with_cached_member(postgres,change):
+    from sqlalchemy import text
+    from app.models.workspace import WorkspaceMember
+    from app.models.assistant import AssistantConversation
+    from app.features.assistant.stream_persistence import StreamPersistence
+    from app.features.workspace.permissions import assert_can_write
+    from app.exceptions import PermissionDeniedError
+    run_id=create_run(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) SELECT workspace_id,user_id,'editor' FROM assistant_conversations LIMIT 1"))
+    with Session(postgres) as worker:
+        run=worker.get(AssistantRun,run_id)
+        conversation=worker.get(AssistantConversation,run.conversation_id)
+        workspace=worker.get(Workspace,conversation.workspace_id)
+        cached=worker.query(WorkspaceMember).one()
+        persistence=StreamPersistence(worker,workspace,conversation.user_id,conversation,run)
+        assert persistence.poll(False,time.time()) == (False,False)
+        with postgres.begin() as db:
+            db.execute(text("UPDATE workspace_members SET role='viewer'" if change=='demote' else 'DELETE FROM workspace_members'))
+        assert cached.role=='editor'
+        assert persistence.poll(False,time.time()) == (False,True)
+        with pytest.raises(PermissionDeniedError): assert_can_write(worker,workspace.id,conversation.user_id)

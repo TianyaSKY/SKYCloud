@@ -50,7 +50,7 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None)],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
@@ -244,11 +244,22 @@ with Session(engine) as session:
                                     with factory() as responder:
                                         restored = responder.get(type(run), run.id)
                                         assert restored.to_dict()['pending_permission']['tool'] == event.payload['tool']
-                                        service.respond_permission(responder, responder.get(Workspace, ws_id), user_id, run.id, event.payload['permission_id'], 'once' if permission_response == 'unconfirmed' else permission_response)
+                                        if permission_response in ('demote','remove'):
+                                            responder.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=:ws AND user_id=:user" if permission_response == 'demote' else "DELETE FROM workspace_members WHERE workspace_id=:ws AND user_id=:user"),{'ws':ws_id,'user':user_id})
+                                            responder.commit()
+                                        else:
+                                            service.respond_permission(responder, responder.get(Workspace, ws_id), user_id, run.id, event.payload['permission_id'], 'once' if permission_response == 'unconfirmed' else permission_response)
                                 await asyncio.to_thread(respond_from_worker)
                         return observed
                     events = asyncio.run(asyncio.wait_for(collect(), 120))
                     db.refresh(run)
+                    if permission_response in ('demote','remove'):
+                        assert run.status == 'cancelled'
+                        assert run.pending_permission_id is None
+                        assert any(event.type == 'cancelled' for event in events)
+                        assert not any(event.payload.get('content') == '权限已响应，继续执行' for event in events)
+                        assert not any('AUTHORIZED_ONLY' in str(message.get('content','')) for body in requests for message in body['messages'] if message.get('role') == 'tool')
+                        return
                     if permission_response == 'unconfirmed':
                         assert run.status == 'failed'
                         assert run.pending_permission_id is None

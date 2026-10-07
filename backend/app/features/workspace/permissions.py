@@ -31,14 +31,12 @@ ROLE_LEVEL: dict[str, int] = {
 
 def get_member_role(session: Session, workspace_id: int, user_id: int) -> WorkspaceRole | None:
     """查询用户在指定工作空间中的角色；非成员返回 None。"""
-    member = (
-        session.query(WorkspaceMember)
-        .filter_by(workspace_id=workspace_id, user_id=user_id)
-        .first()
-    )
-    if not member:
-        return None
-    return WorkspaceRole(member.role)
+    # A role column read sees current SQL state even when this Session has
+    # an older WorkspaceMember ORM instance in its identity map.
+    role = session.query(WorkspaceMember.role).filter_by(
+        workspace_id=workspace_id, user_id=user_id
+    ).scalar()
+    return WorkspaceRole(role) if role is not None else None
 
 
 def assert_member(session: Session, workspace_id: int, user_id: int) -> WorkspaceRole:

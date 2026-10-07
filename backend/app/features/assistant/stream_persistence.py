@@ -3,7 +3,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from app.exceptions import ConflictError, ResourceNotFoundError
-from app.features.workspace.permissions import assert_member, assert_can_write
+from app.features.workspace.permissions import assert_member, assert_can_write, get_member_role
 from app.features.assistant import repository
 from app.models.assistant import AssistantMessage, AssistantRun
 
@@ -68,11 +68,13 @@ class StreamPersistence:
         return self.run_id, self.message_id, self.workspace_id, self.mode, self.query
 
     def poll(self, renew_lease, now):
+        role = get_member_role(self.session, self.workspace_id, self.user_id)
+        revoked = role is None or (self.mode == 'expert' and role not in {'editor', 'admin'})
         if renew_lease and not repository.touch_run_lease(self.session, self.run_id, now):
             return True, True
         row = self.session.query(AssistantRun.status, AssistantRun.cancel_requested).filter(
             AssistantRun.id == self.run_id).first()
-        return row is None or row[0] in repository.TERMINAL_RUN_STATUSES, bool(row and row[1])
+        return row is None or row[0] in repository.TERMINAL_RUN_STATUSES, revoked or bool(row and row[1])
 
     def checkpoint(self, content, metadata, usage, permission, commit):
         if permission is not None:

@@ -328,3 +328,13 @@ class TestListMembers:
         members = list_members(session, test_workspace.id)
         assert len(members) >= 1
         assert members[0]["username"] == "testuser"
+
+
+def test_role_check_ignores_cached_member_after_bulk_demotion(session,test_workspace,test_user):
+    from sqlalchemy import update
+    cached=session.query(WorkspaceMember).filter_by(workspace_id=test_workspace.id,user_id=test_user.id).one()
+    session.execute(update(WorkspaceMember).where(WorkspaceMember.id==cached.id).values(role='viewer'),execution_options={'synchronize_session':False})
+    assert cached.role == 'admin'
+    assert get_member_role(session,test_workspace.id,test_user.id) == WorkspaceRole.viewer
+    with pytest.raises(PermissionDeniedError): assert_can_write(session,test_workspace.id,test_user.id)
+    session.rollback()
