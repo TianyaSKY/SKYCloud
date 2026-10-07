@@ -493,3 +493,7 @@ REST 错误现统一返回 `{"success":false,"error":{"code":"PERMISSION_DENIED"
 此次错误结构变更需要同步部署对应的前后端，旧的顶层 message/detail 别名已移除。成功响应、二进制下载、已经建立的 SSE 事件协议以及 MCP JSON-RPC 尚未在本批改为统一成功 envelope；成功 response_model 和逐领域 DTO 契约仍需继续补齐，不能将错误模型的完成视为整个 API 契约整改完成。模型网关共享安全异常处理，正常 OpenAI 模型返回仍直接转发。
 
 认证和用户 JSON 成功响应现声明明确的 Pydantic response_model，过滤公共模型之外的内部字段，并在输出缺失或类型不合法时返回安全的服务端错误。注册/管理创建保留 HTTP 201，删除用户声明 HTTP 204 且无响应体；浏览器刷新保留 HttpOnly Cookie 与 no-store。MCP 元数据读取的模型不包含原始凭据，显式刷新签发才包含 mcp_token，并要求具体 token 元数据。本批保留既有成功 JSON 字段布局；统一成功 envelope 和其他领域的响应模型仍在整改中。
+
+认证 `/auth/*`、用户 `/users*` 和工作空间 `/workspace*` 的 JSON 成功响应统一为 `{"success":true,"data":…}`，并逐接口声明 `SuccessResponse[领域响应DTO]`。原来的业务字段位于 data 内；空间/成员列表取消冗余的 code:200，setup-mcp 取消独立的顶层 success 变体。用户删除继续为无响应体 HTTP 204，创建空间/用户/成员保持 HTTP 201，刷新 Cookie 与 UI ticket 的 no-store 保留。空间/成员/Runtime/ticket 模型过滤未声明的内部字段并校验输出。
+
+此成功结构变更需同步部署前后端。Axios 对这三个路径域严格校验并解包 envelope；浏览器 Cookie 续期与上传 HTTP 验证脚本同步读取 data。无 envelope 或失败 envelope 的 HTTP 200 不作为这三个路径域的正常业务数据；续期还校验用户身份、角色与有效期。二进制下载和 HTTP 204 保留原处理，其他尚未迁移的领域仍需继续补齐成功 DTO/envelope。Runtime UI 代理协议及 MCP/OpenAI 协议未在本批改为 REST envelope。真实终端/撤权和 PG/Redis 刷新存储检查通过，完整浏览器交互仍待继续验证。

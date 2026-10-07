@@ -52,7 +52,6 @@ export const workspaceInfoSchema = z.object({
 /** 后端契约：工作空间列表包装 */
 export const workspaceListResponseSchema = z.object({
   workspaces: z.array(workspaceInfoSchema),
-  code: z.literal(200),
 })
 
 /** 成员列表响应 */
@@ -66,7 +65,6 @@ export const memberListResponseSchema = z.object({
     avatar: z.string().nullable().optional(),
     joined_at: z.string().nullable().optional(),
   })),
-  code: z.literal(200),
 })
 
 export type WorkspaceInfo = z.infer<typeof workspaceInfoSchema>

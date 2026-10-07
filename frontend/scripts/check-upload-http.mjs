@@ -20,13 +20,14 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from './src/stores/auth'
 import { useWorkspaceStore } from './src/stores/workspace'
 import request from './src/api/request'
+import { apiSuccessData } from './src/utils/apiSuccess'
 import { uploadFileOptimized } from './src/utils/upload'
 async function main() {
   const fixture = JSON.parse(readFileSync(process.argv[2], 'utf8'))
   const base = 'http://127.0.0.1:' + new URL(fixture.url).port + '/api'
   const login = await fetch(base + '/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: fixture.url }, body: JSON.stringify({username: fixture.username, password: fixture.password}) })
   assert.equal(login.status, 200, 'Synthetic fixture login failed')
-  const session = await login.json()
+  const session = apiSuccessData(await login.json())
   setActivePinia(createPinia())
   useAuthStore().setAuth(session.token, session.user)
   useWorkspaceStore().currentWorkspace = {id: fixture.workspace_id, name: 'fixture', owner_id: session.user.id, my_role: 'admin'}

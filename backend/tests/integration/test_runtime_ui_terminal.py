@@ -74,7 +74,7 @@ def test_real_terminal_and_current_permission_revocation(infrastructure, control
     with TestClient(app) as client:
         issued = client.post(f'/api/workspace/{ws_id}/opencode/ui-ticket', headers=auth)
         assert issued.status_code == 200, issued.text
-        parsed = urlsplit(issued.json()['launch_url']); host = parsed.netloc
+        parsed = urlsplit(issued.json()['data']['launch_url']); host = parsed.netloc
         launch = client.get('/runtime-ui/__skycloud/launch?' + parsed.query,
                             headers={'Host': host}, follow_redirects=False)
         assert launch.status_code == 303

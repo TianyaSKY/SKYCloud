@@ -1,5 +1,5 @@
 """Public REST error contract; provider/MCP wire protocols remain separate."""
-from typing import Literal
+from typing import Generic, Literal, TypeVar
 from pydantic import BaseModel, ConfigDict
 
 
@@ -31,3 +31,16 @@ HTTP_ERROR_CODES = {400:'INVALID_REQUEST',401:'AUTHENTICATION_REQUIRED',403:'PER
 def error_payload(status, message, *, code=None, issues=None):
     return ErrorResponse(error=ErrorDetail(code=code or HTTP_ERROR_CODES.get(status,'HTTP_ERROR'),
         message=message,issues=issues)).model_dump(exclude_none=True)
+
+
+DataT = TypeVar('DataT')
+
+
+class SuccessResponse(BaseModel, Generic[DataT]):
+    """Typed JSON success contract; streams, downloads and 204 have no envelope."""
+    success: Literal[True] = True
+    data: DataT
+
+
+def success_payload(data):
+    return {"success": True, "data": data}

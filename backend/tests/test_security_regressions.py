@@ -38,7 +38,7 @@ def test_password_change_revokes_old_session_and_new_login_works(client, session
     assert client.get(f"/api/users/{test_user.id}", headers=before).status_code == 401
     login = client.post("/api/auth/login", json={"username": test_user.username, "password": "new-long-password"})
     assert login.status_code == 200
-    after = {"Authorization": "Bearer " + login.json()["token"]}
+    after = {"Authorization": "Bearer " + login.json()['data']["token"]}
     assert client.get(f"/api/users/{test_user.id}", headers=after).status_code == 200
 
 
@@ -71,20 +71,20 @@ def test_mcp_token_is_revealed_only_by_explicit_issuance(client, session, test_u
     from app.models.mcp_token import McpToken
     before = client.get("/api/auth/mcp-token", headers=headers(test_user))
     assert before.status_code == 200
-    assert before.json()["token"] is None
-    assert "mcp_token" not in before.json()
+    assert before.json()['data']["token"] is None
+    assert "mcp_token" not in before.json()["data"]
     assert session.query(McpToken).count() == 0
     issued = client.post("/api/auth/mcp-token/refresh", headers=headers(test_user))
     assert issued.status_code == 200
     assert issued.headers["Cache-Control"] == "no-store"
-    raw = issued.json()["mcp_token"]
+    raw = issued.json()['data']["mcp_token"]
     record = session.query(McpToken).one()
     assert record.token_hash == McpToken.hash_token(raw)
     assert "token_value" not in McpToken.__table__.columns
     read = client.get("/api/auth/mcp-token", headers=headers(test_user))
-    assert "mcp_token" not in read.json()
+    assert "mcp_token" not in read.json()["data"]
     assert raw not in read.text
-    assert read.json()["token"]["id"] == record.id
+    assert read.json()['data']["token"]["id"] == record.id
     assert session.query(McpToken).count() == 1
 
 
@@ -138,7 +138,7 @@ def test_management_user_creation_requires_admin(client, test_user, admin_user):
     assert client.post("/api/users", headers=headers(test_user), json=body).status_code == 403
     response = client.post("/api/users", headers=headers(admin_user), json=body)
     assert response.status_code == 201
-    assert response.json()["role"] == "common"
+    assert response.json()['data']["role"] == "common"
 
 
 def test_password_endpoint_still_requires_old_password(client, session, test_user):

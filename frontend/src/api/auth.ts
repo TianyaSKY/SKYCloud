@@ -1,12 +1,10 @@
 import request from './request'
 import type { LoginInput, RegisterInput } from '../schemas/auth'
-import { withBrowserSessionLock } from '../utils/authSession'
+import { withBrowserSessionLock, type BrowserSession } from '../utils/authSession'
 
 /** 后端契约：/auth/login 返回，含 token 与基础用户标识 */
-export interface LoginResult {
-  token: string
-  user_id: number
-  role: string
+export interface LoginResult extends BrowserSession {
+  message: string
 }
 
 /** 后端契约：/auth/register 返回，调用点未消费具体字段，仅可能携带提示信息 */

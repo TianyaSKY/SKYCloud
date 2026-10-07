@@ -50,7 +50,7 @@ export const useAuthStore = defineStore('auth', () => {
           return false
         }
         token.value = result.token
-        user.value = result.user
+        user.value = { ...result.user, avatar: result.user.avatar ?? undefined }
       } else clear()
       return isAuthenticated.value
     })()

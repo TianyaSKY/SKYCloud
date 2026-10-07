@@ -26,8 +26,9 @@ def test_created_users_filter_private_fields(client, test_user, monkeypatch, pat
     monkeypatch.setattr(service, function, lambda *args: test_user)
     response = client.post(path, json={'username': 'new', 'password': 'password'})
     assert response.status_code == 201
+    assert response.json()['success'] is True and set(response.json()) == {'success', 'data'}
     assert 'private-hash' not in response.text and 'auth_version' not in response.text
-    assert (response.json()['user'] if path == '/auth/register' else response.json()) == expected
+    assert (response.json()['data']['user'] if path == '/auth/register' else response.json()['data']) == expected
 
 def test_invalid_profile_returns_safe_server_error(client, monkeypatch):
     class InvalidUser:
@@ -46,7 +47,7 @@ def test_refresh_preserves_cookie_and_filters_private_fields(client, monkeypatch
     monkeypatch.setattr(auth.refresh_sessions, 'check_origin', lambda *args, **kwargs: None)
     monkeypatch.setattr(auth.refresh_sessions, 'refresh', lambda *args: ('replacement', payload, 600))
     response = client.post('/auth/refresh')
-    assert response.status_code == 200 and response.json()['token'] == 'access-token'
+    assert response.status_code == 200 and response.json()['data']['token'] == 'access-token'
     assert 'private' not in response.text
     assert 'HttpOnly' in response.headers['set-cookie']
     assert response.headers['cache-control'] == 'no-store'
@@ -55,7 +56,7 @@ def test_mcp_metadata_filters_raw_credential_and_issue_requires_metadata(client,
     payload = dict(token=None, user_id=1, expires_in_days=365, usage='Bearer', mcp_token='private-credential')
     monkeypatch.setattr(auth.auth_service, 'get_mcp_token', lambda *args: payload)
     response = client.get('/auth/mcp-token')
-    assert response.status_code == 200 and 'mcp_token' not in response.json()
+    assert response.status_code == 200 and 'mcp_token' not in response.json()['data']
     assert response.headers['cache-control'] == 'no-store'
     monkeypatch.setattr(auth.auth_service, 'refresh_mcp_token', lambda *args: payload)
     response = client.post('/auth/mcp-token/refresh')
@@ -78,6 +79,6 @@ def test_explicit_mcp_issue_returns_credential_with_valid_metadata(client, monke
     payload = dict(token=metadata, user_id=1, expires_in_days=365, usage='Bearer', mcp_token='issued-token')
     monkeypatch.setattr(auth.auth_service, 'refresh_mcp_token', lambda *args: payload)
     response = client.post('/auth/mcp-token/refresh')
-    assert response.status_code == 200 and response.json()['mcp_token'] == 'issued-token'
+    assert response.status_code == 200 and response.json()['data']['mcp_token'] == 'issued-token'
     assert 'private-hash' not in response.text
     assert response.headers['cache-control'] == 'no-store'

@@ -54,7 +54,7 @@ def issue(ui, user, workspace):
         headers={'Authorization': 'Bearer ' + generate_token(user.id, user.auth_version)})
     assert response.status_code == 200, response.text
     assert response.headers['cache-control'] == 'no-store'
-    url = urlsplit(response.json()['launch_url'])
+    url = urlsplit(response.json()['data']['launch_url'])
     ticket = parse_qs(url.query)['ticket'][0]
     return url.netloc, ticket
 
@@ -122,7 +122,7 @@ def test_parent_login_logout_immediately_revokes_runtime_ui_cookie(ui, session, 
     issued = client.post(f'/api/workspace/{test_workspace.id}/opencode/ui-ticket',
                         headers={'Authorization': 'Bearer ' + access['token']})
     assert issued.status_code == 200
-    url = urlsplit(issued.json()['launch_url'])
+    url = urlsplit(issued.json()['data']['launch_url'])
     launch = client.get('/runtime-ui/__skycloud/launch?' + url.query,
                         headers={'Host': url.netloc}, follow_redirects=False)
     raw = launch.cookies[ui_tickets.COOKIE]

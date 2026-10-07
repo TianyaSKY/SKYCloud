@@ -61,3 +61,25 @@ describe('canonical API errors',()=>{
     await expect(request.get('/protected')).rejects.toMatchObject({status:403,code:'PERMISSION_DENIED',message:'当前角色无权限'})
   })
 })
+
+
+describe('canonical JSON successes', () => {
+  it.each(['/auth/login', '/workspace', '/users/7'])('unwraps migrated routes (%s)', async url => {
+    request.defaults.adapter=async config=>({status:200,statusText:'OK',headers:{},config,
+      data:{success:true,data:{id:7}}})
+    expect(await request.get(url)).toEqual({id:7})
+  })
+  it.each([null, {id:7}, {success:false,error:{message:'private-error'}}, {success:true}])(
+    'rejects malformed migrated success without exposing private payload (%j)', async payload => {
+      request.defaults.adapter=async config=>({status:200,statusText:'OK',headers:{},config,data:payload})
+      await expect(request.get('/workspace')).rejects.toMatchObject({code:'INVALID_RESPONSE',message:'服务响应格式无效'})
+    })
+  it('preserves HTTP204, binary downloads and unmigrated routes', async () => {
+    const blob=new Blob(['download'])
+    request.defaults.adapter=async config=>({status:config.url?.startsWith('/users') ? 204 : 200,
+      statusText:'OK',headers:{},config,data:config.responseType==='blob' ? blob : {old:'data'}})
+    expect(await request.delete('/users/7')).toEqual({old:'data'})
+    expect(await request.get('/file/1/download',{responseType:'blob'})).toBe(blob)
+    expect(await request.get('/folder')).toEqual({old:'data'})
+  })
+})

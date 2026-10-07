@@ -56,7 +56,8 @@ async def test_slow_sync_boundary_allows_concurrent_http_request(monkeypatch, bo
             method, path, kwargs = 'POST', '/assistant/runs/2/cancel', {}
     elif boundary == 'create':
         monkeypatch.setattr(workspace_router.workspace_service, 'create_workspace',
-                            slow(SimpleNamespace(to_dict=lambda: {'id': 2})))
+                            slow(SimpleNamespace(to_dict=lambda: dict(id=2, name='Thread pool', description=None, owner_id=1,
+                                created_at=None, updated_at=None, container_id=None, status='stopped', error_message=None))))
         method, path, kwargs = 'POST', '/workspace', {'json': {'name': 'Thread pool'}}
     elif boundary == 'workspace':
         monkeypatch.setattr('app.api.dependencies.assert_member', lambda *args: None)
@@ -118,8 +119,8 @@ def test_http_create_workspace_preserves_description_and_validation(session, tes
     with TestClient(app) as client:
         response = client.post('/workspace', json={'name': '  Created over HTTP  ', 'description': 'Description'})
         assert response.status_code == 201, response.text
-        assert response.json()['name'] == 'Created over HTTP'
-        assert response.json()['description'] == 'Description'
+        assert response.json()['data']['name'] == 'Created over HTTP'
+        assert response.json()['data']['description'] == 'Description'
         assert client.post('/workspace', json={'name': 'Without description'}).status_code == 201
         assert client.post('/workspace', json={'name': '   '}).status_code == 422
         assert client.post('/workspace', json={'name': 'n' * 121}).status_code == 422

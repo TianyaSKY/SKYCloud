@@ -18,6 +18,8 @@ class TestAuthRouter:
         from app.features.auth.service import generate_token
         with patch("app.features.auth.service.login", return_value={"token": generate_token(test_user.id), "user": {}}) as mock:
             result = login(payload, Request({'type': 'http', 'headers': []}), Response(), session)
+            assert result['success'] is True
+            result = result['data']
         assert "token" in result
         mock.assert_called_once()
 
@@ -30,6 +32,8 @@ class TestAuthRouter:
         payload = RegisterRequest(username="new", password="pass123")
         with patch("app.features.auth.service.register_user", return_value=mock_user):
             result = register(payload, session)
+            assert result['success'] is True
+            result = result['data']
         assert result == {"message": "User registered successfully", "user": mock_user.to_dict.return_value}
 
     def test_get_mcp_token(self, session, test_user):
@@ -37,6 +41,8 @@ class TestAuthRouter:
 
         with patch("app.features.auth.service.get_mcp_token", return_value={"token": "mcp"}):
             result = get_mcp_token(Response(), test_user, session)
+            assert result['success'] is True
+            result = result['data']
         assert "token" in result
 
     def test_refresh_mcp_token(self, session, test_user):
@@ -44,6 +50,8 @@ class TestAuthRouter:
 
         with patch("app.features.auth.service.refresh_mcp_token", return_value={"token": "new"}):
             result = refresh_mcp_token(Response(), test_user, session)
+            assert result['success'] is True
+            result = result['data']
         assert "token" in result
 
     def test_create_user(self, session, admin_user):
@@ -55,6 +63,8 @@ class TestAuthRouter:
         payload = UserCreateRequest(username="created", password="pass")
         with patch("app.features.auth.user_service.create_user", return_value=mock_user):
             result = create_user(payload, admin_user, session)
+            assert result['success'] is True
+            result = result['data']
         assert result == mock_user.to_dict.return_value
 
     def test_get_user(self, session, test_user):
@@ -66,6 +76,8 @@ class TestAuthRouter:
              patch("app.features.auth.user_service.get_user", new_callable=AsyncMock, return_value=mock_user):
             import asyncio
             result = asyncio.run(get_user(test_user.id, test_user, session))
+            assert result['success'] is True
+            result = result['data']
         assert "id" in result
 
     def test_update_user(self, session, test_user):
@@ -78,6 +90,8 @@ class TestAuthRouter:
         with patch("app.features.auth.user_service.ensure_user_access"), \
              patch("app.features.auth.user_service.update_user", return_value=mock_user):
             result = update_user(test_user.id, payload, test_user, session)
+            assert result['success'] is True
+            result = result['data']
         assert "id" in result
 
     def test_update_password(self, session, test_user):
@@ -88,6 +102,8 @@ class TestAuthRouter:
         with patch("app.features.auth.user_service.ensure_user_access"), \
              patch("app.features.auth.user_service.change_password"):
             result = update_user_password(test_user.id, payload, test_user, session)
+            assert result['success'] is True
+            result = result['data']
         assert "message" in result
 
     def test_delete_user(self, session, test_user):
@@ -113,13 +129,17 @@ class TestWorkspaceRouter:
         payload = WorkspaceCreateRequest(name="new")
         with patch("app.features.workspace.service.create_workspace", return_value=mock_ws):
             result = create_workspace(payload, test_user, session)
-        assert result.status_code == 201
+            assert result['success'] is True
+            result = result['data']
+        assert result == mock_ws.to_dict.return_value
 
     def test_list_workspaces(self, session, test_user):
         from app.features.workspace.router import list_workspaces
 
         with patch("app.features.workspace.service.get_user_workspace_rows", return_value=[]):
             result = list_workspaces(test_user, session)
+            assert result['success'] is True
+            result = result['data']
         assert "workspaces" in result
 
     def test_get_workspace(self, session, test_user, test_workspace):
@@ -128,6 +148,8 @@ class TestWorkspaceRouter:
         with patch("app.features.workspace.permissions.assert_member"), \
              patch("app.features.workspace.service.get_workspace_detail", return_value={"id": 1}):
             result = get_workspace(test_workspace.id, test_user, session)
+            assert result['success'] is True
+            result = result['data']
         assert "id" in result
 
     def test_update_workspace(self, session, test_user, test_workspace):
@@ -139,6 +161,8 @@ class TestWorkspaceRouter:
         payload = WorkspaceUpdateRequest(name="updated")
         with patch("app.features.workspace.service.update_workspace", return_value=mock_ws):
             result = update_workspace(test_workspace.id, payload, test_user, session)
+            assert result['success'] is True
+            result = result['data']
         assert "id" in result
 
     def test_delete_workspace(self, session, test_user, test_workspace):
@@ -146,7 +170,9 @@ class TestWorkspaceRouter:
 
         with patch("app.features.workspace.service.delete_workspace"):
             result = delete_workspace(test_workspace.id, test_user, session)
-        assert result.status_code == 200
+            assert result['success'] is True
+            result = result['data']
+        assert result == {"message": "已删除"}
 
     def test_invite_member(self, session, test_user, test_workspace):
         from app.features.workspace.router import invite_member
@@ -157,7 +183,9 @@ class TestWorkspaceRouter:
         payload = MemberInviteRequest(username="new", role="editor")
         with patch("app.features.workspace.service.invite_member", return_value=mock_member):
             result = invite_member(test_workspace.id, payload, test_user, session)
-        assert result.status_code == 201
+            assert result['success'] is True
+            result = result['data']
+        assert result == mock_member.to_dict.return_value
 
     def test_list_members(self, session, test_user, test_workspace):
         from app.features.workspace.router import list_members
@@ -165,6 +193,8 @@ class TestWorkspaceRouter:
         with patch("app.features.workspace.permissions.assert_member"), \
              patch("app.features.workspace.service.list_members", return_value=[]):
             result = list_members(test_workspace.id, test_user, session)
+            assert result['success'] is True
+            result = result['data']
         assert "members" in result
 
     def test_update_member_role(self, session, test_user, test_workspace):
@@ -176,6 +206,8 @@ class TestWorkspaceRouter:
         payload = MemberRoleUpdateRequest(role="admin")
         with patch("app.features.workspace.service.update_member_role", return_value=mock_member):
             result = update_member_role(test_workspace.id, 2, payload, test_user, session)
+            assert result['success'] is True
+            result = result['data']
         assert "user_id" in result
 
     def test_remove_member(self, session, test_user, test_workspace):
@@ -183,7 +215,9 @@ class TestWorkspaceRouter:
 
         with patch("app.features.workspace.service.remove_member"):
             result = remove_member(test_workspace.id, 2, test_user, session)
-        assert result.status_code == 200
+            assert result['success'] is True
+            result = result['data']
+        assert result == {"message": "已移除"}
 
 
 # ---------------------------------------------------------------------------

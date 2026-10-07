@@ -39,9 +39,9 @@ def signin(browser):
 def test_login_short_access_hash_only_refresh_cookie_and_scope(browser):
     response = signin(browser)
     raw = response.cookies[refresh.COOKIE]
-    claims = jwt.decode(response.json()['token'], SECRET_KEY, algorithms=['HS256'])
+    claims = jwt.decode(response.json()['data']['token'], SECRET_KEY, algorithms=['HS256'])
     assert 899 <= claims['exp'] - claims['iat'] <= 900
-    assert response.json()['expires_in'] == 900
+    assert response.json()['data']['expires_in'] == 900
     assert raw not in response.text and len(raw) == 43
     assert 'HttpOnly' in response.headers['set-cookie'] and 'SameSite=strict' in response.headers['set-cookie']
     assert 'Domain=' not in response.headers['set-cookie']
@@ -49,7 +49,7 @@ def test_login_short_access_hash_only_refresh_cookie_and_scope(browser):
     keys = list(refresh.redis_client.scan_iter('web-auth:*'))
     assert all(raw not in key and raw not in refresh.redis_client.get(key) for key in keys)
     assert browser.get('/api/protected').status_code == 401  # refresh cookie is never REST authentication
-    assert browser.get('/api/protected', params={'token': response.json()['token']}).status_code == 401
+    assert browser.get('/api/protected', params={'token': response.json()['data']['token']}).status_code == 401
 
 
 def test_refresh_rotation_and_replay_revoke_access_family(browser):
@@ -57,7 +57,7 @@ def test_refresh_rotation_and_replay_revoke_access_family(browser):
     renewed = browser.post('/api/auth/refresh', headers=HEADERS)
     assert renewed.status_code == 200
     assert renewed.cookies[refresh.COOKIE] != previous
-    auth = {'Authorization': 'Bearer ' + renewed.json()['token']}
+    auth = {'Authorization': 'Bearer ' + renewed.json()['data']['token']}
     assert browser.get('/api/protected', headers=auth).status_code == 200
     browser.cookies.clear()
     replay = browser.post('/api/auth/refresh', headers={**HEADERS, 'Cookie': refresh.COOKIE + '=' + previous})
@@ -74,12 +74,12 @@ def test_refresh_rotation_and_replay_revoke_access_family(browser):
 def test_cookie_mutations_require_exact_origin_and_non_simple_header(browser, path, headers):
     initial = signin(browser)
     assert browser.post('/api/auth/' + path, headers=headers).status_code == 403
-    assert browser.get('/api/protected', headers={'Authorization': 'Bearer ' + initial.json()['token']}).status_code == 200
+    assert browser.get('/api/protected', headers={'Authorization': 'Bearer ' + initial.json()['data']['token']}).status_code == 200
 
 
 def test_logout_revokes_access_and_refresh_and_clears_cookie(browser):
     initial = signin(browser)
-    auth = {'Authorization': 'Bearer ' + initial.json()['token']}
+    auth = {'Authorization': 'Bearer ' + initial.json()['data']['token']}
     response = browser.post('/api/auth/logout', headers=HEADERS)
     assert response.status_code == 200 and 'Max-Age=0' in response.headers['set-cookie']
     assert browser.get('/api/protected', headers=auth).status_code == 401
@@ -90,7 +90,7 @@ def test_logout_revokes_access_and_refresh_and_clears_cookie(browser):
 def test_logout_revokes_signed_access_family_when_cookie_is_missing(browser):
     initial = signin(browser)
     browser.cookies.clear()
-    auth = {'Authorization': 'Bearer ' + initial.json()['token']}
+    auth = {'Authorization': 'Bearer ' + initial.json()['data']['token']}
     response = browser.post('/api/auth/logout', headers={**HEADERS, **auth})
     assert response.status_code == 200
     assert browser.get('/api/protected', headers=auth).status_code == 401
@@ -100,7 +100,7 @@ def test_password_version_change_invalidates_refresh_and_access(browser, session
     initial = signin(browser)
     session.execute(update(User).where(User.id == test_user.id).values(auth_version=1)); session.commit()
     assert browser.post('/api/auth/refresh', headers=HEADERS).status_code == 401
-    assert browser.get('/api/protected', headers={'Authorization': 'Bearer ' + initial.json()['token']}).status_code == 401
+    assert browser.get('/api/protected', headers={'Authorization': 'Bearer ' + initial.json()['data']['token']}).status_code == 401
 
 
 def test_current_role_and_profile_are_read_from_database_on_refresh(browser, session, test_user):
@@ -108,7 +108,7 @@ def test_current_role_and_profile_are_read_from_database_on_refresh(browser, ses
     session.execute(update(User).where(User.id == test_user.id).values(role='admin', username='changed')); session.commit()
     response = browser.post('/api/auth/refresh', headers=HEADERS)
     assert response.status_code == 200
-    assert response.json()['role'] == 'admin' and response.json()['user']['username'] == 'changed'
+    assert response.json()['data']['role'] == 'admin' and response.json()['data']['user']['username'] == 'changed'
 
 
 def test_refresh_store_outage_fails_closed_without_rotating_cookie(browser):

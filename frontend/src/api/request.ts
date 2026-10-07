@@ -1,3 +1,4 @@
+import { apiSuccessData, usesSuccessEnvelope } from '../utils/apiSuccess'
 import { apiErrorDetail } from '../utils/apiError'
 import axios, { type AxiosRequestConfig } from 'axios'
 import { Message } from '@arco-design/web-vue'
@@ -68,6 +69,13 @@ service.interceptors.request.use(
 service.interceptors.response.use(
   (response) => {
     if (response.config.skycloudContext) assertRequestContext(response.config.skycloudContext)
+    if (response.status === 204 || response.config.responseType === 'blob' || response.config.responseType === 'arraybuffer') return response.data
+    if (usesSuccessEnvelope(response.config.url ?? '')) {
+      try { return apiSuccessData(response.data) } catch {
+        Message.error({ content: '服务响应格式无效', position: 'top', closable: true })
+        throw new BizError('服务响应格式无效', response.status, 'INVALID_RESPONSE')
+      }
+    }
     return response.data
   },
   async (error) => {

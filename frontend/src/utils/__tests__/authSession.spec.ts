@@ -4,8 +4,8 @@ import { refreshBrowserSession, logoutBrowserSession } from '../authSession'
 afterEach(() => vi.unstubAllGlobals())
 describe('HttpOnly session transport', () => {
   it('uses same-origin cookies and the CSRF header without an Authorization token', async () => {
-    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ token: 'access',
-      user: { id: 1, username: 'u', role: 'common' } }), {status: 200}))
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true, data: { token: 'access', user_id: 1, role: 'common', expires_in: 900,
+      user: { id: 1, username: 'u', role: 'common' } } }), {status: 200}))
     vi.stubGlobal('fetch', fetch)
     expect((await refreshBrowserSession())?.token).toBe('access')
     expect(fetch).toHaveBeenCalledWith('/api/auth/refresh', expect.objectContaining({
@@ -19,7 +19,7 @@ describe('HttpOnly session transport', () => {
   })
   it('executes cookie mutations only inside the shared browser lock', async () => {
     let release!: () => Promise<void>
-    const fetch = vi.fn().mockResolvedValue(new Response('{}', {status:200}))
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({success:true,data:{message:'Logged out'}}), {status:200}))
     const locks = { request: vi.fn((_name, execute) => new Promise(resolve => {
       release = async () => { await execute(); resolve(undefined) }
     })) }
@@ -30,4 +30,16 @@ describe('HttpOnly session transport', () => {
     await release(); await pending
     expect(fetch).toHaveBeenCalledTimes(1)
   })
+})
+
+
+it.each([
+  {token:'private-access', user:{id:1,username:'u',role:'common'}},
+  {success:false,error:{message:'private-error'}},
+  {success:true},
+  {success:true,data:null},
+  {success:true,data:{token:'private-access',user_id:2,role:'common',expires_in:900,user:{id:1,username:'u',role:'common'}}},
+])('rejects invalid session envelopes and mismatched identity (%j)', async payload => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload),{status:200})))
+  await expect(refreshBrowserSession()).rejects.toThrow(/无效/)
 })

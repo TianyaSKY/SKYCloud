@@ -64,7 +64,7 @@ def test_http_list_has_constant_sql_and_controller_calls(session, test_user, adm
     assert len(selects) <= 4, statements  # Includes actual authentication reads.
     data_statements = [sql for sql in statements if sql.lstrip().split()[0].upper() in {'SELECT', 'UPDATE', 'INSERT', 'DELETE'}]
     assert len(data_statements) <= 5, statements  # Auth + joined list + two bulk updates.
-    rows = {row['id']: row for row in response.json()['workspaces']}
+    rows = {row['id']: row for row in response.json()['data']['workspaces']}
     for workspace_id, (runtime_id, container_id) in expected.items():
         row = rows[workspace_id]
         assert row['runtime_id'] == runtime_id and row['config_version'] == 2

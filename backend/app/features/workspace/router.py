@@ -1,14 +1,17 @@
 """工作空间路由：空间 CRUD 与成员管理。"""
 
-from fastapi import APIRouter, Depends, status, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, status, Request, Response
 from sqlalchemy.orm import Session
 
+from app.api.contracts import SuccessResponse, success_payload
 from app.api.dependencies import get_current_user
 from app.infra.extensions import get_db
 from app.models.user import User
 from app.features.workspace import service as workspace_service
 from app.features.workspace.schemas import (
+    WorkspaceResponse, RuntimeWorkspaceResponse, WorkspaceListResponse,
+    WorkspaceDetailResponse, MemberResponse, MemberListResponse,
+    UiTicketResponse, WorkspaceMessageResponse,
     WorkspaceCreateRequest,
     WorkspaceUpdateRequest,
     MemberInviteRequest,
@@ -26,7 +29,7 @@ router = APIRouter(tags=["workspace"])
 # ---------------------------------------------------------------------------
 
 
-@router.post("/workspace")
+@router.post("/workspace", response_model=SuccessResponse[WorkspaceResponse], status_code=status.HTTP_201_CREATED)
 def create_workspace(
         payload: WorkspaceCreateRequest,
         current_user: User = Depends(get_current_user),
@@ -39,13 +42,10 @@ def create_workspace(
         name=payload.name,
         description=payload.description,
     )
-    return JSONResponse(
-        status_code=status.HTTP_201_CREATED,
-        content=workspace.to_dict(),
-    )
+    return success_payload(workspace.to_dict())
 
 
-@router.get("/workspace")
+@router.get("/workspace", response_model=SuccessResponse[WorkspaceListResponse])
 def list_workspaces(
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -53,10 +53,10 @@ def list_workspaces(
     """列出当前用户加入的所有工作空间。"""
     rows = workspace_service.get_user_workspace_rows(session, current_user.id)
     workspaces = docker_service.list_summaries(session, rows, current_user.id)
-    return {"workspaces": workspaces, "code": 200}
+    return success_payload({"workspaces": workspaces})
 
 
-@router.get("/workspace/{workspace_id}")
+@router.get("/workspace/{workspace_id}", response_model=SuccessResponse[WorkspaceDetailResponse])
 def get_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
@@ -73,7 +73,7 @@ def get_workspace(
             current_user.id,
         )
     )
-    return detail
+    return success_payload(detail)
 
 
 # ---------------------------------------------------------------------------
@@ -89,10 +89,11 @@ def _docker_response(session: Session, workspace_id: int, user_id: int | None = 
     }
 
 
-@router.post("/workspace/{workspace_id}/opencode/ui-ticket")
+@router.post("/workspace/{workspace_id}/opencode/ui-ticket", response_model=SuccessResponse[UiTicketResponse])
 def issue_ui_ticket(
         workspace_id: int,
         request: Request,
+        response: Response,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
 ):
@@ -103,11 +104,11 @@ def issue_ui_ticket(
     # get_current_user has already checked the exact Bearer signature/scope.
     claims = jwt.decode(request.headers['authorization'].split(' ', 1)[1], SECRET_KEY,
                         algorithms=['HS256'], options={'verify_exp': False})
-    return JSONResponse(issue(session, current_user.id, workspace_id, parent_session=claims.get('sid')),
-                        headers={"Cache-Control": "no-store"})
+    response.headers["Cache-Control"] = "no-store"
+    return success_payload(issue(session, current_user.id, workspace_id, parent_session=claims.get('sid')))
 
 
-@router.post("/workspace/{workspace_id}/opencode/start")
+@router.post("/workspace/{workspace_id}/opencode/start", response_model=SuccessResponse[RuntimeWorkspaceResponse])
 def start_opencode_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
@@ -117,10 +118,10 @@ def start_opencode_workspace(
     assert_can_write(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
     docker_service.start(session, workspace, current_user.id)
-    return _docker_response(session, workspace_id, current_user.id)
+    return success_payload(_docker_response(session, workspace_id, current_user.id))
 
 
-@router.post("/workspace/{workspace_id}/opencode/stop")
+@router.post("/workspace/{workspace_id}/opencode/stop", response_model=SuccessResponse[RuntimeWorkspaceResponse])
 def stop_opencode_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
@@ -130,10 +131,10 @@ def stop_opencode_workspace(
     assert_can_write(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
     docker_service.stop(session, workspace, current_user.id)
-    return _docker_response(session, workspace_id, current_user.id)
+    return success_payload(_docker_response(session, workspace_id, current_user.id))
 
 
-@router.post("/workspace/{workspace_id}/opencode/restart")
+@router.post("/workspace/{workspace_id}/opencode/restart", response_model=SuccessResponse[RuntimeWorkspaceResponse])
 def restart_opencode_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
@@ -143,10 +144,10 @@ def restart_opencode_workspace(
     assert_can_write(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
     docker_service.restart(session, workspace, current_user.id)
-    return _docker_response(session, workspace_id, current_user.id)
+    return success_payload(_docker_response(session, workspace_id, current_user.id))
 
 
-@router.post("/workspace/{workspace_id}/opencode/setup-mcp")
+@router.post("/workspace/{workspace_id}/opencode/setup-mcp", response_model=SuccessResponse[RuntimeWorkspaceResponse])
 def setup_opencode_mcp(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
@@ -156,7 +157,7 @@ def setup_opencode_mcp(
     assert_can_write(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
     docker_service.setup_mcp(session, workspace, current_user.id)
-    return {"success": True, **_docker_response(session, workspace_id, current_user.id)}
+    return success_payload(_docker_response(session, workspace_id, current_user.id))
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +165,7 @@ def setup_opencode_mcp(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/workspace/{workspace_id}/opencode/runtime")
+@router.get("/workspace/{workspace_id}/opencode/runtime", response_model=SuccessResponse[RuntimeWorkspaceResponse])
 def get_opencode_runtime(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
@@ -173,10 +174,10 @@ def get_opencode_runtime(
     """Return only the current member's OpenCode Runtime status."""
     assert_member(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
-    return _docker_response(session, workspace_id, current_user.id)
+    return success_payload(_docker_response(session, workspace_id, current_user.id))
 
 
-@router.post("/workspace/{workspace_id}/opencode/runtime/start")
+@router.post("/workspace/{workspace_id}/opencode/runtime/start", response_model=SuccessResponse[RuntimeWorkspaceResponse])
 def start_opencode_runtime(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
@@ -185,10 +186,10 @@ def start_opencode_runtime(
     assert_can_write(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
     docker_service.start(session, workspace, current_user.id)
-    return _docker_response(session, workspace_id, current_user.id)
+    return success_payload(_docker_response(session, workspace_id, current_user.id))
 
 
-@router.post("/workspace/{workspace_id}/opencode/runtime/stop")
+@router.post("/workspace/{workspace_id}/opencode/runtime/stop", response_model=SuccessResponse[RuntimeWorkspaceResponse])
 def stop_opencode_runtime(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
@@ -197,10 +198,10 @@ def stop_opencode_runtime(
     assert_can_write(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
     docker_service.stop(session, workspace, current_user.id)
-    return _docker_response(session, workspace_id, current_user.id)
+    return success_payload(_docker_response(session, workspace_id, current_user.id))
 
 
-@router.post("/workspace/{workspace_id}/opencode/runtime/restart")
+@router.post("/workspace/{workspace_id}/opencode/runtime/restart", response_model=SuccessResponse[RuntimeWorkspaceResponse])
 def restart_opencode_runtime(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
@@ -209,10 +210,10 @@ def restart_opencode_runtime(
     assert_can_write(session, workspace_id, current_user.id)
     workspace = workspace_service.get_workspace(session, workspace_id)
     docker_service.restart(session, workspace, current_user.id)
-    return _docker_response(session, workspace_id, current_user.id)
+    return success_payload(_docker_response(session, workspace_id, current_user.id))
 
 
-@router.put("/workspace/{workspace_id}")
+@router.put("/workspace/{workspace_id}", response_model=SuccessResponse[WorkspaceResponse])
 def update_workspace(
         workspace_id: int,
         payload: WorkspaceUpdateRequest,
@@ -227,10 +228,10 @@ def update_workspace(
         name=payload.name,
         description=payload.description,
     )
-    return workspace.to_dict()
+    return success_payload(workspace.to_dict())
 
 
-@router.delete("/workspace/{workspace_id}")
+@router.delete("/workspace/{workspace_id}", response_model=SuccessResponse[WorkspaceMessageResponse])
 def delete_workspace(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
@@ -238,7 +239,7 @@ def delete_workspace(
 ):
     """删除工作空间（仅 owner）。"""
     workspace_service.delete_workspace(session, workspace_id, current_user.id)
-    return JSONResponse(status_code=200, content={"message": "已删除", "code": 200})
+    return success_payload({"message": "已删除"})
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +247,7 @@ def delete_workspace(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/workspace/{workspace_id}/members")
+@router.post("/workspace/{workspace_id}/members", response_model=SuccessResponse[MemberResponse], status_code=status.HTTP_201_CREATED)
 def invite_member(
         workspace_id: int,
         payload: MemberInviteRequest,
@@ -261,13 +262,10 @@ def invite_member(
         username=payload.username,
         role=payload.role,
     )
-    return JSONResponse(
-        status_code=status.HTTP_201_CREATED,
-        content=member.to_dict(),
-    )
+    return success_payload(member.to_dict())
 
 
-@router.get("/workspace/{workspace_id}/members")
+@router.get("/workspace/{workspace_id}/members", response_model=SuccessResponse[MemberListResponse])
 def list_members(
         workspace_id: int,
         current_user: User = Depends(get_current_user),
@@ -277,10 +275,10 @@ def list_members(
     # 校验成员身份
     assert_member(session, workspace_id, current_user.id)
     members = workspace_service.list_members(session, workspace_id)
-    return {"members": members, "code": 200}
+    return success_payload({"members": members})
 
 
-@router.put("/workspace/{workspace_id}/members/{user_id}")
+@router.put("/workspace/{workspace_id}/members/{user_id}", response_model=SuccessResponse[MemberResponse])
 def update_member_role(
         workspace_id: int,
         user_id: int,
@@ -296,10 +294,10 @@ def update_member_role(
         target_user_id=user_id,
         new_role=payload.role,
     )
-    return member.to_dict()
+    return success_payload(member.to_dict())
 
 
-@router.delete("/workspace/{workspace_id}/members/{user_id}")
+@router.delete("/workspace/{workspace_id}/members/{user_id}", response_model=SuccessResponse[WorkspaceMessageResponse])
 def remove_member(
         workspace_id: int,
         user_id: int,
@@ -313,4 +311,4 @@ def remove_member(
         actor_id=current_user.id,
         target_user_id=user_id,
     )
-    return JSONResponse(status_code=200, content={"message": "已移除", "code": 200})
+    return success_payload({"message": "已移除"})

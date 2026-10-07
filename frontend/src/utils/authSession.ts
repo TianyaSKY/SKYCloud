@@ -1,10 +1,12 @@
+import { apiSuccessData } from './apiSuccess'
+
 /** Cookie transport bypasses the access-token request interceptor. */
 export interface BrowserSession {
   token: string
   user_id: number
   role: string
   expires_in: number
-  user: { id: number; username: string; role: string; avatar?: string }
+  user: { id: number; username: string; role: string; avatar?: string | null }
 }
 
 async function sessionRequest(path: string, token?: string | null): Promise<Response> {
@@ -25,10 +27,13 @@ export async function refreshBrowserSession(): Promise<BrowserSession | null> {
     const response = await sessionRequest('refresh')
     if (response.status === 401) return null
     if (!response.ok) throw new Error('登录会话暂时无法续期')
-    const result = await response.json() as BrowserSession
-    if (typeof result.token !== 'string' || !result.token || !result.user ||
+    const result = apiSuccessData(await response.json()) as BrowserSession
+    if (!result || typeof result.token !== 'string' || !result.token || !result.user ||
         typeof result.user.id !== 'number' || typeof result.user.username !== 'string' ||
-        typeof result.user.role !== 'string') throw new Error('登录会话响应无效')
+        !Number.isSafeInteger(result.user_id) || result.user_id <= 0 ||
+        !Number.isSafeInteger(result.expires_in) || result.expires_in <= 0 ||
+        !['admin', 'common'].includes(result.role) ||
+        result.user.id !== result.user_id || result.user.role !== result.role) throw new Error('登录会话响应无效')
     return result
   }
   // Read the shared cookie only after taking the origin-scoped browser lock.
@@ -39,6 +44,7 @@ export async function logoutBrowserSession(token?: string | null): Promise<void>
   const execute = async () => {
     const response = await sessionRequest('logout', token)
     if (!response.ok) throw new Error('退出登录暂时失败，请重试')
+    apiSuccessData(await response.json())
   }
   await withBrowserSessionLock(execute)
 }

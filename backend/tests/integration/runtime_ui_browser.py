@@ -32,7 +32,7 @@ def exercise_browser(app, monkeypatch, user_id, workspace_id, auth, temporary):
             `export async function issueRuntimeUiTicket(id) {
               const response = await fetch('/api/workspace/'+id+'/opencode/ui-ticket',
                 {method:'POST', headers:{Authorization:window.fixtureAuth}});
-              if (!response.ok) throw new Error('denied'); return response.json(); }`}));
+              if (!response.ok) throw new Error('denied'); return (await response.json()).data; }`}));
         }}]});
     '''
     subprocess.run(['node', '--input-type=module', '-e', script, str(root), str(bundle)], check=True)
