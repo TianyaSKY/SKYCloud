@@ -1,4 +1,5 @@
 import request from './request'
+import type { FileMetadata } from './file'
 import type { PasswordChangeInput } from '../schemas/user'
 
 /** 后端契约：/users/{id} 返回的用户资料 */
@@ -9,10 +10,10 @@ export interface UserProfile {
   avatar?: string | null
 }
 
-/** 后端契约：/files/upload/avatar/{id} 返回，头像地址字段名可能为 avatar 或 url */
-export interface UploadAvatarResult {
-  avatar?: string
-  url?: string
+/** Validated avatar metadata and the published avatar URL. */
+export interface UploadAvatarResult extends FileMetadata {
+  avatar: string
+  avatar_url: string
 }
 
 export const getUserInfo = (id: number) => {

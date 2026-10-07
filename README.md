@@ -497,3 +497,9 @@ REST 错误现统一返回 `{"success":false,"error":{"code":"PERMISSION_DENIED"
 认证 `/auth/*`、用户 `/users*` 和工作空间 `/workspace*` 的 JSON 成功响应统一为 `{"success":true,"data":…}`，并逐接口声明 `SuccessResponse[领域响应DTO]`。原来的业务字段位于 data 内；空间/成员列表取消冗余的 code:200，setup-mcp 取消独立的顶层 success 变体。用户删除继续为无响应体 HTTP 204，创建空间/用户/成员保持 HTTP 201，刷新 Cookie 与 UI ticket 的 no-store 保留。空间/成员/Runtime/ticket 模型过滤未声明的内部字段并校验输出。
 
 此成功结构变更需同步部署前后端。Axios 对这三个路径域严格校验并解包 envelope；浏览器 Cookie 续期与上传 HTTP 验证脚本同步读取 data。无 envelope 或失败 envelope 的 HTTP 200 不作为这三个路径域的正常业务数据；续期还校验用户身份、角色与有效期。二进制下载和 HTTP 204 保留原处理，其他尚未迁移的领域仍需继续补齐成功 DTO/envelope。Runtime UI 代理协议及 MCP/OpenAI 协议未在本批改为 REST envelope。真实终端/撤权和 PG/Redis 刷新存储检查通过，完整浏览器交互仍待继续验证。
+
+文件 `/files*` 和文件夹 `/folder*` 的 JSON 成功响应也统一为 `{"success":true,"data":…}`，并声明明确的响应 DTO。目录列表固定为 data.folders + data.files 分页对象，取消文件夹接口的 code:200；单个/批量上传、分片完成保持 HTTP 201，删除/中止/索引重试保持 HTTP 204 无响应体，鉴权下载继续直接流式返回原始字节和附件头。预检与分片初始化以 instant_upload 区分继续上传/已有提交文件的秒传结果，秒传结果必须包含已提交文件元数据；内部对象键、向量、临时目录等未声明字段被过滤。
+
+前端已同步解包，区分 API 元数据和带 is_folder 的界面行，并使用固定分页结构。智能搜索界面中的 vector 选项会映射为后端 HTTP 的 semantic 参数；语义检索失败现在返回安全的标准错误，不再以 HTTP 200 空列表掩盖失败。文件夹创建/更新名称上限与数据库对齐为 128 字符，界面同步限制；创建时省略父目录会挂到现有工作空间根目录，缺少根目录时返回 404 并阻止生成第二个根节点。需要同步部署对应前后端。
+
+CI 新增真实 PostgreSQL/MinIO 上传及清理、RabbitMQ/模型 SDK 索引与整理链路，并在构建锁定 OpenCode 后启用真实终端/撤权和 PG/Redis 刷新存储检查。上传/索引/整理 13 项本地集成检查通过，托管 Linux CI 尚未运行；上传检查本身保留测试 Redis/RabbitMQ 替身，另外的索引/整理链路使用真实 broker、锁定 SDK 和合成 HTTP provider。完整浏览器交互及其余领域 API/服务边界整改仍需继续。

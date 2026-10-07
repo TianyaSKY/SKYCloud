@@ -90,7 +90,7 @@ def test_authenticated_upload_download_multipart_owner_and_limits(upload_api, po
     client, headers, root = upload_api
     response = client.post('/api/files', headers=headers, files={'file': ('small.txt', b'hello', 'text/plain')})
     assert response.status_code == 201, response.text
-    record = response.json()
+    record = response.json()["data"]
     assert record['file_size'] == 5
     assert client.get(f"/api/files/{record['id']}/download",
                       params={'token': generate_token(1)},
@@ -107,7 +107,7 @@ def test_authenticated_upload_download_multipart_owner_and_limits(upload_api, po
         'filename': 'multipart.txt', 'total_size': len(body), 'chunk_size': 4,
         'content_hash': hashlib.sha256(body).hexdigest()})
     assert response.status_code == 200, response.text
-    rid = response.json()['upload_id']
+    rid = response.json()['data']['upload_id']
     other = {**headers, 'authorization': 'Bearer ' + generate_token(2)}
     assert client.get('/api/files/multipart/' + rid, headers=other).status_code == 403
     response = client.post('/api/files/multipart/chunk', headers=other,
@@ -119,7 +119,7 @@ def test_authenticated_upload_download_multipart_owner_and_limits(upload_api, po
         assert response.status_code == 200, response.text
     response = client.post('/api/files/multipart/complete', headers=headers, json={'upload_id': rid})
     assert response.status_code == 201, response.text
-    assert client.get(f"/api/files/{response.json()['id']}/download", headers=headers).content == body
+    assert client.get(f"/api/files/{response.json()['data']['id']}/download", headers=headers).content == body
     assert client.post('/api/files/multipart/complete', headers=headers, json={'upload_id': rid}).status_code == 409
     with postgres.connect() as conn:
         assert conn.scalar(text('SELECT count(*) FROM files')) == 2
@@ -142,7 +142,7 @@ def test_worker_reconciles_real_orphan_object_and_retains_committed_object(uploa
         service.cleanup_expired_uploads(session=session)
         assert session.get(UploadReservation, rid).cleaned_at is not None
     assert not minio_storage.file_exists('crash-orphan')
-    assert client.get(f"/api/files/{response.json()['id']}/download", headers=headers).content == b'keep'
+    assert client.get(f"/api/files/{response.json()['data']['id']}/download", headers=headers).content == b'keep'
     assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == 1
 
 
@@ -152,7 +152,7 @@ def test_real_database_commit_failure_removes_uploaded_object(upload_api, postgr
         conn.execute(text("ALTER TABLE files ADD CONSTRAINT reject_test_file CHECK (name <> 'reject.txt')"))
     response = client.post('/api/files', headers=headers, files={'file': ('reject.txt', b'12345')})
     assert response.status_code == 500
-    assert response.json()['message'] == 'Internal server error'
+    assert response.json()['error']['message'] == 'Internal server error'
     assert list(minio_storage._client.list_objects(minio_storage._bucket)) == []
     with postgres.connect() as conn:
         assert conn.scalar(text('SELECT count(*) FROM files')) == 0
@@ -174,7 +174,7 @@ def test_real_storage_rejection_holds_capacity_until_reconciliation(upload_api, 
     monkeypatch.setattr(upload_quota, 'USER_CAPACITY', 5)
     response = client.post('/api/files', headers=headers, files={'file': ('failure.txt', b'12345')})
     assert response.status_code == 500
-    assert response.json()['message'] == 'Internal server error'
+    assert response.json()['error']['message'] == 'Internal server error'
     with Session(postgres) as session:
         row = session.query(UploadReservation).one()
         assert row.status == 'cancelled' and row.cleaned_at is None

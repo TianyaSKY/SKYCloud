@@ -136,6 +136,17 @@ jobs:
           tests/integration/test_file_object_deletion.py
           tests/integration/test_runtime_container_deletion.py
           tests/integration/test_workspace_runtime_list.py
+      - name: Authenticated uploads, object recovery and indexing workflows
+        working-directory: backend
+        env:
+          RUN_UPLOAD_STORAGE_TESTS: '1'
+          RUN_INDEXING_PIPELINE_TESTS: '1'
+          RUN_ORGANIZE_PIPELINE_TESTS: '1'
+        run: >-
+          python -m pytest -o addopts='' -q
+          tests/integration/test_upload_storage.py
+          tests/integration/test_indexing_pipeline.py
+          tests/integration/test_organize_pipeline.py
       - name: Build locked OpenCode and gateway bridge fixture
         run: |
           python - <<'PY'
@@ -149,7 +160,13 @@ jobs:
         working-directory: backend
         env:
           RUN_EXPERT_GATEWAY_TESTS: '1'
-        run: python -m pytest -o addopts='' -q tests/integration/test_expert_gateway.py
+          RUN_RUNTIME_UI_TESTS: '1'
+          RUN_REFRESH_SESSION_TESTS: '1'
+        run: >-
+          python -m pytest -o addopts='' -q
+          tests/integration/test_expert_gateway.py
+          tests/integration/test_runtime_ui_terminal.py
+          tests/integration/test_refresh_sessions.py
 
   images:
     name: Image (${{ matrix.image }})

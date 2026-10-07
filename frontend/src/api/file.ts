@@ -14,6 +14,30 @@ export interface FileItem {
   parent_id?: number | null
 }
 
+/** Raw API metadata is separate from rows decorated for the file browser. */
+export interface FileMetadata {
+  id: number
+  name: string
+  status: string | null
+  description: string | null
+  file_size: number | null
+  mime_type: string | null
+  content_hash: string | null
+  workspace_id: number
+  uploader_id: number | null
+  parent_id: number | null
+  created_at: string | null
+}
+
+export interface FolderMetadata {
+  id: number
+  name: string
+  workspace_id: number
+  parent_id: number | null
+  path: string
+  created_at: string | null
+}
+
 /** 列表查询参数；parent_id 为空表示根目录 */
 export interface ListFilesParams {
   parent_id?: number | null
@@ -50,7 +74,7 @@ export interface MultipartInitResponse {
   total_chunks: number
   uploaded_chunks: number[]
   instant_upload?: boolean
-  file?: FileItem
+  file?: FileMetadata
 }
 
 export interface FilePreflightRequest {
@@ -64,27 +88,25 @@ export interface FilePreflightRequest {
 export interface FilePreflightResponse {
   instant_upload: boolean
   exists: boolean
-  file?: FileItem
+  file?: FileMetadata
 }
 
 /** 后端契约：/files/search 返回的标准分页结构 */
 export interface FilePageResult {
-  items: FileItem[]
+  items: FileMetadata[]
   total: number
-  page?: number
-  page_size?: number
+  page: number
+  page_size: number
 }
 
-/** 后端契约：/files/list 返回；files 可能为分页对象或数组（历史兼容），folders 为子文件夹 */
+/** Canonical directory listing: paginated files and immediate subfolders. */
 export interface FileListResponse {
-  files?: FilePageResult | FileItem[]
-  folders?: FileItem[]
-  items?: FileItem[]
-  total?: number
+  files: FilePageResult & { pages: number }
+  folders: FolderMetadata[]
 }
 
 export interface FolderListResult {
-  folders: FileItem[]
+  folders: FolderMetadata[]
 }
 
 export interface RootFolderIdResult {
@@ -113,15 +135,15 @@ export interface RebuildIndexesResult {
 
 /** 后端契约：/folder/organize 返回；queued=false 表示已有任务在进行中 */
 export interface OrganizeFilesResult {
-  message?: string
-  queued?: boolean
+  message: string
+  queued: boolean
 }
 
 /** 后端契约：/files/process_status 返回各状态文件计数，键为中文状态名 */
 export interface ProcessStatusResult {
   处理中: number
   失败: number
-  [key: string]: number
+  成功: number
 }
 
 export const getFiles = (params?: ListFilesParams) => {
@@ -129,11 +151,11 @@ export const getFiles = (params?: ListFilesParams) => {
 }
 
 export const searchFiles = (params: SearchFilesParams) => {
-  return request.get<FilePageResult>('/files/search', { params })
+  return request.get<FilePageResult>('/files/search', { params: { ...params, type: params.type === 'vector' ? 'semantic' : params.type } })
 }
 
 export const uploadFile = (data: FormData, config?: AxiosRequestConfig) => {
-  return request.post<void>('/files', data, {
+  return request.post<FileMetadata>('/files', data, {
     timeout: 0,
     ...config,
     headers: {
@@ -144,7 +166,7 @@ export const uploadFile = (data: FormData, config?: AxiosRequestConfig) => {
 }
 
 export const batchUploadFiles = (data: FormData, config?: AxiosRequestConfig) => {
-  return request.post<void>('/files/batch', data, {
+  return request.post<FileMetadata[]>('/files/batch', data, {
     timeout: 0,
     ...config,
     headers: {
@@ -184,7 +206,7 @@ export const uploadMultipartChunk = (
 }
 
 export const completeMultipartUpload = (upload_id: string, config?: AxiosRequestConfig) => {
-  return request.post<void>('/files/multipart/complete', { upload_id }, { timeout: 0, ...config })
+  return request.post<FileMetadata>('/files/multipart/complete', { upload_id }, { timeout: 0, ...config })
 }
 
 export const getMultipartUploadStatus = (upload_id: string) => {
@@ -208,15 +230,15 @@ export const batchDeleteFiles = (items: BatchDeleteItem[]) => {
 }
 
 export const createFolder = (data: CreateFolderParams) => {
-  return request.post<void>('/folder', data)
+  return request.post<FolderMetadata>('/folder', data)
 }
 
 export const updateFolder = (id: number, data: UpdateFileItemParams) => {
-  return request.put<void>(`/folder/${id}`, data)
+  return request.put<FolderMetadata>(`/folder/${id}`, data)
 }
 
 export const updateFile = (id: number, data: UpdateFileItemParams) => {
-  return request.put<void>(`/files/${id}`, data)
+  return request.put<FileMetadata>(`/files/${id}`, data)
 }
 
 export const downloadFile = (id: number) => {

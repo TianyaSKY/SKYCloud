@@ -17,14 +17,18 @@ from fastapi import (
     status,
 )
 from fastapi import UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
+from app.api.contracts import SuccessResponse, success_payload
 from app.api.dependencies import get_current_user, get_current_workspace, require_workspace_role
 from app.models.workspace import Workspace
 from app.features.file.schemas import (
+    FileResponse, DirectoryResponse, FilePageResponse, PreflightResponse,
+    MultipartInitResponse, MultipartStatusResponse, MultipartChunkResponse,
+    AvatarResponse, RebuildResponse, ProcessStatusResponse,
     BatchDeleteRequest,
     FilePreflightRequest,
     FileUpdateRequest,
@@ -40,7 +44,7 @@ from app.features.file import service as file_service
 router = APIRouter(tags=["file"])
 
 
-@router.post("/files")
+@router.post("/files", response_model=SuccessResponse[FileResponse], status_code=status.HTTP_201_CREATED)
 def create_file(
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
@@ -52,12 +56,10 @@ def create_file(
     new_file = file_service.create_uploaded_file(
         session, workspace.id, current_user.id, FastAPIUploadAdapter(file), parent_id
     )
-    return JSONResponse(
-        status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
-    )
+    return success_payload(new_file.to_dict())
 
 
-@router.post("/files/batch")
+@router.post("/files/batch", response_model=SuccessResponse[list[FileResponse]], status_code=status.HTTP_201_CREATED)
 def batch_upload_files(
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
@@ -70,13 +72,10 @@ def batch_upload_files(
     new_files = file_service.create_uploaded_files(
         session, workspace.id, current_user.id, adapters, parent_id
     )
-    return JSONResponse(
-        status_code=status.HTTP_201_CREATED,
-        content=[f.to_dict() for f in new_files],
-    )
+    return success_payload([f.to_dict() for f in new_files])
 
 
-@router.post("/files/preflight")
+@router.post("/files/preflight", response_model=SuccessResponse[PreflightResponse])
 def preflight_file_upload(
         payload: FilePreflightRequest,
         current_user=Depends(get_current_user),
@@ -84,12 +83,12 @@ def preflight_file_upload(
         session: Session = Depends(get_db),
 ):
     """上传前校验（哈希秒传、配额等），避免无效分片开销。"""
-    return file_service.preflight_file_upload(
+    return success_payload(file_service.preflight_file_upload(
         session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
-    )
+    ))
 
 
-@router.post("/files/multipart/init")
+@router.post("/files/multipart/init", response_model=SuccessResponse[MultipartInitResponse])
 def init_multipart_upload(
         payload: MultipartInitRequest,
         current_user=Depends(get_current_user),
@@ -97,12 +96,12 @@ def init_multipart_upload(
         session: Session = Depends(get_db),
 ):
     """初始化分片上传会话。"""
-    return file_service.init_multipart_upload(
+    return success_payload(file_service.init_multipart_upload(
         session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
-    )
+    ))
 
 
-@router.post("/files/multipart/chunk")
+@router.post("/files/multipart/chunk", response_model=SuccessResponse[MultipartChunkResponse])
 def upload_multipart_chunk(
         upload_id: str = Form(...),
         chunk_index: int = Form(...),
@@ -117,17 +116,17 @@ def upload_multipart_chunk(
             status_code=status.HTTP_400_BAD_REQUEST, detail="No chunk provided"
         )
 
-    return file_service.save_multipart_chunk(
+    return success_payload(file_service.save_multipart_chunk(
         session,
         current_user.id,
         workspace.id,
         upload_id,
         chunk_index,
         FastAPIUploadAdapter(chunk),
-    )
+    ))
 
 
-@router.post("/files/multipart/complete")
+@router.post("/files/multipart/complete", response_model=SuccessResponse[FileResponse], status_code=status.HTTP_201_CREATED)
 def complete_multipart_upload(
         payload: MultipartCompleteRequest,
         current_user=Depends(get_current_user),
@@ -138,12 +137,10 @@ def complete_multipart_upload(
     new_file = file_service.complete_multipart_upload(
         session, workspace.id, current_user.id, payload.upload_id
     )
-    return JSONResponse(
-        status_code=status.HTTP_201_CREATED, content=new_file.to_dict()
-    )
+    return success_payload(new_file.to_dict())
 
 
-@router.get("/files/multipart/{upload_id}")
+@router.get("/files/multipart/{upload_id}", response_model=SuccessResponse[MultipartStatusResponse])
 def get_multipart_upload_status(
         upload_id: str,
         current_user=Depends(get_current_user),
@@ -151,10 +148,10 @@ def get_multipart_upload_status(
         session: Session = Depends(get_db),
 ):
     """查询分片上传进度（已收分片等）。"""
-    return file_service.get_multipart_upload_status(session, workspace.id, current_user.id, upload_id)
+    return success_payload(file_service.get_multipart_upload_status(session, workspace.id, current_user.id, upload_id))
 
 
-@router.delete("/files/multipart/{upload_id}")
+@router.delete("/files/multipart/{upload_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def abort_multipart_upload(
         upload_id: str,
         current_user=Depends(get_current_user),
@@ -166,7 +163,7 @@ def abort_multipart_upload(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/files/list")
+@router.get("/files/list", response_model=SuccessResponse[DirectoryResponse])
 def list_files(
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(get_current_workspace),
@@ -179,12 +176,12 @@ def list_files(
         session: Session = Depends(get_db),
 ):
     """目录浏览：文件与子文件夹分页列表。"""
-    return file_service.get_files_and_folders(
+    return success_payload(file_service.get_files_and_folders(
         session, workspace.id, parent_id, page, page_size, name, sort_by, order
-    )
+    ))
 
 
-@router.get("/files/search")
+@router.get("/files/search", response_model=SuccessResponse[FilePageResponse])
 async def search_files(
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(get_current_workspace),
@@ -196,11 +193,15 @@ async def search_files(
 ):
     """文件名模糊或语义检索；空查询直接返回空页避免全表扫描。"""
     if not q:
-        return {"items": [], "total": 0, "page": page, "page_size": page_size}
-    return await file_service.search_files(session, workspace.id, q, page, page_size, type)
+        return success_payload({"items": [], "total": 0, "page": page, "page_size": page_size})
+    result = await file_service.search_files(session, workspace.id, q, page, page_size, type)
+    if result.get('error'):
+        from app.exceptions import ServiceOperationError
+        raise ServiceOperationError('File search unavailable')
+    return success_payload(result)
 
 
-@router.put("/files/{id}")
+@router.put("/files/{id}", response_model=SuccessResponse[FileResponse])
 def update_file(
         id: int,
         payload: FileUpdateRequest,
@@ -211,10 +212,10 @@ def update_file(
     """重命名/移动文件等元数据更新。"""
     file_service.get_authorized_file(session, workspace.id, current_user.id, id)
     file_obj = file_service.update_file(session, id, payload.model_dump(exclude_none=True))
-    return file_obj.to_dict()
+    return success_payload(file_obj.to_dict())
 
 
-@router.delete("/files/{id}")
+@router.delete("/files/{id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def delete_file(
         id: int,
         current_user=Depends(get_current_user),
@@ -227,7 +228,7 @@ def delete_file(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/files/{id}/download")
+@router.get("/files/{id}/download", response_class=StreamingResponse, responses={200: {'description': 'Authenticated original file bytes'}})
 def download_file(
         id: int,
         current_user=Depends(get_current_user),
@@ -256,7 +257,7 @@ def download_file(
     )
 
 
-@router.post("/files/upload/avatar/{id}")
+@router.post("/files/upload/avatar/{id}", response_model=SuccessResponse[AvatarResponse])
 async def upload_avatar(
         id: int,
         request: Request,
@@ -297,10 +298,10 @@ async def upload_avatar(
     # 兼容旧前端字段名 avatar
     if result.get("avatar_url") and "avatar" not in result:
         result["avatar"] = result["avatar_url"]
-    return result
+    return success_payload(result)
 
 
-@router.post("/files/batch-delete")
+@router.post("/files/batch-delete", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def batch_delete_files(
         payload: BatchDeleteRequest,
         current_user=Depends(get_current_user),
@@ -313,7 +314,7 @@ def batch_delete_files(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/files/retry_embedding")
+@router.post("/files/retry_embedding", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def retry_embedding(
         payload: RetryEmbeddingRequest,
         current_user=Depends(get_current_user),
@@ -328,7 +329,7 @@ def retry_embedding(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/files/rebuild_failed_indexes")
+@router.post("/files/rebuild_failed_indexes", response_model=SuccessResponse[RebuildResponse])
 def rebuild_failed_indexes(
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(get_current_workspace),
@@ -336,21 +337,21 @@ def rebuild_failed_indexes(
 ):
     """批量重试当前工作空间所有失败索引。"""
     count = file_service.rebuild_failed_indexes(session, workspace.id)
-    return {"count": count}
+    return success_payload({"count": count})
 
 
-@router.get("/files/process_status")
+@router.get("/files/process_status", response_model=SuccessResponse[ProcessStatusResponse])
 async def process_status(
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(get_current_workspace),
         session: Session = Depends(get_db),
 ):
     """查询当前工作空间文件处理状态汇总（pending/processing 等）。"""
-    return await file_service.process_status(session, workspace.id)
+    return success_payload(await file_service.process_status(session, workspace.id))
 
 
 # 必须放在所有 /files/* 具体路由之后，避免 {id} 匹配 list、search 等路径段
-@router.get("/files/{id}")
+@router.get("/files/{id}", response_model=SuccessResponse[FileResponse])
 def get_file(
         id: int,
         current_user=Depends(get_current_user),
@@ -361,4 +362,4 @@ def get_file(
     file_obj = file_service.get_authorized_file(
         session, workspace.id, current_user.id, id
     )
-    return file_obj.to_dict()
+    return success_payload(file_obj.to_dict())

@@ -115,7 +115,7 @@ def test_actual_indexing_outcomes(upload_api, postgres, minio_storage, broker, p
     response = client.post("/api/files", headers=headers,
                            files={"file": ("pipeline.txt", source, "text/plain")})
     assert response.status_code == 201, response.text
-    file_id = response.json()["id"]
+    file_id = response.json()['data']["id"]
     from app.infra.task_queue import publish_messages, FILE_PROCESS_QUEUE
     if mode == "success":
         # A second delivery of the same file must replace the existing chunks.

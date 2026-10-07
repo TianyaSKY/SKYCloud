@@ -80,6 +80,6 @@ describe('canonical JSON successes', () => {
       statusText:'OK',headers:{},config,data:config.responseType==='blob' ? blob : {old:'data'}})
     expect(await request.delete('/users/7')).toEqual({old:'data'})
     expect(await request.get('/file/1/download',{responseType:'blob'})).toBe(blob)
-    expect(await request.get('/folder')).toEqual({old:'data'})
+    expect(await request.get('/inbox')).toEqual({old:'data'})
   })
 })

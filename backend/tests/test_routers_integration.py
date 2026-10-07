@@ -234,7 +234,9 @@ class TestFolderRouter:
         payload = FolderCreateRequest(name="new", parent_id=None)
         with patch("app.features.folder.service.create_folder", return_value=mock_folder):
             result = create_folder(payload, test_user, test_workspace, session)
-        assert result.status_code == 201
+            assert result['success'] is True
+            result = result['data']
+        assert result == mock_folder.to_dict.return_value
 
     def test_update_folder(self, session, test_user, test_workspace):
         from app.features.folder.router import update_folder
@@ -246,6 +248,8 @@ class TestFolderRouter:
         with patch("app.features.folder.service.get_authorized_folder"), \
              patch("app.features.folder.service.update_folder", return_value=mock_folder):
             result = update_folder(1, payload, test_user, test_workspace, session)
+            assert result['success'] is True
+            result = result['data']
         assert "id" in result
 
     def test_delete_folder(self, session, test_user, test_workspace):
@@ -261,6 +265,8 @@ class TestFolderRouter:
 
         with patch("app.features.folder.service.get_root_folder_id", return_value=1):
             result = get_root_folder_id(test_user, test_workspace, session)
+            assert result['success'] is True
+            result = result['data']
         assert "root_folder_id" in result
 
     def test_get_folders(self, session, test_user, test_workspace):
@@ -268,6 +274,8 @@ class TestFolderRouter:
 
         with patch("app.features.folder.service.get_folders", return_value=[]):
             result = get_folders(test_user, test_workspace, session)
+            assert result['success'] is True
+            result = result['data']
         assert "folders" in result
 
     def test_get_folder(self, session, test_user, test_workspace):
@@ -277,6 +285,8 @@ class TestFolderRouter:
         mock_folder.to_dict.return_value = {"id": 1}
         with patch("app.features.folder.service.get_authorized_folder", return_value=mock_folder):
             result = get_folder(1, test_user, test_workspace, session)
+            assert result['success'] is True
+            result = result['data']
         assert "id" in result
 
     def test_organize(self, session, test_user, test_workspace):
@@ -284,6 +294,8 @@ class TestFolderRouter:
 
         with patch("app.features.folder.service.organize_files", return_value=True):
             result = organize_workspace_files(session, test_user, test_workspace)
+            assert result['success'] is True
+            result = result['data']
         assert result["queued"] is True
 
 
@@ -297,6 +309,8 @@ class TestFileRouter:
 
         with patch("app.features.file.service.get_files_and_folders", return_value={"files": []}):
             result = list_files(test_user, test_workspace, None, 1, 10, None, "created_at", "desc", session)
+            assert result['success'] is True
+            result = result['data']
         assert "files" in result
 
     def test_search_files_empty(self, session, test_user, test_workspace):
@@ -306,6 +320,8 @@ class TestFileRouter:
         result = asyncio.run(
             search_files(test_user, test_workspace, "", 1, 10, "fuzzy", session)
         )
+        assert result['success'] is True
+        result = result['data']
         assert result["total"] == 0
 
     def test_search_files(self, session, test_user, test_workspace):
@@ -316,6 +332,8 @@ class TestFileRouter:
             result = asyncio.run(
                 search_files(test_user, test_workspace, "test", 1, 10, "fuzzy", session)
             )
+            assert result['success'] is True
+            result = result['data']
         assert "items" in result
 
     def test_update_file(self, session, test_user, test_workspace):
@@ -328,6 +346,8 @@ class TestFileRouter:
         with patch("app.features.file.service.get_authorized_file"), \
              patch("app.features.file.service.update_file", return_value=mock_file):
             result = update_file(1, payload, test_user, test_workspace, session)
+            assert result['success'] is True
+            result = result['data']
         assert "id" in result
 
     def test_delete_file(self, session, test_user, test_workspace):
@@ -345,6 +365,8 @@ class TestFileRouter:
         mock_file.to_dict.return_value = {"id": 1}
         with patch("app.features.file.service.get_authorized_file", return_value=mock_file):
             result = get_file(1, test_user, test_workspace, session)
+            assert result['success'] is True
+            result = result['data']
         assert "id" in result
 
     def test_download_file(self, session, test_user, test_workspace, tmp_path):
@@ -384,6 +406,8 @@ class TestFileRouter:
 
         with patch("app.features.file.service.rebuild_failed_indexes", return_value=5):
             result = rebuild_failed_indexes(test_user, test_workspace, session)
+            assert result['success'] is True
+            result = result['data']
         assert result["count"] == 5
 
     def test_process_status(self, session, test_user, test_workspace):
@@ -392,6 +416,8 @@ class TestFileRouter:
 
         with patch("app.features.file.service.process_status", new_callable=AsyncMock, return_value={"pending": 0}):
             result = asyncio.run(process_status(test_user, test_workspace, session))
+            assert result['success'] is True
+            result = result['data']
         assert "pending" in result
 
     def test_preflight(self, session, test_user, test_workspace):
@@ -401,6 +427,8 @@ class TestFileRouter:
         payload = FilePreflightRequest(filename="test.txt", total_size=100, content_hash="a" * 64)
         with patch("app.features.file.service.preflight_file_upload", return_value={"ok": True}):
             result = preflight_file_upload(payload, test_user, test_workspace, session)
+            assert result['success'] is True
+            result = result['data']
         assert result["ok"] is True
 
     def test_multipart_init(self, session, test_user, test_workspace):
@@ -410,6 +438,8 @@ class TestFileRouter:
         payload = MultipartInitRequest(filename="big.zip", total_size=1000000)
         with patch("app.features.file.service.init_multipart_upload", return_value={"upload_id": "abc"}):
             result = init_multipart_upload(payload, test_user, test_workspace, session)
+            assert result['success'] is True
+            result = result['data']
         assert "upload_id" in result
 
     def test_multipart_status(self, session, test_user, test_workspace):
@@ -417,6 +447,8 @@ class TestFileRouter:
 
         with patch("app.features.file.service.get_multipart_upload_status", return_value={"chunks": []}):
             result = get_multipart_upload_status("abc", test_user, test_workspace, session)
+            assert result['success'] is True
+            result = result['data']
         assert "chunks" in result
 
     def test_multipart_abort(self, session, test_user, test_workspace):
@@ -435,7 +467,9 @@ class TestFileRouter:
         payload = MultipartCompleteRequest(upload_id="abc")
         with patch("app.features.file.service.complete_multipart_upload", return_value=mock_file):
             result = complete_multipart_upload(payload, test_user, test_workspace, session)
-        assert result.status_code == 201
+            assert result['success'] is True
+            result = result['data']
+        assert result == mock_file.to_dict.return_value
 
 
 # ---------------------------------------------------------------------------

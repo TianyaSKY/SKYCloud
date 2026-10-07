@@ -11,6 +11,7 @@
         <a-input
           :model-value="folderForm.name"
           placeholder="请输入文件夹名称"
+          :max-length="128"
           @update:model-value="$emit('update:folderName', $event)"
         />
       </a-form-item>
@@ -29,6 +30,7 @@
         <a-input
           :model-value="renameForm.name"
           placeholder="请输入新名称"
+          :max-length="selectedFile?.is_folder ? 128 : 255"
           @update:model-value="$emit('update:renameName', $event)"
         />
       </a-form-item>

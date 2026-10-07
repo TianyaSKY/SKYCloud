@@ -53,7 +53,7 @@ async def test_slow_file_boundary_leaves_loop_responsive(monkeypatch, boundary):
     finally:
         release.set()
         result = await pending
-    assert result == ({'avatar_url': '/api/share/synthetic', 'avatar': '/api/share/synthetic'}
+    assert result == ({'success': True, 'data': {'avatar_url': '/api/share/synthetic', 'avatar': '/api/share/synthetic'}}
                       if boundary == 'avatar' else {'成功': 1})
 
 
@@ -63,7 +63,9 @@ async def test_http_semantic_parameter_reaches_vector_search(monkeypatch):
     from app.api.dependencies import get_current_user, get_current_workspace
     from app.infra.extensions import get_db
     embedding = AsyncMock(return_value=[0.3])
-    vector = Mock(return_value={'items': [{'id': 9}], 'total': 1, 'page': 1, 'page_size': 10})
+    file = dict(id=9, name='match.txt', status='success', description=None, file_size=1, mime_type=None,
+                content_hash=None, workspace_id=2, uploader_id=1, parent_id=None, created_at=None)
+    vector = Mock(return_value={'items': [file], 'total': 1, 'page': 1, 'page_size': 10})
     monkeypatch.setattr(service, 'embedding_desc', embedding)
     monkeypatch.setattr(service, 'get_embedding_model_config', lambda: {})
     monkeypatch.setattr(service, '_search_files_vector_by_embedding', vector)
@@ -76,5 +78,5 @@ async def test_http_semantic_parameter_reaches_vector_search(monkeypatch):
     app.dependency_overrides[get_current_workspace] = lambda: SimpleNamespace(id=2)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
         response = await client.get('/files/search', params={'q': 'query', 'type': 'semantic'})
-    assert response.status_code == 200 and response.json()['items'] == [{'id': 9}]
+    assert response.status_code == 200 and response.json()['data']['items'] == [file]
     vector.assert_called_once_with(session, 2, [0.3], 1, 10)

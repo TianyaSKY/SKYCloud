@@ -255,7 +255,7 @@ const handleUploadAvatar = () => {
       Message.success('头像更新成功')
 
       // 追加时间戳以刷新图片缓存后，再更新本地状态。
-      const url = data.avatar || data.url
+      const url = data.avatar
       let newAvatarUrl = url
       if (url && typeof url === 'string' && !url.startsWith('data:')) {
         newAvatarUrl = url + '?t=' + new Date().getTime()

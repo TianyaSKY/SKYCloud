@@ -1,5 +1,5 @@
 import { onMounted, reactive, ref, shallowRef, watch } from 'vue'
-import type { FileItem } from '../api/file'
+import type { FileItem, FileMetadata, FolderMetadata } from '../api/file'
 import { getFiles, getProcessStatus, getRootFolderId, searchFiles } from '../api/file'
 import { Notification } from '@arco-design/web-vue'
 import { logger } from '../utils/logger'
@@ -82,8 +82,8 @@ export function useFileBrowser() {
     const myId = ++fetchSeq
     loading.value = true
     try {
-      let folders: FileItem[] = []
-      let files: FileItem[] = []
+      let folders: FolderMetadata[] = []
+      let files: FileMetadata[] = []
       let total = 0
 
       if (isSearching.value && searchKey.value) {
@@ -106,34 +106,25 @@ export function useFileBrowser() {
           order: sortState.order as 'asc' | 'desc',
         })
         if (myId !== fetchSeq) return
-        // FileListResponse 为并集结构：优先 items，其次 files（分页或数组），再取 folders
-        if (data.items) {
-          files = data.items
-          total = data.total ?? 0
-        } else if (data.files) {
-          if (Array.isArray(data.files)) {
-            files = data.files
-          } else {
-            files = data.files.items
-            total = data.files.total
-          }
-        }
-        if (Array.isArray(data.folders)) {
-          folders = data.folders
-        }
+        files = data.files.items
+        total = data.files.total
+        folders = data.folders
       }
 
       const processedFolders = folders.map((f): FileItem => ({
         ...f,
         is_folder: true,
         size: 0,
-        updated_at: f.updated_at || f.created_at,
+        created_at: f.created_at ?? undefined,
+        updated_at: f.created_at ?? undefined,
       }))
       const processedFiles = files.map((f): FileItem => ({
         ...f,
         is_folder: false,
-        size: f.file_size || f.size,
-        updated_at: f.updated_at || f.created_at,
+        file_size: f.file_size ?? undefined,
+        size: f.file_size ?? undefined,
+        created_at: f.created_at ?? undefined,
+        updated_at: f.created_at ?? undefined,
       }))
 
       // shallowRef 需整体替换以触发响应

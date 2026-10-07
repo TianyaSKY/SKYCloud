@@ -60,7 +60,7 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
     uploaded = client.post("/api/files", headers=headers,
                            files={"file": ("organize.txt", content, "text/plain")})
     assert uploaded.status_code == 201, uploaded.text
-    file_id = uploaded.json()["id"]
+    file_id = uploaded.json()['data']["id"]
     with postgres.connect() as db:
         root_id = db.scalar(text("SELECT id FROM folder WHERE workspace_id=1 AND parent_id IS NULL"))
     if mode == "checkpoint_rejected":
@@ -120,8 +120,8 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
     thread.start()
     try:
         queued = client.post("/api/folder/organize", headers=headers)
-        assert queued.status_code == 200 and queued.json()["queued"] is True
-        assert client.post("/api/folder/organize", headers=headers).json()["queued"] is False
+        assert queued.status_code == 200 and queued.json()['data']["queued"] is True
+        assert client.post("/api/folder/organize", headers=headers).json()['data']["queued"] is False
         with postgres.connect() as db:
             assert db.scalar(text("SELECT state FROM organize_tasks WHERE workspace_id=1")) == "queued"
         env = {**os.environ, "DATABASE_URL":postgres.url.render_as_string(hide_password=False),

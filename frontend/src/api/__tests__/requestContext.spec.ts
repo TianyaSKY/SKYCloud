@@ -62,7 +62,7 @@ describe('request identity and workspace boundaries', () => {
     const adapter = vi.fn(async config => {
       expect(config.headers['X-Workspace-Id']).toBe('11')
       if (config.headers.Authorization === 'Bearer access') throw new AxiosError('expired', 'ERR_BAD_REQUEST', config, undefined, { status: 401, statusText: 'Unauthorized', headers: {}, config, data: {} })
-      return { status: 200, statusText: 'OK', headers: {}, config, data: 'accepted' }
+      return { status: 200, statusText: 'OK', headers: {}, config, data: {success:true,data:'accepted'} }
     })
     request.defaults.adapter = adapter
     expect(await request.post('/files', 'upload', { skycloudContext: context })).toBe('accepted')
