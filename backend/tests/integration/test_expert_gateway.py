@@ -50,9 +50,19 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None)],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
+    if permission_response == 'unconfirmed':
+        # Inject only the control acknowledgment boundary. Runtime, model/tool
+        # request, permission persistence and subsequent abort use real services.
+        from app.features.assistant.clients.opencode_client import OpenCodeClient
+        original_json = OpenCodeClient._json
+        async def unconfirmed_permission(client, method, path, **kwargs):
+            if '/permissions/' in path:
+                return False
+            return await original_json(client,method,path,**kwargs)
+        monkeypatch.setattr(OpenCodeClient,'_json',unconfirmed_permission)
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     provider_key = 'synthetic-provider-secret-' + uuid.uuid4().hex
@@ -217,11 +227,18 @@ with Session(engine) as session:
                                     with factory() as responder:
                                         restored = responder.get(type(run), run.id)
                                         assert restored.to_dict()['pending_permission']['tool'] == event.payload['tool']
-                                        service.respond_permission(responder, responder.get(Workspace, ws_id), user_id, run.id, event.payload['permission_id'], permission_response)
+                                        service.respond_permission(responder, responder.get(Workspace, ws_id), user_id, run.id, event.payload['permission_id'], 'once' if permission_response == 'unconfirmed' else permission_response)
                                 await asyncio.to_thread(respond_from_worker)
                         return observed
                     events = asyncio.run(asyncio.wait_for(collect(), 120))
                     db.refresh(run)
+                    if permission_response == 'unconfirmed':
+                        assert run.status == 'failed'
+                        assert run.pending_permission_id is None
+                        assert any(event.type == 'error' for event in events)
+                        assert not any(event.payload.get('content') == '权限已响应，继续执行' for event in events)
+                        assert not any('AUTHORIZED_ONLY' in str(message.get('content','')) for body in requests for message in body['messages'] if message.get('role') == 'tool')
+                        return
                     if run.status != 'completed' and run.opencode_session_id:
                         from app.features.assistant.clients.opencode_client import OpenCodeClient
                         from app.features.assistant.clients.opencode_auth import server_password,server_username

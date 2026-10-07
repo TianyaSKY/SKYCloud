@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from app.exceptions import ConflictError, ServiceOperationError
 from app.features.assistant import repository
 from app.features.assistant.clients.opencode_auth import server_password, server_username
-from app.features.assistant.clients.opencode_client import OpenCodeClient, OpenCodeClientError
+from app.features.assistant.clients.opencode_client import OpenCodeClient, OpenCodeClientError, OpenCodeActionError
 from app.features.assistant.clients.opencode_events import (
     extract_reasoning_title,
     map_opencode_event,
@@ -439,6 +439,14 @@ class ExpertEngine:
                             yield mapped
                         if done_seen:
                             break
+                except OpenCodeActionError:
+                    # An unacknowledged permission must not clear SQL state or
+                    # recover an older answer as if this control action succeeded.
+                    try:
+                        await asyncio.wait_for(client.abort_session(str(session_id)), timeout=5)
+                    except (Exception, asyncio.CancelledError):
+                        pass
+                    raise
                 except OpenCodeClientError:
                     # If the event connection dropped after the provider accepted
                     # the prompt, rebuild the answer from the durable message API.

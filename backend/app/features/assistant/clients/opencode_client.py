@@ -21,6 +21,10 @@ class OpenCodeClientError(RuntimeError):
         self.status_code = status_code
 
 
+class OpenCodeActionError(OpenCodeClientError):
+    """An explicit control action was not acknowledged by the provider."""
+
+
 class OpenCodeClient:
     def __init__(
         self,
@@ -63,7 +67,9 @@ class OpenCodeClient:
                 f"OpenCode returned HTTP {response.status_code}",
                 status_code=response.status_code,
             )
-        if response.status_code == 204 or not response.content:
+        if response.status_code == 204:
+            return True
+        if not response.content:
             return None
         try:
             return response.json()
@@ -122,8 +128,7 @@ class OpenCodeClient:
                 raise OpenCodeClientError("OpenCode did not confirm persisted context")
 
     async def abort_session(self, session_id: str) -> bool:
-        result = await self._json("POST", f"/session/{self._path_value(session_id)}/abort")
-        return self._result_ok(result)
+        return await self._control_action(f"/session/{self._path_value(session_id)}/abort")
 
     async def respond_permission(
         self,
@@ -134,20 +139,19 @@ class OpenCodeClient:
     ) -> bool:
         if remember or response not in {"once", "reject"}:
             raise ValueError("Only one-shot permission responses are supported")
-        result = await self._json(
-            "POST",
+        return await self._control_action(
             f"/session/{self._path_value(session_id)}/permissions/{self._path_value(permission_id)}",
             json={"response": response},
         )
-        return self._result_ok(result)
 
-    @staticmethod
-    def _result_ok(result: Any) -> bool:
-        if result is None or result is True:
+    async def _control_action(self, path: str, **kwargs: Any) -> bool:
+        try:
+            result = await self._json("POST", path, **kwargs)
+        except OpenCodeClientError as error:
+            raise OpenCodeActionError("OpenCode control action was not confirmed", error.status_code) from None
+        if result is True or (isinstance(result, dict) and result.get("success") is True):
             return True
-        if isinstance(result, dict):
-            return bool(result.get("success", True))
-        return bool(result)
+        raise OpenCodeActionError("OpenCode control action was not confirmed")
 
     async def get_diff(self, session_id: str, message_id: str | None = None) -> list[dict[str, Any]]:
         params = {"messageID": message_id} if message_id else None
