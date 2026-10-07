@@ -467,3 +467,5 @@ Controller 对已记录 ready 身份、但对应物理资源已消失的准备�
 专家会话在 Runtime 换代后会检查原 OpenCode session 是否仍存在；确认缺失时建立新 session，并回放 SQL 中已保存的近期会话上下文。历史注入现使用同步 POST /session/{id}/message（noReply=true），校验返回的消息 ID、user 角色和 sessionID 后才发送当前问题。锁定的 OpenCode 1.18.11 在 noReply 路径保存消息后直接返回，不进入模型循环；参见该版本的 [prompt 实现](https://raw.githubusercontent.com/anomalyco/opencode/v1.18.11/packages/opencode/src/session/prompt.ts)。原先异步注入后等待 idle 会造成恢复一直挂起，现已移除该等待，正常问题仍走 prompt_async。注入未确认会报错，不能继续在缺失上下文下发送问题。
 
 新增真实换代检查先通过实际 OpenCode/模型网关完成回答，再删除该测试容器及其 session 存储，在同一个 SKYCloud 会话继续提问；检查新 generation/容器/session、网关收到旧历史与当前问题、第二次持久回答和实际 MCP SDK 调用。旧实现达到 120 秒超时，修复后通过。此路径恢复近期文本上下文，不搬迁旧容器文件或重建完整工具执行状态；外部模型及浏览器端完整恢复仍待验证。
+
+OpenCode 客户端的 HTTP 和 SSE 错误仅包含固定诊断与 HTTP 状态码，不复制上游响应正文、网络异常详情或非法 JSON 的解码上下文；异常输出不应携带提示词、配置或凭据。SSE 错误响应不再读取整个错误正文。只有 session 查询明确返回 404 时才作为 session 缺失处理；成功响应必须返回同一个 session ID，其他状态和畸形响应均报错。健康检查要求布尔 healthy，消息/差异要求对象列表，MCP 要求对象，新 session 要求非空字符串 ID，避免协议错误静默变为空结果或健康状态。

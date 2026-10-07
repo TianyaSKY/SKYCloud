@@ -56,29 +56,30 @@ class OpenCodeClient:
     async def _json(self, method: str, path: str, **kwargs: Any) -> Any:
         try:
             response = await self._client.request(method, path, **kwargs)
-        except httpx.HTTPError as exc:
-            raise OpenCodeClientError(f"OpenCode request failed: {exc}") from exc
+        except httpx.HTTPError:
+            raise OpenCodeClientError("OpenCode request failed") from None
         if response.status_code >= 400:
-            detail = response.text[:500]
             raise OpenCodeClientError(
-                f"OpenCode returned HTTP {response.status_code}: {detail}",
+                f"OpenCode returned HTTP {response.status_code}",
                 status_code=response.status_code,
             )
         if response.status_code == 204 or not response.content:
             return None
         try:
             return response.json()
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise OpenCodeClientError("OpenCode returned invalid JSON") from exc
+        except (ValueError, json.JSONDecodeError):
+            raise OpenCodeClientError("OpenCode returned invalid JSON") from None
 
     async def health(self) -> dict[str, Any]:
         result = await self._json("GET", "/global/health")
-        return result if isinstance(result, dict) else {"healthy": bool(result)}
+        if not isinstance(result, dict) or not isinstance(result.get("healthy"), bool):
+            raise OpenCodeClientError("OpenCode returned invalid health response")
+        return result
 
     async def create_session(self, title: str | None = None) -> str:
         payload = {"title": title} if title else {}
         result = await self._json("POST", "/session", json=payload)
-        if not isinstance(result, dict) or not result.get("id"):
+        if not isinstance(result, dict) or not isinstance(result.get("id"), str) or not result["id"]:
             raise OpenCodeClientError("OpenCode session response did not contain an id")
         return str(result["id"])
 
@@ -89,7 +90,9 @@ class OpenCodeClient:
             if exc.status_code == 404:
                 return None
             raise
-        return result if isinstance(result, dict) else None
+        if not isinstance(result, dict) or result.get("id") != session_id:
+            raise OpenCodeClientError("OpenCode returned invalid session identity")
+        return result
 
     async def prompt_async(
         self,
@@ -151,19 +154,27 @@ class OpenCodeClient:
         result = await self._json(
             "GET", f"/session/{self._path_value(session_id)}/diff", params=params
         )
-        return result if isinstance(result, list) else []
+        if not isinstance(result, list) or any(not isinstance(item, dict) for item in result):
+            raise OpenCodeClientError("OpenCode returned invalid list response")
+        return result
 
     async def get_messages(self, session_id: str) -> list[dict[str, Any]]:
         result = await self._json("GET", f"/session/{self._path_value(session_id)}/message")
-        return result if isinstance(result, list) else []
+        if not isinstance(result, list) or any(not isinstance(item, dict) for item in result):
+            raise OpenCodeClientError("OpenCode returned invalid list response")
+        return result
 
     async def get_mcp_status(self) -> dict[str, Any]:
         result = await self._json("GET", "/mcp")
-        return result if isinstance(result, dict) else {}
+        if not isinstance(result, dict):
+            raise OpenCodeClientError("OpenCode returned invalid MCP response")
+        return result
 
     async def add_mcp(self, name: str, config: dict[str, Any]) -> dict[str, Any]:
         result = await self._json("POST", "/mcp", json={"name": name, "config": config})
-        return result if isinstance(result, dict) else {}
+        if not isinstance(result, dict):
+            raise OpenCodeClientError("OpenCode returned invalid MCP response")
+        return result
 
     async def stream_events(self) -> AsyncIterator[dict[str, Any]]:
         """Yield decoded SSE records from ``/event``.
@@ -186,9 +197,8 @@ class OpenCodeClient:
                 )
                 response = await self._client.send(request, stream=True)
             if response.status_code >= 400:
-                detail = (await response.aread()).decode("utf-8", errors="replace")[:500]
                 raise OpenCodeClientError(
-                    f"OpenCode event stream returned HTTP {response.status_code}: {detail}",
+                    f"OpenCode event stream returned HTTP {response.status_code}",
                     status_code=response.status_code,
                 )
 
@@ -225,8 +235,8 @@ class OpenCodeClient:
                         data["type"] = event_name
                     data["event"] = event_name or data.get("event")
                     yield data
-        except httpx.HTTPError as exc:
-            raise OpenCodeClientError(f"OpenCode event stream failed: {exc}") from exc
+        except httpx.HTTPError:
+            raise OpenCodeClientError("OpenCode event stream failed") from None
         finally:
             if response is not None:
                 await response.aclose()
