@@ -373,3 +373,23 @@ def serialize_events_metadata(events: list[AssistantEvent]) -> dict[str, Any]:
             tools.append(existing)
         existing["status"] = payload.get("status") or event.type.removeprefix("tool_")
     return {"tool_calls": tools} if tools else {}
+
+
+def lock_permission_dispatch(session, workspace_id, user_id, conversation_id, run_id,
+                             runtime_id, container_id, provider_session_id, permission_id, response):
+    """Caller keeps lifecycle/member/run locks until bounded dispatch completes."""
+    from app.exceptions import ConflictError
+    from app.features.workspace.runtime_operation_repository import current_runtime
+    runtime = current_runtime(session,workspace_id,user_id,runtime_id,container_id)
+    run = lock_run(session,run_id)
+    conversation = get_conversation(session,conversation_id,workspace_id,user_id)
+    if (runtime.status != 'running' or conversation is None or run is None
+            or run.conversation_id != conversation_id or run.engine != 'expert'
+            or run.status in TERMINAL_RUN_STATUSES or run.cancel_requested
+            or conversation.opencode_runtime_id != runtime_id
+            or conversation.opencode_session_id != provider_session_id
+            or run.opencode_session_id != provider_session_id
+            or run.pending_permission_id != permission_id
+            or run.permission_response != response or response not in {'once','reject'}):
+        raise ConflictError('Permission dispatch is no longer current')
+    return run

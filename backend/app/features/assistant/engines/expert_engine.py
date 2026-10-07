@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 from dataclasses import dataclass
 
+from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import sessionmaker
 from starlette.concurrency import run_in_threadpool
@@ -185,6 +186,7 @@ async def _runtime_lease(runtime_id: int):
 class RuntimeConnection:
     runtime_id: int
     base_url: str
+    container_id: str
 
 
 @dataclass(frozen=True)
@@ -245,17 +247,26 @@ class ExpertEngine:
             response = run.permission_response if run.pending_permission_id == permission_id else None
             return response, bool(cancelled)
 
-    def _finish_permission(self, workspace_id: int, user_id: int, permission_id: str) -> bool:
+    def _dispatch_permission(self, workspace_id, user_id, connection, provider_session_id, permission_id, response):
+        # SQL and this HTTP client both belong to this worker thread. Parent
+        # locks serialize grant dispatch against demotion/delete/replacement.
         with self.runtime_session_factory() as session:
-            self._owned_run(session, workspace_id, user_id)
-            run = repository.lock_run(session, self.run_id)
-            if (run.status in repository.TERMINAL_RUN_STATUSES or run.cancel_requested
-                    or run.pending_permission_id != permission_id):
-                return False
+            if session.get_bind().dialect.name == 'postgresql':
+                session.execute(text("SET LOCAL lock_timeout = '5s'"))
+            run = repository.lock_permission_dispatch(session,workspace_id,user_id,
+                self.conversation_id,self.run_id,connection.runtime_id,connection.container_id,
+                provider_session_id,permission_id,response)
+            async def dispatch():
+                async with OpenCodeClient(connection.base_url,server_username(),
+                    server_password(connection.runtime_id,user_id,workspace_id),timeout=5) as client:
+                    try:
+                        await asyncio.wait_for(client.respond_permission(provider_session_id,permission_id,response,remember=False),5)
+                    except asyncio.TimeoutError:
+                        raise OpenCodeActionError("OpenCode permission dispatch timed out") from None
+            asyncio.run(dispatch())
             repository.clear_pending_permission(run)
-            run.status = "running"
+            run.status = 'running'
             session.commit()
-            return True
 
     def _runtime_needs_start(self, workspace_id: int, user_id: int) -> bool:
         with self.runtime_session_factory() as session:
@@ -289,6 +300,7 @@ class ExpertEngine:
                 docker_service.setup_mcp(session, workspace, user_id, runtime=runtime)
             return RuntimeConnection(
                 runtime_id=int(runtime.id),
+                container_id=str(runtime.container_id),
                 base_url=docker_service.get_runtime_base_url(workspace, user_id, runtime),
             )
 
@@ -462,16 +474,16 @@ class ExpertEngine:
                                 finally:
                                     cancel_task.cancel()
                                     await asyncio.gather(cancel_task, return_exceptions=True)
-                                await client.respond_permission(
-                                    str(session_id), permission_id, response, remember=False
-                                )
+                                try:
+                                    await run_in_threadpool(self._dispatch_permission,workspace_id,user_id,
+                                        connection,str(session_id),permission_id,response)
+                                except BaseException:
+                                    try:
+                                        await asyncio.wait_for(client.abort_session(str(session_id)),5)
+                                    except (Exception, asyncio.CancelledError):
+                                        pass
+                                    raise
                                 permission_rejected = response == "reject"
-                                if not await run_in_threadpool(
-                                    self._finish_permission, workspace_id, user_id, permission_id
-                                ):
-                                    await client.abort_session(str(session_id))
-                                    yield AssistantEvent("cancelled", {"status": "cancelled"})
-                                    return
                                 yield AssistantEvent("status", {"content": "权限已响应，继续执行"})
                                 continue
                             elif mapped.type == "done":

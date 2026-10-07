@@ -67,8 +67,8 @@ async def test_runtime_setup_uses_independent_sessions_and_keeps_loop_responsive
         release.set()
         connection, status = await pending
         await events.aclose()
-    assert connection == module.RuntimeConnection(9, 'http://controller/runtime')
-    assert [field.name for field in fields(connection)] == ['runtime_id', 'base_url']
+    assert connection == module.RuntimeConnection(9, 'http://controller/runtime', 'abc')
+    assert [field.name for field in fields(connection)] == ['runtime_id', 'base_url', 'container_id']
     assert status.payload['runtime_status'] == 'running'
     assert calls == ['start' if needs_start else 'mcp']
     assert len(sessions) == 2 and sessions[0] is not sessions[1]
@@ -117,15 +117,13 @@ async def test_expert_control_transactions_use_worker_sessions_and_preserve_term
     run.status = 'running'
     assert await asyncio.to_thread(engine._permission_state, 2, 1, 'other') == (None, False)
     assert await asyncio.to_thread(engine._permission_state, 2, 1, 'p1') == ('once', False)
-    assert await asyncio.to_thread(engine._finish_permission, 2, 1, 'p1')
-    assert run.pending_permission_id is None
     run.status = 'failed'
+    run.permission_response = None
     run.pending_permission_id = 'p2'
     assert await asyncio.to_thread(engine._permission_state, 2, 1, 'p2') == (None, True)
-    assert not await asyncio.to_thread(engine._finish_permission, 2, 1, 'p2')
     with pytest.raises(ConflictError):
         await asyncio.to_thread(engine._persist_permission, 2, 1, {'permission_id': 'p2'})
     assert run.status == 'failed' and run.pending_permission_id == 'p2'
-    assert len(sessions) == 10 and closed == sessions
+    assert len(sessions) == 8 and closed == sessions
     stream_session.get.assert_not_called()
     stream_session.commit.assert_not_called()
