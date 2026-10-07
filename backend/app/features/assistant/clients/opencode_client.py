@@ -107,11 +107,16 @@ class OpenCodeClient:
         }
         if system:
             payload["system"] = system
-        await self._json(
-            "POST",
-            f"/session/{self._path_value(session_id)}/prompt_async",
-            json=payload,
+        # noReply does not enter the model loop or emit an idle event. Use
+        # synchronous persistence so the next prompt cannot overtake history.
+        endpoint = "message" if no_reply else "prompt_async"
+        result = await self._json(
+            "POST", f"/session/{self._path_value(session_id)}/{endpoint}", json=payload,
         )
+        if no_reply:
+            info = result.get("info") if isinstance(result, dict) else None
+            if not isinstance(info, dict) or info.get("sessionID") != session_id or info.get("role") != "user" or not info.get("id"):
+                raise OpenCodeClientError("OpenCode did not confirm persisted context")
 
     async def abort_session(self, session_id: str) -> bool:
         result = await self._json("POST", f"/session/{self._path_value(session_id)}/abort")

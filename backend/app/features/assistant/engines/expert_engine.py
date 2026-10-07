@@ -356,23 +356,6 @@ class ExpertEngine:
                             no_reply=True,
                             system=EXPERT_SYSTEM_PROMPT,
                         )
-                        # ``noReply`` still produces session events on some
-                        # OpenCode versions. Drain that context injection before
-                        # sending the user prompt so its idle event cannot end the
-                        # actual task early.
-                        while True:
-                            try:
-                                context_event = await events.__anext__()
-                            except StopAsyncIteration:
-                                raise OpenCodeClientError("OpenCode event stream closed during context injection")
-                            context_mapped = map_opencode_event(
-                                context_event, str(session_id), text_state
-                            )
-                            if any(item.type == "error" for item in context_mapped):
-                                raise OpenCodeClientError("OpenCode context injection failed")
-                            if any(item.type == "done" for item in context_mapped):
-                                break
-    
                     await client.prompt_async(
                         str(session_id),
                         query,

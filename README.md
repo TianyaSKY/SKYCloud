@@ -463,3 +463,7 @@ Controller 对已记录 ready 身份、但对应物理资源已消失的准备�
 当前 schema head 已更新为 `0016_generation_retirement`。升级前停止旧数据库客户端并执行 `python -m entry.migrate`。迁移将没有任何 Runtime 或旧 Workspace 容器引用的 complete generation 重新标记为 cancelled，并清空其 finished_at，使现有 Worker 通过认证退役入口确认 Controller 围栏；旧容器清理任务的 completed_at 保留，不能作为 generation 退役证明。迁移不执行 Docker RPC，失败时数据库版本、回填和 DDL 一起回滚；拒绝丢弃这些意图的降级。
 
 新增的 PostgreSQL AFTER DELETE/容器 ID 变更触发器覆盖 Runtime 和旧 Workspace，最后一个引用解除后在同一业务事务中保存已完成 generation 的退役意图。仅改变运行状态为 stopped 不会退役已完成且仍归属的容器；其他引用存在时也不退役。删除/替换回滚同时恢复归属和 generation 状态。新增 candidate_container_id 索引支持按旧完整 ID 查找历史 generation；Worker 沿用失败退避和完成标记重放，Controller 继续只删除匹配的资源。该补回解决历史“容器清理已完成但 generation 未围栏”的遗漏；更复杂生命周期并发、已有专家会话在换代后的恢复、外部模型和完整浏览器流程仍待验证。
+
+专家会话在 Runtime 换代后会检查原 OpenCode session 是否仍存在；确认缺失时建立新 session，并回放 SQL 中已保存的近期会话上下文。历史注入现使用同步 POST /session/{id}/message（noReply=true），校验返回的消息 ID、user 角色和 sessionID 后才发送当前问题。锁定的 OpenCode 1.18.11 在 noReply 路径保存消息后直接返回，不进入模型循环；参见该版本的 [prompt 实现](https://raw.githubusercontent.com/anomalyco/opencode/v1.18.11/packages/opencode/src/session/prompt.ts)。原先异步注入后等待 idle 会造成恢复一直挂起，现已移除该等待，正常问题仍走 prompt_async。注入未确认会报错，不能继续在缺失上下文下发送问题。
+
+新增真实换代检查先通过实际 OpenCode/模型网关完成回答，再删除该测试容器及其 session 存储，在同一个 SKYCloud 会话继续提问；检查新 generation/容器/session、网关收到旧历史与当前问题、第二次持久回答和实际 MCP SDK 调用。旧实现达到 120 秒超时，修复后通过。此路径恢复近期文本上下文，不搬迁旧容器文件或重建完整工具执行状态；外部模型及浏览器端完整恢复仍待验证。

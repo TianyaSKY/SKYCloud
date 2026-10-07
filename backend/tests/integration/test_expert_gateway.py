@@ -50,7 +50,7 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     upgrade(postgres)
@@ -140,7 +140,7 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                 docker('network', 'connect', '--gw-priority', '-1', '--alias', 'skycloud-llm-gateway', '--alias', 'backend-mcp', infrastructure['runtime'], bridge)
                 docker('start', bridge)
                 assert docker('inspect', '--format', '{{.State.Running}}', bridge).stdout.strip() == 'true'
-                if missing_candidate:
+                if missing_candidate in ('preparing','switched'):
                     from app.features.workspace import runtime_operation_repository as operations
                     with factory() as bootstrap:
                         old = operations.admit(bootstrap,ws_id,user_id)
@@ -245,6 +245,32 @@ with Session(engine) as session:
                         tool_replies = [message.get('content', '') for body in requests for message in body['messages'] if message.get('role') == 'tool']
                         if permission_response == 'once':
                             assert any('AUTHORIZED_ONLY' in str(reply) for reply in tool_replies)
+
+                    if missing_candidate == 'conversation':
+                        first_session = run.opencode_session_id
+                        first_runtime = docker_service.runtime_service.get_runtime(db,ws_id,user_id)
+                        first_container = first_runtime.container_id
+                        first_generation = db.query(RuntimeOperation).filter_by(state='complete').one().generation
+                        docker('rm','-f',first_container)  # Lose actual OpenCode session storage.
+                        request_count = len(requests)
+                        conversation, run, history = service.prepare_run(db,workspace,user_id,conversation.id,'续接历史，只输出 E2E_GATEWAY_OK，不调用工具。')
+                        assert len(history) == 2
+                        observed.clear()
+                        events = asyncio.run(asyncio.wait_for(collect(),120))
+                        db.refresh(run); db.refresh(conversation)
+                        assert run.status == 'completed', [(event.type,event.payload) for event in events]
+                        assert conversation.opencode_session_id == run.opencode_session_id != first_session
+                        assert len(repository.get_messages(db,conversation.id)) == 4
+                        assert 'E2E_GATEWAY_OK' in repository.get_messages(db,conversation.id)[-1].content
+                        # The new provider session receives committed SQL history
+                        # before the second user prompt, across the actual gateway.
+                        replayed = json.dumps([body['messages'] for body in requests[request_count:]],ensure_ascii=False)
+                        assert '只输出 E2E_GATEWAY_OK，不调用任何工具。' in replayed
+                        assert '续接历史' in replayed
+                        db.expire_all()
+                        restored_runtime = docker_service.runtime_service.get_runtime(db,ws_id,user_id)
+                        assert restored_runtime.container_id != first_container
+                        assert db.get(RuntimeOperation,first_generation).state == 'cancelled'
 
                     runtime = docker_service.runtime_service.get_runtime(db, ws_id, user_id)
                     operation = db.query(RuntimeOperation).filter_by(workspace_id=ws_id,user_id=user_id,state='complete').one()
