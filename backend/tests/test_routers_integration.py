@@ -30,7 +30,7 @@ class TestAuthRouter:
         payload = RegisterRequest(username="new", password="pass123")
         with patch("app.features.auth.service.register_user", return_value=mock_user):
             result = register(payload, session)
-        assert result.status_code == 201
+        assert result == {"message": "User registered successfully", "user": mock_user.to_dict.return_value}
 
     def test_get_mcp_token(self, session, test_user):
         from app.features.auth.router import get_mcp_token
@@ -55,7 +55,7 @@ class TestAuthRouter:
         payload = UserCreateRequest(username="created", password="pass")
         with patch("app.features.auth.user_service.create_user", return_value=mock_user):
             result = create_user(payload, admin_user, session)
-        assert result.status_code == 201
+        assert result == mock_user.to_dict.return_value
 
     def test_get_user(self, session, test_user):
         from app.features.auth.router import get_user

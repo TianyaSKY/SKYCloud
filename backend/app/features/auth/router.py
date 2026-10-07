@@ -2,11 +2,17 @@
 
 from fastapi import APIRouter, Depends, Response, Request, status
 import jwt
-from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, require_admin
 from app.features.auth.schemas import (
+    BrowserSessionResponse,
+    LoginResponse,
+    MessageResponse,
+    RegistrationResponse,
+    UserResponse,
+    McpTokenResponse,
+    McpTokenIssueResponse,
     LoginRequest,
     RegisterRequest,
     UserCreateRequest,
@@ -22,7 +28,7 @@ from app.infra.extensions import SECRET_KEY
 router = APIRouter(tags=["auth"])
 
 
-@router.post("/auth/login")
+@router.post("/auth/login", response_model=LoginResponse)
 def login(payload: LoginRequest, request: Request, response: Response, session: Session = Depends(get_db)):
     """用户名密码登录，返回 JWT 与用户信息。"""
     refresh_sessions.check_origin(request)
@@ -33,7 +39,7 @@ def login(payload: LoginRequest, request: Request, response: Response, session: 
     return {"message": "Login successful", **result}
 
 
-@router.post('/auth/refresh')
+@router.post('/auth/refresh', response_model=BrowserSessionResponse)
 def refresh(request: Request, response: Response, session: Session = Depends(get_db)):
     refresh_sessions.check_origin(request, required=True)
     raw, result, lifetime = refresh_sessions.refresh(session, refresh_sessions.credential(request))
@@ -41,7 +47,7 @@ def refresh(request: Request, response: Response, session: Session = Depends(get
     return result
 
 
-@router.post('/auth/logout')
+@router.post('/auth/logout', response_model=MessageResponse)
 def logout(request: Request, response: Response):
     refresh_sessions.check_origin(request, required=True)
     refresh_sessions.revoke(refresh_sessions.credential(request))
@@ -50,19 +56,16 @@ def logout(request: Request, response: Response):
     return {'message': 'Logged out'}
 
 
-@router.post("/auth/register")
+@router.post("/auth/register", response_model=RegistrationResponse, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, session: Session = Depends(get_db)):
     """注册新用户（默认普通角色）。"""
     user = auth_service.register_user(
         session, payload.username, payload.password, payload.avatar
     )
-    return JSONResponse(
-        status_code=status.HTTP_201_CREATED,
-        content={"message": "User registered successfully", "user": user.to_dict()},
-    )
+    return {"message": "User registered successfully", "user": user.to_dict()}
 
 
-@router.get("/auth/mcp-token")
+@router.get("/auth/mcp-token", response_model=McpTokenResponse)
 def get_mcp_token(
     response: Response,
     current_user=Depends(get_current_user),
@@ -73,7 +76,7 @@ def get_mcp_token(
     return auth_service.get_mcp_token(session, current_user.id)
 
 
-@router.post("/auth/mcp-token/refresh")
+@router.post("/auth/mcp-token/refresh", response_model=McpTokenIssueResponse)
 def refresh_mcp_token(
     response: Response,
     current_user=Depends(get_current_user),
@@ -89,7 +92,7 @@ def refresh_mcp_token(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/users")
+@router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def create_user(
     payload: UserCreateRequest,
     current_user=Depends(require_admin),
@@ -97,10 +100,10 @@ def create_user(
 ):
     """创建用户（公开注册入口之外的管理向创建）。"""
     user = user_service.create_user(session, payload.model_dump())
-    return JSONResponse(status_code=status.HTTP_201_CREATED, content=user.to_dict())
+    return user.to_dict()
 
 
-@router.get("/users/{id}")
+@router.get("/users/{id}", response_model=UserResponse)
 async def get_user(
     id: int,
     current_user=Depends(get_current_user),
@@ -112,7 +115,7 @@ async def get_user(
     return user.to_dict()
 
 
-@router.put("/users/{id}")
+@router.put("/users/{id}", response_model=UserResponse)
 def update_user(
     id: int,
     payload: UserUpdateRequest,
@@ -125,7 +128,7 @@ def update_user(
     return user.to_dict()
 
 
-@router.put("/users/{id}/password")
+@router.put("/users/{id}/password", response_model=MessageResponse)
 def update_user_password(
     id: int,
     payload: UserPasswordUpdateRequest,
@@ -146,7 +149,7 @@ def update_user_password(
     return {"message": "Password updated successfully"}
 
 
-@router.delete("/users/{id}")
+@router.delete("/users/{id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def delete_user(
     id: int,
     current_user=Depends(get_current_user),

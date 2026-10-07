@@ -491,3 +491,5 @@ OpenCode 权限响应和 abort 控制操作现要求明确确认：HTTP 204、�
 REST 错误现统一返回 `{"success":false,"error":{"code":"PERMISSION_DENIED","message":"…"}}`。领域错误使用稳定代码，HTTP/框架 404/405、请求校验及上传限制也采用相同模型；认证/Allow/Retry 等异常响应头继续保留。422 在 error.issues 中提供字段位置、类型和安全说明，剔除提交值、validator context 与自定义原始消息，避免校验异常回显凭据。OpenAPI 为常见错误状态声明 ErrorResponse，前端普通请求、Blob 下载错误与 SSE 开流错误使用共同解析器，BizError.code 为字符串。
 
 此次错误结构变更需要同步部署对应的前后端，旧的顶层 message/detail 别名已移除。成功响应、二进制下载、已经建立的 SSE 事件协议以及 MCP JSON-RPC 尚未在本批改为统一成功 envelope；成功 response_model 和逐领域 DTO 契约仍需继续补齐，不能将错误模型的完成视为整个 API 契约整改完成。模型网关共享安全异常处理，正常 OpenAI 模型返回仍直接转发。
+
+认证和用户 JSON 成功响应现声明明确的 Pydantic response_model，过滤公共模型之外的内部字段，并在输出缺失或类型不合法时返回安全的服务端错误。注册/管理创建保留 HTTP 201，删除用户声明 HTTP 204 且无响应体；浏览器刷新保留 HttpOnly Cookie 与 no-store。MCP 元数据读取的模型不包含原始凭据，显式刷新签发才包含 mcp_token，并要求具体 token 元数据。本批保留既有成功 JSON 字段布局；统一成功 envelope 和其他领域的响应模型仍在整改中。
