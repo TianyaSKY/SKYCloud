@@ -50,7 +50,7 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None)],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
@@ -63,6 +63,23 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
                 return False
             return await original_json(client,method,path,**kwargs)
         monkeypatch.setattr(OpenCodeClient,'_json',unconfirmed_permission)
+    disconnects = []
+    if missing_candidate == 'completed-disconnect':
+        from app.features.assistant.clients.opencode_client import OpenCodeClient, OpenCodeClientError
+        original_events = OpenCodeClient.stream_events
+        async def disconnect_after_completion(client):
+            events = original_events(client)
+            try:
+                async for event in events:
+                    properties = event.get('properties',{})
+                    status = properties.get('status',{})
+                    if event.get('type') == 'session.status' and isinstance(status,dict) and status.get('type') == 'idle':
+                        disconnects.append(True)
+                        raise OpenCodeClientError('Injected event disconnect after provider completion')
+                    yield event
+            finally:
+                await events.aclose()
+        monkeypatch.setattr(OpenCodeClient,'stream_events',disconnect_after_completion)
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     provider_key = 'synthetic-provider-secret-' + uuid.uuid4().hex
@@ -239,7 +256,7 @@ with Session(engine) as session:
                         assert not any(event.payload.get('content') == '权限已响应，继续执行' for event in events)
                         assert not any('AUTHORIZED_ONLY' in str(message.get('content','')) for body in requests for message in body['messages'] if message.get('role') == 'tool')
                         return
-                    if run.status != 'completed' and run.opencode_session_id:
+                    if run.status != ('cancelled' if permission_response == 'reject' else 'completed') and run.opencode_session_id:
                         from app.features.assistant.clients.opencode_client import OpenCodeClient
                         from app.features.assistant.clients.opencode_auth import server_password,server_username
                         current_runtime = docker_service.runtime_service.get_runtime(db,ws_id,user_id)
@@ -248,20 +265,44 @@ with Session(engine) as session:
                                 return await failure_client.get_messages(run.opencode_session_id)
                         failures = asyncio.run(failure_messages())
                         import re
-                        detail = json.dumps([message.get('info',{}).get('error') for message in failures])
+                        detail = json.dumps([{key:message.get('info',{}).get(key) for key in ('id','role','parentID','time','finish','error')} for message in failures])
                         detail = re.sub(r'eyJ[A-Za-z0-9_.-]+','[redacted]',detail.replace(provider_key,'[redacted]'))
                         raise AssertionError('OpenCode recovered task failed: '+detail[:1500])
-                    assert run.status == 'completed', [(event.type, event.payload) for event in events]
+                    assert run.status == ('cancelled' if permission_response == 'reject' else 'completed'), [(event.type, event.payload) for event in events]
+                    if missing_candidate == 'completed-disconnect':
+                        assert disconnects, 'Completion disconnect boundary was not exercised'
                     if permission_response != 'reject':
                         assert 'E2E_GATEWAY_OK' in repository.get_messages(db, conversation.id)[-1].content
                     assert requests, 'No model request traversed the real gateway'
                     assert all(0 < body.get('max_tokens', body.get('max_completion_tokens', 0)) <= 4096 for body in requests)
-                    assert any(event.type == 'done' for event in events)
+                    assert any(event.type == ('cancelled' if permission_response == 'reject' else 'done') for event in events)
                     if permission_response is not None:
                         assert any(event.type == 'permission_required' for event in events)
                         tool_replies = [message.get('content', '') for body in requests for message in body['messages'] if message.get('role') == 'tool']
                         if permission_response == 'once':
                             assert any('AUTHORIZED_ONLY' in str(reply) for reply in tool_replies)
+
+                    if missing_candidate == 'prompt-refusal':
+                        from app.features.assistant.clients.opencode_client import OpenCodeClient, OpenCodeClientError
+                        first_session = run.opencode_session_id
+                        original_json = OpenCodeClient._json
+                        async def refuse_prompt(client,method,path,**kwargs):
+                            if path.endswith('/prompt_async'):
+                                raise OpenCodeClientError('OpenCode returned HTTP 503',503)
+                            return await original_json(client,method,path,**kwargs)
+                        monkeypatch.setattr(OpenCodeClient,'_json',refuse_prompt)
+                        # Repeat the same question: content equality cannot
+                        # distinguish the old answer from this refused attempt.
+                        conversation, run, history = service.prepare_run(db,workspace,user_id,conversation.id,'只输出 E2E_GATEWAY_OK，不调用任何工具。')
+                        observed.clear()
+                        events = asyncio.run(asyncio.wait_for(collect(),30))
+                        db.refresh(run)
+                        assert run.status == 'failed'
+                        assert run.opencode_session_id == first_session
+                        assert repository.get_messages(db,conversation.id)[-1].content == ''
+                        assert any(event.type == 'error' for event in events)
+                        assert not any(event.type == 'token' for event in events)
+                        return
 
                     if missing_candidate == 'conversation':
                         first_session = run.opencode_session_id

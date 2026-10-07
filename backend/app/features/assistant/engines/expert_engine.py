@@ -93,6 +93,36 @@ def _text_from_messages(
     return latest_text, provider_id, usage, title
 
 
+def _current_reply(messages: list[dict[str, Any]], previous_ids: set[str], query: str):
+    """Recover only a completed answer parented to this newly submitted query."""
+    parents = set()
+    for item in messages:
+        info = item.get("info", {})
+        if not isinstance(info, dict) or info.get("role") != "user" or not isinstance(info.get("id"), str):
+            continue
+        parts = item.get("parts")
+        if not isinstance(parts, list):
+            continue
+        if info["id"] not in previous_ids and any(
+            isinstance(part, dict) and part.get("type") == "text" and part.get("text") == query
+            for part in parts
+        ):
+            parents.add(info["id"])
+    completed = []
+    for item in messages:
+        info = item.get("info", {})
+        if (not isinstance(info, dict) or info.get("role") != "assistant"
+                or not isinstance(info.get("id"), str) or not info["id"]
+                or info["id"] in previous_ids):
+            continue
+        timing = info.get("time")
+        if (info.get("parentID") in parents and not info.get("error")
+                and isinstance(timing, dict) and timing.get("completed")
+                and info.get("finish") not in {None, "tool-calls", "unknown"}):
+            completed.append(item)
+    return _text_from_messages(completed)
+
+
 def _conversation_context(
     conversation: "ExpertContext",
     history: Sequence[dict[str, str]],
@@ -305,6 +335,7 @@ class ExpertEngine:
             emitted_title: str | None = None
             text_state: dict[str, str] = {"__user_query": query}
             done_seen = False
+            permission_rejected = False
 
             async with OpenCodeClient(
                 base_url,
@@ -337,6 +368,7 @@ class ExpertEngine:
                 controller.set_abort_callback(lambda: client.abort_session(str(session_id)))
     
                 events = client.stream_events().__aiter__()
+                previous_ids = None
                 try:
                     # Establish the event stream before prompting so the first
                     # tool/status event cannot be lost.
@@ -356,6 +388,13 @@ class ExpertEngine:
                             no_reply=True,
                             system=EXPERT_SYSTEM_PROMPT,
                         )
+                    prior_messages = await client.get_messages(str(session_id))
+                    previous_ids = set()
+                    for message in prior_messages:
+                        info = message.get("info")
+                        if not isinstance(info, dict) or not isinstance(info.get("id"), str):
+                            raise OpenCodeClientError("OpenCode returned invalid prior message identity")
+                        previous_ids.add(info["id"])
                     await client.prompt_async(
                         str(session_id),
                         query,
@@ -426,6 +465,7 @@ class ExpertEngine:
                                 await client.respond_permission(
                                     str(session_id), permission_id, response, remember=False
                                 )
+                                permission_rejected = response == "reject"
                                 if not await run_in_threadpool(
                                     self._finish_permission, workspace_id, user_id, permission_id
                                 ):
@@ -450,8 +490,10 @@ class ExpertEngine:
                 except OpenCodeClientError:
                     # If the event connection dropped after the provider accepted
                     # the prompt, rebuild the answer from the durable message API.
+                    if previous_ids is None:
+                        raise
                     messages = await client.get_messages(str(session_id))
-                    final_text, provider_id, usage, title = _text_from_messages(messages)
+                    final_text, provider_id, usage, title = _current_reply(messages, previous_ids, query)
                     if final_text and not emitted_text:
                         yield AssistantEvent("token", {"content": final_text})
                         emitted_text = final_text
@@ -467,7 +509,12 @@ class ExpertEngine:
                         raise
     
                 messages = await client.get_messages(str(session_id))
-                final_text, provider_id, usage, title = _text_from_messages(messages)
+                final_text, provider_id, usage, title = _current_reply(messages, previous_ids or set(), query)
+                if not final_text:
+                    if permission_rejected and done_seen:
+                        yield AssistantEvent("cancelled", {"status": "cancelled"})
+                        return
+                    raise OpenCodeClientError("OpenCode did not confirm a completed answer for this query")
                 if title and not emitted_title:
                     yield AssistantEvent("title", {"content": title})
                     emitted_title = title
@@ -483,7 +530,7 @@ class ExpertEngine:
                 if provider_id or usage:
                     yield AssistantEvent("usage", {"provider_message_id": provider_id, **usage})
     
-                diffs = await client.get_diff(str(session_id))
+                diffs = await client.get_diff(str(session_id), provider_id)
                 if diffs:
                     yield AssistantEvent("file_diff", {"files": diffs})
                 if controller.cancel_event.is_set():
