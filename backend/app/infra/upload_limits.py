@@ -1,4 +1,6 @@
 """Finite upload limits, checked before parsing and while copying bytes."""
+from app.api.contracts import error_payload
+
 import os
 
 from starlette.formparsers import MultiPartException
@@ -54,9 +56,9 @@ class UploadBodyLimitMiddleware:
         except ValueError:
             length = -1
         if length < 0:
-            return await JSONResponse({"message": "Invalid Content-Length", "detail": "Invalid Content-Length"}, status_code=400)(scope, receive, send)
+            return await JSONResponse(error_payload(400,"Invalid Content-Length"), status_code=400)(scope, receive, send)
         if length > limit:
-            return await JSONResponse({"message": "Upload request too large", "detail": "Upload request too large"}, status_code=413)(scope, receive, send)
+            return await JSONResponse(error_payload(413,"Upload request too large"), status_code=413)(scope, receive, send)
         received = 0
         exceeded = False
         replaced = False
@@ -78,12 +80,12 @@ class UploadBodyLimitMiddleware:
             if exceeded:
                 if not replaced and message["type"] == "http.response.start":
                     replaced = True
-                    await JSONResponse({"message": "Upload request too large", "detail": "Upload request too large"}, status_code=413)(scope, receive, send)
+                    await JSONResponse(error_payload(413,"Upload request too large"), status_code=413)(scope, receive, send)
                 return
             await send(message)
 
         if self.active_requests >= REQUEST_CONCURRENCY:
-            return await JSONResponse({"message": "Too many upload requests", "detail": "Too many upload requests"}, status_code=429)(scope, receive, send)
+            return await JSONResponse(error_payload(429,"Too many upload requests"), status_code=429)(scope, receive, send)
         self.active_requests += 1
         try:
             await self.app(scope, bounded_receive, bounded_send)

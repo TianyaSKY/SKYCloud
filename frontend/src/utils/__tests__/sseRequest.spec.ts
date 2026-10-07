@@ -63,7 +63,7 @@ describe('authenticated assistant stream', () => {
     expect(fetchMock.mock.calls[1]?.[1].headers.Authorization).toBe('Bearer renewed')
   })
   it('does not retry a permission denial or replay a partly consumed failed stream', async () => {
-    fetchMock.mockResolvedValueOnce(new Response('{"message":"denied"}', { status: 403 }))
+    fetchMock.mockResolvedValueOnce(new Response('{"success":false,"error":{"code":"PERMISSION_DENIED","message":"denied"}}', { status: 403 }))
     await expect(sseRequest('/stream', {}, { onEvent: vi.fn() })).rejects.toThrow('denied'); expect(mocks.auth.restore).not.toHaveBeenCalled()
     const body = new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error('broken connection')) } }); fetchMock.mockResolvedValueOnce(new Response(body))
     await expect(sseRequest('/stream', {}, { onEvent: vi.fn() })).rejects.toThrow('broken connection')

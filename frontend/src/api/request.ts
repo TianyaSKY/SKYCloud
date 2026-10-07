@@ -1,3 +1,4 @@
+import { apiErrorDetail } from '../utils/apiError'
 import axios, { type AxiosRequestConfig } from 'axios'
 import { Message } from '@arco-design/web-vue'
 import router from '../router'
@@ -33,10 +34,10 @@ declare module 'axios' {
  */
 export class BizError extends Error {
   status: number
-  code?: number
+  code?: string
   data?: unknown
 
-  constructor(message: string, status: number, code?: number, data?: unknown) {
+  constructor(message: string, status: number, code?: string, data?: unknown) {
     super(message)
     this.name = 'BizError'
     this.status = status
@@ -91,9 +92,7 @@ service.interceptors.response.use(
       try { data = JSON.parse(await data.text()) } catch { /* Keep the bounded original payload. */ }
       assertRequestContext(parsingContext)
     }
-    const payload = data as { message?: string; detail?: string; code?: number } | undefined
-    const msg = payload?.message || payload?.detail || '网络错误'
-    const code = payload?.code
+    const { message: msg, code } = apiErrorDetail(data, '网络错误')
     const url = error?.config?.url ?? ''
 
     if (status === 401) {

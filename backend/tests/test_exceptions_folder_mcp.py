@@ -76,8 +76,8 @@ class TestCompactValidationErrors:
         ]
         result = _compact_validation_errors(errors)
         assert len(result) == 2
-        assert result[0]["msg"] == "field required"
-        assert "ctx" in result[1]
+        assert result[0]["msg"] == "Field required"
+        assert "ctx" not in result[1]
 
 
 class TestExceptionHandlers:

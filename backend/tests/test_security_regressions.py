@@ -208,7 +208,7 @@ def test_server_errors_are_sanitized(kind):
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.get("/error")
     assert response.status_code == (500 if kind == "domain" else 503)
-    assert response.json() == {"message": "Internal server error", "detail": "Internal server error"}
+    assert response.json() == {"success": False, "error": {"code": "INTERNAL_ERROR" if kind == "domain" else "SERVICE_UNAVAILABLE", "message": "Internal server error"}}
 
 
 def test_registration_failure_hides_internal_error(client):
@@ -216,7 +216,7 @@ def test_registration_failure_hides_internal_error(client):
         response = client.post("/api/auth/register", json={"username": "register-error", "password": "secret"})
     assert response.status_code == 500
     assert "database-private-path-password" not in response.text
-    assert response.json()["message"] == "Internal server error"
+    assert response.json()["error"]["message"] == "Internal server error"
 
 
 @pytest.mark.parametrize("kind", ["unexpected", "domain", "http"])

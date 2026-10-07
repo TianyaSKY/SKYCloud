@@ -1,3 +1,4 @@
+import { apiErrorDetail } from './apiError'
 import { useAuthStore } from '@/stores/auth'
 import { useWorkspaceStore } from '@/stores/workspace'
 
@@ -55,8 +56,7 @@ export async function sseRequest(
   if (!response.ok) {
     let detail = `Assistant request failed (${response.status})`
     try {
-      const payload = (await response.json()) as { detail?: string; message?: string }
-      detail = payload.message || payload.detail || detail
+      detail = apiErrorDetail(await response.json(), detail).message
     } catch {
       // The status remains the useful fallback for proxy failures.
     }

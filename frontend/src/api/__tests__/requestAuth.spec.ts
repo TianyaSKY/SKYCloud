@@ -51,3 +51,13 @@ describe('access header and refresh retry',()=>{
     expect(router.push).not.toHaveBeenCalled()
   })
 })
+
+
+describe('canonical API errors',()=>{
+  it.each([false,true])('reads typed error code from JSON or download Blob (%s)', async blob => {
+    const payload={success:false,error:{code:'PERMISSION_DENIED',message:'当前角色无权限'}}
+    request.defaults.adapter=async config=>{throw new AxiosError('denied','ERR_BAD_REQUEST',config,undefined,
+      {status:403,statusText:'Forbidden',headers:{},config,data:blob ? new Blob([JSON.stringify(payload)],{type:'application/json'}) : payload})}
+    await expect(request.get('/protected')).rejects.toMatchObject({status:403,code:'PERMISSION_DENIED',message:'当前角色无权限'})
+  })
+})
