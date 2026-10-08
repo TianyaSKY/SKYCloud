@@ -119,11 +119,11 @@ def create_app(settings=None, engine=None):
 
     @app.exception_handler(PolicyViolation)
     async def forbidden(_, exc):
-        return JSONResponse({"detail": str(exc)}, status_code=403)
+        return JSONResponse({"detail": "Runtime operation forbidden"}, status_code=403)
 
     @app.exception_handler(Exception)
     async def error(_, exc):
-        logging.exception("Runtime controller operation failed")
+        logging.error("Runtime controller operation failed (error_type=%s)", type(exc).__name__)
         return JSONResponse({"detail": "Runtime controller operation failed"}, status_code=500)
 
     @app.get("/health")
@@ -284,6 +284,8 @@ def create_app(settings=None, engine=None):
 
 if __name__ == "__main__":
     import uvicorn
+    from runtime_controller.diagnostics import setup_logging
+    setup_logging()
 
     # Compose binds only the private control interface. Runtime containers
     # cannot contact the RPC listener on its separate runtime interface.
@@ -291,4 +293,4 @@ if __name__ == "__main__":
     if host != "127.0.0.1":
         host = socket.gethostbyname(host)
     uvicorn.run(create_app(), host=host, port=int(os.getenv("RUNTIME_CONTROLLER_PORT", "5003")),
-                ws_max_size=MAX_MESSAGE, ws_max_queue=4)
+                ws_max_size=MAX_MESSAGE, ws_max_queue=4, log_config=None)
