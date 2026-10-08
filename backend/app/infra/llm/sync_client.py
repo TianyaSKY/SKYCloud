@@ -41,7 +41,7 @@ def close_sync_clients() -> None:
         try:
             client.close()
         except Exception as exc:
-            logger.warning("Failed to close sync LLM client: {}", exc)
+            logger.warning("Failed to close sync LLM client (error_type={})", type(exc).__name__)
 
 
 def chat_completion(

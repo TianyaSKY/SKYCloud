@@ -72,9 +72,9 @@ def record_usage(
             },
         )
         session.commit()
-    except Exception:
+    except Exception as exc:
         session.rollback()
-        logger.exception("Failed to record token usage for user {}", user_id)
+        logger.error("Failed to record token usage for user {} (error_type={})", user_id, type(exc).__name__)
     finally:
         session.close()
 

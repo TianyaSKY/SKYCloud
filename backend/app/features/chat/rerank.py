@@ -133,5 +133,5 @@ async def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
         logger.info(f"Rerank applied: {len(docs)} -> {len(ranked_docs)}")
         return ranked_docs
     except Exception as e:
-        logger.warning(f"Rerank failed, fallback to vector rank: {e}")
+        logger.warning("Rerank failed, fallback to vector rank (error_type={})", type(e).__name__)
         return docs

@@ -22,16 +22,16 @@ class RemoteEmbedder:
             response.raise_for_status()
             result = response.json()
 
-            if 'embeddings' in result:
+            if isinstance(result, dict) and isinstance(result.get('embeddings'), list):
                 # 远端返回 list，包装为 tensor 以兼容历史调用方
                 import torch
                 return torch.tensor(result['embeddings'])
             else:
-                logger.error("LLM 服务响应格式异常: {}", result)
+                logger.error("LLM embedding response has invalid format")
                 return None
 
-        except httpx.HTTPError as e:
-            logger.error("调用 LLM 服务失败: {}", e)
+        except (httpx.HTTPError, ValueError, TypeError, RuntimeError) as e:
+            logger.error("LLM embedding request failed (error_type={})", type(e).__name__)
             return None
 
 

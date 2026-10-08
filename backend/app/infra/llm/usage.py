@@ -28,4 +28,4 @@ def safe_record(
             query_summary=query_summary,
         )
     except Exception as exc:
-        logger.warning("Failed to record token usage ({}): {}", action, exc)
+        logger.warning("Failed to record token usage (error_type={})", type(exc).__name__)
