@@ -309,7 +309,7 @@ class TestFileRouter:
         from app.features.file.router import list_files
 
         with patch("app.features.file.service.get_files_and_folders", return_value={"files": []}):
-            result = list_files(test_user, test_workspace, None, 1, 10, None, "created_at", "desc", session)
+            result = list_files(test_user, test_workspace, None, 1, 10, None, "created_at", "desc", lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "files" in result
@@ -346,7 +346,7 @@ class TestFileRouter:
         payload = FileUpdateRequest(name="renamed.txt")
         with patch("app.features.file.service.get_authorized_file"), \
              patch("app.features.file.service.update_file", return_value=mock_file):
-            result = update_file(1, payload, test_user, test_workspace, session)
+            result = update_file(1, payload, test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "id" in result
@@ -356,7 +356,7 @@ class TestFileRouter:
 
         with patch("app.features.file.service.get_authorized_file"), \
              patch("app.features.file.service.delete_file"):
-            result = delete_file(1, test_user, test_workspace, session)
+            result = delete_file(1, test_user, test_workspace, lambda: nullcontext(session))
         assert result.status_code == 204
 
     def test_get_file(self, session, test_user, test_workspace):
@@ -365,7 +365,7 @@ class TestFileRouter:
         mock_file = MagicMock()
         mock_file.to_dict.return_value = {"id": 1}
         with patch("app.features.file.service.get_authorized_file", return_value=mock_file):
-            result = get_file(1, test_user, test_workspace, session)
+            result = get_file(1, test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "id" in result
@@ -378,7 +378,7 @@ class TestFileRouter:
         mock_file.name = "test.txt"
         mock_file.mime_type = "text/plain"
         with patch("app.features.file.service.get_downloadable_file", return_value=mock_file):
-            result = download_file(1, test_user, test_workspace, session)
+            result = download_file(1, test_user, test_workspace, lambda: nullcontext(session))
         assert result.media_type == "text/plain"
 
     def test_batch_delete(self, session, test_user, test_workspace):
@@ -387,7 +387,7 @@ class TestFileRouter:
 
         payload = BatchDeleteRequest(items=[BatchDeleteItem(id=1, is_folder=False)])
         with patch("app.features.file.service.batch_delete_items"):
-            result = batch_delete_files(payload, test_user, test_workspace, session)
+            result = batch_delete_files(payload, test_user, test_workspace, lambda: nullcontext(session))
         assert result.status_code == 204
 
     def test_retry_embedding(self, session, test_user, test_workspace):
@@ -399,14 +399,14 @@ class TestFileRouter:
         payload = RetryEmbeddingRequest(file_id=1)
         with patch("app.features.file.service.get_authorized_file", return_value=mock_file), \
              patch("app.features.file.service.retry_embedding"):
-            result = retry_embedding(payload, test_user, test_workspace, session)
+            result = retry_embedding(payload, test_user, test_workspace, lambda: nullcontext(session))
         assert result.status_code == 204
 
     def test_rebuild_failed_indexes(self, session, test_user, test_workspace):
         from app.features.file.router import rebuild_failed_indexes
 
         with patch("app.features.file.service.rebuild_failed_indexes", return_value=5):
-            result = rebuild_failed_indexes(test_user, test_workspace, session)
+            result = rebuild_failed_indexes(test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert result["count"] == 5
@@ -427,7 +427,7 @@ class TestFileRouter:
 
         payload = FilePreflightRequest(filename="test.txt", total_size=100, content_hash="a" * 64)
         with patch("app.features.file.service.preflight_file_upload", return_value={"ok": True}):
-            result = preflight_file_upload(payload, test_user, test_workspace, session)
+            result = preflight_file_upload(payload, test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert result["ok"] is True
@@ -438,7 +438,7 @@ class TestFileRouter:
 
         payload = MultipartInitRequest(filename="big.zip", total_size=1000000)
         with patch("app.features.file.service.init_multipart_upload", return_value={"upload_id": "abc"}):
-            result = init_multipart_upload(payload, test_user, test_workspace, session)
+            result = init_multipart_upload(payload, test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "upload_id" in result
@@ -447,7 +447,7 @@ class TestFileRouter:
         from app.features.file.router import get_multipart_upload_status
 
         with patch("app.features.file.service.get_multipart_upload_status", return_value={"chunks": []}):
-            result = get_multipart_upload_status("abc", test_user, test_workspace, session)
+            result = get_multipart_upload_status("abc", test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "chunks" in result
@@ -456,7 +456,7 @@ class TestFileRouter:
         from app.features.file.router import abort_multipart_upload
 
         with patch("app.features.file.service.abort_multipart_upload"):
-            result = abort_multipart_upload("abc", test_user, test_workspace, session)
+            result = abort_multipart_upload("abc", test_user, test_workspace, lambda: nullcontext(session))
         assert result.status_code == 204
 
     def test_multipart_complete(self, session, test_user, test_workspace):
@@ -467,7 +467,7 @@ class TestFileRouter:
         mock_file.to_dict.return_value = {"id": 1}
         payload = MultipartCompleteRequest(upload_id="abc")
         with patch("app.features.file.service.complete_multipart_upload", return_value=mock_file):
-            result = complete_multipart_upload(payload, test_user, test_workspace, session)
+            result = complete_multipart_upload(payload, test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert result == mock_file.to_dict.return_value

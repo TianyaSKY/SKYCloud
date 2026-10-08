@@ -18,7 +18,6 @@ from fastapi import (
 )
 from fastapi import UploadFile
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
@@ -36,7 +35,8 @@ from app.features.file.schemas import (
     MultipartInitRequest,
     RetryEmbeddingRequest,
 )
-from app.infra.extensions import get_db, get_session_factory
+from app.infra.extensions import get_session_factory
+from app.features.workspace.permissions import assert_member, assert_can_write_locked
 from app.infra.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
 from app.infra.storage import get_storage_client
 from app.features.file import service as file_service
@@ -51,13 +51,15 @@ def create_file(
         workspace: Workspace = Depends(require_workspace_role("editor")),
         file: UploadFile = FastAPIFile(...),
         parent_id: int | None = Form(default=None),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """单文件上传；未指定 parent_id 时落到工作空间根目录。"""
-    new_file = file_service.create_uploaded_file(
-        session, workspace.id, current_user.id, FastAPIUploadAdapter(file), parent_id
-    )
-    return success_payload(new_file.to_dict())
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        new_file = file_service.create_uploaded_file(
+            session, workspace.id, current_user.id, FastAPIUploadAdapter(file), parent_id
+        )
+        return success_payload(new_file.to_dict())
 
 
 @router.post("/files/batch", response_model=SuccessResponse[list[FileResponse]], status_code=status.HTTP_201_CREATED)
@@ -66,14 +68,16 @@ def batch_upload_files(
         workspace: Workspace = Depends(require_workspace_role("editor")),
         files: list[UploadFile] | None = FastAPIFile(default=None),
         parent_id: int | None = Form(default=None),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """批量上传；未指定 parent_id 时落到工作空间根目录。"""
-    adapters = [FastAPIUploadAdapter(file) for file in (files or []) if file]
-    new_files = file_service.create_uploaded_files(
-        session, workspace.id, current_user.id, adapters, parent_id
-    )
-    return success_payload([f.to_dict() for f in new_files])
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        adapters = [FastAPIUploadAdapter(file) for file in (files or []) if file]
+        new_files = file_service.create_uploaded_files(
+            session, workspace.id, current_user.id, adapters, parent_id
+        )
+        return success_payload([f.to_dict() for f in new_files])
 
 
 @router.post("/files/preflight", response_model=SuccessResponse[PreflightResponse])
@@ -81,12 +85,14 @@ def preflight_file_upload(
         payload: FilePreflightRequest,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """上传前校验（哈希秒传、配额等），避免无效分片开销。"""
-    return success_payload(file_service.preflight_file_upload(
-        session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
-    ))
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        return success_payload(file_service.preflight_file_upload(
+            session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
+        ))
 
 
 @router.post("/files/multipart/init", response_model=SuccessResponse[MultipartInitResponse])
@@ -94,12 +100,14 @@ def init_multipart_upload(
         payload: MultipartInitRequest,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """初始化分片上传会话。"""
-    return success_payload(file_service.init_multipart_upload(
-        session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
-    ))
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        return success_payload(file_service.init_multipart_upload(
+            session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
+        ))
 
 
 @router.post("/files/multipart/chunk", response_model=SuccessResponse[MultipartChunkResponse])
@@ -109,22 +117,24 @@ def upload_multipart_chunk(
         chunk: UploadFile = FastAPIFile(...),
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """写入单个分片。"""
-    if not chunk.filename:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="No chunk provided"
-        )
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        if not chunk.filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="No chunk provided"
+            )
 
-    return success_payload(file_service.save_multipart_chunk(
-        session,
-        current_user.id,
-        workspace.id,
-        upload_id,
-        chunk_index,
-        FastAPIUploadAdapter(chunk),
-    ))
+        return success_payload(file_service.save_multipart_chunk(
+            session,
+            current_user.id,
+            workspace.id,
+            upload_id,
+            chunk_index,
+            FastAPIUploadAdapter(chunk),
+        ))
 
 
 @router.post("/files/multipart/complete", response_model=SuccessResponse[FileResponse], status_code=status.HTTP_201_CREATED)
@@ -132,13 +142,15 @@ def complete_multipart_upload(
         payload: MultipartCompleteRequest,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """合并分片并落库，触发后续索引任务。"""
-    new_file = file_service.complete_multipart_upload(
-        session, workspace.id, current_user.id, payload.upload_id
-    )
-    return success_payload(new_file.to_dict())
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        new_file = file_service.complete_multipart_upload(
+            session, workspace.id, current_user.id, payload.upload_id
+        )
+        return success_payload(new_file.to_dict())
 
 
 @router.get("/files/multipart/{upload_id}", response_model=SuccessResponse[MultipartStatusResponse])
@@ -146,10 +158,12 @@ def get_multipart_upload_status(
         upload_id: str,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(get_current_workspace),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """查询分片上传进度（已收分片等）。"""
-    return success_payload(file_service.get_multipart_upload_status(session, workspace.id, current_user.id, upload_id))
+    with session_factory() as session:
+        assert_member(session, workspace.id, current_user.id)
+        return success_payload(file_service.get_multipart_upload_status(session, workspace.id, current_user.id, upload_id))
 
 
 @router.delete("/files/multipart/{upload_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -157,11 +171,13 @@ def abort_multipart_upload(
         upload_id: str,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """中止并清理未完成的分片会话。"""
-    file_service.abort_multipart_upload(session, workspace.id, current_user.id, upload_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        file_service.abort_multipart_upload(session, workspace.id, current_user.id, upload_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/files/list", response_model=SuccessResponse[DirectoryResponse])
@@ -174,12 +190,14 @@ def list_files(
         name: str | None = Query(default=None, max_length=255),
         sort_by: str = Query(default="created_at", min_length=1, max_length=50),
         order: str = Query(default="desc", pattern="^(asc|desc)$"),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """目录浏览：文件与子文件夹分页列表。"""
-    return success_payload(file_service.get_files_and_folders(
-        session, workspace.id, parent_id, page, page_size, name, sort_by, order
-    ))
+    with session_factory() as session:
+        assert_member(session, workspace.id, current_user.id)
+        return success_payload(file_service.get_files_and_folders(
+            session, workspace.id, parent_id, page, page_size, name, sort_by, order
+        ))
 
 
 @router.get("/files/search", response_model=SuccessResponse[FilePageResponse])
@@ -209,12 +227,14 @@ def update_file(
         payload: FileUpdateRequest,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """重命名/移动文件等元数据更新。"""
-    file_service.get_authorized_file(session, workspace.id, current_user.id, id)
-    file_obj = file_service.update_file(session, id, payload.model_dump(exclude_none=True))
-    return success_payload(file_obj.to_dict())
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        file_service.get_authorized_file(session, workspace.id, current_user.id, id)
+        file_obj = file_service.update_file(session, id, payload.model_dump(exclude_none=True))
+        return success_payload(file_obj.to_dict())
 
 
 @router.delete("/files/{id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -222,12 +242,14 @@ def delete_file(
         id: int,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """删除单个文件。"""
-    file_service.get_authorized_file(session, workspace.id, current_user.id, id)
-    file_service.delete_file(session, id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        file_service.get_authorized_file(session, workspace.id, current_user.id, id)
+        file_service.delete_file(session, id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/files/{id}/download", response_class=StreamingResponse, responses={200: {'description': 'Authenticated original file bytes'}})
@@ -235,28 +257,30 @@ def download_file(
         id: int,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(get_current_workspace),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """鉴权后以附件形式下载原始文件（从 MinIO 流式读取）。"""
-    file_obj = file_service.get_downloadable_file(
-        session, workspace.id, current_user.id, id
-    )
-    storage = get_storage_client()
-    object_name = cast(str, file_obj.file_path)
-    file_stream = storage.get_file_stream(object_name)
+    with session_factory() as session:
+        assert_member(session, workspace.id, current_user.id)
+        file_obj = file_service.get_downloadable_file(
+            session, workspace.id, current_user.id, id
+        )
+        storage = get_storage_client()
+        object_name = cast(str, file_obj.file_path)
+        file_stream = storage.get_file_stream(object_name)
 
-    from urllib.parse import quote
-    filename = cast(str | None, file_obj.name) or "download"
-    encoded_filename = quote(filename)
+        from urllib.parse import quote
+        filename = cast(str | None, file_obj.name) or "download"
+        encoded_filename = quote(filename)
 
-    return StreamingResponse(
-        file_stream,
-        media_type=cast(str | None, file_obj.mime_type) or "application/octet-stream",
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
-        },
-        background=BackgroundTask(storage.close_file_stream, file_stream),
-    )
+        return StreamingResponse(
+            file_stream,
+            media_type=cast(str | None, file_obj.mime_type) or "application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            },
+            background=BackgroundTask(storage.close_file_stream, file_stream),
+        )
 
 
 @router.post("/files/upload/avatar/{id}", response_model=SuccessResponse[AvatarResponse])
@@ -307,12 +331,14 @@ def batch_delete_files(
         payload: BatchDeleteRequest,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """批量删除文件与/或文件夹。"""
-    items = [item.model_dump() for item in payload.items]
-    file_service.batch_delete_items(session, workspace.id, current_user.id, items)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        items = [item.model_dump() for item in payload.items]
+        file_service.batch_delete_items(session, workspace.id, current_user.id, items)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/files/retry_embedding", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -320,25 +346,29 @@ def retry_embedding(
         payload: RetryEmbeddingRequest,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(get_current_workspace),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """对单个失败文件重新入队索引。"""
-    file_obj = file_service.get_authorized_file(
-        session, workspace.id, current_user.id, payload.file_id
-    )
-    file_service.retry_embedding(session, cast(int, file_obj.id))
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        file_obj = file_service.get_authorized_file(
+            session, workspace.id, current_user.id, payload.file_id
+        )
+        file_service.retry_embedding(session, cast(int, file_obj.id))
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/files/rebuild_failed_indexes", response_model=SuccessResponse[RebuildResponse])
 def rebuild_failed_indexes(
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(get_current_workspace),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """批量重试当前工作空间所有失败索引。"""
-    count = file_service.rebuild_failed_indexes(session, workspace.id)
-    return success_payload({"count": count})
+    with session_factory() as session:
+        assert_can_write_locked(session, workspace.id, current_user.id)
+        count = file_service.rebuild_failed_indexes(session, workspace.id)
+        return success_payload({"count": count})
 
 
 @router.get("/files/process_status", response_model=SuccessResponse[ProcessStatusResponse])
@@ -358,10 +388,12 @@ def get_file(
         id: int,
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(get_current_workspace),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """获取单文件元数据（含权限校验）。"""
-    file_obj = file_service.get_authorized_file(
-        session, workspace.id, current_user.id, id
-    )
-    return success_payload(file_obj.to_dict())
+    with session_factory() as session:
+        assert_member(session, workspace.id, current_user.id)
+        file_obj = file_service.get_authorized_file(
+            session, workspace.id, current_user.id, id
+        )
+        return success_payload(file_obj.to_dict())

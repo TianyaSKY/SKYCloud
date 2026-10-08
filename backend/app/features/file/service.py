@@ -38,7 +38,7 @@ from app.infra.upload_staging import StagedUpload, cleanup_staging, close_stagin
 from app.infra.upload_limits import FILE_LIMIT, AVATAR_LIMIT, positive_limit
 from app.models.file import File
 from app.features.folder import change_log as change_log_service
-from app.features.workspace.permissions import assert_member
+from app.features.workspace.permissions import assert_member, assert_can_write_locked
 from app.features.file import upload_quota, repository
 from app.features.file.upload_recovery import compensate_failed_uploads, _release_failed_upload
 from app.features.file.repository import escape_like as _escape_like
@@ -925,6 +925,7 @@ def batch_delete_items(session: Session, workspace_id: int, user_id: int, items:
     from app.features.folder import service as folder_service
 
     for item in items:
+        assert_can_write_locked(session, workspace_id, user_id)
         item_id = item.get("id")
         is_folder = item.get("is_folder", False)
         if is_folder:

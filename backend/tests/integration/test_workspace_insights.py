@@ -511,3 +511,88 @@ def test_folder_write_authorization_lock_blocks_role_change(postgres):
     with factory() as owned:
         with pytest.raises(PermissionDeniedError):
             assert_can_write_locked(owned, 1, 1)
+
+
+@pytest.mark.parametrize('operation', ['list', 'get', 'download', 'update', 'delete', 'batch', 'retry', 'rebuild'])
+async def test_file_http_rejects_stale_membership_before_io(postgres, monkeypatch, operation):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.features.file import router
+    from app.api.dependencies import get_current_user
+    from app.infra.extensions import get_session_factory
+    from app.exceptions import register_exception_handlers
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+        db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id) VALUES (1,'original','private',3,'fail',1,1)"))
+    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
+    for route in router.router.routes:
+        for dependency in route.dependant.dependencies:
+            if dependency.name == 'workspace':
+                app.dependency_overrides[dependency.call] = lambda: SimpleNamespace(id=1)
+    def forbidden_storage():
+        raise AssertionError('denied download must not open storage')
+    monkeypatch.setattr(router, 'get_storage_client', forbidden_storage)
+    calls = {
+        'list': ('GET', '/files/list', None), 'get': ('GET', '/files/1', None),
+        'download': ('GET', '/files/1/download', None),
+        'update': ('PUT', '/files/1', {'name': 'forbidden'}),
+        'delete': ('DELETE', '/files/1', None),
+        'batch': ('POST', '/files/batch-delete', {'items': [{'id': 1, 'is_folder': False}]}),
+        'retry': ('POST', '/files/retry_embedding', {'file_id': 1}),
+        'rebuild': ('POST', '/files/rebuild_failed_indexes', None),
+    }
+    method, path, body = calls[operation]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+        if operation in {'list', 'get'}:
+            assert (await client.get(path)).status_code == 200
+        with postgres.begin() as independent:
+            if method == 'GET':
+                independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
+            else:
+                independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
+        response = await client.request(method, path, json=body)
+        assert response.status_code == 403, response.text
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT id,name,status FROM files')).all() == [(1, 'original', 'fail')]
+        assert db.scalar(text('SELECT count(*) FROM file_task_outbox')) == 0
+
+
+async def test_file_batch_delete_rechecks_after_committed_item(postgres, monkeypatch):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.features.file import router
+    from app.api.dependencies import get_current_user
+    from app.infra.extensions import get_session_factory
+    from app.exceptions import register_exception_handlers
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+        db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id) VALUES (1,'first','first',3,'success',1,1),(2,'second','second',3,'success',1,1)"))
+    def delete_then_demote(session, id):
+        assert id == 1, 'second delete must not be dispatched'
+        session.execute(text('DELETE FROM files WHERE id=1'))
+        session.commit()
+        with postgres.begin() as independent:
+            independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
+    monkeypatch.setattr(router.file_service, 'delete_file', delete_then_demote)
+    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
+    for route in router.router.routes:
+        for dependency in route.dependant.dependencies:
+            if dependency.name == 'workspace':
+                app.dependency_overrides[dependency.call] = lambda: SimpleNamespace(id=1)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+        response = await client.post('/files/batch-delete', json={'items': [{'id': 1}, {'id': 2}]})
+        assert response.status_code == 403, response.text
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT id FROM files')).scalars().all() == [2]
