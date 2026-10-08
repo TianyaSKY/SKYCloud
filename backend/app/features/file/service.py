@@ -39,6 +39,7 @@ from app.infra.upload_limits import FILE_LIMIT, AVATAR_LIMIT, positive_limit
 from app.models.file import File
 from app.features.folder import change_log as change_log_service
 from app.features.workspace.permissions import assert_member, assert_can_write_locked
+from app.features.file import upload_authorization
 from app.features.file import upload_quota, repository
 from app.features.file.upload_recovery import compensate_failed_uploads, _release_failed_upload
 from app.features.file.repository import escape_like as _escape_like
@@ -182,9 +183,11 @@ def _clone_existing_file(
     object_name = cast(str, source_file.file_path)
     file_size = int(source_file.file_size or 0)
 
-    reservation = upload_quota.reserve(session, workspace_id, uploader_id, file_size, kind="instant")
+    reservation = upload_authorization.reserve(session, workspace_id, uploader_id, file_size, kind="instant")
     reservation_id = reservation.id
     try:
+        # Identity locks precede the shared-object lock, matching cancellation.
+        assert_can_write_locked(session, workspace_id, uploader_id)
         lock_object_path(session, object_name)
         source_file = repository.find_live_file(session, source_id)
         if source_file is None or source_file.file_path != object_name or not get_storage_client().file_exists(object_name):
@@ -193,7 +196,7 @@ def _clone_existing_file(
         status = cast(str | None, source_file.status) or "pending"
         description = cast(str | None, source_file.description) if status == "success" else None
         vector_info = source_file.vector_info if status == "success" else None
-        upload_quota.consume(session, workspace_id, uploader_id, reservation_id, int(source_file.file_size or 0))
+        upload_authorization.consume(session, workspace_id, uploader_id, reservation_id, int(source_file.file_size or 0))
         new_file = _persist_file_record(session, 
             name=filename,
             file_path=cast(str, source_file.file_path),
@@ -341,12 +344,12 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any], *,
         file_size = os.path.getsize(local_tmp_path)
         mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
         content_hash = _calculate_file_hash(local_tmp_path)
-        reservation_id = upload_quota.reserve(session, data["workspace_id"], data["uploader_id"], file_size,
+        reservation_id = upload_authorization.reserve(session, data["workspace_id"], data["uploader_id"], file_size,
             reservation_id=staging.directory.name, details={"object_name": unique_filename, "stage_id": staging.directory.name}).id
         # 上传到 MinIO 对象存储
         storage.upload_file(local_tmp_path, unique_filename)
 
-        upload_quota.consume(session, data["workspace_id"], data["uploader_id"], reservation_id, file_size)
+        upload_authorization.consume(session, data["workspace_id"], data["uploader_id"], reservation_id, file_size)
         new_file = _persist_file_record(session, 
             name=original_filename,
             file_path=unique_filename,
@@ -419,7 +422,7 @@ def batch_create_files(
             mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
             content_hash = _calculate_file_hash(local_tmp_path)
 
-            reservation = upload_quota.reserve(session, workspace_id, uploader_id, file_size,
+            reservation = upload_authorization.reserve(session, workspace_id, uploader_id, file_size,
                 reservation_id=staging.directory.name, details={"object_name": unique_filename, "stage_id": staging.directory.name})
             reservations.append(reservation.id)
             object_keys.append(unique_filename)
@@ -447,13 +450,15 @@ def batch_create_files(
 
     try:
         for reservation_id, file_obj in zip(reservations, new_files):
-            upload_quota.consume(session, workspace_id, uploader_id, reservation_id, file_obj.file_size)
+            upload_authorization.consume(session, workspace_id, uploader_id, reservation_id, file_obj.file_size)
         repository.insert_files(session, new_files)
         stage_file_tasks(session, [file.id for file in new_files])
         session.commit()
     except Exception as exc:
         compensate_failed_uploads(session, workspace_id, uploader_id,
                                   zip(reservations, object_keys), storage)
+        if isinstance(exc, DomainError):
+            raise
         raise ServiceOperationError("Failed to save uploaded file metadata") from exc
 
     if uploader_id:
@@ -559,7 +564,7 @@ def init_multipart_upload(session: Session, workspace_id: int, uploader_id: int,
         meta = reservation.details
         session.commit()
     else:
-        reservation = upload_quota.reserve(session, workspace_id, uploader_id, total_size,
+        reservation = upload_authorization.reserve(session, workspace_id, uploader_id, total_size,
                                           kind="multipart", reservation_id=upload_id, details=metadata)
         meta = metadata
         try:
@@ -696,7 +701,7 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
             uploader_id=uploader_id,
             parent_id=parent_id,
         )
-        upload_quota.consume(session, workspace_id, uploader_id, safe_upload_id, total_size)
+        upload_authorization.consume(session, workspace_id, uploader_id, safe_upload_id, total_size)
         repository.insert_file(session, new_file)
         stage_file_tasks(session, [new_file.id])
         session.commit()

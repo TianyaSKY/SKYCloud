@@ -504,3 +504,69 @@ def test_real_upload_cleanup_close_fault_does_not_replace_sql_outcome(upload_api
     assert len(list(minio_storage._client.list_objects(minio_storage._bucket)))==expected
     if expected:assert client.get(f"/api/files/{response.json()['data']['id']}/download",headers=headers).content==b'body'
     assert not (root/'uploads'/'.staging').exists()
+
+
+@pytest.mark.parametrize('kind', ['single', 'batch', 'multipart', 'instant'])
+def test_upload_publication_rejects_committed_role_loss(upload_api, postgres, minio_storage, monkeypatch, kind):
+    """Actual SQL/object bytes; explicit boundary hook commits role loss."""
+    client, headers, root = upload_api
+    baseline_files = baseline_tasks = baseline_objects = 0
+    if kind == 'instant':
+        source = client.post('/api/files', headers=headers, files={'file': ('source.txt', b'abc')})
+        assert source.status_code == 201, source.text
+        with postgres.connect() as db:
+            baseline_files = db.scalar(text('SELECT count(*) FROM files'))
+            baseline_tasks = db.scalar(text('SELECT count(*) FROM file_task_outbox'))
+        baseline_objects = len(list(minio_storage._client.list_objects(minio_storage._bucket)))
+        reserve = service.upload_quota.reserve
+        def reserve_then_demote(*args, **kwargs):
+            row = reserve(*args, **kwargs)
+            with postgres.begin() as independent:
+                independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
+            return row
+        monkeypatch.setattr(service.upload_quota, 'reserve', reserve_then_demote)
+    else:
+        put = minio_storage.upload_file
+        puts = 0
+        def put_then_demote(*args, **kwargs):
+            nonlocal puts
+            result = put(*args, **kwargs)
+            puts += 1
+            if puts == (2 if kind == 'batch' else 1):
+                with postgres.begin() as independent:
+                    independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
+            return result
+        monkeypatch.setattr(minio_storage, 'upload_file', put_then_demote)
+    if kind == 'single':
+        response = client.post('/api/files', headers=headers, files={'file': ('single.txt', b'abc')})
+    elif kind == 'batch':
+        response = client.post('/api/files/batch', headers=headers,
+                               files=[('files', ('first.txt', b'abc')), ('files', ('second.txt', b'def'))])
+    elif kind == 'multipart':
+        admitted = client.post('/api/files/multipart/init', headers=headers, json={'filename': 'parts.txt', 'total_size': 3})
+        assert admitted.status_code == 200, admitted.text
+        upload_id = admitted.json()['data']['upload_id']
+        chunk = client.post('/api/files/multipart/chunk', headers=headers, data={'upload_id': upload_id, 'chunk_index': '0'},
+                            files={'chunk': ('part', b'abc')})
+        assert chunk.status_code == 200, chunk.text
+        # HTTP entry already holds membership through completion. Exercise the
+        # shared service boundary directly without that extra request lock.
+        from app.exceptions import PermissionDeniedError
+        with Session(postgres) as db:
+            with pytest.raises(PermissionDeniedError):
+                service.complete_multipart_upload(db, 1, 1, upload_id)
+        response = None
+    else:
+        response = client.post('/api/files/preflight', headers=headers,
+                               json={'filename': 'clone.txt', 'total_size': 3, 'content_hash': hashlib.sha256(b'abc').hexdigest()})
+    if response is not None:
+        assert response.status_code == 403, response.text
+    with postgres.connect() as db:
+        assert db.scalar(text('SELECT count(*) FROM files')) == baseline_files
+        assert db.scalar(text('SELECT count(*) FROM file_task_outbox')) == baseline_tasks
+        assert db.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
+        assert db.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='cancelled'")) == (2 if kind == 'batch' else 1)
+        assert db.scalar(text('SELECT sum(attempts) FROM upload_daily_usage')) == (2 if kind in {'batch', 'instant'} else 1)
+    assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == baseline_objects
+    if kind == 'instant':
+        assert client.get('/api/files/' + str(source.json()['data']['id']) + '/download', headers=headers).content == b'abc'
