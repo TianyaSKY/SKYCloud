@@ -5,6 +5,7 @@ from typing import cast
 from sqlalchemy import Column, Integer, String, ForeignKey
 from sqlalchemy.orm import relationship, backref
 
+from app.exceptions import BusinessRuleError, PermissionDeniedError
 from app.infra.extensions import Base
 from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
 
@@ -35,7 +36,14 @@ class Folder(Base):
     def to_dict(self):
         path_parts = []
         current = self
+        seen = set()
         while current:
+            identity = ('row', current.id) if current.id is not None else ('object', id(current))
+            if identity in seen:
+                raise BusinessRuleError('Invalid folder hierarchy')
+            seen.add(identity)
+            if current.workspace_id != self.workspace_id:
+                raise PermissionDeniedError('Parent folder belongs to another workspace')
             if current.parent_id is None:
                 break
             path_parts.append(current.name)

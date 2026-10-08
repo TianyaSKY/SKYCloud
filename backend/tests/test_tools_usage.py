@@ -71,6 +71,8 @@ class TestCreateFolderTool:
 
         mock_session = MagicMock()
         mock_session.get.return_value.workspace_id = 1
+        mock_session.get.return_value.id = 1
+        mock_session.get.return_value.parent_id = None
         mock_session.query.return_value.filter_by.return_value.first.return_value = mock_existing
         with patch("app.features.folder.organize.tools.get_session", return_value=mock_session):
             result = create_folder.invoke({"name": "docs", "parent_id": 1, "workspace_id": 1})
@@ -79,6 +81,8 @@ class TestCreateFolderTool:
     def test_create_new(self):
         mock_session = MagicMock()
         mock_session.get.return_value.workspace_id = 1
+        mock_session.get.return_value.id = 1
+        mock_session.get.return_value.parent_id = None
         mock_session.query.return_value.filter_by.return_value.first.return_value = None
         mock_new_folder = MagicMock()
         mock_new_folder.id = 10
@@ -248,9 +252,12 @@ class TestMoveFolderTool:
         mock_folder = MagicMock()
         mock_folder.id = 1
         mock_folder.workspace_id = 1
+        mock_folder.parent_id = 2
 
         mock_session = MagicMock()
-        mock_session.get.return_value = mock_folder
+        root = Folder(id=2, workspace_id=1, name='/', parent_id=None)
+        mock_session.scalar.return_value = 2
+        mock_session.get.side_effect = [mock_folder, root]
 
         with patch("app.features.folder.organize.tools.get_session", return_value=mock_session), \
              patch("app.features.folder.organize.tools.clear_workspace_cache"):

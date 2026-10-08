@@ -11,6 +11,7 @@ from app.infra.cache import cacheable, evict_cache
 from app.infra.task_queue import publish_organize_task
 from app.models.file import File
 from app.models.folder import Folder
+from . import repository, tree
 from app.features.folder import change_log as change_log_service
 from app.features.file.service import delete_file, _clear_search_cache
 from app.features.workspace.permissions import assert_member
@@ -19,7 +20,7 @@ ORGANIZE_TASK_LOCK_PREFIX = "organize:task:lock"
 ORGANIZE_TASK_LOCK_TTL_SECONDS = 6 * 60 * 60
 
 FOLDER_CACHE_PREFIX = "workspace:folders"
-ROOT_FOLDER_CACHE_PREFIX = "workspace:root_folder"
+ROOT_FOLDER_CACHE_PREFIX = "workspace:root_folder:v2"
 ROOT_FILES_CACHE_PREFIX = "workspace:root_files:v2"
 FOLDER_CACHE_EXPIRE = 3600
 
@@ -40,11 +41,9 @@ def create_folder(session: Session, data):
         workspace_id = data.get("workspace_id")
         if workspace_id is None:
             raise PermissionDeniedError("workspace_id is required")
-        parent_id = data.get("parent_id")
-        if parent_id is not None:
-            parent = get_folder(session, parent_id)
-            if parent.workspace_id != workspace_id:
-                raise PermissionDeniedError("Parent folder belongs to another workspace")
+        repository.lock_tree(session, workspace_id)
+        tree.validate_name(data['name'])
+        parent_id = tree.validate_parent(session, workspace_id, data.get('parent_id'))
         new_folder = Folder(
             name=data["name"],
             workspace_id=workspace_id,
@@ -79,39 +78,44 @@ def get_authorized_folder(session: Session, workspace_id: int, user_id: int, fol
 
 
 def update_folder(session: Session, id, data):
-    folder = session.get(Folder, id)
-    if not folder:
+    workspace_id = repository.workspace_id_for_folder(session, id)
+    if workspace_id is None:
         raise ResourceNotFoundError("Folder not found")
     try:
-        old_name = folder.name
-        old_parent_id = folder.parent_id
-
-        if "parent_id" in data and data["parent_id"] is not None:
-            parent = get_folder(session, data["parent_id"])
-            if parent.workspace_id != folder.workspace_id:
-                raise PermissionDeniedError("Parent folder belongs to another workspace")
-
-        folder.name = data.get("name", folder.name)
-        folder.parent_id = data.get("parent_id", folder.parent_id)
+        repository.lock_tree(session, workspace_id)
+        folder = repository.get_folder(session, id)
+        if folder is None:
+            raise ResourceNotFoundError("Folder not found")
+        if folder.workspace_id != workspace_id:
+            raise PermissionDeniedError('Folder belongs to another workspace')
+        tree.assert_mutable(session, folder)
+        if 'name' in data:
+            tree.validate_name(data['name'])
+        if 'parent_id' in data:
+            parent_id = tree.validate_parent(session, workspace_id, data['parent_id'], moving_id=id)
+            folder.parent_id = parent_id
+        folder.name = data.get('name', folder.name)
         session.commit()
-
-        if folder.workspace_id:
-            _invalidate_folder_caches(folder.workspace_id)
-
+        _invalidate_folder_caches(workspace_id)
         return folder
-    except Exception as e:
+    except Exception:
         session.rollback()
-        raise e
+        raise
 
 
 def delete_folder(session: Session, id):
-    folder = session.query(Folder).filter(Folder.id == id).with_for_update().first()
-    if not folder:
+    workspace_id = repository.workspace_id_for_folder(session, id)
+    if workspace_id is None:
         raise ResourceNotFoundError("Folder not found")
-    workspace_id = folder.workspace_id
     deleted_events: list[dict] = []
-
     try:
+        repository.lock_tree(session, workspace_id)
+        folder = repository.get_folder(session, id)
+        if folder is None:
+            raise ResourceNotFoundError("Folder not found")
+        if folder.workspace_id != workspace_id:
+            raise PermissionDeniedError('Folder belongs to another workspace')
+        tree.assert_mutable(session, folder)
         _delete_folder_recursive(session, folder, deleted_events)
         deleted_events.append(
             {
@@ -184,10 +188,7 @@ def _delete_folder_recursive(session: Session, folder, deleted_events: list[dict
     key=lambda session, workspace_id, **_: workspace_id,
 )
 def get_root_folder_id(session: Session, workspace_id) -> int | None:
-    root_folder = session.query(Folder).filter_by(workspace_id=workspace_id, parent_id=None).first()
-    if root_folder:
-        return root_folder.id
-    return None
+    return repository.root_id(session, workspace_id)
 
 
 @cacheable(

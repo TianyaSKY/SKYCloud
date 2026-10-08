@@ -17,7 +17,7 @@ def contract(session, test_user, test_workspace):
     root = session.query(Folder).filter_by(workspace_id=test_workspace.id, parent_id=None).one()
     row = File(name='你好.txt', file_path='private-object-key', file_size=2,
                workspace_id=test_workspace.id, uploader_id=test_user.id, parent_id=root.id)
-    session.add(row); session.flush()
+    session.add(row); session.commit()
     app = FastAPI(); register_exception_handlers(app)
     app.include_router(files.router); app.include_router(folders.router)
     app.dependency_overrides[get_db] = lambda: session
@@ -146,13 +146,14 @@ def test_openapi_documents_json_envelopes_binary_and_no_content(contract):
 
 
 def test_missing_root_cannot_create_a_second_root(contract, monkeypatch):
+    from app.features.folder import repository
     client, row, root = contract
-    create = Mock(side_effect=AssertionError('Missing root must not be replaced'))
-    monkeypatch.setattr(folders.folder_service,'get_root_folder_id',lambda *args:None)
-    monkeypatch.setattr(folders.folder_service,'create_folder',create)
+    session = row._sa_instance_state.session
+    before = session.query(Folder).count()
+    monkeypatch.setattr(repository,'root_id',lambda *args:None)
     response=client.post('/folder',json={'name':'child'})
     assert response.status_code == 404 and response.json()['error']['code'] == 'RESOURCE_NOT_FOUND'
-    create.assert_not_called()
+    assert session.query(Folder).count() == before
 
 
 def test_avatar_filters_private_metadata_and_preserves_public_alias(contract, monkeypatch):

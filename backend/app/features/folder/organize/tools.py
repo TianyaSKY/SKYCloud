@@ -10,6 +10,7 @@ from sqlalchemy import func
 from app.infra.extensions import SessionLocal, redis_client
 from app.models.file import File
 from app.models.folder import Folder
+from app.features.folder import repository as folder_repository, tree as folder_tree
 from app.features.workspace.permissions import assert_can_write
 from app.exceptions import PermissionDeniedError
 from .scope import current_scope, authorize_session
@@ -179,11 +180,9 @@ def create_folder(name: str, parent_id: int, workspace_id: int) -> str:
     """在指定父目录下创建文件夹；同名已存在则返回已有 ID。"""
     session = get_session()
     try:
-        pid = parent_id if parent_id and parent_id != 0 else None
-        if pid is not None:
-            parent = session.get(Folder, pid)
-            if parent is None or parent.workspace_id != workspace_id:
-                return "权限错误：父文件夹不属于当前工作空间"
+        folder_repository.lock_tree(session, workspace_id)
+        folder_tree.validate_name(name)
+        pid = folder_tree.validate_parent(session, workspace_id, parent_id or None)
         existing_folder = session.query(Folder).filter_by(
             name=name,
             workspace_id=workspace_id,
@@ -212,13 +211,16 @@ def rename_folder(folder_id: int, new_name: str, workspace_id: int) -> str:
     """重命名文件夹；须校验归属，且同级不重名。"""
     session = get_session()
     try:
-        folder = session.get(Folder, folder_id)
+        folder_repository.lock_tree(session, workspace_id)
+        folder = folder_repository.get_folder(session, folder_id)
         if not folder:
             return f"文件夹 {folder_id} 不存在"
 
         if folder.workspace_id != workspace_id:
             return f"权限错误：文件夹 {folder_id} 不属于工作空间 {workspace_id}"
 
+        folder_tree.assert_mutable(session, folder)
+        folder_tree.validate_name(new_name)
         existing_folder = session.query(Folder).filter_by(
             name=new_name,
             parent_id=folder.parent_id,
@@ -244,6 +246,7 @@ def move_file(file_id: int, target_folder_id: int, workspace_id: int) -> str:
     """移动文件到目标文件夹；校验文件与目标归属。"""
     session = get_session()
     try:
+        folder_repository.lock_tree(session, workspace_id)
         file = session.get(File, file_id)
         if not file:
             return f"文件 {file_id} 不存在"
@@ -251,14 +254,7 @@ def move_file(file_id: int, target_folder_id: int, workspace_id: int) -> str:
         if file.workspace_id != workspace_id:
             return f"权限错误：文件 {file_id} 不属于工作空间 {workspace_id}"
 
-        target_id = target_folder_id if target_folder_id and target_folder_id != 0 else None
-
-        if target_id is not None:
-            target_folder = session.get(Folder, target_id)
-            if not target_folder:
-                return f"目标文件夹 {target_folder_id} 不存在"
-            if target_folder.workspace_id != workspace_id:
-                return f"权限错误：目标文件夹 {target_folder_id} 不属于工作空间 {workspace_id}"
+        target_id = folder_tree.validate_parent(session, workspace_id, target_folder_id or None)
 
         file.parent_id = target_id
         session.commit()
@@ -308,13 +304,15 @@ def delete_folder(folder_id: int, workspace_id: int) -> str:
     """仅允许删除空文件夹；非空返回失败原因。"""
     session = get_session()
     try:
-        folder = session.get(Folder, folder_id)
+        folder_repository.lock_tree(session, workspace_id)
+        folder = folder_repository.get_folder(session, folder_id)
         if not folder:
             return f"文件夹 {folder_id} 不存在"
 
         if folder.workspace_id != workspace_id:
             return f"权限错误：文件夹 {folder_id} 不属于工作空间 {workspace_id}"
 
+        folder_tree.assert_mutable(session, folder)
         subfolders_count = session.query(Folder).filter_by(parent_id=folder.id).count()
         if subfolders_count > 0:
             return f"删除失败：文件夹 {folder_id} 不为空（包含子文件夹）。"
@@ -339,8 +337,9 @@ def merge_folders(source_folder_id: int, target_folder_id: int, workspace_id: in
     """将源目录内容并入目标后删除源；禁止合并到自身子树，重名子目录递归合并。"""
     session = get_session()
     try:
-        source = session.get(Folder, source_folder_id)
-        target = session.get(Folder, target_folder_id)
+        folder_repository.lock_tree(session, workspace_id)
+        source = folder_repository.get_folder(session, source_folder_id)
+        target = folder_repository.get_folder(session, target_folder_id)
 
         if not source or not target:
             return "源文件夹或目标文件夹不存在"
@@ -350,6 +349,7 @@ def merge_folders(source_folder_id: int, target_folder_id: int, workspace_id: in
         if target.workspace_id != workspace_id:
             return f"权限错误：目标文件夹 {target_folder_id} 不属于工作空间 {workspace_id}"
 
+        folder_tree.assert_mutable(session, source)
         if source.id == target.id:
             return "不能合并同一个文件夹"
 
@@ -468,46 +468,26 @@ def move_folder(folder_id: int, target_folder_id: int, workspace_id: int) -> str
     """移动文件夹到目标下；禁止移入自身子树，0/None 表示根。"""
     session = get_session()
     try:
-        folder = session.get(Folder, folder_id)
+        folder_repository.lock_tree(session, workspace_id)
+        folder = folder_repository.get_folder(session, folder_id)
         if not folder:
             return f"文件夹 {folder_id} 不存在"
 
         if folder.workspace_id != workspace_id:
             return f"权限错误：文件夹 {folder_id} 不属于工作空间 {workspace_id}"
 
+        folder_tree.assert_mutable(session, folder)
         if folder.id == target_folder_id:
             return "不能将文件夹移动到自身"
 
-        if not target_folder_id or target_folder_id == 0:
-            folder.parent_id = None
-            session.commit()
-            clear_workspace_cache(folder.workspace_id)
-            return f"已将文件夹 {folder_id} 移动到根目录"
-
-        target = session.get(Folder, target_folder_id)
-        if not target:
-            return f"目标文件夹 {target_folder_id} 不存在"
-
-        if target.workspace_id != workspace_id:
-            return f"权限错误：目标文件夹 {target_folder_id} 不属于工作空间 {workspace_id}"
-
-        current = target
-        seen = set()
-        while current:
-            if current.id in seen:
-                return "目录结构无效，无法移动"
-            seen.add(current.id)
-            if current.id == folder.id:
-                return "无法移动：目标文件夹是源文件夹的子文件夹"
-            if current.parent_id:
-                current = session.get(Folder, current.parent_id)
-            else:
-                break
-
-        folder.parent_id = target.id
+        target_id = folder_tree.validate_parent(session, workspace_id, target_folder_id or None, moving_id=folder.id)
+        folder.parent_id = target_id
         session.commit()
         clear_workspace_cache(folder.workspace_id)
-        return f"已将文件夹 {folder_id} 移动到 {target.name} (ID: {target.id})"
+        if not target_folder_id:
+            return f"已将文件夹 {folder_id} 移动到根目录"
+        return f"已将文件夹 {folder_id} 移动到文件夹 {target_id}"
+
     except Exception as e:
         session.rollback()
         return f"移动失败: 请稍后重试"

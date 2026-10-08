@@ -3,7 +3,6 @@
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.orm import Session
 
-from app.exceptions import ResourceNotFoundError
 from app.api.contracts import SuccessResponse, success_payload
 from app.api.dependencies import get_current_user, get_current_workspace, require_workspace_role
 from app.features.folder.schemas import FolderCreateRequest, FolderUpdateRequest, FolderResponse, FolderListResponse, RootFolderResponse, OrganizeResponse
@@ -24,10 +23,6 @@ def create_folder(
     """在指定父目录下创建文件夹（归属当前工作空间）。"""
     data = payload.model_dump()
     data["workspace_id"] = workspace.id
-    if data['parent_id'] is None:
-        data['parent_id'] = folder_service.get_root_folder_id(session, workspace.id)
-        if data['parent_id'] is None:
-            raise ResourceNotFoundError('Workspace root folder not found')
     folder = folder_service.create_folder(session, data)
     return success_payload(folder.to_dict())
 

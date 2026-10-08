@@ -121,6 +121,7 @@ jobs:
           RUN_OBJECT_DELETION_TESTS: '1'
           RUN_CONTAINER_DELETION_TESTS: '1'
           RUN_WORKSPACE_LIST_TESTS: '1'
+          RUN_FOLDER_TREE_TESTS: '1'
         run: >-
           python -m pytest -o addopts='' -q
           tests/integration/test_migrations.py
@@ -136,6 +137,7 @@ jobs:
           tests/integration/test_file_object_deletion.py
           tests/integration/test_runtime_container_deletion.py
           tests/integration/test_workspace_runtime_list.py
+          tests/integration/test_folder_tree.py
       - name: Authenticated uploads, object recovery and indexing workflows
         working-directory: backend
         env:
