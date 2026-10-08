@@ -35,7 +35,7 @@ async def check():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_fastapi_app()),
                                 base_url='https://cloud.example.test:8443') as client:
         response = await client.get('/api/health')
-        assert response.status_code == 200 and response.json() == {'status': 'ok'}
+        assert response.status_code == 200 and response.json() == {'success': True, 'data': {'status': 'ok'}}
     app = get_mcp_app(mcp)
     async with mcp.session_manager.run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),

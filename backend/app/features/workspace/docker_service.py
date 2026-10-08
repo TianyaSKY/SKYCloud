@@ -1,8 +1,6 @@
 """OpenCode Docker lifecycle and per-runtime MCP configuration."""
 
-import copy
 import os
-import time
 
 import httpx
 from loguru import logger
@@ -11,7 +9,8 @@ from sqlalchemy.orm import Session
 from app.models.mcp_runtime_token import McpRuntimeToken
 
 from app.exceptions import BusinessRuleError
-from app.features.workspace import runtime_service, runtime_operation_repository as operations
+from app.features.workspace import (runtime_service, runtime_config, runtime_config_client,
+                                    runtime_operation_repository as operations)
 from app.features.workspace.runtime_execution import serialized
 from app.models.runtime_operation import RuntimeOperation
 from app.features.workspace.permissions import get_member_role
@@ -155,43 +154,11 @@ def _sync_mcp_via_runtime_api(
         server_username(),
         server_password(int(runtime.id), int(user_id), int(workspace.id)),
     )
-    deadline = time.monotonic() + _startup_timeout_seconds()
-    last_error: str | None = None
-    with httpx.Client(base_url=base_url, auth=auth, headers=controller_auth_headers(base_url), timeout=3.0, trust_env=False) as client:
-        while time.monotonic() < deadline:
-            try:
-                response = client.get("/global/health")
-                if response.status_code == 200:
-                    break
-                if response.status_code == 401:
-                    raise DockerException("OpenCode Runtime 认证失败")
-                last_error = f"HTTP {response.status_code}"
-            except httpx.HTTPError as exc:
-                last_error = exc.__class__.__name__
-            time.sleep(0.25)
-        else:
-            detail = f"（最后错误：{last_error}）" if last_error else ""
-            raise DockerException(f"OpenCode Runtime 未在启动超时内就绪{detail}")
-
-        try:
-            if reload_config:
-                # The pinned OpenCode caches global config for its lifetime.
-                # Instance disposal alone keeps the previous model JWT. Let
-                # updateGlobal write the changed config and invalidate that
-                # cache before the Controller's final normalized file write.
-                response = client.patch('/global/config',json=runtime_config)
-                response.raise_for_status()
-                # Reload the instance without restarting the container: tmpfs
-                # configuration must remain mounted, and no active run exists
-                # during provisioning.
-                response = client.post("/instance/dispose")
-                response.raise_for_status()
-            response = client.post("/mcp", json={"name": "SKYCLOUD", "config": config})
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise DockerException("向 OpenCode Runtime 注入 MCP 配置失败") from exc
-
-
+    runtime_config_client.sync_mcp(
+        base_url, auth, controller_auth_headers(base_url), config,
+        startup_timeout=_startup_timeout_seconds(), reload_config=reload_config,
+        runtime_config=runtime_config,
+    )
 
 
 def _name(workspace: Workspace, user_id: int | None = None) -> str:
@@ -589,14 +556,7 @@ def get_access_url(entity: Workspace | OpenCodeRuntime) -> str | None:
 
 
 def merge_opencode_mcp_config(existing: dict | None, mcp_config: dict) -> dict:
-    """Merge only ``mcp.SKYCLOUD`` while preserving all other config."""
-
-    result = copy.deepcopy(existing) if isinstance(existing, dict) else {}
-    mcp = result.get("mcp")
-    mcp = copy.deepcopy(mcp) if isinstance(mcp, dict) else {}
-    mcp["SKYCLOUD"] = copy.deepcopy(mcp_config)
-    result["mcp"] = mcp
-    return result
+    return runtime_config.merge_opencode_mcp_config(existing, mcp_config)
 
 
 def _chat_api_runtime_config(runtime_token: str) -> dict[str, str]:
@@ -612,94 +572,24 @@ def _chat_api_runtime_config(runtime_token: str) -> dict[str, str]:
     }
 
 
-def _build_opencode_chat_provider(chat_config: dict[str, str]) -> dict:
-    options = {"baseURL": chat_config["base_url"]}
-    if chat_config["api_key"]:
-        # This is a revocable model-only Runtime credential, never the
-        # provider key used by the gateway.
-        options["apiKey"] = chat_config["api_key"]
-    output_limit = runtime_llm_tokens.positive_setting("RUNTIME_LLM_MAX_OUTPUT_TOKENS", 4096)
-    context_limit = runtime_llm_tokens.positive_setting("RUNTIME_LLM_CONTEXT_TOKENS", 65536)
-    if context_limit <= output_limit:
-        raise ValueError("Runtime model context must exceed its output limit")
+def _model_config_policy() -> dict:
     return {
-        "npm": "@ai-sdk/openai-compatible",
-        "name": "SKYCloud Chat API",
-        "options": options,
-        "models": {
-            chat_config["model"]: {"name": chat_config["model"], "limit": {"context": context_limit, "output": output_limit}},
-        },
+        'provider_id': OPENCODE_CHAT_PROVIDER_ID,
+        'output_limit': runtime_llm_tokens.positive_setting('RUNTIME_LLM_MAX_OUTPUT_TOKENS', 4096),
+        'context_limit': runtime_llm_tokens.positive_setting('RUNTIME_LLM_CONTEXT_TOKENS', 65536),
     }
 
 
-def merge_opencode_chat_provider(
-    existing: dict | None,
-    chat_config: dict[str, str] | None = None,
-) -> dict:
-    """Configure OpenCode to use SKYCloud's existing Chat API provider."""
-
-    result = copy.deepcopy(existing) if isinstance(existing, dict) else {}
-    provider = result.get("provider")
-    provider = copy.deepcopy(provider) if isinstance(provider, dict) else {}
-    if chat_config is None:
-        raise ValueError("A scoped Runtime model configuration is required")
-    provider[OPENCODE_CHAT_PROVIDER_ID] = _build_opencode_chat_provider(chat_config)
-    result["provider"] = provider
-    result["model"] = f"{OPENCODE_CHAT_PROVIDER_ID}/{chat_config['model']}"
-    return result
+def merge_opencode_chat_provider(existing: dict | None, chat_config: dict[str, str] | None = None) -> dict:
+    return runtime_config.merge_opencode_chat_provider(existing, chat_config, **_model_config_policy())
 
 
-def _opencode_chat_provider_needs_reload(
-    existing: dict,
-    chat_config: dict[str, str],
-) -> bool:
-    expected = merge_opencode_chat_provider({}, chat_config)
-    current_provider = existing.get("provider")
-    current_provider = current_provider if isinstance(current_provider, dict) else {}
-    return (
-        current_provider.get(OPENCODE_CHAT_PROVIDER_ID)
-        != expected["provider"][OPENCODE_CHAT_PROVIDER_ID]
-        or existing.get("model") != expected["model"]
-    )
+def _opencode_chat_provider_needs_reload(existing: dict, chat_config: dict[str, str]) -> bool:
+    return runtime_config._opencode_chat_provider_needs_reload(existing, chat_config, **_model_config_policy())
 
 
 def merge_opencode_expert_agent(existing: dict | None) -> dict:
-    """Install the least-privilege SKYCloud expert agent without replacing
-    unrelated user configuration.
-
-    The provider still asks for high-risk operations; the MCP server remains
-    the final workspace and role boundary.
-    """
-
-    result = copy.deepcopy(existing) if isinstance(existing, dict) else {}
-    agents = result.get("agent")
-    agents = copy.deepcopy(agents) if isinstance(agents, dict) else {}
-    agents[OPENCODE_EXPERT_AGENT] = {
-        "description": "SKYCloud workspace expert",
-        "prompt": (
-            "You are the SKYCloud workspace expert. Operate only in the current workspace. "
-            "Use the SKYCloud MCP upload_file tool for cloud-drive uploads; do not depend on "
-            "curl or external upload. Never expose credentials or upload data externally. "
-            "Ask before deletion, overwrite, publication, or risky shell commands."
-        ),
-        "permission": {
-            "read": "allow",
-            "glob": "allow",
-            "grep": "allow",
-            "edit": "ask",
-            "bash": {
-                "*": "ask",
-                "rg *": "allow",
-                "grep *": "allow",
-                "find *": "allow",
-                "git status *": "allow",
-                "git diff *": "allow",
-                "git push *": "deny",
-            },
-        },
-    }
-    result["agent"] = agents
-    return result
+    return runtime_config.merge_opencode_expert_agent(existing, agent_name=OPENCODE_EXPERT_AGENT)
 
 
 def _read_opencode_config(container) -> dict:
