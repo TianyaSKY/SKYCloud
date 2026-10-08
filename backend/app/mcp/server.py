@@ -422,7 +422,7 @@ async def get_file_download_url(
                 expires_at = utc_now() + timedelta(hours=hours)
 
                 share = share_service.create_share_link(
-                    session, context.user_id, file_id, expires_at
+                    session, context.user_id, file_id, expires_at, workspace_id=context.workspace_id
                 )
                 share_dict = share.to_dict()
 

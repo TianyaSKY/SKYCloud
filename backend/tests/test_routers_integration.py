@@ -486,21 +486,21 @@ class TestShareRouter:
         mock_share.to_dict.return_value = {"id": 1}
         payload = ShareCreateRequest(file_id=1)
         with patch("app.features.share.service.create_share", return_value=mock_share):
-            result = create_share(payload, test_user, session)
+            result = create_share(payload, test_user, lambda: nullcontext(session))
         assert result == {"success": True, "data": {"id": 1}}
 
     def test_get_my_shares(self, session, test_user):
         from app.features.share.router import get_my_shares
 
         with patch("app.features.share.service.get_my_shares", return_value=[]):
-            result = get_my_shares(test_user, session)
+            result = get_my_shares(test_user, lambda: nullcontext(session))
         assert result == {"success": True, "data": []}
 
     def test_cancel_share(self, session, test_user):
         from app.features.share.router import cancel_share
 
         with patch("app.features.share.service.cancel_share_for_user"):
-            result = cancel_share(1, test_user, session)
+            result = cancel_share(1, test_user, lambda: nullcontext(session))
         assert "message" in result["data"]
 
 

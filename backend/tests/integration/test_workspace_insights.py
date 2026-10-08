@@ -654,3 +654,73 @@ async def test_mcp_write_authorization_holds_role_lock_at_dispatch(postgres, mon
             assert db.scalar(text('SELECT count(*) FROM upload_reservations')) == 0
     finally:
         reset_mcp_context(token)
+
+
+async def test_share_publication_locks_membership_and_file_and_preserves_owner_cancellation(postgres):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from sqlalchemy.exc import DBAPIError
+    from app.features.share import router, service
+    from app.api.dependencies import get_current_user
+    from app.infra.extensions import get_session_factory
+    from app.exceptions import register_exception_handlers
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'viewer')"))
+        db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id) VALUES (1,'original','original',3,'success',1,1)"))
+    factory = sessionmaker(bind=postgres)
+    with factory() as owned:
+        share = service.create_share_link(owned, 1, 1, commit=False)
+        for statement in ['DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1',
+                          "UPDATE files SET name='concurrent' WHERE id=1", 'DELETE FROM files WHERE id=1']:
+            with postgres.connect() as independent:
+                independent.execute(text("SET LOCAL lock_timeout='100ms'"))
+                with pytest.raises(DBAPIError) as error:
+                    independent.execute(text(statement))
+                assert error.value.orig.pgcode == '55P03'
+                independent.rollback()
+        owned.commit()
+        share_id, token = share.id, share.token
+    with postgres.begin() as independent:
+        independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
+    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_session_factory] = lambda: factory
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+        assert (await client.post('/share', json={'file_id': 1})).status_code == 403
+        mine = await client.get('/share/my')
+        assert mine.status_code == 200 and mine.json()['data'][0]['id'] == share_id
+        assert (await client.delete('/share/' + str(share_id))).status_code == 200
+        assert (await client.get('/share/' + token)).status_code == 404
+    with postgres.connect() as db:
+        assert db.scalar(text('SELECT count(*) FROM shares')) == 0
+        assert db.scalar(text('SELECT count(*) FROM files')) == 1
+
+
+async def test_mcp_share_publication_rejects_concurrent_workspace_change(postgres, monkeypatch):
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'selected',1),(2,'other',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'viewer'),(2,1,'viewer')"))
+        db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id) VALUES (1,'original','original',3,'success',1,1)"))
+    monkeypatch.setattr(server, 'SessionLocal', sessionmaker(bind=postgres))
+    authorized = server.file_service.get_authorized_file
+    def move_after_read(session, **kwargs):
+        file = authorized(session, **kwargs)
+        with postgres.begin() as independent:
+            independent.execute(text('UPDATE files SET workspace_id=2 WHERE id=1'))
+        return file
+    monkeypatch.setattr(server.file_service, 'get_authorized_file', move_after_read)
+    token = set_mcp_context(McpRequestContext(1, 1, 'viewer'))
+    try:
+        result = json.loads(await server.get_file_download_url(1))
+        assert result == {'error': 'Permission denied'}
+        with postgres.connect() as db:
+            assert db.scalar(text('SELECT workspace_id FROM files WHERE id=1')) == 2
+            assert db.scalar(text('SELECT count(*) FROM shares')) == 0
+    finally:
+        reset_mcp_context(token)

@@ -6,7 +6,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.api.dependencies import get_current_user, require_admin
 from app.exceptions import register_exception_handlers
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 from app.features.inbox import router as inbox
 from app.features.share import router as share
 from app.features.sys_dict import router as settings
@@ -18,6 +19,7 @@ def client(session, test_user):
     app=FastAPI(); register_exception_handlers(app)
     for router in (inbox.router,share.router,settings.router): app.include_router(router)
     app.dependency_overrides[get_db]=lambda:session
+    app.dependency_overrides[get_session_factory]=lambda:sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     app.dependency_overrides[get_current_user]=lambda:test_user
     app.dependency_overrides[require_admin]=lambda:test_user
     return TestClient(app,raise_server_exceptions=False)

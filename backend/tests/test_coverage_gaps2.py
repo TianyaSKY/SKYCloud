@@ -1,4 +1,5 @@
 """补充覆盖率：query_rewrite / rerank / chat router / share router / exceptions / mcp init。"""
+from contextlib import nullcontext
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -170,7 +171,7 @@ class TestShareRouter:
         other_user.role = "common"
         from app.exceptions import ResourceNotFoundError
         with pytest.raises(ResourceNotFoundError):
-            cancel_share(share.id, other_user, session)
+            cancel_share(share.id, other_user, lambda: nullcontext(session))
 
 
 # ---------------------------------------------------------------------------

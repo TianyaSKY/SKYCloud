@@ -72,11 +72,17 @@ def check_role_level(role: str | WorkspaceRole, min_role: str) -> bool:
     return ROLE_LEVEL.get(role_value, 0) >= ROLE_LEVEL.get(min_role, 0)
 
 
-def assert_can_write_locked(session: Session, workspace_id: int, user_id: int) -> None:
-    """Hold current edit authorization through the caller's mutation transaction."""
+def assert_member_locked(session: Session, workspace_id: int, user_id: int) -> WorkspaceRole:
+    """Hold current membership through the caller's publication transaction."""
     from app.features.workspace.access_repository import lock_write_identity
     member = lock_write_identity(session, workspace_id, user_id)
     if member is None:
         raise PermissionDeniedError("您不是该工作空间的成员")
-    if member.role not in ('editor', 'admin'):
+    return WorkspaceRole(member.role)
+
+
+def assert_can_write_locked(session: Session, workspace_id: int, user_id: int) -> None:
+    """Hold current edit authorization through the caller's mutation transaction."""
+    role = assert_member_locked(session, workspace_id, user_id)
+    if role not in (WorkspaceRole.editor, WorkspaceRole.admin):
         raise PermissionDeniedError("需要编辑者或管理员权限")

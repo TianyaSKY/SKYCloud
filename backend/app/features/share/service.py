@@ -6,21 +6,27 @@ from typing import cast
 
 from sqlalchemy.orm import Session
 
-from app.exceptions import BusinessRuleError, ResourceNotFoundError
+from app.exceptions import BusinessRuleError, ResourceNotFoundError, PermissionDeniedError
 from app.infra.datetime_utils import utc_now, to_utc_datetime
 from app.infra.storage import get_storage_client
 from app.models.file import File
 from app.models.share import Share
-from app.features.workspace.permissions import assert_member
+from app.features.workspace.permissions import assert_member_locked
+from app.features.share import repository
 
 
-def create_share_link(session: Session, user_id, file_id, expires_at=None, *, commit=True):
+def create_share_link(session: Session, user_id, file_id, expires_at=None, *, commit=True, workspace_id=None):
     # Both REST and MCP callers must be current members of the file workspace.
-    file = session.get(File, file_id)
-    if not file:
+    current_workspace_id = repository.file_workspace_id(session, file_id)
+    if workspace_id is not None and current_workspace_id != workspace_id:
+        raise PermissionDeniedError("Permission denied")
+    workspace_id = current_workspace_id
+    if workspace_id is None:
         raise ValueError("File not found")
-
-    assert_member(session, file.workspace_id, user_id)
+    assert_member_locked(session, workspace_id, user_id)
+    file = repository.lock_scoped_file(session, file_id, workspace_id)
+    if file is None:
+        raise ValueError("File not found")
 
     share = Share(
         user_id=user_id,
