@@ -11,7 +11,8 @@ from app.features.auth.router import router as auth_router
 from app.features.auth.service import generate_token
 from app.features.auth.user_service import update_user
 from app.features.file.router import router as file_router
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture
@@ -21,6 +22,7 @@ def client(session):
     app.include_router(auth_router, prefix="/api")
     app.include_router(file_router, prefix="/api")
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
 
@@ -239,7 +241,7 @@ def test_mcp_server_errors_do_not_reveal_internal_details(kind):
 
 async def test_vector_search_failure_is_sanitized(session, test_workspace):
     from app.features.file.service import search_files
-    with patch("app.features.file.service.get_embedding_model_config", side_effect=RuntimeError("private-provider-key")):
+    with patch("app.features.file.search_service.get_embedding_model_config", side_effect=RuntimeError("private-provider-key")):
         result = await search_files(session, test_workspace.id, "query", search_type="vector")
     assert result["error"] == "Vector search is temporarily unavailable"
     assert "private-provider-key" not in str(result)

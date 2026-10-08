@@ -11,6 +11,7 @@ from app.mcp import server
 from app.mcp.context import McpRequestContext, set_mcp_context, reset_mcp_context
 from entry.migrate import upgrade
 from tests.integration.test_migrations import postgres
+from tests.integration.test_runtime_security import infrastructure
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_WORKSPACE_INSIGHTS_TESTS") != "1",
                                reason="Opt-in isolated PostgreSQL workspace insights")
@@ -139,3 +140,150 @@ def test_remaining_reads_revalidate_before_warm_cache(postgres,monkeypatch,opera
         cached.assert_not_called()
     finally:
         reset_mcp_context(token)
+
+
+@pytest.mark.parametrize('mode', ['fuzzy', 'vector'])
+async def test_search_scope_and_committed_revocation_before_cached_or_vector_reads(postgres, infrastructure, monkeypatch, mode):
+    from unittest.mock import AsyncMock
+    from app.exceptions import PermissionDeniedError
+    from app.features.file import search_service
+    from app.infra import cache
+    upgrade(postgres)
+    near = [1.0] + [0.0]*1023
+    far = [0.0, 1.0] + [0.0]*1022
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'search-reader','x','common'),(2,'search-other','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1),(2,'other',2)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'viewer'),(2,2,'admin')"))
+        db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id,vector_info) VALUES (1,'target','one',1,'success',1,1,CAST(:near AS vector)),(2,'target','foreign',1,'success',2,2,CAST(:near AS vector)),(3,'other','far',1,'success',1,1,CAST(:far AS vector))"), {'near':json.dumps(near),'far':json.dumps(far)})
+    monkeypatch.setattr(server, 'SessionLocal', sessionmaker(bind=postgres))
+    monkeypatch.setattr(cache, 'redis_client', infrastructure['redis'])
+    monkeypatch.setattr(search_service, 'embedding_desc', AsyncMock(return_value=near))
+    monkeypatch.setattr(search_service, 'get_embedding_model_config', lambda: {})
+    token = set_mcp_context(McpRequestContext(1,1,'viewer'))
+    try:
+        first = json.loads(await server.search_files('target', search_type=mode))
+        expected = [1] if mode == 'fuzzy' else [1,3]
+        assert [item['id'] for item in first['items']] == expected
+        assert first['total'] == len(expected)
+        assert all(item['workspace_id'] == 1 for item in first['items'])
+        if mode == 'fuzzy':
+            assert infrastructure['redis'].exists('search:fuzzy:1:target:1:10:fuzzy') == 1
+        with postgres.begin() as remover:
+            remover.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
+        with pytest.raises(PermissionDeniedError):
+            await server.search_files('target', search_type=mode)
+    finally:
+        reset_mcp_context(token)
+
+
+async def test_worker_cleanup_invalidation_preserves_commit_and_rolls_back_uncommitted_work(postgres, monkeypatch):
+    """Explicit close fault seam; real PG transactions and SQLAlchemy invalidation."""
+    from sqlalchemy.orm import Session
+    from sqlalchemy.exc import StatementError
+    from loguru import logger
+    upgrade(postgres)
+    private = 'private-cleanup-sql-sentinel'
+    class CloseFaultSession(Session):
+        def close(self):
+            raise StatementError(private, 'SELECT :password', {'password': private}, ValueError(private))
+    monkeypatch.setattr(server, 'SessionLocal', sessionmaker(bind=postgres, class_=CloseFaultSession))
+    records = []
+    sink = logger.add(lambda message: records.append(message.record))
+    original = RuntimeError('original business failure')
+    def committed(db):
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'committed','x','common')"))
+        db.commit()
+        return {'id': 1}
+    def uncommitted(db):
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (2,'uncommitted','x','common')"))
+        raise original
+    try:
+        assert await server._run_sync(committed) == {'id': 1}
+        assert postgres.pool.checkedout() == 0
+        with pytest.raises(RuntimeError) as caught:
+            await server._run_sync(uncommitted)
+        assert caught.value is original
+        assert postgres.pool.checkedout() == 0
+        with sessionmaker(bind=postgres)() as healthy:
+            assert healthy.execute(text('SELECT id FROM users ORDER BY id')).scalars().all() == [1]
+        assert postgres.pool.checkedout() == 0
+    finally:
+        logger.remove(sink)
+    assert len(records) == 2
+    assert all(private not in record['message'] and record['exception'] is None for record in records)
+
+
+@pytest.mark.parametrize('mode', ['fuzzy','semantic','status'])
+async def test_http_worker_reads_revalidate_committed_removal(postgres, infrastructure, monkeypatch, mode):
+    """Real SQL/cache behind explicit stale HTTP identity dependency snapshots."""
+    import httpx
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from fastapi import FastAPI
+    from app.api.dependencies import get_current_user, get_current_workspace
+    from app.exceptions import register_exception_handlers
+    from app.features.file import router, search_service
+    from app.infra.extensions import get_session_factory
+    from app.infra import cache
+    upgrade(postgres)
+    vector = [1.0] + [0.0]*1023
+    with postgres.begin() as sql:
+        sql.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        sql.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        sql.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'viewer')"))
+        sql.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id,vector_info) VALUES (1,'target','one',1,'success',1,1,CAST(:vector AS vector))"),{'vector':json.dumps(vector)})
+    monkeypatch.setattr(cache,'redis_client',infrastructure['redis'])
+    monkeypatch.setattr(search_service,'embedding_desc',AsyncMock(return_value=vector))
+    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_current_workspace] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
+    path = '/files/process_status' if mode == 'status' else '/files/search'
+    params = {} if mode == 'status' else {'q':'target','type':mode}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
+        first = await client.get(path,params=params)
+        assert first.status_code == 200, first.text
+        if mode == 'status':
+            assert first.json()['data'] == {'处理中':0,'成功':1,'失败':0}
+        else:
+            assert [row['id'] for row in first.json()['data']['items']] == [1]
+        if mode == 'fuzzy':
+            assert infrastructure['redis'].exists('search:fuzzy:1:target:1:10:fuzzy') == 1
+        with postgres.begin() as sql:
+            sql.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
+        denied = await client.get(path,params=params)
+        assert denied.status_code == 403, denied.text
+        assert denied.json()['success'] is False
+
+
+async def test_http_auth_fresh_role_overrides_cached_admin_and_revokes_version(postgres,infrastructure,monkeypatch):
+    import httpx
+    from fastapi import FastAPI,Depends
+    from app.api.dependencies import require_admin
+    from app.infra.extensions import get_db,get_session_factory
+    from app.features.auth.service import generate_token
+    from app.infra import cache
+    upgrade(postgres)
+    with postgres.begin() as sql:
+        sql.execute(text("INSERT INTO users(id,username,password_hash,role,auth_version) VALUES (1,'admin-cache','x','admin',0)"))
+    monkeypatch.setattr(cache,'redis_client',infrastructure['redis'])
+    factory=sessionmaker(bind=postgres)
+    app=FastAPI()
+    def database():
+        with factory() as db:yield db
+    app.dependency_overrides[get_db]=database
+    app.dependency_overrides[get_session_factory]=lambda:factory
+    @app.get('/admin-only')
+    async def admin(user=Depends(require_admin)):
+        return {'id':user.id}
+    headers={'Authorization':'Bearer '+generate_token(1)}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
+        assert (await client.get('/admin-only',headers=headers)).status_code==200
+        assert infrastructure['redis'].exists('user:profile:1')==1
+        with postgres.begin() as sql:
+            sql.execute(text("UPDATE users SET role='common' WHERE id=1"))
+        assert (await client.get('/admin-only',headers=headers)).status_code==403
+        with postgres.begin() as sql:
+            sql.execute(text('UPDATE users SET auth_version=1 WHERE id=1'))
+        assert (await client.get('/admin-only',headers=headers)).status_code==401

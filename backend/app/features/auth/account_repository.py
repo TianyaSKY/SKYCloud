@@ -1,5 +1,5 @@
 """Account lifecycle SQL using the caller's Session and transaction."""
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.models.user import User
@@ -21,3 +21,14 @@ def user_runtimes(session: Session, user_id: int) -> list[OpenCodeRuntime]:
 
 def delete_account(session: Session, user_id: int) -> None:
     session.execute(delete(User).where(User.id == user_id).execution_options(synchronize_session='fetch'))
+
+
+def current_role(session: Session, user_id: int) -> str | None:
+    """Read the current role column without cached profile/ORM identity state."""
+    return session.scalar(select(User.role).where(User.id == user_id))
+
+
+def set_avatar(session: Session, user_id: int, avatar_url: str) -> bool:
+    """Stage account avatar metadata in the caller's publication transaction."""
+    result = session.execute(update(User).where(User.id == user_id).values(avatar=avatar_url))
+    return result.rowcount == 1

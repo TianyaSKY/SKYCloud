@@ -14,7 +14,7 @@ from app.models.share import Share
 from app.features.workspace.permissions import assert_member
 
 
-def create_share_link(session: Session, user_id, file_id, expires_at=None):
+def create_share_link(session: Session, user_id, file_id, expires_at=None, *, commit=True):
     # Both REST and MCP callers must be current members of the file workspace.
     file = session.get(File, file_id)
     if not file:
@@ -28,7 +28,10 @@ def create_share_link(session: Session, user_id, file_id, expires_at=None):
         expires_at=to_utc_datetime(expires_at)
     )
     session.add(share)
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     return share
 
 

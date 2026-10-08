@@ -197,7 +197,8 @@ def test_inline_mcp_upload_rejects_encoded_excess_before_decoding(monkeypatch):
     from app.mcp import server
     monkeypatch.setattr(server, 'MCP_INLINE_UPLOAD_MAX_BYTES', 3)
     decoder = MagicMock(side_effect=AssertionError('Oversized input was decoded'))
-    monkeypatch.setattr(server.base64, 'b64decode', decoder)
+    from app.mcp import inline_upload
+    monkeypatch.setattr(inline_upload.base64, 'b64decode', decoder)
     with pytest.raises(ValueError, match='exceeds'):
         server._inline_upload_adapter('x', 'eHh4eHh4', 'base64', None)
     decoder.assert_not_called()

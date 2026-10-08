@@ -52,3 +52,35 @@ def test_cleanup_does_not_touch_legacy_files_new_stages_or_symlinks(tmp_path):
     assert legacy.read_bytes() == b'keep'
     assert (outside / 'important').read_bytes() == b'keep'
     assert stage.directory.exists()
+
+
+def test_constructor_fault_after_actual_lock_releases_lease(tmp_path,monkeypatch):
+    import pytest
+    from app.infra import upload_staging
+    lock=upload_staging._lock
+    handles=[]
+    original=OSError('private-lease-initialization-fault')
+    def fault(handle):
+        lock(handle);handles.append(handle)
+        raise original
+    monkeypatch.setattr(upload_staging,'_lock',fault)
+    with pytest.raises(OSError) as caught:
+        StagedUpload(tmp_path,stage_id='a'*32)
+    assert caught.value is original and handles[0].closed
+    monkeypatch.setattr(upload_staging,'_lock',lock)
+    retry=StagedUpload(tmp_path,stage_id='a'*32)
+    retry.close()
+
+
+def test_directory_cleanup_fault_still_closes_real_handle(tmp_path,monkeypatch):
+    import pytest
+    from app.infra import upload_staging
+    stage=StagedUpload(tmp_path,stage_id='b'*32)
+    if os.name=='nt':pytest.skip('POSIX remove-before-close lifecycle')
+    def fail(*args,**kwargs):raise OSError('private-remove-fault')
+    with monkeypatch.context() as patch:
+        patch.setattr(upload_staging.shutil,'rmtree',fail)
+        with pytest.raises(OSError):stage.close()
+    assert stage.handle.closed
+    retry=StagedUpload(tmp_path,stage_id='b'*32)
+    retry.close()

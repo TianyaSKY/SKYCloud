@@ -257,3 +257,158 @@ def test_workspace_concurrency_applies_across_users(session, test_workspace, tes
     quota.reserve(session, wid, uid, 1)
     with pytest.raises(ConflictError, match='active'):
         quota.reserve(session, wid, other.id, 1)
+
+
+@pytest.mark.parametrize('failure_point', ['filename', 'staging', 'record'])
+@pytest.mark.parametrize('delete_failure', [False, True])
+def test_batch_preparation_failure_compensates_previous_uploads(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage, failure_point, delete_failure):
+    from app.exceptions import ServiceOperationError
+    uid, wid = test_user.id, test_workspace.id
+    monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path))
+    monkeypatch.setattr(quota, 'USER_CAPACITY', 10)
+    attribute = {'filename':'_generate_unique_filename', 'staging':'StagedUpload', 'record':'File'}[failure_point]
+    original = getattr(service, attribute)
+    calls = 0
+    def prepare(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError('private-preparation-fault')
+        return original(*args, **kwargs)
+    monkeypatch.setattr(service, attribute, prepare)
+    delete = mock_object_storage.delete_file
+    if delete_failure:
+        monkeypatch.setattr(mock_object_storage, 'delete_file', MagicMock(side_effect=OSError('private-storage-fault')))
+    with pytest.raises(ServiceOperationError, match='Failed to upload file'):
+        service.batch_create_files(session, [adapter(b'12345'), adapter(b'12345')], {'workspace_id':wid,'uploader_id':uid})
+    expected_attempts = 2 if failure_point == 'record' else 1
+    assert session.query(File).count() == 0
+    assert session.query(UploadReservation).filter_by(status='active').count() == 0
+    assert session.query(UploadDailyUsage).one().attempts == expected_attempts
+    assert list(tmp_path.iterdir()) == []
+    if delete_failure:
+        assert len(mock_object_storage.objects) == expected_attempts
+        with pytest.raises(BusinessRuleError, match='capacity'):
+            quota.reserve(session, wid, uid, 10)
+        session.rollback()
+        monkeypatch.setattr(mock_object_storage, 'delete_file', delete)
+        quota.cleanup(session, str(tmp_path / 'parts'), upload_root=str(tmp_path), storage_factory=lambda:mock_object_storage)
+    assert mock_object_storage.objects == {}
+    assert quota.reserve(session, wid, uid, 10).size == 10
+
+
+@pytest.mark.parametrize('kind', ['single', 'batch', 'multipart'])
+def test_upload_commit_ack_failure_preserves_committed_objects(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage, kind):
+    from app.exceptions import ServiceOperationError
+    uid, wid = test_user.id, test_workspace.id
+    monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
+    monkeypatch.setattr(service, 'MULTIPART_ROOT', str(tmp_path / 'parts'))
+    attribute = 'insert_files' if kind == 'batch' else 'insert_file'
+    insert = getattr(service.repository, attribute)
+    commit = session.commit
+    fail = False
+    def persist(*args, **kwargs):
+        nonlocal fail
+        result = insert(*args, **kwargs)
+        fail = True
+        return result
+    def acknowledged_commit():
+        nonlocal fail
+        committed_file = fail
+        fail = False
+        commit()
+        if committed_file:
+            raise OSError('private-commit-acknowledgement-fault')
+    monkeypatch.setattr(service.repository, attribute, persist)
+    monkeypatch.setattr(session, 'commit', acknowledged_commit)
+    with pytest.raises(ServiceOperationError):
+        if kind == 'single':
+            service.create_file(session, adapter(b'12345'), {'workspace_id':wid,'uploader_id':uid})
+        elif kind == 'batch':
+            service.batch_create_files(session, [adapter(b'12345'), adapter(b'67890')], {'workspace_id':wid,'uploader_id':uid})
+        else:
+            rid = service.init_multipart_upload(session, wid, uid, {'filename':'x','total_size':5})['upload_id']
+            service.save_multipart_chunk(session, uid, wid, rid, 0, adapter(b'12345'))
+            service.complete_multipart_upload(session, wid, uid, rid)
+    expected = 2 if kind == 'batch' else 1
+    session.expire_all()
+    files = session.query(File).all()
+    assert len(files) == expected
+    assert len(mock_object_storage.objects) == expected
+    assert all(mock_object_storage.objects[file.file_path] in [b'12345', b'67890'] for file in files)
+    rows = session.query(UploadReservation).all()
+    assert len(rows) == expected and all(row.status == 'completed' for row in rows)
+    assert all(row.details['object_name'] in mock_object_storage.objects for row in rows)
+    quota.cleanup(session, service.MULTIPART_ROOT, upload_root=service.UPLOAD_FOLDER, storage_factory=lambda:mock_object_storage)
+    assert len(mock_object_storage.objects) == expected
+    assert not (tmp_path / 'uploads' / '.staging').exists()
+
+
+@pytest.mark.parametrize('failure',['share','profile','ack'])
+def test_avatar_publication_metadata_commits_together(session,test_workspace,test_user,tmp_path,monkeypatch,mock_object_storage,failure):
+    from app.features.auth import account_repository
+    from app.features.share import service as shares
+    from app.models.share import Share
+    from app.models.file_task_outbox import FileTaskOutbox
+    from app.exceptions import ServiceOperationError
+    uid=test_user.id
+    monkeypatch.setattr(service,'UPLOAD_FOLDER',str(tmp_path))
+    test_user.avatar='/existing-avatar';session.commit()
+    if failure in ['share','profile']:
+        target,attribute=(shares,'create_share_link') if failure=='share' else (account_repository,'set_avatar')
+        monkeypatch.setattr(target,attribute,MagicMock(side_effect=RuntimeError('private-avatar-publication-fault')))
+    else:
+        insert=service.repository.insert_file
+        commit=session.commit
+        fail=False
+        def persist(*args,**kwargs):
+            nonlocal fail
+            result=insert(*args,**kwargs);fail=True
+            return result
+        def acknowledgement():
+            nonlocal fail
+            published=fail;fail=False;commit()
+            if published:raise OSError('private-avatar-ack-fault')
+        monkeypatch.setattr(service.repository,'insert_file',persist)
+        monkeypatch.setattr(session,'commit',acknowledgement)
+    with pytest.raises(ServiceOperationError):
+        service.upload_avatar(session,adapter(b'avatar'),uid)
+    session.expire_all()
+    expected=int(failure=='ack')
+    assert session.query(File).count()==expected
+    assert session.query(Share).count()==expected
+    assert session.query(FileTaskOutbox).count()==expected
+    assert len(mock_object_storage.objects)==expected
+    row=session.query(UploadReservation).one()
+    assert row.status==('completed' if expected else 'cancelled')
+    current=session.get(User,uid)
+    assert current.avatar==('/api/share/'+session.query(Share).one().token if expected else '/existing-avatar')
+    assert session.query(UploadDailyUsage).one().attempts==1
+
+
+@pytest.mark.parametrize('business_failure',[False,True])
+def test_staging_close_fault_preserves_business_outcome(session,test_workspace,test_user,tmp_path,monkeypatch,mock_object_storage,business_failure):
+    from loguru import logger
+    monkeypatch.setattr(service,'UPLOAD_FOLDER',str(tmp_path))
+    close=service.StagedUpload.close
+    closed=[]
+    private='private-staging-close-fault'
+    def fail(stage):
+        close(stage);closed.append(stage.handle.closed)
+        raise OSError(private)
+    monkeypatch.setattr(service.StagedUpload,'close',fail)
+    original=BusinessRuleError('original metadata rule')
+    if business_failure:monkeypatch.setattr(service.repository,'insert_file',MagicMock(side_effect=original))
+    records=[];sink=logger.add(lambda message:records.append(message.record))
+    try:
+        if business_failure:
+            with pytest.raises(BusinessRuleError) as caught:
+                service.create_file(session,adapter(b'x'),{'workspace_id':test_workspace.id,'uploader_id':test_user.id})
+            assert caught.value is original
+        else:
+            assert service.create_file(session,adapter(b'x'),{'workspace_id':test_workspace.id,'uploader_id':test_user.id}).id
+    finally:logger.remove(sink)
+    assert closed==[True]
+    assert session.query(File).count()==int(not business_failure)
+    assert len(mock_object_storage.objects)==int(not business_failure)
+    assert all(private not in r['message'] and r['exception'] is None for r in records)

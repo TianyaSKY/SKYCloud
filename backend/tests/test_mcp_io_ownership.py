@@ -10,7 +10,8 @@ import pytest
 from fastapi import FastAPI
 
 from app.exceptions import PermissionDeniedError
-from app.mcp import server
+from app.mcp import server, authentication
+from app.features.file import search_service
 from app.mcp.context import McpRequestContext, get_optional_mcp_context, set_mcp_context, reset_mcp_context
 
 
@@ -31,7 +32,7 @@ async def test_slow_mcp_auth_allows_another_http_request_and_closes_session(monk
         entered.set()
         assert release.wait(5)
         return McpRequestContext(1, 2, 'viewer')
-    monkeypatch.setattr(server, 'SessionLocal', Session)
+    monkeypatch.setattr(authentication, 'SessionLocal', Session)
     monkeypatch.setattr(server.JWTAuthMiddleware, '_resolve_context', staticmethod(resolve))
     app = FastAPI()
     app.add_middleware(server.JWTAuthMiddleware)
@@ -82,10 +83,10 @@ async def test_mcp_search_worker_owned_session_scope_and_revocation(monkeypatch,
         return {'items': [{'id': 9}], 'total': 1}
     monkeypatch.setattr(server, 'SessionLocal', Session)
     monkeypatch.setattr(server, 'assert_member', membership)
-    monkeypatch.setattr(server.file_service, '_search_files_fuzzy', fetch)
-    monkeypatch.setattr(server.file_service, '_search_files_vector_by_embedding', fetch)
-    monkeypatch.setattr(server.file_service, 'embedding_desc', AsyncMock(return_value=[0.1]))
-    monkeypatch.setattr(server.file_service, 'get_embedding_model_config', lambda: {})
+    monkeypatch.setattr(search_service, '_search_files_fuzzy', fetch)
+    monkeypatch.setattr(search_service, '_search_files_vector_by_embedding', fetch)
+    monkeypatch.setattr(search_service, 'embedding_desc', AsyncMock(return_value=[0.1]))
+    monkeypatch.setattr(search_service, 'get_embedding_model_config', lambda: {})
     token = set_mcp_context(McpRequestContext(1, 2, 'viewer'))
     try:
         if revoked:

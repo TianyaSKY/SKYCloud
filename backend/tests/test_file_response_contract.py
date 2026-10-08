@@ -8,7 +8,8 @@ from app.api.dependencies import get_current_user, get_current_workspace
 from app.exceptions import register_exception_handlers
 from app.features.file import router as files
 from app.features.folder import router as folders
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 from app.models.file import File
 from app.models.folder import Folder
 
@@ -21,6 +22,7 @@ def contract(session, test_user, test_workspace):
     app = FastAPI(); register_exception_handlers(app)
     app.include_router(files.router); app.include_router(folders.router)
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     app.dependency_overrides[get_current_user] = lambda: test_user
     app.dependency_overrides[get_current_workspace] = lambda: test_workspace
     return TestClient(app, raise_server_exceptions=False), row, root

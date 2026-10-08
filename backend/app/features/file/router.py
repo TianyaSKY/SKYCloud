@@ -36,10 +36,11 @@ from app.features.file.schemas import (
     MultipartInitRequest,
     RetryEmbeddingRequest,
 )
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
 from app.infra.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
 from app.infra.storage import get_storage_client
 from app.features.file import service as file_service
+from app.features.file.avatar_upload import upload_avatar_owned
 
 router = APIRouter(tags=["file"])
 
@@ -189,12 +190,13 @@ async def search_files(
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=10, ge=1, le=100),
         type: str = Query(default="fuzzy", pattern="^(fuzzy|semantic)$"),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """文件名模糊或语义检索；空查询直接返回空页避免全表扫描。"""
     if not q:
         return success_payload({"items": [], "total": 0, "page": page, "page_size": page_size})
-    result = await file_service.search_files(session, workspace.id, q, page, page_size, type)
+    result = await file_service.search_files(None, workspace.id, q, page, page_size, type,
+                                             session_factory=session_factory, user_id=current_user.id)
     if result.get('error'):
         from app.exceptions import ServiceOperationError
         raise ServiceOperationError('File search unavailable')
@@ -264,16 +266,15 @@ async def upload_avatar(
         avatar: UploadFile | None = FastAPIFile(default=None),
         avatar_base64: str | None = Form(default=None),
         current_user=Depends(get_current_user),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """上传用户头像；兼容 multipart 文件、form base64 与 JSON body。"""
-    adapter = None
+    avatar_text = None
     if avatar is not None:
         if not avatar.filename:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="No avatar file"
             )
-        adapter = FastAPIUploadAdapter(avatar)
     else:
         avatar_text = (avatar_base64 or "").strip()
         if not avatar_text and request.headers.get("content-type", "").startswith(
@@ -290,10 +291,10 @@ async def upload_avatar(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="No avatar data"
             )
-        adapter = Base64UploadAdapter(avatar_text)
 
     result = await run_in_threadpool(
-        file_service.upload_avatar_for_user, session, current_user.id, current_user.role, id, adapter
+        upload_avatar_owned, session_factory, current_user.id, id,
+        upload=avatar, encoded=avatar_text
     )
     # 兼容旧前端字段名 avatar
     if result.get("avatar_url") and "avatar" not in result:
@@ -344,10 +345,11 @@ def rebuild_failed_indexes(
 async def process_status(
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(get_current_workspace),
-        session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ):
     """查询当前工作空间文件处理状态汇总（pending/processing 等）。"""
-    return success_payload(await file_service.process_status(session, workspace.id))
+    return success_payload(await file_service.process_status(None, workspace.id,
+                           session_factory=session_factory, user_id=current_user.id))
 
 
 # 必须放在所有 /files/* 具体路由之后，避免 {id} 匹配 list、search 等路径段

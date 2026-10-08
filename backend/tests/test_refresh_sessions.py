@@ -7,11 +7,12 @@ import pytest
 from fastapi import FastAPI, Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import update
+from sqlalchemy.orm import sessionmaker
 
 from app.features.auth import refresh_sessions as refresh
 from app.features.auth.router import router
 from app.api.dependencies import get_current_user
-from app.infra.extensions import get_db, SECRET_KEY
+from app.infra.extensions import get_db, get_session_factory, SECRET_KEY
 from app.models.user import User
 
 
@@ -20,6 +21,7 @@ def browser(session, test_user, monkeypatch):
     monkeypatch.setenv('APP_ORIGIN', 'http://app.skycloud.localhost')
     app = FastAPI(); app.include_router(router, prefix='/api')
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     @app.get('/api/protected')
     def protected(user=Depends(get_current_user)):
         return {'id': user.id}

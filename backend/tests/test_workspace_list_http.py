@@ -11,7 +11,8 @@ from app.features.auth.service import generate_token
 from app.features.workspace.router import router
 from app.features.workspace.service import create_workspace
 from app.infra.datetime_utils import beijing_now
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.mcp_runtime_token import McpRuntimeToken
 from runtime_controller.client import ControllerError
@@ -41,6 +42,7 @@ def test_http_list_has_constant_sql_and_controller_calls(session, test_user, adm
     session.expire_all()
     app = FastAPI(); app.include_router(router, prefix='/api')
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     controller = Mock()
     if state == 'outage':
         controller.user_snapshot.side_effect = ControllerError('offline')
@@ -63,7 +65,8 @@ def test_http_list_has_constant_sql_and_controller_calls(session, test_user, adm
     assert len([sql for sql in selects if 'FROM workspaces ' in sql]) == 1
     assert len(selects) <= 4, statements  # Includes actual authentication reads.
     data_statements = [sql for sql in statements if sql.lstrip().split()[0].upper() in {'SELECT', 'UPDATE', 'INSERT', 'DELETE'}]
-    assert len(data_statements) <= 5, statements  # Auth + joined list + two bulk updates.
+    assert sum(sql.lstrip().startswith("SELECT users.role") for sql in selects) == 1
+    assert len(data_statements) <= 6, statements  # Three auth reads + joined list + two bulk updates.
     rows = {row['id']: row for row in response.json()['data']['workspaces']}
     for workspace_id, (runtime_id, container_id) in expected.items():
         row = rows[workspace_id]

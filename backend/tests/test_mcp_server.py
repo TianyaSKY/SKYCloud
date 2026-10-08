@@ -144,8 +144,8 @@ class TestJWTAuthMiddleware:
         middleware = JWTAuthMiddleware(mock_app)
         scope = {"type": "http", "headers": [(b"authorization", b"Bearer valid_token")]}
 
-        with patch("app.mcp.server.SessionLocal") as mock_sl, \
-             patch("app.mcp.server.decode_token", return_value="42"):
+        with patch("app.mcp.authentication.SessionLocal") as mock_sl, \
+             patch("app.mcp.authentication.decode_token", return_value="42"):
             mock_session = MagicMock()
             mock_sl.return_value = mock_session
             await middleware(scope, None, None)
@@ -158,8 +158,8 @@ class TestJWTAuthMiddleware:
         middleware = JWTAuthMiddleware(mock_app)
         scope = {"type": "http", "headers": [(b"authorization", b"Bearer bad_token")]}
 
-        with patch("app.mcp.server.SessionLocal") as mock_sl, \
-             patch("app.mcp.server.decode_token", return_value="Invalid token"):
+        with patch("app.mcp.authentication.SessionLocal") as mock_sl, \
+             patch("app.mcp.authentication.decode_token", return_value="Invalid token"):
             mock_session = MagicMock()
             mock_sl.return_value = mock_session
             await middleware(scope, None, None)

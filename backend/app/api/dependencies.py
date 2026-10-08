@@ -10,7 +10,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
-from app.infra.extensions import SECRET_KEY, get_db
+from app.infra.extensions import SECRET_KEY, get_db, get_session_factory
+from app.api.authentication import resolve_http_user
+from fastapi.params import Depends as DependsParameter
+from contextlib import nullcontext
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.features.auth import user_service
@@ -22,6 +25,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 async def get_current_user(
         credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
         session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ) -> User:
     """解析当前请求用户；仅接受 Bearer 请求头。
 
@@ -43,35 +47,15 @@ async def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token!"
             )
-        # MCP 长效 token 可被主动吊销，不能只信 JWT 签名
-        if payload.get("type") == "mcp":
-            from app.mcp import token_service as mcp_token_service
-
-            if not await run_in_threadpool(mcp_token_service.get_active_mcp_token, session, token):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="MCP token is revoked or expired!",
-                )
-        elif payload.get("type") in {"mcp_runtime", "runtime_llm"}:
-            # Runtime credentials are intentionally accepted only by the
-            # dedicated MCP ASGI middleware.  They must not be able to call
-            # ordinary REST endpoints such as profile or MCP-token APIs.
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Runtime token is only valid for the scoped MCP endpoint",
-            )
-        elif payload.get("type") is None:
-            from app.features.auth.sessions import valid_session
-            if not await run_in_threadpool(valid_session, session, payload):
-                raise HTTPException(status_code=401, detail="Session revoked. Please log in again.")
-        else:
+        token_type = payload.get("type")
+        if token_type in {"mcp_runtime", "runtime_llm"}:
+            raise HTTPException(status_code=403, detail="Runtime token is only valid for the scoped MCP endpoint")
+        if token_type not in {None, "mcp"}:
             raise HTTPException(status_code=403, detail="Invalid token scope")
-        user_id = int(user_id)
-        current_user = await user_service.get_user(session, user_id)
-        if not current_user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found!"
-            )
+        # Direct legacy service tests may explicitly supply a borrowed Session.
+        # ASGI dependency resolution always supplies the real factory instead.
+        factory = (lambda: nullcontext(session)) if isinstance(session_factory, DependsParameter) else session_factory
+        current_user = await run_in_threadpool(resolve_http_user, factory, payload, token)
 
         return current_user
     except jwt.ExpiredSignatureError as exc:

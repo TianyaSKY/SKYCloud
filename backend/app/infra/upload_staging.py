@@ -6,6 +6,7 @@ UUID staging directories, and never scans historical files in the upload root.
 from contextlib import contextmanager
 
 from app.exceptions import ConflictError
+from loguru import logger
 
 import os
 from pathlib import Path
@@ -42,27 +43,42 @@ class StagedUpload:
         if self.directory.is_symlink():
             raise RuntimeError('Upload staging directory must not be a symlink')
         fd = os.open(self.directory / '.lease', os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
-        self.handle = os.fdopen(fd, 'r+b')
-        if os.fstat(fd).st_size == 0:
-            self.handle.write(b'\0')
-            self.handle.flush()
         try:
-            _lock(self.handle)
-        except (BlockingIOError, PermissionError):
-            self.handle.close()
-            raise ConflictError('Upload staging is busy')
-        # MIME guessing can still use the original extension.
-        extension = Path(filename).suffix
-        if not re.fullmatch(r'\.[A-Za-z0-9]{1,16}', extension):
-            extension = ''
-        self.path = str(self.directory / ('payload' + extension))
+            self.handle = os.fdopen(fd, 'r+b')
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                logger.warning('Upload lease descriptor close failed: error_type={}', type(exc).__name__)
+            raise
+        try:
+            if os.fstat(fd).st_size == 0:
+                self.handle.write(b'\0')
+                self.handle.flush()
+            try:
+                _lock(self.handle)
+            except (BlockingIOError, PermissionError) as exc:
+                raise ConflictError('Upload staging is busy') from exc
+            # MIME guessing can still use the original extension.
+            extension = Path(filename).suffix
+            if not re.fullmatch(r'\.[A-Za-z0-9]{1,16}', extension):
+                extension = ''
+            self.path = str(self.directory / ('payload' + extension))
+        except BaseException:
+            try:
+                self.handle.close()
+            except Exception as exc:
+                logger.warning('Upload lease close failed: error_type={}', type(exc).__name__)
+            raise
 
     def close(self):
         if self.handle.closed:
             return
-        if os.name != 'nt':
-            shutil.rmtree(self.directory, ignore_errors=True)
-        self.handle.close()
+        try:
+            if os.name != 'nt':
+                shutil.rmtree(self.directory, ignore_errors=True)
+        finally:
+            self.handle.close()
         if os.name == 'nt':
             shutil.rmtree(self.directory, ignore_errors=True)
         try:
@@ -130,3 +146,11 @@ def staging_guard(upload_root, stage_id):
     finally:
         if handle is not None:
             handle.close()
+
+
+def close_staging_safely(staging):
+    """Cleanup must not replace a committed result or the upload's business error."""
+    try:
+        staging.close()
+    except Exception as exc:
+        logger.warning('Upload staging cleanup deferred: error_type={}', type(exc).__name__)

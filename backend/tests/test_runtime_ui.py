@@ -9,7 +9,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import update
 
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.user import User
 from app.models.workspace import WorkspaceMember
@@ -44,6 +45,7 @@ def ui(session, test_user, test_workspace, monkeypatch):
     store = CredentialStore(); monkeypatch.setattr(ui_tickets, 'redis_client', store)
     app = FastAPI(); app.include_router(router, prefix='/api'); app.include_router(gateway)
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client, store, runtime
 

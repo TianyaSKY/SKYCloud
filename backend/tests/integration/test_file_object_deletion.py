@@ -352,12 +352,13 @@ def test_account_http_self_delete_forbidden_other_and_old_token_rejected(object_
     from fastapi.testclient import TestClient
     from app.api.factory import create_fastapi_app
     from app.features.auth.service import generate_token
-    from app.infra.extensions import get_db
+    from app.infra.extensions import get_db, get_session_factory
     app = create_fastapi_app()
     def database():
         with object_context[2]() as session:
             yield session
     app.dependency_overrides[get_db] = database
+    app.dependency_overrides[get_session_factory] = lambda: object_context[2]
     client = TestClient(app)
     headers = {'authorization':'Bearer '+generate_token(1)}
     denied = client.delete('/api/users/2', headers=headers)

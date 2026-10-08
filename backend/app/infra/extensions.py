@@ -92,3 +92,8 @@ def get_db() -> Generator[Session, None, None]:
         yield session
     finally:
         session.close()
+
+
+def get_session_factory():
+    """Inject a factory; async callers construct/use/close sessions on their worker."""
+    return SessionLocal

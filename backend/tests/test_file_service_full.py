@@ -278,7 +278,7 @@ class TestFileServiceMultipart:
 class TestFileServiceSearch:
     async def test_search_files_vector_no_config(self, session, test_workspace):
         from app.features.file.service import search_files
-        with patch("app.features.file.service.get_embedding_model_config", side_effect=Exception("No config")):
+        with patch("app.features.file.search_service.get_embedding_model_config", side_effect=Exception("No config")):
             result = await search_files(session, test_workspace.id, "test", 1, 10, "vector")
         assert "error" in result
 

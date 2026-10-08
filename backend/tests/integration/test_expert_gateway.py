@@ -25,7 +25,7 @@ from entry.migrate import upgrade
 from app.features.assistant import repository, service
 from app.features.runtime_llm import quota
 from app.features.workspace import docker_service
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
 from app.models.runtime_operation import RuntimeOperation
@@ -117,6 +117,7 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
         with factory() as db:
             yield db
     gateway.dependency_overrides[get_db] = database
+    gateway.dependency_overrides[get_session_factory] = lambda: factory
     monkeypatch.setattr(quota, 'redis_client', infrastructure['redis'])
     monkeypatch.setenv('CHAT_API_MODEL', model)
     monkeypatch.setenv('CHAT_API_KEY', provider_key)

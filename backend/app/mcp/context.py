@@ -22,6 +22,9 @@ class McpRequestContext:
     actor_type: str = "user"
 
 
+_current_user_id: ContextVar[int | None] = ContextVar("_current_user_id", default=None)
+
+
 _current_context: ContextVar[McpRequestContext | None] = ContextVar(
     "_current_context", default=None
 )

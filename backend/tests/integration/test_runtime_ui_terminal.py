@@ -16,7 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 from tests.integration.test_runtime_security import infrastructure, controller, docker
 from tests.integration.test_migrations import postgres
 from entry.migrate import upgrade
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
 from app.models.opencode_runtime import OpenCodeRuntime
@@ -65,6 +65,7 @@ def test_real_terminal_and_current_permission_revocation(infrastructure, control
         with factory() as db:
             yield db
     app.dependency_overrides[get_db] = database
+    app.dependency_overrides[get_session_factory] = lambda: factory
     auth = {'Authorization': 'Bearer ' + generate_token(user_id, 0)}
     if os.getenv('RUN_RUNTIME_UI_BROWSER') == '1':
         from tests.integration.runtime_ui_browser import exercise_browser

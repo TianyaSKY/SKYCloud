@@ -113,15 +113,23 @@ def consume(session, workspace_id, user_id, reservation_id, size):
     return row
 
 
-def cancel(session, workspace_id, user_id, reservation_id, *, missing_ok=False, object_deleted=False):
-    if missing_ok and session.get(UploadReservation, reservation_id) is None:
-        session.rollback()
-        return
+def lock_for_cancellation(session, workspace_id, user_id, reservation_id, *, missing_ok=False):
+    """Refresh committed state under admission locks before destructive cleanup."""
     lock_owners(session, workspace_id, user_id)
     row = session.scalar(select(UploadReservation).where(UploadReservation.id == reservation_id)
                          .with_for_update().execution_options(populate_existing=True))
+    if row is None and missing_ok:
+        session.rollback()
+        return None
     if row is None or row.user_id != user_id or row.workspace_id != workspace_id:
         raise PermissionDeniedError('Upload session belongs to another user or workspace')
+    return row
+
+
+def cancel(session, workspace_id, user_id, reservation_id, *, missing_ok=False, object_deleted=False):
+    row = lock_for_cancellation(session, workspace_id, user_id, reservation_id, missing_ok=missing_ok)
+    if row is None:
+        return
     if row.status == 'active':
         row.status = 'cancelled'
     if object_deleted and row.status != 'completed':

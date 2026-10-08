@@ -37,7 +37,7 @@ def test_mcp_context_uses_workspace_header_and_membership(session, test_user, te
     middleware = JWTAuthMiddleware(app)
     token = generate_token(test_user.id)
 
-    with patch("app.mcp.server.SessionLocal", return_value=session):
+    with patch("app.mcp.authentication.SessionLocal", return_value=session):
         asyncio.run(middleware(_scope(token, selected_workspace.id), None, None))
 
     context = captured["context"]
@@ -75,7 +75,7 @@ def test_non_member_cannot_select_workspace(session, test_user, test_workspace):
 
     token = generate_token(test_user.id)
     middleware = JWTAuthMiddleware(app)
-    with patch("app.mcp.server.SessionLocal", return_value=session):
+    with patch("app.mcp.authentication.SessionLocal", return_value=session):
         asyncio.run(middleware(_scope(token, outsider_workspace.id), None, None))
 
     assert captured["context"] is None
@@ -96,7 +96,7 @@ def test_revoked_mcp_token_is_rejected_immediately(session, test_user, test_work
             captured["context"] = None
 
     middleware = JWTAuthMiddleware(app)
-    with patch("app.mcp.server.SessionLocal", return_value=session):
+    with patch("app.mcp.authentication.SessionLocal", return_value=session):
         asyncio.run(middleware(_scope(old_token, test_workspace.id), None, None))
 
     assert captured["context"] is None

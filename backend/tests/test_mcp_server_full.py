@@ -112,7 +112,7 @@ class TestJWTAuthMiddleware:
             "type": "http",
             "headers": [(b"authorization", f"Bearer {token}".encode())],
         }
-        with patch("app.mcp.server.SessionLocal", return_value=session):
+        with patch("app.mcp.authentication.SessionLocal", return_value=session):
             asyncio.run(mw(scope, MagicMock(), MagicMock()))
         assert captured["user_id"] == test_user.id
 
@@ -124,7 +124,7 @@ class TestJWTAuthMiddleware:
             "type": "http",
             "headers": [(b"authorization", b"Bearer invalid.token")],
         }
-        with patch("app.mcp.server.SessionLocal", return_value=session):
+        with patch("app.mcp.authentication.SessionLocal", return_value=session):
             asyncio.run(mw(scope, MagicMock(), MagicMock()))
         app_mock.assert_called_once()
         assert _current_user_id.get() is None

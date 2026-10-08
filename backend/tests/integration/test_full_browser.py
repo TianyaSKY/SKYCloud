@@ -22,7 +22,7 @@ from tests.integration.test_runtime_security import infrastructure, controller, 
 from tests.integration.test_migrations import postgres
 from tests.integration.test_upload_storage import minio_storage
 from entry.migrate import upgrade
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
 from app.infra.schema import check_schema
 from app.features.auth import refresh_sessions, user_service
 from app.features.workspace import docker_service, ui_gateway, ui_tickets
@@ -76,6 +76,7 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
         with factory() as db:
             yield db
     app.dependency_overrides[get_db] = database
+    app.dependency_overrides[get_session_factory] = lambda: factory
     api_socket = socket.socket(); api_socket.bind(('127.0.0.1', 0)); api_socket.listen(128)
     api_port = api_socket.getsockname()[1]
     parent_port, ui_port = free_port(), free_port()

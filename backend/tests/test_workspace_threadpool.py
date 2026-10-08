@@ -77,9 +77,8 @@ async def test_slow_sync_boundary_allows_concurrent_http_request(monkeypatch, bo
         from fastapi.security import HTTPAuthorizationCredentials
         from app.infra.extensions import SECRET_KEY
         monkeypatch.setattr('app.mcp.token_service.get_active_mcp_token', slow(object()))
-        async def cached_user(*args):
-            return user
-        monkeypatch.setattr(user_service, 'get_user', cached_user)
+        monkeypatch.setattr(user_service, '_get_user_data', lambda *args: {'id':1})
+        monkeypatch.setattr('app.features.auth.account_repository.current_role', lambda *args: 'common')
         credentials = HTTPAuthorizationCredentials(scheme='Bearer',
             credentials=jwt.encode({'sub': '1', 'type': 'mcp'}, SECRET_KEY, algorithm='HS256'))
         @app.get('/slow')

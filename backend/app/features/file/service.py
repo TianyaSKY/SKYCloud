@@ -1,4 +1,4 @@
-"""文件上传/下载/搜索/embedding 及分片上传会话管理。
+"""文件上传/下载及分片上传会话管理，兼容导出独立检索服务。
 
 含秒传（content_hash 复用）、Bloom 预鉴权、物理文件引用计数删除等边界。
 存储后端已迁移至 MinIO 对象存储（兼容 S3 API）。
@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 import uuid
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 from werkzeug.utils import secure_filename
 
@@ -28,25 +28,28 @@ from app.exceptions import (
 from sqlalchemy.orm import Session
 
 from app.infra.extensions import UPLOAD_FOLDER, redis_client
-from app.infra.cache import cacheable, evict_cache_pattern
+from app.infra.cache import evict_cache_pattern
 from app.infra.file_task_outbox import stage_file_tasks
 from app.infra.file_object_deletion import stage_object_deletion_fallback, lock_object_path
 from app.infra.storage import get_storage_client
 from app.infra import multipart_storage
 from app.infra.upload_adapter import save_bounded
-from app.infra.upload_staging import StagedUpload, cleanup_staging
+from app.infra.upload_staging import StagedUpload, cleanup_staging, close_staging_safely
 from app.infra.upload_limits import FILE_LIMIT, AVATAR_LIMIT, positive_limit
 from app.models.file import File
 from app.features.folder import change_log as change_log_service
-from app.infra.llm.config import get_embedding_model_config
 from app.features.workspace.permissions import assert_member
 from app.features.file import upload_quota, repository
+from app.features.file.upload_recovery import compensate_failed_uploads, _release_failed_upload
 from app.features.file.repository import escape_like as _escape_like
+from app.features.file.search_service import (
+    search_files, embedding_desc, _search_files_fuzzy, _search_files_vector_by_embedding,
+    SEARCH_CACHE_PREFIX,
+)
 
 from loguru import logger
 
 CACHE_EXPIRATION = 3600
-SEARCH_CACHE_PREFIX = "search:fuzzy"
 
 COPY_BUFFER_SIZE = 1024 * 1024
 
@@ -123,6 +126,7 @@ def _persist_file_record(
         status: str = "pending",
         description: str | None = None,
         vector_info: Any = None,
+        before_commit: Callable[[File], None] | None = None,
 ) -> File:
     new_file = File(
         name=name,
@@ -140,6 +144,8 @@ def _persist_file_record(
     repository.insert_file(session, new_file)
     if status != "success":
         stage_file_tasks(session, [new_file.id])
+    if before_commit is not None:
+        before_commit(new_file)
     session.commit()
     return new_file
 
@@ -202,8 +208,8 @@ def _clone_existing_file(
             vector_info=vector_info,
         )
     except Exception as e:
-        session.rollback()
-        upload_quota.cancel(session, workspace_id, uploader_id, reservation_id, missing_ok=True)
+        compensate_failed_uploads(session, workspace_id, uploader_id,
+                                  [(reservation_id, object_name)], None)
         if isinstance(e, DomainError):
             raise
         logger.error("Failed to create instant upload record (error_type={})", type(e).__name__)
@@ -317,22 +323,9 @@ def _write_multipart_meta(meta_path: str, meta: dict[str, Any]) -> None:
 
 
 
-def _release_failed_upload(session, workspace_id, uploader_id, reservation_id, object_name, storage):
-    if reservation_id is None:
-        return
-    deleted = False
-    if storage is not None:
-        try:
-            # A failed PUT response may still have created the object. Delete the
-            # reserved unique key even when upload_file never reported success.
-            storage.delete_file(object_name)
-            deleted = True
-        except Exception:
-            logger.warning("Object deletion deferred for upload {}", reservation_id)
-    upload_quota.cancel(session, workspace_id, uploader_id, reservation_id,
-                        missing_ok=True, object_deleted=deleted)
 
-def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
+def create_file(session: Session, file_obj: Any, data: dict[str, Any], *,
+                before_commit: Callable[[File], None] | None = None) -> File:
     storage = get_storage_client()
     # 分片临时目录仍用本地
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -363,17 +356,18 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
             uploader_id=data.get("uploader_id"),
             parent_id=data.get("parent_id"),
             content_hash=content_hash,
+            before_commit=before_commit,
         )
     except Exception as e:
-        session.rollback()
-        _release_failed_upload(session, data["workspace_id"], data["uploader_id"], reservation_id, unique_filename, storage)
+        compensate_failed_uploads(session, data["workspace_id"], data["uploader_id"],
+                                  [(reservation_id, unique_filename)], storage)
         logger.error("Failed to save uploaded file metadata (error_type={})", type(e).__name__)
         if isinstance(e, DomainError):
             raise
         raise ServiceOperationError("Failed to save file metadata")
     finally:
         # 清理本地临时文件
-        staging.close()
+        close_staging_safely(staging)
 
     _log_file_created(new_file)
     _invalidate_processing_cache(
@@ -414,13 +408,12 @@ def batch_create_files(
     uploader_id = data.get("uploader_id")
 
     for file_obj in valid_files:
-
-        original_filename = file_obj.filename
-        unique_filename = _generate_unique_filename(original_filename)
-        staging = StagedUpload(UPLOAD_FOLDER, original_filename)
-        local_tmp_path = staging.path
-
+        staging = None
         try:
+            original_filename = file_obj.filename
+            unique_filename = _generate_unique_filename(original_filename)
+            staging = StagedUpload(UPLOAD_FOLDER, original_filename)
+            local_tmp_path = staging.path
             save_bounded(file_obj, local_tmp_path, MAX_UPLOAD_SIZE)
             file_size = os.path.getsize(local_tmp_path)
             mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
@@ -431,27 +424,26 @@ def batch_create_files(
             reservations.append(reservation.id)
             object_keys.append(unique_filename)
             storage.upload_file(local_tmp_path, unique_filename)
+            new_file = File(
+                name=original_filename,
+                file_path=unique_filename,
+                file_size=file_size,
+                mime_type=mime_type,
+                content_hash=content_hash,
+                workspace_id=workspace_id,
+                uploader_id=uploader_id,
+                parent_id=data.get("parent_id"),
+            )
+            new_files.append(new_file)
         except Exception as exc:
-            session.rollback()
-            for reservation_id, object_name in zip(reservations, object_keys):
-                _release_failed_upload(session, workspace_id, uploader_id, reservation_id, object_name, storage)
+            compensate_failed_uploads(session, workspace_id, uploader_id,
+                                      zip(reservations, object_keys), storage)
             if isinstance(exc, DomainError):
                 raise
             raise ServiceOperationError("Failed to upload file") from exc
         finally:
-            staging.close()
-
-        new_file = File(
-            name=original_filename,
-            file_path=unique_filename,
-            file_size=file_size,
-            mime_type=mime_type,
-            content_hash=content_hash,
-            workspace_id=workspace_id,
-            uploader_id=uploader_id,
-            parent_id=data.get("parent_id"),
-        )
-        new_files.append(new_file)
+            if staging is not None:
+                close_staging_safely(staging)
 
     try:
         for reservation_id, file_obj in zip(reservations, new_files):
@@ -460,9 +452,8 @@ def batch_create_files(
         stage_file_tasks(session, [file.id for file in new_files])
         session.commit()
     except Exception as exc:
-        session.rollback()
-        for reservation_id, object_name in zip(reservations, object_keys):
-            _release_failed_upload(session, workspace_id, uploader_id, reservation_id, object_name, storage)
+        compensate_failed_uploads(session, workspace_id, uploader_id,
+                                  zip(reservations, object_keys), storage)
         raise ServiceOperationError("Failed to save uploaded file metadata") from exc
 
     if uploader_id:
@@ -575,7 +566,8 @@ def init_multipart_upload(session: Session, workspace_id: int, uploader_id: int,
             os.makedirs(chunks_dir, exist_ok=True)
             _write_multipart_meta(meta_path, meta)
         except Exception:
-            upload_quota.cancel(session, workspace_id, uploader_id, upload_id)
+            compensate_failed_uploads(session, workspace_id, uploader_id,
+                                      [(upload_id, metadata["object_name"])], None)
             shutil.rmtree(upload_dir, ignore_errors=True)
             raise ServiceOperationError("Failed to initialize upload")
 
@@ -674,14 +666,14 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
         multipart_storage.assemble(chunks_dir, final_path, total_chunks=total_chunks,
                                    chunk_size=int(meta["chunk_size"]), total_size=total_size)
     except DomainError:
-        staging.close()
+        close_staging_safely(staging)
         raise
     except Exception as e:
-        staging.close()
+        close_staging_safely(staging)
         logger.error("Failed to merge chunks (error_type={})", type(e).__name__)
         raise ServiceOperationError("Failed to merge chunks")
     except BaseException:
-        staging.close()
+        close_staging_safely(staging)
         raise
 
     storage = None
@@ -709,15 +701,15 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
         stage_file_tasks(session, [new_file.id])
         session.commit()
     except Exception as e:
-        session.rollback()
-        _release_failed_upload(session, workspace_id, uploader_id, safe_upload_id, unique_filename, storage)
+        compensate_failed_uploads(session, workspace_id, uploader_id,
+                                  [(safe_upload_id, unique_filename)], storage)
         logger.error("Failed to persist merged file (error_type={})", type(e).__name__)
         if isinstance(e, DomainError):
             raise
         raise ServiceOperationError("Failed to save file metadata")
     finally:
         # 清理本地合并文件与分片目录
-        staging.close()
+        close_staging_safely(staging)
         shutil.rmtree(upload_dir, ignore_errors=True)
 
     _log_file_created(new_file)
@@ -861,74 +853,6 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
         _clear_search_cache(file_obj.workspace_id)
 
 
-async def search_files(
-        session: Session | None,
-        workspace_id: int,
-        query: str,
-        page: int = 1,
-        page_size: int = 10,
-        search_type: str = "fuzzy",
-        *, session_factory=None,
-) -> dict[str, Any]:
-    async def execute(function, *args):
-        def work():
-            if session_factory is not None:
-                with session_factory() as owned_session:
-                    return function(owned_session, *args)
-            return function(session, *args)
-        return await asyncio.to_thread(work)
-
-    if not query:
-        return {"items": [], "total": 0, "page": page, "page_size": page_size}
-
-    if search_type not in {"vector", "semantic"}:
-        return await execute(_search_files_fuzzy, workspace_id, query, page, page_size)
-
-    try:
-        embeddings = await embedding_desc(query, get_embedding_model_config())
-        return await execute(_search_files_vector_by_embedding, workspace_id, embeddings, page, page_size)
-    except (PermissionDeniedError, PermissionError):
-        raise
-    except Exception as e:
-        logger.error("Vector search error (error_type={})", type(e).__name__)
-        return {
-            "items": [], "total": 0, "page": page, "page_size": page_size,
-            "error": "Vector search is temporarily unavailable",
-        }
-
-
-@cacheable(
-    prefix=SEARCH_CACHE_PREFIX,
-    expire=CACHE_EXPIRATION,
-    key=lambda session, workspace_id, query, page, page_size, **_: f"{workspace_id}:{query}:{page}:{page_size}:fuzzy",
-)
-def _search_files_fuzzy(
-        session: Session,
-        workspace_id: int, query: str, page: int, page_size: int
-) -> dict[str, Any]:
-    rows = repository.search_names(session, workspace_id, query, page, page_size)
-    return {"items": [file.to_dict() for file in rows.items], "total": rows.total,
-            "page": page, "page_size": page_size}
-
-
-def _search_files_vector_by_embedding(
-        session: Session,
-        workspace_id: int, embeddings: list[float], page: int, page_size: int
-) -> dict[str, Any]:
-    if not embeddings:
-        return {
-            "items": [],
-            "total": 0,
-            "page": page,
-            "page_size": page_size,
-            "error": "No embeddings returned",
-        }
-
-    rows = repository.search_vectors(session, workspace_id, embeddings, page, page_size)
-    return {"items": [file.to_dict() for file in rows.items], "total": rows.total,
-            "page": page, "page_size": page_size}
-
-
 def _clear_search_cache(workspace_id: int | None) -> None:
     evict_cache_pattern(SEARCH_CACHE_PREFIX)
 
@@ -965,10 +889,23 @@ def upload_avatar(session: Session, img_file: Any, user_id: int) -> dict[str, An
     folder = repository.find_child_folder(session, workspace.id, root_folder_id, "所有用户头像")
     if folder is None:
         folder = folder_service.create_folder(session, {"name": "所有用户头像", "parent_id": root_folder_id, "workspace_id": workspace.id})
-    avatar = create_file(session, img_file, {"workspace_id": workspace.id, "uploader_id": user_id, "parent_id": folder.id, "max_bytes": AVATAR_LIMIT})
-    share = share_service.create_share_link(session, user_id, avatar.id)
-    avatar_url = f"/api/share/{share.token}"
-    user_service.update_user(session, user_id, {"avatar": avatar_url})
+    from app.features.auth import account_repository
+    from app.infra.cache import evict_cache
+    avatar_url = None
+    def publish_metadata(avatar):
+        nonlocal avatar_url
+        share = share_service.create_share_link(session, user_id, avatar.id, commit=False)
+        avatar_url = f"/api/share/{share.token}"
+        if not account_repository.set_avatar(session, user_id, avatar_url):
+            raise ResourceNotFoundError("User not found")
+    try:
+        avatar = create_file(session, img_file,
+            {"workspace_id": workspace.id, "uploader_id": user_id, "parent_id": folder.id, "max_bytes": AVATAR_LIMIT},
+            before_commit=publish_metadata)
+    finally:
+        # Also invalidate after an ambiguous commit acknowledgement: SQL may
+        # already contain the new URL, so cached profile must be read again.
+        evict_cache(user_service.USER_CACHE_PREFIX, user_id)
 
     result = avatar.to_dict()
     result["avatar_url"] = avatar_url
@@ -996,22 +933,6 @@ def batch_delete_items(session: Session, workspace_id: int, user_id: int, items:
         else:
             get_authorized_file(session, workspace_id, user_id, item_id)
             delete_file(session, item_id)
-
-
-async def embedding_desc(desc: str, config: dict[str, str], user_id: int = 0) -> list[float]:
-    """单条文本 embedding；失败返回空列表，避免索引任务硬失败。"""
-    try:
-        from app.infra.llm.client import embed_texts
-        vectors = await embed_texts(
-            texts=desc,
-            config=config,
-            user_id=user_id,
-            query_summary=desc[:100] if desc else None,
-        )
-        return vectors[0] if vectors else []
-    except Exception as e:
-        logger.error("Embedding failed (error_type={})", type(e).__name__)
-        return []
 
 
 def retry_embedding(session: Session, file_id: int) -> None:
@@ -1043,8 +964,16 @@ def get_all_files(session: Session, workspace_id: int) -> list[File]:
     return repository.list_workspace_files(session, workspace_id)
 
 
-async def process_status(session: Session, workspace_id: int) -> dict[str, int]:
-    return await asyncio.to_thread(_process_status, session, workspace_id)
+async def process_status(session: Session | None, workspace_id: int, *, session_factory=None,
+                         user_id: int | None = None) -> dict[str, int]:
+    def work():
+        if session_factory is not None:
+            with session_factory() as owned_session:
+                if user_id is not None:
+                    assert_member(owned_session, workspace_id, user_id)
+                return _process_status(owned_session, workspace_id)
+        return _process_status(session, workspace_id)
+    return await asyncio.to_thread(work)
 
 
 def _process_status(session: Session, workspace_id: int) -> dict[str, int]:

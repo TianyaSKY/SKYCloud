@@ -133,3 +133,7 @@ def status_counts(session: Session, workspace_id: int) -> dict[str, int]:
 def find_live_file(session: Session, file_id: int) -> File | None:
     """Refresh an instant-clone source after reservation commit and object locking."""
     return session.query(File).populate_existing().filter(File.id == file_id).first()
+
+
+def has_object_reference(session: Session, object_name: str) -> bool:
+    return session.query(File.id).filter(File.file_path == object_name).first() is not None
