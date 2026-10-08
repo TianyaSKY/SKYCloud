@@ -51,7 +51,7 @@
       </div>
     </div>
 
-    <a-modal v-model:visible="modalVisible" :footer="false" :title="currentMessage?.title">
+    <a-modal v-model:visible="modalVisible" :footer="false" :title="currentMessage?.title ?? undefined">
       <div class="modal-content">{{ currentMessage?.content }}</div>
     </a-modal>
   </MainLayout>

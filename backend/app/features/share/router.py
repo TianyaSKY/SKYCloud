@@ -4,20 +4,22 @@ from typing import cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
 from app.api.dependencies import get_current_user
-from app.features.share.schemas import ShareCreateRequest
+from app.features.share.schemas import ShareCreateRequest, ShareResponse, ShareAcknowledgment
 from app.infra.extensions import get_db
 from app.infra.storage import get_storage_client
 from app.features.share import service as share_service
 
+from app.api.contracts import SuccessResponse, success_payload
+
 router = APIRouter(tags=["share"])
 
 
-@router.post("/share")
+@router.post("/share", status_code=status.HTTP_201_CREATED, response_model=SuccessResponse[ShareResponse])
 def create_share(
     payload: ShareCreateRequest,
     current_user=Depends(get_current_user),
@@ -27,19 +29,19 @@ def create_share(
     share = share_service.create_share(
         session, current_user.id, payload.file_id, payload.expires_at
     )
-    return JSONResponse(status_code=status.HTTP_201_CREATED, content=share.to_dict())
+    return success_payload(share.to_dict())
 
 
-@router.get("/share/my")
+@router.get("/share/my", response_model=SuccessResponse[list[ShareResponse]])
 def get_my_shares(
     current_user=Depends(get_current_user),
     session: Session = Depends(get_db),
 ):
     """列出当前用户发出的分享。"""
-    return share_service.get_my_shares(session, current_user.id)
+    return success_payload(share_service.get_my_shares(session, current_user.id))
 
 
-@router.delete("/share/{share_id}")
+@router.delete("/share/{share_id}", response_model=SuccessResponse[ShareAcknowledgment])
 def cancel_share(
     share_id: int,
     current_user=Depends(get_current_user),
@@ -47,10 +49,10 @@ def cancel_share(
 ):
     """取消本人创建的分享链接。"""
     share_service.cancel_share_for_user(session, share_id, current_user.id)
-    return {"message": "Share cancelled successfully"}
+    return success_payload({"message": "Share cancelled successfully"})
 
 
-@router.get("/share/{token}")
+@router.get("/share/{token}", response_class=StreamingResponse)
 def access_share(token: str, session: Session = Depends(get_db)):
     """匿名凭 token 内联预览/下载文件（从 MinIO 流式读取）；过期或无效由 service 抛错。"""
     file = share_service.resolve_shared_file(session, token)

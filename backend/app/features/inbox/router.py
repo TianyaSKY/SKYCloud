@@ -7,10 +7,14 @@ from app.api.dependencies import get_current_user
 from app.infra.extensions import get_db
 from app.features.inbox import service as inbox_service
 
+from app.api.contracts import SuccessResponse, success_payload
+
+from app.features.inbox.schemas import InboxMessage, InboxPage, InboxAcknowledgment
+
 router = APIRouter(tags=["inbox"])
 
 
-@router.get("/inbox")
+@router.get("/inbox", response_model=SuccessResponse[InboxPage])
 def get_inbox(
         current_user=Depends(get_current_user),
         session: Session = Depends(get_db),
@@ -20,15 +24,15 @@ def get_inbox(
     """分页获取当前用户收件箱消息。"""
     result = inbox_service.get_user_inbox(session, current_user.id, page, per_page)
 
-    return {
+    return success_payload({
         "items": [item.to_dict() for item in result["items"]],
         "total": result["total"],
         "pages": result["pages"],
         "current_page": result["page"],
-    }
+    })
 
 
-@router.put("/inbox/{id}/read")
+@router.put("/inbox/{id}/read", response_model=SuccessResponse[InboxMessage])
 def mark_message_read(
     id: int,
     current_user=Depends(get_current_user),
@@ -36,20 +40,20 @@ def mark_message_read(
 ):
     """标记单条消息为已读（仅本人消息）。"""
     message = inbox_service.mark_as_read(session, id, current_user.id)
-    return message.to_dict()
+    return success_payload(message.to_dict())
 
 
-@router.put("/inbox/read-all")
+@router.put("/inbox/read-all", response_model=SuccessResponse[InboxAcknowledgment])
 def mark_all_messages_read(
     current_user=Depends(get_current_user),
     session: Session = Depends(get_db),
 ):
     """将当前用户全部未读标记为已读。"""
     inbox_service.mark_all_as_read(session, current_user.id)
-    return {"message": "All messages marked as read"}
+    return success_payload({"message": "All messages marked as read"})
 
 
-@router.delete("/inbox/{id}")
+@router.delete("/inbox/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_message(
     id: int,
     current_user=Depends(get_current_user),

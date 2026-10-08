@@ -3,18 +3,20 @@ import request from './request'
 /** 后端契约：站内信单条消息 */
 export interface Message {
   id: number
-  title: string
+  user_id: number
+  title: string | null
   content: string
   is_read: boolean
-  created_at: string
+  type: string | null
+  created_at: string | null
 }
 
 /** 后端契约：/inbox 分页列表 */
 export interface InboxResponse {
   items: Message[]
   total: number
-  page: number
-  per_page: number
+  pages: number
+  current_page: number
 }
 
 export const getInboxMessages = (page = 1, per_page = 10) => {
@@ -24,11 +26,11 @@ export const getInboxMessages = (page = 1, per_page = 10) => {
 }
 
 export const markAsRead = (id: number) => {
-  return request.put<void>(`/inbox/${id}/read`)
+  return request.put<Message>(`/inbox/${id}/read`)
 }
 
 export const markAllAsRead = () => {
-  return request.put<void>('/inbox/read-all')
+  return request.put<{message: string}>('/inbox/read-all')
 }
 
 export const deleteMessage = (id: number) => {

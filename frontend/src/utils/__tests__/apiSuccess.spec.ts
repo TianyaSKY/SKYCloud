@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { apiSuccessData, usesSuccessEnvelope } from '../apiSuccess'
 
 describe('public JSON envelope parsing', () => {
-  it.each(['/workspace', '/api/workspace/1?refresh=1', '/users/1', '/auth/refresh', 'workspace'])('recognizes migrated route %s', path => {
+  it.each(['/workspace', '/api/workspace/1?refresh=1', '/users/1', '/auth/refresh', 'workspace', '/inbox/1/read', '/sys_dicts', '/share', '/share/my', '/share/1'])('recognizes migrated route %s', path => {
     expect(usesSuccessEnvelope(path)).toBe(true)
   })
-  it.each(['/workspaces', '/file/workspace', '/runtime-ui/session', '/admin/users'])('keeps other protocols separate %s', path => {
+  it.each(['/workspaces', '/file/workspace', '/runtime-ui/session', '/admin/users', '/share/anonymous-token'])('keeps other protocols separate %s', path => {
     expect(usesSuccessEnvelope(path)).toBe(false)
   })
   it('requires an own data property and supports intentionally null data', () => {

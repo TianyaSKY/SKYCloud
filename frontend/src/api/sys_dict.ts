@@ -1,12 +1,13 @@
 import request from './request'
 import type { SysDictInput } from '../schemas/sys_dict'
 
-/** 后端契约：系统字典项；id 创建前可空 */
+/** 后端契约：系统字典项；与表单输入分开声明 */
 export interface SysDict {
-  id?: number
+  id: number
   key: string
   value: string
-  des?: string
+  des: string | null
+  created_at: string | null
   enable: boolean
 }
 

@@ -486,21 +486,21 @@ class TestShareRouter:
         payload = ShareCreateRequest(file_id=1)
         with patch("app.features.share.service.create_share", return_value=mock_share):
             result = create_share(payload, test_user, session)
-        assert result.status_code == 201
+        assert result == {"success": True, "data": {"id": 1}}
 
     def test_get_my_shares(self, session, test_user):
         from app.features.share.router import get_my_shares
 
         with patch("app.features.share.service.get_my_shares", return_value=[]):
             result = get_my_shares(test_user, session)
-        assert result == []
+        assert result == {"success": True, "data": []}
 
     def test_cancel_share(self, session, test_user):
         from app.features.share.router import cancel_share
 
         with patch("app.features.share.service.cancel_share_for_user"):
             result = cancel_share(1, test_user, session)
-        assert "message" in result
+        assert "message" in result["data"]
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +514,7 @@ class TestInboxRouter:
         mock_result = {"items": [], "total": 0, "pages": 0, "page": 1}
         with patch("app.features.inbox.service.get_user_inbox", return_value=mock_result):
             result = get_inbox(test_user, session, 1, 20)
-        assert "items" in result
+        assert "items" in result["data"]
 
     def test_mark_message_read(self, session, test_user):
         from app.features.inbox.router import mark_message_read
@@ -523,14 +523,14 @@ class TestInboxRouter:
         mock_msg.to_dict.return_value = {"id": 1}
         with patch("app.features.inbox.service.mark_as_read", return_value=mock_msg):
             result = mark_message_read(1, test_user, session)
-        assert "id" in result
+        assert "id" in result["data"]
 
     def test_mark_all_messages_read(self, session, test_user):
         from app.features.inbox.router import mark_all_messages_read
 
         with patch("app.features.inbox.service.mark_all_as_read"):
             result = mark_all_messages_read(test_user, session)
-        assert "message" in result
+        assert "message" in result["data"]
 
     def test_delete_message(self, session, test_user):
         from app.features.inbox.router import delete_message
@@ -551,7 +551,7 @@ class TestSysDictRouter:
 
         with patch("app.features.sys_dict.service.get_sys_dict_all", new_callable=AsyncMock, return_value=[]):
             result = asyncio.run(get_sys_dicts(test_user, session))
-        assert result == []
+        assert result == {"success": True, "data": []}
 
     def test_get_sys_dict(self, session, test_user):
         from app.features.sys_dict.router import get_sys_dict
@@ -559,7 +559,7 @@ class TestSysDictRouter:
 
         with patch("app.features.sys_dict.service.get_sys_dict", new_callable=AsyncMock, return_value={"id": 1}):
             result = asyncio.run(get_sys_dict(1, test_user, session))
-        assert "id" in result
+        assert "id" in result["data"]
 
     def test_create_sys_dict(self, session, test_user):
         from app.features.sys_dict.router import create_sys_dict
@@ -570,7 +570,7 @@ class TestSysDictRouter:
         payload = SysDictPayload(key="k", value="v")
         with patch("app.features.sys_dict.service.create_sys_dict", return_value=mock_dict):
             result = create_sys_dict(payload, test_user, session)
-        assert result.status_code == 201
+        assert result == {"success": True, "data": {"id": 1}}
 
     def test_update_sys_dict(self, session, test_user):
         from app.features.sys_dict.router import update_sys_dict
@@ -581,7 +581,7 @@ class TestSysDictRouter:
         payload = SysDictPayload(key="k", value="v")
         with patch("app.features.sys_dict.service.update_sys_dict", return_value=mock_dict):
             result = update_sys_dict(1, payload, test_user, session)
-        assert "id" in result
+        assert "id" in result["data"]
 
     def test_delete_sys_dict(self, session, test_user):
         from app.features.sys_dict.router import delete_sys_dict

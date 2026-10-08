@@ -79,7 +79,7 @@ import { IconPlus, IconRefresh } from '@arco-design/web-vue/es/icon'
 import { Message } from '@arco-design/web-vue'
 import type { SysDict } from '@/api/sys_dict'
 import { createSysDict, deleteSysDict, getSysDicts, updateSysDict } from '@/api/sys_dict'
-import { sysDictSchema } from '@/schemas/sys_dict'
+import { sysDictSchema, type SysDictInput } from '@/schemas/sys_dict'
 import { logger } from '@/utils/logger'
 import MainLayout from '../components/MainLayout.vue'
 
@@ -87,7 +87,7 @@ const dicts = ref<SysDict[]>([])
 const loading = ref(false)
 const submitting = ref(false)
 const visible = ref(false)
-const form = reactive<SysDict>({
+const form = reactive<SysDictInput & {id?: number}>({
   id: undefined,
   key: '',
   value: '',
@@ -116,7 +116,7 @@ const handleAdd = () => {
 }
 
 const handleEdit = (record: SysDict) => {
-  Object.assign(form, record)
+  Object.assign(form, {id: record.id, key: record.key, value: record.value, des: record.des ?? '', enable: record.enable})
   visible.value = true
 }
 
@@ -142,10 +142,10 @@ const handleOk = async () => {
   submitting.value = true
   try {
     if (form.id) {
-      await updateSysDict(form.id, form)
+      await updateSysDict(form.id, result.data)
       Message.success('更新成功')
     } else {
-      await createSysDict(form)
+      await createSysDict(result.data)
       Message.success('创建成功')
     }
     visible.value = false

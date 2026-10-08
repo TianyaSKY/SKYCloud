@@ -6,22 +6,19 @@ export interface CreateShareParams {
   expires_at?: string
 }
 
-/** 后端契约：分享记录；token 用于公开下载链接，file_name 仅列表侧可能填充 */
+/** 后端契约：分享记录；token 用于公开下载链接，日期和文件名可能为空 */
 export interface ShareInfo {
   id: number
   token: string
   file_id: number
-  expires_at: string
-  created_at: string
-  file_name?: string
+  expires_at: string | null
+  created_at: string | null
+  file_name: string | null
+  link: string
 }
 
 export const createShare = (data: CreateShareParams) => {
   return request.post<ShareInfo>('/share', data)
-}
-
-export const getShareInfo = (token: string) => {
-  return request.get<ShareInfo>(`/share/${token}`)
 }
 
 export const getMyShares = () => {
@@ -29,5 +26,5 @@ export const getMyShares = () => {
 }
 
 export const cancelShare = (id: number) => {
-  return request.delete<void>(`/share/${id}`)
+  return request.delete<{message: string}>(`/share/${id}`)
 }

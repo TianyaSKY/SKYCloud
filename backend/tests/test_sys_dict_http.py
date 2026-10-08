@@ -26,19 +26,19 @@ def test_real_http_dictionary_crud_cache_policy_and_admin(session, admin_user, t
         payload = {'key': 'http_dict', 'value': 'one', 'des': 'Description', 'enable': True}
         created = client.post('/sys_dicts', json=payload)
         assert created.status_code == 201, created.text
-        identifier = created.json()['id']
-        assert client.get(f'/sys_dicts/{identifier}').json()['value'] == 'one'
-        assert any(item['id'] == identifier for item in client.get('/sys_dicts').json())
+        identifier = created.json()['data']['id']
+        assert client.get(f'/sys_dicts/{identifier}').json()['data']['value'] == 'one'
+        assert any(item['id'] == identifier for item in client.get('/sys_dicts').json()['data'])
         payload['value'] = 'two'
-        assert client.put(f'/sys_dicts/{identifier}', json=payload).json()['value'] == 'two'
-        assert client.get(f'/sys_dicts/{identifier}').json()['value'] == 'two'
+        assert client.put(f'/sys_dicts/{identifier}', json=payload).json()['data']['value'] == 'two'
+        assert client.get(f'/sys_dicts/{identifier}').json()['data']['value'] == 'two'
         assert client.post('/sys_dicts', json={**payload, 'key': 'chat_api_key'}).status_code == 400
         hidden = SysDict(key='chat_api_key', value='hidden legacy value', des='', enable=True)
         session.add(hidden)
         session.commit()
         hidden_id = hidden.id
         module.sys_dict_service._invalidate_sys_dict_cache()
-        listing = client.get('/sys_dicts').json()
+        listing = client.get('/sys_dicts').json()['data']
         assert all(item['key'] != 'chat_api_key' for item in listing)
         assert client.get(f'/sys_dicts/{hidden_id}').status_code == 404
         assert client.put(f'/sys_dicts/{hidden_id}', json=payload).status_code == 400
@@ -49,7 +49,7 @@ def test_real_http_dictionary_crud_cache_policy_and_admin(session, admin_user, t
         app.dependency_overrides[get_current_user] = lambda: admin_user
         assert client.delete(f'/sys_dicts/{identifier}').status_code == 204
         assert client.get(f'/sys_dicts/{identifier}').status_code == 404
-        assert all(item['id'] != identifier for item in client.get('/sys_dicts').json())
+        assert all(item['id'] != identifier for item in client.get('/sys_dicts').json()['data'])
 
 
 async def test_slow_dictionary_read_leaves_http_loop_responsive(monkeypatch):
@@ -78,4 +78,4 @@ async def test_slow_dictionary_read_leaves_http_loop_responsive(monkeypatch):
         finally:
             release.set()
             response = await pending
-        assert response.status_code == 200 and response.json() == []
+        assert response.status_code == 200 and response.json() == {'success':True,'data':[]}

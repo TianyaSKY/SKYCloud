@@ -11,13 +11,16 @@ from app.infra.datetime_utils import utc_now, to_utc_datetime
 from app.infra.storage import get_storage_client
 from app.models.file import File
 from app.models.share import Share
+from app.features.workspace.permissions import assert_member
 
 
 def create_share_link(session: Session, user_id, file_id, expires_at=None):
-    # 当前简化：仅校验文件存在，未强制归属（调用方应先做权限）
+    # Both REST and MCP callers must be current members of the file workspace.
     file = session.get(File, file_id)
     if not file:
         raise ValueError("File not found")
+
+    assert_member(session, file.workspace_id, user_id)
 
     share = Share(
         user_id=user_id,
