@@ -9,10 +9,9 @@ from urllib.parse import quote, urlencode
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import RedirectResponse, StreamingResponse, HTMLResponse
-from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app.infra.extensions import get_db, SessionLocal
+from app.infra.extensions import get_session_factory, SessionLocal
 from app.features.workspace import ui_tickets
 from runtime_controller.client import auth_headers, controller_url
 from runtime_controller.socket_relay import direct_connect, pump, terminal_path, SocketSlots
@@ -32,16 +31,25 @@ def _credential(request):
     return request.cookies.get('__Host-' + ui_tickets.COOKIE) or request.cookies.get(ui_tickets.COOKIE) or ''
 
 
-def reauthenticate(raw, host):
-    # Streaming responses outlive yield dependencies on supported FastAPI
-    # versions; each periodic check owns and closes its independent Session.
-    with SessionLocal() as session:
+def authenticate_owned(session_factory, raw, host):
+    with session_factory() as session:
         return ui_tickets.authenticate(session, raw, host)
 
 
+def redeem_owned(session_factory, raw, host):
+    with session_factory() as session:
+        return ui_tickets.redeem(session, raw, host)
+
+
+def reauthenticate(raw, host):
+    # Streaming responses outlive yield dependencies on supported FastAPI
+    # versions; each periodic check owns and closes its independent Session.
+    return authenticate_owned(SessionLocal, raw, host)
+
+
 @router.get('/__skycloud/launch')
-def launch(request: Request, ticket: str, session: Session = Depends(get_db)):
-    raw, payload = ui_tickets.redeem(session, ticket, _host(request))
+def launch(request: Request, ticket: str, session_factory=Depends(get_session_factory)):
+    raw, payload = redeem_owned(session_factory, ticket, _host(request))
     response = RedirectResponse('/', status_code=303, headers={
         'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
     response.set_cookie(ui_tickets.cookie_name(payload['origin']), raw,
@@ -51,8 +59,8 @@ def launch(request: Request, ticket: str, session: Session = Depends(get_db)):
 
 
 @router.get('/__skycloud/renew')
-def renew(request: Request, ticket: str, session: Session = Depends(get_db)):
-    raw, payload = ui_tickets.redeem(session, ticket, _host(request))
+def renew(request: Request, ticket: str, session_factory=Depends(get_session_factory)):
+    raw, payload = redeem_owned(session_factory, ticket, _host(request))
     nonce = secrets.token_urlsafe(32)
     parent = os.getenv('APP_ORIGIN', 'http://app.skycloud.localhost').rstrip('/')
     # The acknowledgement contains only the already consumed ticket, never
@@ -72,8 +80,8 @@ def renew(request: Request, ticket: str, session: Session = Depends(get_db)):
 
 
 @router.api_route('/{path:path}', methods=['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'])
-async def relay(path: str, request: Request, session: Session = Depends(get_db)):
-    payload = await run_in_threadpool(ui_tickets.authenticate, session, _credential(request), _host(request))
+async def relay(path: str, request: Request, session_factory=Depends(get_session_factory)):
+    payload = await run_in_threadpool(authenticate_owned, session_factory, _credential(request), _host(request))
     if request.cookies.get(ui_tickets.cookie_name(payload['origin'])) != _credential(request):
         raise HTTPException(401, 'Runtime UI cookie scope mismatch')
     # Same-site sibling runtimes must not be able to mutate another runtime.
