@@ -234,7 +234,7 @@ class TestFolderRouter:
         mock_folder.to_dict.return_value = {"id": 1}
         payload = FolderCreateRequest(name="new", parent_id=None)
         with patch("app.features.folder.service.create_folder", return_value=mock_folder):
-            result = create_folder(payload, test_user, test_workspace, session)
+            result = create_folder(payload, test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert result == mock_folder.to_dict.return_value
@@ -248,7 +248,7 @@ class TestFolderRouter:
         payload = FolderUpdateRequest(name="renamed")
         with patch("app.features.folder.service.get_authorized_folder"), \
              patch("app.features.folder.service.update_folder", return_value=mock_folder):
-            result = update_folder(1, payload, test_user, test_workspace, session)
+            result = update_folder(1, payload, test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "id" in result
@@ -258,14 +258,14 @@ class TestFolderRouter:
 
         with patch("app.features.folder.service.get_authorized_folder"), \
              patch("app.features.folder.service.delete_folder"):
-            result = delete_folder(1, test_user, test_workspace, session)
+            result = delete_folder(1, test_user, test_workspace, lambda: nullcontext(session))
         assert result.status_code == 204
 
     def test_get_root_folder_id(self, session, test_user, test_workspace):
         from app.features.folder.router import get_root_folder_id
 
         with patch("app.features.folder.service.get_root_folder_id", return_value=1):
-            result = get_root_folder_id(test_user, test_workspace, session)
+            result = get_root_folder_id(test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "root_folder_id" in result
@@ -274,7 +274,7 @@ class TestFolderRouter:
         from app.features.folder.router import get_folders
 
         with patch("app.features.folder.service.get_folders", return_value=[]):
-            result = get_folders(test_user, test_workspace, session)
+            result = get_folders(test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "folders" in result
@@ -285,7 +285,7 @@ class TestFolderRouter:
         mock_folder = MagicMock()
         mock_folder.to_dict.return_value = {"id": 1}
         with patch("app.features.folder.service.get_authorized_folder", return_value=mock_folder):
-            result = get_folder(1, test_user, test_workspace, session)
+            result = get_folder(1, test_user, test_workspace, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "id" in result
@@ -294,7 +294,7 @@ class TestFolderRouter:
         from app.features.folder.router import organize_workspace_files
 
         with patch("app.features.folder.service.organize_files", return_value=True):
-            result = organize_workspace_files(session, test_user, test_workspace)
+            result = organize_workspace_files(lambda: nullcontext(session), test_user, test_workspace)
             assert result['success'] is True
             result = result['data']
         assert result["queued"] is True

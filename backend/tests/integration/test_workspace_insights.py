@@ -433,3 +433,81 @@ async def test_http_workspace_dependencies_detach_and_recheck_membership(postgre
         with postgres.begin() as independent:
             independent.execute(text('DELETE FROM workspaces WHERE id=1'))
         assert (await client.get('/context')).status_code == 404
+
+
+@pytest.mark.parametrize('operation', ['create', 'update', 'delete', 'organize', 'root', 'all', 'get'])
+async def test_folder_http_rechecks_stale_workspace_snapshot(postgres, infrastructure, monkeypatch, operation):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.features.folder import router
+    from app.api.dependencies import get_current_user
+    from app.infra.extensions import get_session_factory
+    from app.infra import cache
+    from app.exceptions import register_exception_handlers
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+        db.execute(text("INSERT INTO folder(id,name,workspace_id,parent_id) VALUES (1,'/',1,NULL),(2,'child',1,1)"))
+    monkeypatch.setattr(cache, 'redis_client', infrastructure['redis'])
+    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
+    for route in router.router.routes:
+        for dependency in route.dependant.dependencies:
+            if dependency.name == 'workspace':
+                app.dependency_overrides[dependency.call] = lambda: SimpleNamespace(id=1)
+    calls = {
+        'create': ('POST', '/folder', {'name': 'forbidden'}),
+        'update': ('PUT', '/folder/2', {'name': 'forbidden'}),
+        'delete': ('DELETE', '/folder/2', None),
+        'organize': ('POST', '/folder/organize', None),
+        'root': ('GET', '/folder/root_id', None),
+        'all': ('GET', '/folder/all', None),
+        'get': ('GET', '/folder/2', None),
+    }
+    method, path, body = calls[operation]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+        if method == 'GET':
+            assert (await client.get(path)).status_code == 200
+            if operation in {'root', 'all'}:
+                prefix = 'workspace:root_folder:v2' if operation == 'root' else 'workspace:folders'
+                assert infrastructure['redis'].exists(prefix + ':1') == 1
+        with postgres.begin() as independent:
+            if method == 'GET':
+                independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
+            else:
+                independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
+        response = await client.request(method, path, json=body)
+        assert response.status_code == 403, response.text
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT id,name FROM folder ORDER BY id')).all() == [(1, '/'), (2, 'child')]
+        assert db.scalar(text('SELECT count(*) FROM organize_tasks')) == 0
+
+
+def test_folder_write_authorization_lock_blocks_role_change(postgres):
+    from sqlalchemy.exc import DBAPIError
+    from app.features.workspace.permissions import assert_can_write_locked
+    from app.exceptions import PermissionDeniedError
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+    factory = sessionmaker(bind=postgres)
+    with factory() as owned:
+        assert_can_write_locked(owned, 1, 1)
+        with postgres.connect() as independent:
+            independent.execute(text("SET LOCAL lock_timeout='100ms'"))
+            with pytest.raises(DBAPIError) as error:
+                independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
+            assert error.value.orig.pgcode == '55P03'
+            independent.rollback()
+        owned.commit()
+    with postgres.begin() as independent:
+        independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
+    with factory() as owned:
+        with pytest.raises(PermissionDeniedError):
+            assert_can_write_locked(owned, 1, 1)

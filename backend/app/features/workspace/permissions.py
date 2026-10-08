@@ -70,3 +70,11 @@ def check_role_level(role: str | WorkspaceRole, min_role: str) -> bool:
     """检查角色是否达到最低要求。"""
     role_value = role.value if isinstance(role, WorkspaceRole) else role
     return ROLE_LEVEL.get(role_value, 0) >= ROLE_LEVEL.get(min_role, 0)
+
+
+def assert_can_write_locked(session: Session, workspace_id: int, user_id: int) -> None:
+    """Hold current edit authorization through the caller's mutation transaction."""
+    from app.features.workspace.access_repository import lock_write_identity
+    member = lock_write_identity(session, workspace_id, user_id)
+    if member is None or member.role not in ('editor', 'admin'):
+        raise PermissionDeniedError("需要编辑者或管理员权限")
