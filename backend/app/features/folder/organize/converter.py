@@ -10,6 +10,7 @@ import cv2
 import fitz
 
 from loguru import logger
+from app.infra.processes import run_converter
 
 OFFICE_CONVERSION_TIMEOUT_SECONDS = 120
 
@@ -51,7 +52,7 @@ def convert_office_to_pdf(input_path, output_dir):
         output_dir,
     ]
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=OFFICE_CONVERSION_TIMEOUT_SECONDS)
+        run_converter(cmd, timeout=OFFICE_CONVERSION_TIMEOUT_SECONDS)
         logger.info("Office conversion finished")
     except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         logger.error("Office conversion failed (error_type={})", type(exc).__name__)

@@ -40,7 +40,7 @@ class TestConvertOfficeToPdf:
         input_file = str(tmp_path / "test.docx")
         Path(input_file).touch()
 
-        with patch("app.features.folder.organize.converter.subprocess.run") as mock_run, \
+        with patch("app.features.folder.organize.converter.run_converter") as mock_run, \
              patch("app.features.folder.organize.converter.get_libreoffice_command", return_value="soffice"):
             result = convert_office_to_pdf(input_file, str(tmp_path))
         assert result.endswith(".pdf")
@@ -50,7 +50,7 @@ class TestConvertOfficeToPdf:
         input_file = str(tmp_path / "test.docx")
         Path(input_file).touch()
 
-        with patch("app.features.folder.organize.converter.subprocess.run", side_effect=FileNotFoundError), \
+        with patch("app.features.folder.organize.converter.run_converter", side_effect=FileNotFoundError), \
              patch("app.features.folder.organize.converter.get_libreoffice_command", return_value="soffice"):
             with pytest.raises(FileNotFoundError):
                 convert_office_to_pdf(input_file, str(tmp_path))
