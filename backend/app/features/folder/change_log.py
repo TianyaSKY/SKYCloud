@@ -213,9 +213,9 @@ def update_checkpoint(
     try:
         session.execute(statement)
         session.commit()
-    except Exception:
+    except Exception as exc:
         session.rollback()
-        logger.exception("Failed to update organize checkpoint for workspace {}", workspace_id)
+        logger.error("Failed to update organize checkpoint for workspace {} (error_type={})", workspace_id, type(exc).__name__)
         raise
 
 

@@ -3,7 +3,6 @@
 仅做本地转换，不访问 LLM / DB；LibreOffice 路径可通过 LIBREOFFICE_PATH 覆盖。
 """
 
-import locale
 import os
 import subprocess
 
@@ -11,6 +10,8 @@ import cv2
 import fitz
 
 from loguru import logger
+
+OFFICE_CONVERSION_TIMEOUT_SECONDS = 120
 
 
 def get_libreoffice_command():
@@ -34,7 +35,7 @@ def get_libreoffice_command():
 def convert_office_to_pdf(input_path, output_dir):
     """用 LibreOffice headless 转 PDF；独立 UserInstallation 避免并发锁 profile。"""
     soffice_cmd = get_libreoffice_command()
-    logger.info(f"Converting office document to PDF: {input_path}")
+    logger.info("Converting office document to PDF")
 
     user_profile_path = os.path.join(output_dir, "libreoffice_user_profile")
     user_profile_url = f"file:///{user_profile_path.replace(os.sep, '/')}"
@@ -50,23 +51,11 @@ def convert_office_to_pdf(input_path, output_dir):
         output_dir,
     ]
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        logger.info(f"Successfully converted to PDF: {input_path}")
-    except FileNotFoundError:
-        logger.error(f"Error: '{soffice_cmd}' command not found.")
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=OFFICE_CONVERSION_TIMEOUT_SECONDS)
+        logger.info("Office conversion finished")
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.error("Office conversion failed (error_type={})", type(exc).__name__)
         raise
-    except subprocess.CalledProcessError as e:
-        stderr_content = e.stderr if e.stderr else b""
-        try:
-            error_msg = stderr_content.decode("utf-8")
-        except UnicodeDecodeError:
-            try:
-                error_msg = stderr_content.decode(locale.getpreferredencoding())
-            except:
-                error_msg = stderr_content.decode("utf-8", errors="replace")
-
-        logger.error(f"LibreOffice conversion failed: {error_msg}")
-        raise e
 
     base_name = os.path.splitext(os.path.basename(input_path))[0]
     return os.path.join(output_dir, base_name + ".pdf")
@@ -75,6 +64,7 @@ def convert_office_to_pdf(input_path, output_dir):
 def convert_pdf_to_images(pdf_path, output_dir, max_pages=5):
     """PDF 前 max_pages 页渲成 JPEG；2x zoom 兼顾清晰度与体积。"""
     image_paths = []
+    doc = None
     try:
         doc = fitz.open(pdf_path)
         page_count = min(len(doc), max_pages)
@@ -87,15 +77,21 @@ def convert_pdf_to_images(pdf_path, output_dir, max_pages=5):
             image_path = os.path.join(output_dir, f"page_{i}.jpg")
             pix.save(image_path)
             image_paths.append(image_path)
-        doc.close()
     except Exception as e:
-        logger.error(f"Error converting PDF to images: {e}")
+        logger.error("PDF rendering failed (error_type={})", type(e).__name__)
+    finally:
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception as exc:
+                logger.warning("PDF document cleanup failed (error_type={})", type(exc).__name__)
     return image_paths
 
 
 def extract_video_frames(video_path, output_dir, frame_count=5):
     """等间隔抽取 frame_count 帧，覆盖片头到片尾。"""
     image_paths = []
+    cap = None
     try:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -113,7 +109,12 @@ def extract_video_frames(video_path, output_dir, frame_count=5):
                 frame_path = os.path.join(output_dir, f"frame_{i}.jpg")
                 cv2.imwrite(frame_path, frame)
                 image_paths.append(frame_path)
-        cap.release()
     except Exception as e:
-        logger.error(f"Error extracting video frames: {e}")
+        logger.error("Video frame extraction failed (error_type={})", type(e).__name__)
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception as exc:
+                logger.warning("Video capture cleanup failed (error_type={})", type(exc).__name__)
     return image_paths

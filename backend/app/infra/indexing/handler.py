@@ -132,7 +132,7 @@ def _mark_file_failed(session, file_id: int, error: Exception) -> None:
                 },
             )
     except Exception as inner_error:
-        logger.error("Failed to mark file {} as failed: {}", file_id, inner_error)
+        logger.error("Failed to mark file {} as failed (error_type={})", file_id, type(inner_error).__name__)
         session.rollback()
         raise
 
@@ -144,7 +144,7 @@ def mark_file_failed(file_id: int, error: Exception) -> None:
         session = SessionLocal()
         _mark_file_failed(session, file_id, error)
     except Exception as exc:
-        logger.error("Could not persist failure status for file {}: {}", file_id, exc)
+        logger.error("Could not persist failure status for file {} (error_type={})", file_id, type(exc).__name__)
         raise
     finally:
         if session is not None:
@@ -366,12 +366,12 @@ def handle_file_indexing(file_id: int) -> None:
             len(result.chunks),
         )
     except Exception as exc:
-        logger.exception("Error indexing file {}: {}", file_id, exc)
+        logger.error("Error indexing file {} (error_type={})", file_id, type(exc).__name__)
         if context is not None:
             try:
                 mark_file_failed(file_id, exc)
-            except Exception:
-                logger.exception("Could not persist failure status for file {}", file_id)
+            except Exception as persist_error:
+                logger.error("Could not persist failure status for file {} (error_type={})", file_id, type(persist_error).__name__)
                 raise
         else:
             raise

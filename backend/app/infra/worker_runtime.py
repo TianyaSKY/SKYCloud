@@ -47,34 +47,34 @@ def run_scheduler() -> None:
     while True:
         try:
             deliver_pending_file_tasks()
-        except Exception:
-            logger.exception("Error delivering pending file tasks")
+        except Exception as exc:
+            logger.error("Error delivering pending file tasks (error_type={})", type(exc).__name__)
         try:
             deliver_pending_organize_tasks()
-        except Exception:
-            logger.exception("Error delivering pending organize tasks")
+        except Exception as exc:
+            logger.error("Error delivering pending organize tasks (error_type={})", type(exc).__name__)
         try:
             delete_pending_objects()
-        except Exception:
-            logger.exception("Error cleaning pending file objects")
+        except Exception as exc:
+            logger.error("Error cleaning pending file objects (error_type={})", type(exc).__name__)
         try:
             delete_pending_containers()
-        except Exception:
-            logger.exception("Error cleaning pending runtime containers")
+        except Exception as exc:
+            logger.error("Error cleaning pending runtime containers (error_type={})", type(exc).__name__)
         try:
             retire_cancelled_operations()
-        except Exception:
-            logger.exception("Error retiring cancelled runtime operations")
+        except Exception as exc:
+            logger.error("Error retiring cancelled runtime operations (error_type={})", type(exc).__name__)
         try:
             recover_runtime_operations()
-        except Exception:
-            logger.exception("Error recovering runtime operations")
+        except Exception as exc:
+            logger.error("Error recovering runtime operations (error_type={})", type(exc).__name__)
         if time.monotonic() >= next_cleanup:
             try:
                 with SessionLocal() as session:
                     cleanup_expired_uploads(max_age_hours=24, session=session)
-            except Exception:
-                logger.exception("Error in upload cleanup")
+            except Exception as exc:
+                logger.error("Error in upload cleanup (error_type={})", type(exc).__name__)
             next_cleanup = time.monotonic() + 60
         time.sleep(1)
 
@@ -125,8 +125,8 @@ class WorkerRuntime:
         for future in done:
             try:
                 future.result()
-            except Exception:
-                logger.exception("Worker task failed in {} executor", queue_name)
+            except Exception as exc:
+                logger.error("Worker task failed in {} executor (error_type={})", queue_name, type(exc).__name__)
 
     def reap_completed(self) -> None:
         self._reap("index")
@@ -152,8 +152,8 @@ class WorkerRuntime:
             for future in done:
                 try:
                     future.result()
-                except Exception:
-                    logger.exception("Worker task failed in {} executor", queue_name)
+                except Exception as exc:
+                    logger.error("Worker task failed in {} executor (error_type={})", queue_name, type(exc).__name__)
 
     def submit_index(self, func, *args: object) -> Future[object]:
         self.wait_for_capacity("index")
@@ -262,9 +262,9 @@ def run_worker(max_workers: int | None = None) -> None:
         while True:
             try:
                 worker_step(runtime, consumer, inflight)
-            except AMQPError:
+            except AMQPError as exc:
                 consumer.close()
-                logger.exception("RabbitMQ delivery failed; reconnecting")
+                logger.error("RabbitMQ delivery failed; reconnecting (error_type={})", type(exc).__name__)
                 time.sleep(RABBITMQ_RECONNECT_DELAY_SECONDS)
     finally:
         consumer.close()

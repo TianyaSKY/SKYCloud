@@ -118,9 +118,8 @@ def _get_visual_urls(local_path: str) -> list:
             else:
                 raise ValueError(f"Unsupported file type: {ext}")
         except Exception as e:
-            logger.error(
-                f"Error processing visual content for {local_path}: {e}")
-            raise e
+            logger.error("Visual content processing failed (error_type={})", type(e).__name__)
+            raise
 
     return image_uris
 
@@ -161,8 +160,8 @@ def _generate_text_description(local_path: str, config: dict, user_id: int = 0) 
         logger.info(f"[Chat] Text description generated for {local_path}")
         return ans
     except Exception as e:
-        logger.exception(f"Chat LLM API call failed: {e}")
-        raise e
+        logger.error("Chat LLM API call failed (error_type={})", type(e).__name__)
+        raise
 
 
 def generate_file_description(
@@ -217,8 +216,8 @@ def generate_file_description(
             raise Exception("未知错误 无法生成文件描述")
         return ans
     except Exception as e:
-        logger.exception(f"VL LLM API call failed: {e}")
-        raise e
+        logger.error("VL LLM API call failed (error_type={})", type(e).__name__)
+        raise
 
 
 def _extract_text_content(local_path: str) -> str:
@@ -264,8 +263,8 @@ def _extract_text_content(local_path: str) -> str:
                 return "\n".join(page.get_text("text") for page in document)
             finally:
                 document.close()
-        except Exception:
-            logger.exception("PDF 文本提取失败 path={}", local_path)
+        except Exception as exc:
+            logger.error("PDF 文本提取失败 (error_type={})", type(exc).__name__)
             return ""
 
     if ext in {".csv", ".xlsx", ".xls"}:
@@ -278,8 +277,8 @@ def _extract_text_content(local_path: str) -> str:
                 f"工作表: {name}\n{frame.fillna('').to_csv(index=False)}"
                 for name, frame in sheets.items()
             )
-        except Exception:
-            logger.exception("表格文本提取失败 path={}", local_path)
+        except Exception as exc:
+            logger.error("表格文本提取失败 (error_type={})", type(exc).__name__)
             return ""
 
     if ext in TEXT_EXTENSIONS or not ext:
@@ -305,8 +304,8 @@ def extract_file_sections(local_path: str) -> list[TextSection]:
                 ]
             finally:
                 document.close()
-        except Exception:
-            logger.exception("PDF 分页文本提取失败 path={}", local_path)
+        except Exception as exc:
+            logger.error("PDF 分页文本提取失败 (error_type={})", type(exc).__name__)
     text = _extract_text_content(local_path)
     return [TextSection(text)] if text.strip() else []
 

@@ -163,7 +163,8 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
             assert db.scalar(text("SELECT count(*) FROM organize_checkpoints")) == 0
             if mode == "checkpoint_rejected":
                 assert len(calls) == 4
-                assert "synthetic checkpoint failure" in result.stderr
+                assert "error_type=InternalError" in result.stderr
+                assert "synthetic checkpoint failure" not in result.stderr
                 assert db.scalar(text("SELECT sum(total_tokens) FROM token_usage_logs WHERE action='organize'")) == 32
                 folder_id = db.scalar(text("SELECT id FROM folder WHERE name='organized' AND workspace_id=1"))
                 assert folder_id is not None

@@ -357,7 +357,7 @@ def handle_organize_process(workspace_id: int, user_id: int, *, task_id=None, ex
             f"{results}"
         )
     except Exception as exc:
-        logger.exception("文件整理失败")
+        logger.error("文件整理失败 (error_type={})", type(exc).__name__)
         succeeded = False
         token_usage = {}
         content = "文件整理任务执行失败，请稍后重试或联系管理员。"

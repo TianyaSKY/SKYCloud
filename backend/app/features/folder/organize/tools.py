@@ -45,7 +45,7 @@ def clear_workspace_cache(workspace_id):
             if cursor == 0:
                 break
     except Exception as e:
-        logger.error(f"Error clearing cache for workspace {workspace_id}: {e}")
+        logger.error("Error clearing cache for workspace {} (error_type={})", workspace_id, type(e).__name__)
 
 
 def _check_mixed_folders(session, workspace_id: int) -> tuple[bool, list[dict]]:
