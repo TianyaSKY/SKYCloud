@@ -149,3 +149,15 @@ def ensure_user_access(actor_id: int, actor_role: str, user_id: int) -> None:
     """仅允许操作本人资料，或 admin 代操作。"""
     if actor_id != user_id and actor_role != "admin":
         raise PermissionDeniedError("Permission denied")
+
+
+def authorize_account_mutation(session: Session, actor_id: int, user_id: int | None = None) -> str:
+    """Keep current actor authorization locked through the caller's mutation commit."""
+    identities = {actor_id} if user_id is None else {actor_id, user_id}
+    users = {user.id: user for user in account_repository.lock_users(session, identities)}
+    actor = users.get(actor_id)
+    if actor is None or (user_id is None and actor.role != "admin"):
+        raise PermissionDeniedError("Permission denied")
+    if user_id is not None:
+        ensure_user_access(actor_id, actor.role, user_id)
+    return actor.role

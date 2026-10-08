@@ -6,16 +6,18 @@ from fastapi.testclient import TestClient
 from app.api.dependencies import get_current_user, require_admin
 from app.exceptions import register_exception_handlers
 from app.features.auth import router as auth
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 
 @pytest.fixture
-def client(session, test_user):
+def client(session, test_user, admin_user):
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(auth.router)
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     app.dependency_overrides[get_current_user] = lambda: test_user
-    app.dependency_overrides[require_admin] = lambda: test_user
+    app.dependency_overrides[require_admin] = lambda: admin_user
     return TestClient(app, raise_server_exceptions=False)
 
 @pytest.mark.parametrize('path', ['/auth/register', '/users'])

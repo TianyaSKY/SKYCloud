@@ -32,3 +32,9 @@ def set_avatar(session: Session, user_id: int, avatar_url: str) -> bool:
     """Stage account avatar metadata in the caller's publication transaction."""
     result = session.execute(update(User).where(User.id == user_id).values(avatar=avatar_url))
     return result.rowcount == 1
+
+
+def lock_users(session: Session, user_ids: set[int]) -> list[User]:
+    """Lock mutation identities in one deterministic order and refresh their state."""
+    return list(session.scalars(select(User).where(User.id.in_(user_ids))
+        .order_by(User.id).with_for_update().execution_options(populate_existing=True)))

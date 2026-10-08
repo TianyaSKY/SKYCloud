@@ -18,7 +18,7 @@ class TestAuthRouter:
         payload = LoginRequest(username="testuser", password="password123")
         from app.features.auth.service import generate_token
         with patch("app.features.auth.service.login", return_value={"token": generate_token(test_user.id), "user": {}}) as mock:
-            result = login(payload, Request({'type': 'http', 'headers': []}), Response(), session)
+            result = login(payload, Request({'type': 'http', 'headers': []}), Response(), lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "token" in result
@@ -32,7 +32,7 @@ class TestAuthRouter:
         mock_user.to_dict.return_value = {"id": 1, "username": "new"}
         payload = RegisterRequest(username="new", password="pass123")
         with patch("app.features.auth.service.register_user", return_value=mock_user):
-            result = register(payload, session)
+            result = register(payload, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert result == {"message": "User registered successfully", "user": mock_user.to_dict.return_value}
@@ -41,7 +41,7 @@ class TestAuthRouter:
         from app.features.auth.router import get_mcp_token
 
         with patch("app.features.auth.service.get_mcp_token", return_value={"token": "mcp"}):
-            result = get_mcp_token(Response(), test_user, session)
+            result = get_mcp_token(Response(), test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "token" in result
@@ -50,7 +50,7 @@ class TestAuthRouter:
         from app.features.auth.router import refresh_mcp_token
 
         with patch("app.features.auth.service.refresh_mcp_token", return_value={"token": "new"}):
-            result = refresh_mcp_token(Response(), test_user, session)
+            result = refresh_mcp_token(Response(), test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "token" in result
@@ -63,7 +63,7 @@ class TestAuthRouter:
         mock_user.to_dict.return_value = {"id": 2}
         payload = UserCreateRequest(username="created", password="pass")
         with patch("app.features.auth.user_service.create_user", return_value=mock_user):
-            result = create_user(payload, admin_user, session)
+            result = create_user(payload, admin_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert result == mock_user.to_dict.return_value
@@ -90,7 +90,7 @@ class TestAuthRouter:
         payload = UserUpdateRequest(username="updated")
         with patch("app.features.auth.user_service.ensure_user_access"), \
              patch("app.features.auth.user_service.update_user", return_value=mock_user):
-            result = update_user(test_user.id, payload, test_user, session)
+            result = update_user(test_user.id, payload, test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "id" in result
@@ -102,7 +102,7 @@ class TestAuthRouter:
         payload = UserPasswordUpdateRequest(old_password="old", new_password="new")
         with patch("app.features.auth.user_service.ensure_user_access"), \
              patch("app.features.auth.user_service.change_password"):
-            result = update_user_password(test_user.id, payload, test_user, session)
+            result = update_user_password(test_user.id, payload, test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "message" in result
@@ -112,7 +112,7 @@ class TestAuthRouter:
 
         with patch("app.features.auth.user_service.ensure_user_access"), \
              patch("app.features.auth.user_service.delete_user"):
-            result = delete_user(test_user.id, test_user, session)
+            result = delete_user(test_user.id, test_user, lambda: nullcontext(session))
         assert result.status_code == 204
 
 

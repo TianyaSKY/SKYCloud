@@ -319,3 +319,73 @@ async def test_profile_http_current_roles_and_cached_target_lifecycle(postgres,i
             else:sql.execute(text('DELETE FROM users WHERE id=2'))
         denied=await client.get('/users/2')
         assert denied.status_code==(403 if change=='demote' else 404),denied.text
+
+
+@pytest.mark.parametrize('operation', ['create', 'profile', 'password', 'delete', 'self-password'])
+async def test_account_mutations_reject_stale_admin_snapshot(postgres, monkeypatch, operation):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.features.auth import router, user_service
+    from app.api.dependencies import get_current_user, require_admin
+    from app.infra.extensions import get_session_factory
+    from app.exceptions import register_exception_handlers
+    from app.models.user import User
+    upgrade(postgres)
+    factory = sessionmaker(bind=postgres)
+    with factory() as db:
+        actor = User(id=1, username='actor', role='admin')
+        target = User(id=2, username='target', role='common')
+        actor.set_password('original-password')
+        target.set_password('original-password')
+        db.add_all([actor, target]); db.commit()
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(router.router)
+    snapshot = SimpleNamespace(id=1, role='admin')
+    app.dependency_overrides[get_current_user] = lambda: snapshot
+    app.dependency_overrides[require_admin] = lambda: snapshot
+    app.dependency_overrides[get_session_factory] = lambda: factory
+    with postgres.begin() as independent:
+        independent.execute(text("UPDATE users SET role='common' WHERE id=1"))
+    calls = {
+        'create': ('POST', '/users', {'username': 'forbidden', 'password': 'new-password'}),
+        'profile': ('PUT', '/users/2', {'username': 'forbidden'}),
+        'password': ('PUT', '/users/2/password', {'old_password': 'incorrect', 'new_password': 'new-password'}),
+        'delete': ('DELETE', '/users/2', None),
+        'self-password': ('PUT', '/users/1/password', {'old_password': 'incorrect', 'new_password': 'new-password'}),
+    }
+    method, path, body = calls[operation]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+        response = await client.request(method, path, json=body)
+        assert response.status_code == (400 if operation == 'self-password' else 403), response.text
+    with factory() as db:
+        assert db.query(User).count() == 2
+        assert db.get(User, 1).check_password('original-password')
+        assert db.get(User, 2).check_password('original-password')
+        assert db.get(User, 1).auth_version == db.get(User, 2).auth_version == 0
+        assert db.get(User, 2).username == 'target'
+
+
+def test_account_authorization_lock_orders_demotion_after_transaction(postgres):
+    from sqlalchemy.exc import DBAPIError
+    from app.features.auth import user_service
+    from app.exceptions import PermissionDeniedError
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin'),(2,'target','x','common')"))
+    factory = sessionmaker(bind=postgres)
+    with factory() as owned:
+        assert user_service.authorize_account_mutation(owned, 1, 2) == 'admin'
+        with postgres.connect() as independent:
+            independent.execute(text("SET LOCAL lock_timeout='100ms'"))
+            with pytest.raises(DBAPIError) as error:
+                independent.execute(text("UPDATE users SET role='common' WHERE id=1"))
+            assert error.value.orig.pgcode == '55P03'
+            independent.rollback()
+        owned.commit()
+    with postgres.begin() as independent:
+        independent.execute(text("UPDATE users SET role='common' WHERE id=1"))
+    with factory() as owned:
+        with pytest.raises(PermissionDeniedError):
+            user_service.authorize_account_mutation(owned, 1, 2)
