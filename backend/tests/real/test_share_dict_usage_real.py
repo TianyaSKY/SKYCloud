@@ -371,9 +371,9 @@ class TestTokenUsageService:
         assert "total_tokens" in stats
 
     def test_get_user_token_stats_not_found(self, session):
-        """不存在用户返回空 dict。"""
-        stats = get_user_token_stats(session, 99999)
-        assert stats == {}
+        """不存在用户明确返回领域错误。"""
+        with pytest.raises(ResourceNotFoundError):
+            get_user_token_stats(session, 99999)
 
     def test_get_usage_logs_empty(self, session, test_user):
         """无记录时返回空列表。"""
@@ -409,9 +409,8 @@ class TestTokenUsageService:
         # 使用有效 ISO 日期
         result = get_usage_logs(session, test_user.id, start_date="2020-01-01T00:00:00")
         assert result["total"] >= 1
-        # 无效日期不报错（pass）
-        result2 = get_usage_logs(session, test_user.id, start_date="invalid")
-        assert result2["total"] >= 1
+        with pytest.raises(BusinessRuleError):
+            get_usage_logs(session, test_user.id, start_date="invalid")
 
     def test_get_daily_stats(self, session, test_user):
         """每日聚合统计。"""

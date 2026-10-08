@@ -15,12 +15,12 @@ export interface TokenUsageLog {
   user_id: number
   action: string
   model_name: string | null
-  prompt_tokens: number
-  completion_tokens: number
-  total_tokens: number
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  total_tokens: number | null
   query_summary: string | null
   extra_info: string | null
-  created_at: string
+  created_at: string | null
 }
 
 /** 后端契约：用量日志分页 */

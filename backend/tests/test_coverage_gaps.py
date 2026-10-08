@@ -44,13 +44,9 @@ class TestTokenUsageAdmin:
             end_date="2099-12-31T00:00:00",
         )
         assert result["total"] >= 1
-        # 无效日期（应忽略 ValueError 分支）
-        result2 = get_usage_logs(
-            session, test_user.id,
-            start_date="not-a-date",
-            end_date="also-bad",
-        )
-        assert result2["total"] >= 1
+        from app.exceptions import BusinessRuleError
+        with pytest.raises(BusinessRuleError):
+            get_usage_logs(session, test_user.id, start_date="bad", end_date="bad2")
 
     def test_get_daily_stats_empty(self, session, test_user):
         """无数据时返回空列表。"""
@@ -82,13 +78,9 @@ class TestTokenUsageAdmin:
             end_date="2099-12-31T00:00:00",
         )
         assert r3["total"] >= 1
-        # 无效日期
-        r4 = get_all_users_usage_logs(
-            session,
-            start_date="bad",
-            end_date="bad2",
-        )
-        assert r4["total"] >= 1
+        from app.exceptions import BusinessRuleError
+        with pytest.raises(BusinessRuleError):
+            get_all_users_usage_logs(session, start_date="bad", end_date="bad2")
 
     def test_get_all_users_daily_stats(self, session, test_user):
         session.add(TokenUsageLog(

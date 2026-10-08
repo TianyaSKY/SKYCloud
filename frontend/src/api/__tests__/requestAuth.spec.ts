@@ -64,7 +64,7 @@ describe('canonical API errors',()=>{
 
 
 describe('canonical JSON successes', () => {
-  it.each(['/auth/login', '/workspace', '/users/7', '/share', '/share/my', '/share/7', '/inbox', '/sys_dicts/7'])('unwraps migrated routes (%s)', async url => {
+  it.each(['/auth/login', '/workspace', '/users/7', '/share', '/share/my', '/share/7', '/inbox', '/sys_dicts/7', '/token-usage/stats', '/admin/token-usage/users'])('unwraps migrated routes (%s)', async url => {
     request.defaults.adapter=async config=>({status:200,statusText:'OK',headers:{},config,
       data:{success:true,data:{id:7}}})
     expect(await request.get(url)).toEqual({id:7})
@@ -80,6 +80,6 @@ describe('canonical JSON successes', () => {
       statusText:'OK',headers:{},config,data:config.responseType==='blob' ? blob : {old:'data'}})
     expect(await request.delete('/users/7')).toEqual({old:'data'})
     expect(await request.get('/file/1/download',{responseType:'blob'})).toBe(blob)
-    expect(await request.get('/token-usage/stats')).toEqual({old:'data'})
+    expect(await request.get('/assistant/runs/active')).toEqual({old:'data'})
   })
 })

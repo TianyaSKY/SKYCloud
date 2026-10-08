@@ -318,7 +318,9 @@ class TestTokenUsageService:
     def test_get_user_token_stats_nonexistent(self, session):
         from app.features.token_usage.service import get_user_token_stats
 
-        assert get_user_token_stats(session, 99999) == {}
+        from app.exceptions import ResourceNotFoundError
+        with pytest.raises(ResourceNotFoundError):
+            get_user_token_stats(session, 99999)
 
     def test_get_usage_logs(self, session, test_user):
         from app.features.token_usage.service import get_usage_logs

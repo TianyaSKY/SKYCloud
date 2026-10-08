@@ -333,8 +333,9 @@ class TestRecordUsage:
 
 class TestGetUserTokenStats:
     def test_user_not_found(self, session):
-        result = get_user_token_stats(session, 99999)
-        assert result == {}
+        from app.exceptions import ResourceNotFoundError
+        with pytest.raises(ResourceNotFoundError):
+            get_user_token_stats(session, 99999)
 
     def test_success(self, session, test_user):
         result = get_user_token_stats(session, test_user.id)

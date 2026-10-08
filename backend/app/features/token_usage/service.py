@@ -9,6 +9,7 @@ from app.infra.extensions import SessionLocal
 from app.infra.datetime_utils import utc_now, local_isoformat, to_utc_datetime
 from app.models.token_usage_log import TokenUsageLog
 from app.models.user import User
+from app.exceptions import BusinessRuleError, ResourceNotFoundError
 
 from loguru import logger
 
@@ -82,7 +83,7 @@ def get_user_token_stats(session: Session, user_id: int) -> dict:
     """用户累计 token 统计（读 users 表冗余字段）。"""
     user = session.get(User, user_id)
     if not user:
-        return {}
+        raise ResourceNotFoundError("User not found")
     return {
         "user_id": user_id,
         "total_prompt_tokens": user.total_prompt_tokens or 0,
@@ -90,6 +91,22 @@ def get_user_token_stats(session: Session, user_id: int) -> dict:
         "total_tokens": user.total_tokens or 0,
         "last_active_at": local_isoformat(user.last_active_at),
     }
+
+
+def _filter_dates(query, start_date, end_date):
+    """Reject invalid filters rather than silently widening the requested audit."""
+    try:
+        start = to_utc_datetime(datetime.fromisoformat(start_date)) if start_date else None
+        end = to_utc_datetime(datetime.fromisoformat(end_date)) if end_date else None
+    except (ValueError, TypeError) as exc:
+        raise BusinessRuleError("Invalid usage date filter") from exc
+    if start is not None and end is not None and start > end:
+        raise BusinessRuleError("Usage start date must not follow end date")
+    if start is not None:
+        query = query.filter(TokenUsageLog.created_at >= start)
+    if end is not None:
+        query = query.filter(TokenUsageLog.created_at <= end)
+    return query
 
 
 def get_usage_logs(
@@ -109,19 +126,7 @@ def get_usage_logs(
     if action:
         query = query.filter(TokenUsageLog.action == action)
 
-    if start_date:
-        try:
-            sd = to_utc_datetime(datetime.fromisoformat(start_date))
-            query = query.filter(TokenUsageLog.created_at >= sd)
-        except ValueError:
-            pass
-
-    if end_date:
-        try:
-            ed = to_utc_datetime(datetime.fromisoformat(end_date))
-            query = query.filter(TokenUsageLog.created_at <= ed)
-        except ValueError:
-            pass
+    query = _filter_dates(query, start_date, end_date)
 
     total = query.count()
     logs = (
@@ -215,19 +220,7 @@ def get_all_users_usage_logs(
     if action:
         query = query.filter(TokenUsageLog.action == action)
 
-    if start_date:
-        try:
-            sd = to_utc_datetime(datetime.fromisoformat(start_date))
-            query = query.filter(TokenUsageLog.created_at >= sd)
-        except ValueError:
-            pass
-
-    if end_date:
-        try:
-            ed = to_utc_datetime(datetime.fromisoformat(end_date))
-            query = query.filter(TokenUsageLog.created_at <= ed)
-        except ValueError:
-            pass
+    query = _filter_dates(query, start_date, end_date)
 
     total = query.count()
     rows = (

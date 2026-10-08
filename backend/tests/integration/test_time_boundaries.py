@@ -9,7 +9,7 @@ from entry.migrate import upgrade
 from tests.integration.test_migrations import postgres  # noqa: F401
 from tests.test_time_boundaries import assert_share_and_usage_times
 from app.models.user import User
-from app.models.workspace import Workspace
+from app.models.workspace import Workspace, WorkspaceMember
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_TIME_BOUNDARY_TESTS") != "1",
                                reason="Opt-in isolated PostgreSQL clock boundaries")
@@ -27,5 +27,7 @@ def test_expiry_and_filters_ignore_database_session_timezone(postgres, database_
             session.flush()
             workspace = Workspace(name="clock-space", owner_id=user.id)
             session.add(workspace)
+            session.flush()
+            session.add(WorkspaceMember(workspace_id=workspace.id,user_id=user.id,role="admin"))
             session.commit()
             assert_share_and_usage_times(session, user.id, workspace.id)
