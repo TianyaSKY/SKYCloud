@@ -21,7 +21,13 @@ class InterceptHandler(logging.Handler):
         while frame is not None and frame.f_code.co_filename == logging.__file__:
             frame = frame.f_back
             depth += 1
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        if record.exc_info and record.exc_info[1] is not None:
+            # Library traceback chains can contain SQL binds, provider bodies
+            # and request data, even when diagnose/backtrace are disabled.
+            logger.opt(depth=depth).log(level, "Library failure in {} (error_type={})",
+                                        record.name, type(record.exc_info[1]).__name__)
+        else:
+            logger.opt(depth=depth).log(level, record.getMessage())
 
 
 def setup_logging() -> None:

@@ -206,7 +206,7 @@ def _clone_existing_file(
         upload_quota.cancel(session, workspace_id, uploader_id, reservation_id, missing_ok=True)
         if isinstance(e, DomainError):
             raise
-        logger.exception(f"Failed to create instant upload record: {e}")
+        logger.error("Failed to create instant upload record (error_type={})", type(e).__name__)
         raise ServiceOperationError("Failed to save file metadata")
 
     _log_file_created(new_file)
@@ -304,7 +304,7 @@ def _load_multipart_meta(workspace_id: int, upload_id: str) -> dict[str, Any]:
     try:
         meta = multipart_storage.read_metadata(meta_path)
     except Exception as e:
-        logger.exception(f"Failed to read upload metadata: {e}")
+        logger.error("Failed to read upload metadata (error_type={})", type(e).__name__)
         raise ServiceOperationError("Upload session corrupted")
 
     if int(meta.get("workspace_id", -1)) != workspace_id:
@@ -367,7 +367,7 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any]) -> File:
     except Exception as e:
         session.rollback()
         _release_failed_upload(session, data["workspace_id"], data["uploader_id"], reservation_id, unique_filename, storage)
-        logger.exception(f"Failed to save uploaded file metadata: {e}")
+        logger.error("Failed to save uploaded file metadata (error_type={})", type(e).__name__)
         if isinstance(e, DomainError):
             raise
         raise ServiceOperationError("Failed to save file metadata")
@@ -678,7 +678,7 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
         raise
     except Exception as e:
         staging.close()
-        logger.exception(f"Failed to merge chunks: {e}")
+        logger.error("Failed to merge chunks (error_type={})", type(e).__name__)
         raise ServiceOperationError("Failed to merge chunks")
     except BaseException:
         staging.close()
@@ -711,7 +711,7 @@ def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: 
     except Exception as e:
         session.rollback()
         _release_failed_upload(session, workspace_id, uploader_id, safe_upload_id, unique_filename, storage)
-        logger.exception(f"Failed to persist merged file: {e}")
+        logger.error("Failed to persist merged file (error_type={})", type(e).__name__)
         if isinstance(e, DomainError):
             raise
         raise ServiceOperationError("Failed to save file metadata")
@@ -890,7 +890,7 @@ async def search_files(
     except (PermissionDeniedError, PermissionError):
         raise
     except Exception as e:
-        logger.exception(f"Vector search error: {e}")
+        logger.error("Vector search error (error_type={})", type(e).__name__)
         return {
             "items": [], "total": 0, "page": page, "page_size": page_size,
             "error": "Vector search is temporarily unavailable",
@@ -1010,7 +1010,7 @@ async def embedding_desc(desc: str, config: dict[str, str], user_id: int = 0) ->
         )
         return vectors[0] if vectors else []
     except Exception as e:
-        logger.exception(f"Embedding failed: {e}")
+        logger.error("Embedding failed (error_type={})", type(e).__name__)
         return []
 
 
@@ -1031,9 +1031,9 @@ def rebuild_failed_indexes(session: Session, workspace_id: int | None = None) ->
         repository.mark_pending(session, file_ids)
         stage_file_tasks(session, file_ids)
         session.commit()
-    except Exception:
+    except Exception as exc:
         session.rollback()
-        logger.exception("Failed to update file status to pending")
+        logger.error("Failed to update file status to pending (error_type={})", type(exc).__name__)
         return 0
 
     return len(file_ids)
@@ -1091,7 +1091,7 @@ def cleanup_expired_uploads(max_age_hours: int = 24, *, session: Session | None 
                         shutil.rmtree(upload_dir, ignore_errors=True)
                         count += 1
                 except OSError as e:
-                    logger.warning(f"Error accessing/deleting {upload_dir}: {e}")
+                    logger.warning("Expired upload cleanup failed (error_type={})", type(e).__name__)
 
             try:
                 if not os.listdir(ws_dir):
@@ -1100,6 +1100,6 @@ def cleanup_expired_uploads(max_age_hours: int = 24, *, session: Session | None 
                 pass
 
     except Exception as e:
-        logger.exception(f"Error during cleanup_expired_uploads: {e}")
+        logger.error("Error during cleanup_expired_uploads (error_type={})", type(e).__name__)
 
     return count

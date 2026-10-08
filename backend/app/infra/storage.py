@@ -54,7 +54,7 @@ class MinIOStorageClient:
                 self._client.make_bucket(self._bucket)
                 logger.info("已创建 MinIO bucket: {}", self._bucket)
         except S3Error as e:
-            logger.error("MinIO bucket 初始化失败: {}", e)
+            logger.error("MinIO bucket 初始化失败 (error_type={})", type(e).__name__)
             raise
 
     # ------------------------------------------------------------------
@@ -67,7 +67,7 @@ class MinIOStorageClient:
             self._client.fput_object(self._bucket, object_name, local_path)
             logger.debug("上传文件到 MinIO: {} -> {}", local_path, object_name)
         except S3Error as e:
-            logger.error("MinIO 上传失败 [{}]: {}", object_name, e)
+            logger.error("MinIO 上传失败 (error_type={})", type(e).__name__)
             raise
 
     def upload_data(self, data: bytes, object_name: str, content_type: str = "application/octet-stream") -> None:
@@ -82,7 +82,7 @@ class MinIOStorageClient:
             )
             logger.debug("上传数据到 MinIO: {} ({} bytes)", object_name, len(data))
         except S3Error as e:
-            logger.error("MinIO 数据上传失败 [{}]: {}", object_name, e)
+            logger.error("MinIO 数据上传失败 (error_type={})", type(e).__name__)
             raise
 
     def upload_stream(self, stream: BinaryIO, object_name: str, length: int, content_type: str = "application/octet-stream") -> None:
@@ -97,7 +97,7 @@ class MinIOStorageClient:
             )
             logger.debug("流式上传到 MinIO: {} ({} bytes)", object_name, length)
         except S3Error as e:
-            logger.error("MinIO 流式上传失败 [{}]: {}", object_name, e)
+            logger.error("MinIO 流式上传失败 (error_type={})", type(e).__name__)
             raise
 
     def download_file(self, object_name: str, local_path: str) -> None:
@@ -106,7 +106,7 @@ class MinIOStorageClient:
             self._client.fget_object(self._bucket, object_name, local_path)
             logger.debug("从 MinIO 下载: {} -> {}", object_name, local_path)
         except S3Error as e:
-            logger.error("MinIO 下载失败 [{}]: {}", object_name, e)
+            logger.error("MinIO 下载失败 (error_type={})", type(e).__name__)
             raise
 
     def get_file_stream(self, object_name: str):
@@ -114,17 +114,18 @@ class MinIOStorageClient:
         try:
             return self._client.get_object(self._bucket, object_name)
         except S3Error as e:
-            logger.error("MinIO 获取文件流失败 [{}]: {}", object_name, e)
+            logger.error("MinIO 获取文件流失败 (error_type={})", type(e).__name__)
             raise
 
     @staticmethod
     def close_file_stream(stream) -> None:
         """关闭下载流并归还 HTTP 连接，供流式响应结束后调用。"""
-        try:
-            stream.close()
-            stream.release_conn()
-        except Exception as exc:
-            logger.warning("关闭 MinIO 下载流失败: {}", exc)
+        # Always try to return the connection even if closing the body fails.
+        for method in ("close", "release_conn"):
+            try:
+                getattr(stream, method)()
+            except Exception as exc:
+                logger.warning("MinIO download stream cleanup failed (error_type={})", type(exc).__name__)
 
     def delete_file(self, object_name: str) -> None:
         """从 MinIO 删除对象。"""
@@ -132,7 +133,7 @@ class MinIOStorageClient:
             self._client.remove_object(self._bucket, object_name)
             logger.debug("从 MinIO 删除: {}", object_name)
         except S3Error as e:
-            logger.error("MinIO 删除失败 [{}]: {}", object_name, e)
+            logger.error("MinIO 删除失败 (error_type={})", type(e).__name__)
             raise
 
     def file_exists(self, object_name: str) -> bool:
@@ -143,7 +144,7 @@ class MinIOStorageClient:
         except S3Error as e:
             if e.code == "NoSuchKey":
                 return False
-            logger.error("MinIO stat 失败 [{}]: {}", object_name, e)
+            logger.error("MinIO stat 失败 (error_type={})", type(e).__name__)
             raise
 
     def get_file_size(self, object_name: str) -> int:
@@ -152,7 +153,7 @@ class MinIOStorageClient:
             stat = self._client.stat_object(self._bucket, object_name)
             return stat.size
         except S3Error as e:
-            logger.error("MinIO 获取文件大小失败 [{}]: {}", object_name, e)
+            logger.error("MinIO 获取文件大小失败 (error_type={})", type(e).__name__)
             raise
 
     def download_to_temp(self, object_name: str, suffix: str = "") -> str:
