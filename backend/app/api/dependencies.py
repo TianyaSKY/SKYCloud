@@ -100,6 +100,7 @@ def get_current_workspace(
         request: Request,
         current_user: User = Depends(get_current_user),
         session: Session = Depends(get_db),
+        session_factory=Depends(get_session_factory),
 ) -> Workspace:
     """从 X-Workspace-Id header 解析当前工作空间，校验用户为成员。
 
@@ -142,16 +143,18 @@ def get_current_workspace(
             # for invalid credentials; do not mask it here.
             pass
 
-    workspace = session.get(Workspace, workspace_id)
-    if not workspace:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace not found",
-        )
+    factory = (lambda: nullcontext(session)) if isinstance(session_factory, DependsParameter) else session_factory
+    with factory() as owned:
+        workspace = owned.get(Workspace, workspace_id)
+        if not workspace:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workspace not found",
+            )
 
-    # 校验用户为工作空间成员
-    assert_member(session, workspace_id, int(current_user.id))
-    return workspace
+        # 校验用户为工作空间成员
+        assert_member(owned, workspace_id, int(current_user.id))
+        return workspace
 
 
 def require_workspace_role(min_role: str):
@@ -164,14 +167,17 @@ def require_workspace_role(min_role: str):
             workspace: Workspace = Depends(get_current_workspace),
             current_user: User = Depends(get_current_user),
             session: Session = Depends(get_db),
+            session_factory=Depends(get_session_factory),
     ) -> Workspace:
         from app.features.workspace.permissions import get_member_role
-        role = get_member_role(session, workspace.id, int(current_user.id))
-        if role is None or not check_role_level(role, min_role):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Requires {min_role} role or higher",
-            )
-        return workspace
+        factory = (lambda: nullcontext(session)) if isinstance(session_factory, DependsParameter) else session_factory
+        with factory() as owned:
+            role = get_member_role(owned, workspace.id, int(current_user.id))
+            if role is None or not check_role_level(role, min_role):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Requires {min_role} role or higher",
+                )
+            return workspace
 
     return checker

@@ -389,3 +389,47 @@ def test_account_authorization_lock_orders_demotion_after_transaction(postgres):
     with factory() as owned:
         with pytest.raises(PermissionDeniedError):
             user_service.authorize_account_mutation(owned, 1, 2)
+
+
+async def test_http_workspace_dependencies_detach_and_recheck_membership(postgres):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import Depends, FastAPI
+    from app.api.dependencies import get_current_user, get_current_workspace, require_workspace_role
+    from app.infra.extensions import get_session_factory
+    from app.exceptions import register_exception_handlers
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
+
+    @app.get('/context')
+    async def context(workspace=Depends(get_current_workspace)):
+        assert workspace._sa_instance_state.session is None
+        return {'id': workspace.id, 'name': workspace.name}
+
+    @app.get('/editor')
+    async def editor(workspace=Depends(require_workspace_role('editor'))):
+        assert workspace._sa_instance_state.session is None
+        return {'id': workspace.id}
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test',
+                                 headers={'X-Workspace-Id': '1'}) as client:
+        assert (await client.get('/context')).json() == {'id': 1, 'name': 'one'}
+        assert (await client.get('/editor')).status_code == 200
+        with postgres.begin() as independent:
+            independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
+        assert (await client.get('/context')).status_code == 200
+        assert (await client.get('/editor')).status_code == 403
+        with postgres.begin() as independent:
+            independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
+        assert (await client.get('/context')).status_code == 403
+        assert (await client.get('/editor')).status_code == 403
+        with postgres.begin() as independent:
+            independent.execute(text('DELETE FROM workspaces WHERE id=1'))
+        assert (await client.get('/context')).status_code == 404
