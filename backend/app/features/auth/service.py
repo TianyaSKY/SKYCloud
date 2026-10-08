@@ -28,7 +28,7 @@ def generate_token(user_id, auth_version: int = 0, *, session_id: str | None = N
         return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
     except Exception as e:
-        logger.error(f"Error generating token: {e}")
+        logger.error("Access token generation failed: error_type={}", type(e).__name__)
         return None
 
 
@@ -52,7 +52,7 @@ def generate_mcp_token(
         }
         return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
     except Exception as e:
-        logger.error(f"Error generating MCP token: {e}")
+        logger.error("MCP token generation failed: error_type={}", type(e).__name__)
         return None
 
 
@@ -122,7 +122,7 @@ def register_user(session: Session, username: str, password: str, avatar: str | 
         return user
     except Exception as exc:
         session.rollback()
-        logger.exception("用户注册失败：{}", exc)
+        logger.error("User registration failed: error_type={}", type(exc).__name__)
         raise ServiceOperationError("User registration failed") from exc
 
 

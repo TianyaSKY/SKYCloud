@@ -72,7 +72,7 @@ def cacheable(
                 if cached is not None:
                     return json.loads(cached)
             except Exception as e:
-                logger.warning(f"[cache] read error {cache_key}: {e}")
+                logger.warning("[cache] read failed: error_type={}", type(e).__name__)
 
             result = func(*args, **kwargs)
 
@@ -83,7 +83,7 @@ def cacheable(
                         json.dumps(result, ensure_ascii=False, default=str),
                     )
                 except Exception as e:
-                    logger.warning(f"[cache] write error {cache_key}: {e}")
+                    logger.warning("[cache] write failed: error_type={}", type(e).__name__)
             return result
 
         @functools.wraps(func)
@@ -94,7 +94,7 @@ def cacheable(
                 if cached is not None:
                     return json.loads(cached)
             except Exception as e:
-                logger.warning(f"[cache] read error {cache_key}: {e}")
+                logger.warning("[cache] read failed: error_type={}", type(e).__name__)
 
             result = await func(*args, **kwargs)
 
@@ -106,7 +106,7 @@ def cacheable(
                         json.dumps(result, ensure_ascii=False, default=str),
                     )
                 except Exception as e:
-                    logger.warning(f"[cache] write error {cache_key}: {e}")
+                    logger.warning("[cache] write failed: error_type={}", type(e).__name__)
             return result
 
         chosen = async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
@@ -143,7 +143,7 @@ def cache_evict(
                     cache_key = _build_cache_key(prefix, args, kwargs, key)
                     redis_client.delete(cache_key)
             except Exception as e:
-                logger.warning(f"[cache] evict error {prefix}: {e}")
+                logger.warning("[cache] evict failed: error_type={}", type(e).__name__)
 
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
@@ -209,7 +209,7 @@ def _put_result(prefix, args, kwargs, key, result, expire, cache_none):
             json.dumps(result, ensure_ascii=False, default=str),
         )
     except Exception as e:
-        logger.warning(f"[cache] put error {cache_key}: {e}")
+        logger.warning("[cache] put failed: error_type={}", type(e).__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +225,7 @@ def evict_cache(prefix: str, *key_parts: Any) -> None:
     try:
         redis_client.delete(cache_key)
     except Exception as e:
-        logger.warning(f"[cache] manual evict error {cache_key}: {e}")
+        logger.warning("[cache] manual evict failed: error_type={}", type(e).__name__)
 
 
 def _evict_pattern(prefix: str) -> int:
@@ -237,7 +237,7 @@ def _evict_pattern(prefix: str) -> int:
             redis_client.delete(*keys)
         return len(keys)
     except Exception as e:
-        logger.warning(f"[cache] pattern evict error {prefix}: {e}")
+        logger.warning("[cache] pattern evict failed: error_type={}", type(e).__name__)
         return 0
 
 

@@ -47,8 +47,9 @@ def record_mcp_call(
     context = get_optional_mcp_context()
     if not context or not is_mcp_request_active():
         return
-    session = SessionLocal()
+    session = None
     try:
+        session = SessionLocal()
         session.add(
             McpAuditLog(
                 request_id=get_request_id() or "unknown",
@@ -66,11 +67,19 @@ def record_mcp_call(
             )
         )
         session.commit()
-    except Exception:
-        session.rollback()
-        logger.exception("MCP audit log failed: tool={}", tool_name)
+    except Exception as exc:
+        logger.error("MCP audit persistence failed: error_type={}", type(exc).__name__)
+        if session is not None:
+            try:
+                session.rollback()
+            except Exception as cleanup_exc:
+                logger.error("MCP audit rollback failed: error_type={}", type(cleanup_exc).__name__)
     finally:
-        session.close()
+        if session is not None:
+            try:
+                session.close()
+            except Exception as cleanup_exc:
+                logger.error("MCP audit close failed: error_type={}", type(cleanup_exc).__name__)
 
 
 def audited_tool(tool_name: str) -> Callable:

@@ -125,6 +125,7 @@ jobs:
           RUN_SHARE_ACCESS_TESTS: '1'
           RUN_USAGE_DIAGNOSTIC_TESTS: '1'
           RUN_SERVER_DIAGNOSTIC_TESTS: '1'
+          RUN_CACHE_AUDIT_DIAGNOSTICS: '1'
         run: >-
           python -m pytest -o addopts='' -q
           tests/integration/test_migrations.py
@@ -144,6 +145,7 @@ jobs:
           tests/integration/test_share_access.py
           tests/integration/test_usage_diagnostics.py
           tests/integration/test_server_diagnostics.py
+          tests/integration/test_cache_audit_diagnostics.py
       - name: Authenticated uploads, object recovery and indexing workflows
         working-directory: backend
         env:
