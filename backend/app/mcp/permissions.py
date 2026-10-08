@@ -29,8 +29,8 @@ def require_mcp_admin_context() -> McpRequestContext:
 
 def assert_mcp_write_permission(session, context: McpRequestContext) -> None:
     """Revalidate database membership/role in the tool-owned transaction."""
-    from app.features.workspace.permissions import assert_can_write
-    assert_can_write(session, context.workspace_id, context.user_id)
+    from app.features.workspace.permissions import assert_can_write_locked
+    assert_can_write_locked(session, context.workspace_id, context.user_id)
 
 
 def assert_mcp_read_permission(session, context: McpRequestContext):

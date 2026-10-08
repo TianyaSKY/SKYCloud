@@ -596,3 +596,61 @@ async def test_file_batch_delete_rechecks_after_committed_item(postgres, monkeyp
         assert response.status_code == 403, response.text
     with postgres.connect() as db:
         assert db.execute(text('SELECT id FROM files')).scalars().all() == [2]
+
+
+@pytest.mark.parametrize('operation', ['create_folder', 'move_file', 'delete_file', 'move_folder',
+                                       'delete_folder', 'batch_delete', 'upload_file'])
+async def test_mcp_write_authorization_holds_role_lock_at_dispatch(postgres, monkeypatch, operation):
+    from sqlalchemy.exc import DBAPIError
+    from app.exceptions import BusinessRuleError
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+        db.execute(text("INSERT INTO folder(id,name,workspace_id,parent_id) VALUES (1,'/',1,NULL),(2,'child',1,1)"))
+        db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id) VALUES (1,'original','original',3,'success',1,1)"))
+    monkeypatch.setattr(server, 'SessionLocal', sessionmaker(bind=postgres))
+    arguments = {
+        'create_folder': {'name': 'new'}, 'move_file': {'file_id': 1, 'new_name': 'new'},
+        'delete_file': {'file_id': 1}, 'move_folder': {'folder_id': 2, 'new_name': 'new'},
+        'delete_folder': {'folder_id': 2}, 'batch_delete': {'items': [server.BatchDeleteItem(id=1)]},
+        'upload_file': {'filename': 'new.txt', 'content': 'abc'},
+    }[operation]
+    owner, method = {
+        'create_folder': (server.folder_service, 'create_folder'),
+        'move_file': (server.file_service, 'update_file'),
+        'delete_file': (server.file_service, 'delete_file'),
+        'move_folder': (server.folder_service, 'update_folder'),
+        'delete_folder': (server.folder_service, 'delete_folder'),
+        'batch_delete': (server.file_service, 'delete_file'),
+        'upload_file': (server.file_service, 'create_uploaded_file'),
+    }[operation]
+    calls = []
+    def dispatch(session, *args, **kwargs):
+        calls.append(True)
+        with postgres.connect() as independent:
+            independent.execute(text("SET LOCAL lock_timeout='100ms'"))
+            with pytest.raises(DBAPIError) as error:
+                independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
+            assert error.value.orig.pgcode == '55P03'
+            independent.rollback()
+        raise BusinessRuleError('Intentional transaction boundary stop')
+    monkeypatch.setattr(owner, method, dispatch)
+    token = set_mcp_context(McpRequestContext(1, 1, 'admin'))
+    try:
+        result = json.loads(await getattr(server, operation)(**arguments))
+        errors = [entry['error'] for entry in result['errors']] if operation == 'batch_delete' else [result['error']]
+        assert errors == ['Intentional transaction boundary stop']
+        with postgres.begin() as independent:
+            independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
+        result = json.loads(await getattr(server, operation)(**arguments))
+        errors = [entry['error'] for entry in result['errors']] if operation == 'batch_delete' else [result['error']]
+        assert errors == ['需要编辑者或管理员权限']
+        assert calls == [True]
+        with postgres.connect() as db:
+            assert db.execute(text('SELECT id,name FROM files')).all() == [(1, 'original')]
+            assert db.execute(text('SELECT id,name FROM folder ORDER BY id')).all() == [(1, '/'), (2, 'child')]
+            assert db.scalar(text('SELECT count(*) FROM upload_reservations')) == 0
+    finally:
+        reset_mcp_context(token)

@@ -76,5 +76,7 @@ def assert_can_write_locked(session: Session, workspace_id: int, user_id: int) -
     """Hold current edit authorization through the caller's mutation transaction."""
     from app.features.workspace.access_repository import lock_write_identity
     member = lock_write_identity(session, workspace_id, user_id)
-    if member is None or member.role not in ('editor', 'admin'):
+    if member is None:
+        raise PermissionDeniedError("您不是该工作空间的成员")
+    if member.role not in ('editor', 'admin'):
         raise PermissionDeniedError("需要编辑者或管理员权限")
