@@ -267,12 +267,13 @@ def update_member_role(session: Session, workspace_id: int, actor_id: int, targe
                     target_user_id,
                     runtime=runtime,
                 )
-            except Exception:
-                logger.exception(
-                    "角色变更后刷新 OpenCode MCP 配置失败：ws_id={}, user={}, runtime_id={}",
+            except Exception as exc:
+                logger.error(
+                    "角色变更后刷新 OpenCode MCP 配置失败：ws_id={}, user={}, runtime_id={}, error_type={}",
                     workspace_id,
                     target_user_id,
                     runtime.id,
+                    type(exc).__name__,
                 )
     logger.info("变更成员角色：ws_id={}, user={}, {} -> {}", workspace_id, target_user_id, old_role, new_role)
     return member

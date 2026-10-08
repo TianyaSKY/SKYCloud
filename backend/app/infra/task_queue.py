@@ -141,6 +141,8 @@ class RabbitMQTaskConsumer:
         try:
             if self._connection and self._connection.is_open:
                 self._connection.close()
+        except Exception as exc:
+            logger.warning("RabbitMQ connection close failed: error_type={}", type(exc).__name__)
         finally:
             self._connection = None
             self._channel = None
@@ -243,11 +245,12 @@ class RabbitMQTaskConsumer:
                     self._connection.sleep(self.poll_interval_seconds)
                 else:
                     time.sleep(self.poll_interval_seconds)
-            except AMQPError:
+            except AMQPError as exc:
                 self.close()
-                logger.exception(
-                    "RabbitMQ polling failed; reconnecting in %.1f seconds",
+                logger.error(
+                    "RabbitMQ polling failed; reconnecting in {} seconds: error_type={}",
                     RABBITMQ_RECONNECT_DELAY_SECONDS,
+                    type(exc).__name__,
                 )
                 time.sleep(RABBITMQ_RECONNECT_DELAY_SECONDS)
 

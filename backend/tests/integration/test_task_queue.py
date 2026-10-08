@@ -175,3 +175,37 @@ def test_confirmed_messages_survive_broker_restart(broker, monkeypatch):
         assert consumer.get_message(queue.FILE_PROCESS_QUEUE) is None
     finally:
         consumer.close()
+
+
+def test_actual_auth_rejection_reconnects_without_private_failure_logs(broker, monkeypatch):
+    from loguru import logger
+    secret = 'private-broker-auth-rejection-sentinel'
+    real_publish(queue.FILE_PROCESS_QUEUE, ['retry-after-auth-failure'])
+    original = queue.open_connection
+    attempts = []
+    username, password = os.environ['RABBITMQ_USER'], os.environ['RABBITMQ_PASSWORD']
+    def open_after_one_denial():
+        attempts.append(1)
+        if len(attempts) != 1:
+            return original()
+        monkeypatch.setenv('RABBITMQ_USER', 'disposable-denied-user')
+        monkeypatch.setenv('RABBITMQ_PASSWORD', secret)
+        try:
+            return original()  # Actual broker rejects SASL credentials.
+        finally:
+            monkeypatch.setenv('RABBITMQ_USER', username)
+            monkeypatch.setenv('RABBITMQ_PASSWORD', password)
+    monkeypatch.setattr(queue, 'open_connection', open_after_one_denial)
+    monkeypatch.setattr(queue, 'RABBITMQ_RECONNECT_DELAY_SECONDS', 0)
+    consumer = queue.RabbitMQTaskConsumer()
+    captured = []
+    sink = logger.add(lambda message: captured.append((str(message), message.record['exception'])), format='{message}')
+    try:
+        message = consumer.get_next_message()
+        assert message.body == 'retry-after-auth-failure'
+        assert len(attempts) == 2 and consumer.acknowledge(message)
+        assert any('RabbitMQ polling failed' in message and 'error_type=' in message for message, _ in captured)
+        assert all(secret not in message and exception is None for message, exception in captured)
+    finally:
+        consumer.close()
+        logger.remove(sink)

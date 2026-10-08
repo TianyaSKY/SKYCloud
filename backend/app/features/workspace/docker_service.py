@@ -88,9 +88,9 @@ def runtime_uses_configured_image(runtime: OpenCodeRuntime) -> bool:
         return False
     except DockerException as exc:
         logger.warning(
-            "无法检查 OpenCode Runtime 镜像：runtime_id={}, reason={}",
+            "无法检查 OpenCode Runtime 镜像：runtime_id={}, error_type={}",
             runtime.id,
-            exc,
+            type(exc).__name__,
         )
         # Do not destroy a healthy Runtime merely because Docker is
         # temporarily unavailable; the caller will surface its normal error.
@@ -220,7 +220,7 @@ def _sync_status(session: Session, workspace: Workspace) -> None:
         workspace.status = "stopped"
         session.commit()
     except DockerException as exc:
-        logger.warning("同步 OpenCode 容器状态失败：workspace_id={}, reason={}", workspace.id, exc)
+        logger.warning("同步 OpenCode 容器状态失败：workspace_id={}, error_type={}", workspace.id, type(exc).__name__)
 
 
 def _sync_runtime_status(session: Session, runtime: OpenCodeRuntime) -> None:
@@ -243,7 +243,7 @@ def _sync_runtime_status(session: Session, runtime: OpenCodeRuntime) -> None:
         runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
         session.commit()
     except DockerException as exc:
-        logger.warning("同步 OpenCode Runtime 状态失败：runtime_id={}, reason={}", runtime.id, exc)
+        logger.warning("同步 OpenCode Runtime 状态失败：runtime_id={}, error_type={}", runtime.id, type(exc).__name__)
 
 
 def _runtime_summary(session: Session, runtime: OpenCodeRuntime) -> dict:
@@ -313,7 +313,7 @@ def list_summaries(session: Session, rows: list, user_id: int) -> list[dict]:
                         for row in _client().user_snapshot(user_id)
                         if row["user_id"] == user_id}
         except DockerException as exc:
-            logger.warning("批量同步 OpenCode 状态失败：user_id={}, reason={}", user_id, exc)
+            logger.warning("批量同步 OpenCode 状态失败：user_id={}, error_type={}", user_id, type(exc).__name__)
     changed_status, changed_container, missing = {}, {}, []
     result = []
     for workspace, runtime in rows:
@@ -435,7 +435,7 @@ def start(session: Session, workspace: Workspace, user_id: int, *, expected_gene
                 runtime.status = 'error'
                 runtime.error_message = _runtime_error_message(exc)
                 session.commit()
-        logger.exception('Runtime start failed: workspace_id={}, user_id={}, type={}',workspace_id,user_id,type(exc).__name__)
+        logger.error('Runtime start failed: workspace_id={}, user_id={}, error_type={}',workspace_id,user_id,type(exc).__name__)
     return workspace
 
 
@@ -472,7 +472,7 @@ def stop(
         except DockerException as exc:
             workspace.status = "error"
             workspace.error_message = _runtime_error_message(exc)
-            logger.exception("停止 OpenCode 容器失败：workspace_id={}, reason={}", workspace.id, exc)
+            logger.error("停止 OpenCode 容器失败：workspace_id={}, error_type={}", workspace.id, type(exc).__name__)
         session.commit()
         return workspace
 
@@ -493,7 +493,7 @@ def stop(
     except DockerException as exc:
         runtime.status = "error"
         runtime.error_message = _runtime_error_message(exc)
-        logger.exception("停止 OpenCode Runtime 失败：workspace_id={}, user_id={}, reason={}", workspace.id, user_id, exc)
+        logger.error("停止 OpenCode Runtime 失败：workspace_id={}, user_id={}, error_type={}", workspace.id, user_id, type(exc).__name__)
     runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
     session.commit()
     return workspace
@@ -531,7 +531,7 @@ def restart(session: Session, workspace: Workspace, user_id: int) -> Workspace:
         runtime.status = "error"
         runtime.error_message = _runtime_error_message(exc)
         session.commit()
-        logger.exception("重启 OpenCode Runtime 失败：workspace_id={}, user_id={}, reason={}", workspace.id, user_id, exc)
+        logger.error("重启 OpenCode Runtime 失败：workspace_id={}, user_id={}, error_type={}", workspace.id, user_id, type(exc).__name__)
     return workspace
 
 
@@ -584,7 +584,7 @@ def get_access_url(entity: Workspace | OpenCodeRuntime) -> str | None:
         if mapping and mapping[0].get("HostPort"):
             return f"http://localhost:{mapping[0]['HostPort']}"
     except DockerException as exc:
-        logger.warning("读取 OpenCode 访问地址失败：entity_id={}, reason={}", getattr(entity, "id", None), exc)
+        logger.warning("读取 OpenCode 访问地址失败：entity_id={}, error_type={}", getattr(entity, "id", None), type(exc).__name__)
     return None
 
 
@@ -784,14 +784,15 @@ def setup_mcp(
             record.id,
             runtime.config_version,
         )
-    except DockerException:
+    except DockerException as exc:
         runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
         session.commit()
-        logger.exception(
-            "配置 OpenCode MCP 失败：workspace_id={}, user_id={}, runtime_id={}",
+        logger.error(
+            "配置 OpenCode MCP 失败：workspace_id={}, user_id={}, runtime_id={}, error_type={}",
             workspace.id,
             user_id,
             runtime.id,
+            type(exc).__name__,
         )
         raise
 

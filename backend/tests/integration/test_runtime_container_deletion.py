@@ -684,3 +684,34 @@ def test_detached_completed_generation_is_fenced_even_when_physical_id_already_m
     from runtime_controller.client import ControllerError
     with pytest.raises(ControllerError): graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
     assert all(exists(graph,runtime) for runtime in graph['containers'] if runtime!=graph['id'])
+
+
+@pytest.mark.parametrize('action', ['stop', 'restart'])
+def test_lifecycle_controller_auth_rejection_keeps_sql_identity_and_private_logs(graph, monkeypatch, action):
+    from loguru import logger
+    from app.features.workspace import docker_service
+    from app.models.workspace import Workspace
+    from app.models.opencode_runtime import OpenCodeRuntime
+    secret = 'private-controller-auth-failure-sentinel'
+    monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN', secret)
+    captured = []
+    sink = logger.add(lambda message: captured.append((str(message), message.record['exception'])), format='{message}')
+    try:
+        with graph['factory']() as session:
+            workspace = session.get(Workspace, graph['id'])
+            assert getattr(docker_service, action)(session, workspace, graph['id']) is workspace
+        assert any('error_type=ControllerError' in message for message, _ in captured)
+        assert all(secret not in message and exception is None for message, exception in captured)
+        with graph['factory']() as observer:
+            runtime = observer.get(OpenCodeRuntime, graph['id'])
+            assert runtime.status == 'error'
+            assert runtime.container_id == graph['containers'][graph['id']]
+            assert secret not in runtime.error_message
+            if action == 'stop':
+                assert observer.scalar(text('SELECT revoked_at IS NOT NULL FROM mcp_runtime_tokens WHERE runtime_id=:id'), {'id':graph['id']}) is True
+        # Restore the observer credential before checking container existence.
+        monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN', graph['token'])
+        # HTTP authorization failure cannot stop, replace or remove any container.
+        assert all(exists(graph, runtime) for runtime in graph['containers'])
+    finally:
+        logger.remove(sink)
