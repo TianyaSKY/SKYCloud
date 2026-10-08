@@ -55,7 +55,23 @@ def _get_user_data(session: Session, id: int) -> dict | None:
     return user.to_dict() if user else None
 
 
-async def get_user(session: Session, id: int) -> User:
+async def get_user(session: Session | None, id: int, *, session_factory=None,
+                   actor_id: int | None = None) -> User:
+    if session_factory is not None:
+        def work():
+            with session_factory() as owned:
+                if actor_id is not None:
+                    actor_role = account_repository.current_role(owned, actor_id)
+                    if actor_role is None:
+                        raise PermissionDeniedError("Permission denied")
+                    ensure_user_access(actor_id, actor_role, id)
+                role = account_repository.current_role(owned, id)
+                user_data = _get_user_data(owned, id)
+                if role is None or not user_data:
+                    raise ResourceNotFoundError("User not found")
+                return User.from_cache({**user_data, "role": role})
+        return await run_in_threadpool(work)
+    # Explicit synchronous-session callers retain their existing service seam.
     user_data = await run_in_threadpool(_get_user_data, session, id)
     if not user_data:
         raise ResourceNotFoundError("User not found")

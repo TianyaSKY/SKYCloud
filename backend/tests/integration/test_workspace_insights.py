@@ -287,3 +287,35 @@ async def test_http_auth_fresh_role_overrides_cached_admin_and_revokes_version(p
         with postgres.begin() as sql:
             sql.execute(text('UPDATE users SET auth_version=1 WHERE id=1'))
         assert (await client.get('/admin-only',headers=headers)).status_code==401
+
+
+@pytest.mark.parametrize('change',['demote','delete-target'])
+async def test_profile_http_current_roles_and_cached_target_lifecycle(postgres,infrastructure,monkeypatch,change):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.features.auth import router,user_service
+    from app.api.dependencies import get_current_user
+    from app.infra.extensions import get_session_factory
+    from app.infra import cache
+    from app.exceptions import register_exception_handlers
+    upgrade(postgres)
+    with postgres.begin() as sql:
+        sql.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin'),(2,'target','x','admin')"))
+    monkeypatch.setattr(cache,'redis_client',infrastructure['redis'])
+    app=FastAPI();register_exception_handlers(app);app.include_router(router.router)
+    app.dependency_overrides[get_current_user]=lambda:SimpleNamespace(id=1,role='admin')
+    app.dependency_overrides[get_session_factory]=lambda:sessionmaker(bind=postgres)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
+        first=await client.get('/users/2')
+        assert first.status_code==200 and first.json()['data']['role']=='admin'
+        assert infrastructure['redis'].exists(user_service.USER_CACHE_PREFIX+':2')==1
+        with postgres.begin() as sql:
+            sql.execute(text("UPDATE users SET role='common' WHERE id=2"))
+        updated=await client.get('/users/2')
+        assert updated.status_code==200 and updated.json()['data']['role']=='common'
+        with postgres.begin() as sql:
+            if change=='demote':sql.execute(text("UPDATE users SET role='common' WHERE id=1"))
+            else:sql.execute(text('DELETE FROM users WHERE id=2'))
+        denied=await client.get('/users/2')
+        assert denied.status_code==(403 if change=='demote' else 404),denied.text

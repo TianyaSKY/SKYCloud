@@ -20,7 +20,7 @@ from app.features.auth.schemas import (
     UserPasswordUpdateRequest,
     UserUpdateRequest,
 )
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
 from app.features.auth import service as auth_service
 from app.features.auth import user_service
 from app.features.auth import refresh_sessions
@@ -108,11 +108,11 @@ def create_user(
 async def get_user(
     id: int,
     current_user=Depends(get_current_user),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
     """获取用户资料；仅本人或管理员。"""
     user_service.ensure_user_access(current_user.id, current_user.role, id)
-    user = await user_service.get_user(session, id)
+    user = await user_service.get_user(None, id, session_factory=session_factory, actor_id=current_user.id)
     return success_payload(user.to_dict())
 
 
