@@ -412,3 +412,30 @@ def test_staging_close_fault_preserves_business_outcome(session,test_workspace,t
     assert session.query(File).count()==int(not business_failure)
     assert len(mock_object_storage.objects)==int(not business_failure)
     assert all(private not in r['message'] and r['exception'] is None for r in records)
+
+
+@pytest.mark.parametrize('loss', ['demote', 'delete'])
+def test_avatar_acting_admin_rechecked_after_object_put(session, test_workspace, test_user, admin_user,
+                                                       tmp_path, monkeypatch, mock_object_storage, loss):
+    from sqlalchemy import update, delete
+    from app.models.share import Share
+    from app.models.file_task_outbox import FileTaskOutbox
+    uid, aid = test_user.id, admin_user.id
+    test_user.avatar = '/existing-avatar'; session.commit()
+    monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path))
+    put = mock_object_storage.upload_file
+    def lose_role(*args, **kwargs):
+        result = put(*args, **kwargs)
+        statement = delete(User) if loss == 'delete' else update(User).values(role='common')
+        session.execute(statement.where(User.id == aid), execution_options={'synchronize_session': False})
+        session.commit()
+        return result
+    monkeypatch.setattr(mock_object_storage, 'upload_file', lose_role)
+    with pytest.raises(PermissionDeniedError):
+        service.upload_avatar_for_user(session, aid, 'admin', uid, adapter(b'avatar'))
+    session.expire_all()
+    assert session.get(User, uid).avatar == '/existing-avatar'
+    assert session.query(File).count() == session.query(Share).count() == session.query(FileTaskOutbox).count() == 0
+    assert session.query(UploadReservation).one().status == 'cancelled'
+    assert session.query(UploadDailyUsage).one().attempts == 1
+    assert not mock_object_storage.objects

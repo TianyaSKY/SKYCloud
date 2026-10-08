@@ -328,7 +328,8 @@ def _write_multipart_meta(meta_path: str, meta: dict[str, Any]) -> None:
 
 
 def create_file(session: Session, file_obj: Any, data: dict[str, Any], *,
-                before_commit: Callable[[File], None] | None = None) -> File:
+                before_commit: Callable[[File], None] | None = None,
+                authorize_upload: Callable[[], None] | None = None) -> File:
     storage = get_storage_client()
     # 分片临时目录仍用本地
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -344,11 +345,15 @@ def create_file(session: Session, file_obj: Any, data: dict[str, Any], *,
         file_size = os.path.getsize(local_tmp_path)
         mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
         content_hash = _calculate_file_hash(local_tmp_path)
+        if authorize_upload is not None:
+            authorize_upload()
         reservation_id = upload_authorization.reserve(session, data["workspace_id"], data["uploader_id"], file_size,
             reservation_id=staging.directory.name, details={"object_name": unique_filename, "stage_id": staging.directory.name}).id
         # 上传到 MinIO 对象存储
         storage.upload_file(local_tmp_path, unique_filename)
 
+        if authorize_upload is not None:
+            authorize_upload()
         upload_authorization.consume(session, data["workspace_id"], data["uploader_id"], reservation_id, file_size)
         new_file = _persist_file_record(session, 
             name=original_filename,
@@ -881,11 +886,15 @@ def get_root_file_id(session: Session, workspace_id: int) -> int | None:
     return None
 
 
-def upload_avatar(session: Session, img_file: Any, user_id: int) -> dict[str, Any]:
+def upload_avatar(session: Session, img_file: Any, user_id: int, *, actor_id: int | None = None) -> dict[str, Any]:
     from app.features.folder import service as folder_service
     from app.features.share import service as share_service
     from app.features.auth import user_service
 
+    def authorize_avatar():
+        user_service.authorize_account_mutation(session, user_id if actor_id is None else actor_id, user_id)
+    # Actor/target identity locks precede workspace and upload reservation locks.
+    authorize_avatar()
     workspace = repository.find_owned_workspace(session, user_id)
     if workspace is None:
         raise ResourceNotFoundError("Personal workspace not found")
@@ -906,7 +915,7 @@ def upload_avatar(session: Session, img_file: Any, user_id: int) -> dict[str, An
     try:
         avatar = create_file(session, img_file,
             {"workspace_id": workspace.id, "uploader_id": user_id, "parent_id": folder.id, "max_bytes": AVATAR_LIMIT},
-            before_commit=publish_metadata)
+            before_commit=publish_metadata, authorize_upload=authorize_avatar)
     finally:
         # Also invalidate after an ambiguous commit acknowledgement: SQL may
         # already contain the new URL, so cached profile must be read again.
@@ -923,7 +932,7 @@ def upload_avatar_for_user(
 ) -> dict[str, Any]:
     if actor_id != user_id and actor_role != "admin":
         raise PermissionDeniedError("Permission denied")
-    return upload_avatar(session, upload, user_id)
+    return upload_avatar(session, upload, user_id, actor_id=actor_id)
 
 
 def batch_delete_items(session: Session, workspace_id: int, user_id: int, items: list[dict[str, Any]]) -> None:

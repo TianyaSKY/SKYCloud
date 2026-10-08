@@ -570,3 +570,41 @@ def test_upload_publication_rejects_committed_role_loss(upload_api, postgres, mi
     assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == baseline_objects
     if kind == 'instant':
         assert client.get('/api/files/' + str(source.json()['data']['id']) + '/download', headers=headers).content == b'abc'
+
+
+@pytest.mark.parametrize('format', ['multipart', 'form', 'json'])
+@pytest.mark.parametrize('loss', ['demote', 'delete'])
+def test_admin_avatar_publication_rechecks_acting_identity(upload_api, postgres, minio_storage, monkeypatch, format, loss):
+    import base64
+    client, headers, root = upload_api
+    with postgres.begin() as db:
+        db.execute(text("UPDATE users SET role='admin' WHERE id=1"))
+        db.execute(text("UPDATE users SET avatar='/existing-avatar' WHERE id=2"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (2,'target-private',2)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (2,2,'admin')"))
+        db.execute(text("INSERT INTO folder(name,workspace_id,parent_id) VALUES ('/',2,NULL)"))
+    put = minio_storage.upload_file
+    def lose_identity(*args, **kwargs):
+        result = put(*args, **kwargs)
+        with postgres.begin() as independent:
+            independent.execute(text('DELETE FROM users WHERE id=1' if loss == 'delete'
+                else "UPDATE users SET role='common' WHERE id=1"))
+        return result
+    monkeypatch.setattr(minio_storage, 'upload_file', lose_identity)
+    encoded = 'data:image/png;base64,' + base64.b64encode(b'avatar-image').decode()
+    if format == 'multipart':
+        response = client.post('/api/files/upload/avatar/2', headers=headers,
+                               files={'avatar': ('avatar.png', b'avatar-image', 'image/png')})
+    elif format == 'form':
+        response = client.post('/api/files/upload/avatar/2', headers=headers, data={'avatar_base64': encoded})
+    else:
+        response = client.post('/api/files/upload/avatar/2', headers=headers, json={'avatar': encoded})
+    assert response.status_code == 403, response.text
+    with postgres.connect() as db:
+        assert db.scalar(text('SELECT avatar FROM users WHERE id=2')) == '/existing-avatar'
+        assert db.scalar(text('SELECT count(*) FROM files')) == 0
+        assert db.scalar(text('SELECT count(*) FROM shares')) == 0
+        assert db.scalar(text('SELECT count(*) FROM file_task_outbox')) == 0
+        assert db.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='cancelled' AND user_id=2")) == 1
+        assert db.scalar(text('SELECT sum(attempts) FROM upload_daily_usage WHERE user_id=2')) == 1
+    assert not list(minio_storage._client.list_objects(minio_storage._bucket))
