@@ -1,6 +1,7 @@
 """路由器测试：直接调用路由函数并 mock 依赖。"""
 
 import pytest
+from contextlib import nullcontext
 from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi import HTTPException, Response, Request
 
@@ -128,7 +129,7 @@ class TestWorkspaceRouter:
         from app.features.workspace.schemas import WorkspaceCreateRequest
         payload = WorkspaceCreateRequest(name="new")
         with patch("app.features.workspace.service.create_workspace", return_value=mock_ws):
-            result = create_workspace(payload, test_user, session)
+            result = create_workspace(payload, test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert result == mock_ws.to_dict.return_value
@@ -137,7 +138,7 @@ class TestWorkspaceRouter:
         from app.features.workspace.router import list_workspaces
 
         with patch("app.features.workspace.service.get_user_workspace_rows", return_value=[]):
-            result = list_workspaces(test_user, session)
+            result = list_workspaces(test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "workspaces" in result
@@ -147,7 +148,7 @@ class TestWorkspaceRouter:
 
         with patch("app.features.workspace.permissions.assert_member"), \
              patch("app.features.workspace.service.get_workspace_detail", return_value={"id": 1}):
-            result = get_workspace(test_workspace.id, test_user, session)
+            result = get_workspace(test_workspace.id, test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "id" in result
@@ -160,7 +161,7 @@ class TestWorkspaceRouter:
         mock_ws.to_dict.return_value = {"id": test_workspace.id}
         payload = WorkspaceUpdateRequest(name="updated")
         with patch("app.features.workspace.service.update_workspace", return_value=mock_ws):
-            result = update_workspace(test_workspace.id, payload, test_user, session)
+            result = update_workspace(test_workspace.id, payload, test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "id" in result
@@ -169,7 +170,7 @@ class TestWorkspaceRouter:
         from app.features.workspace.router import delete_workspace
 
         with patch("app.features.workspace.service.delete_workspace"):
-            result = delete_workspace(test_workspace.id, test_user, session)
+            result = delete_workspace(test_workspace.id, test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert result == {"message": "已删除"}
@@ -182,7 +183,7 @@ class TestWorkspaceRouter:
         mock_member.to_dict.return_value = {"user_id": 2}
         payload = MemberInviteRequest(username="new", role="editor")
         with patch("app.features.workspace.service.invite_member", return_value=mock_member):
-            result = invite_member(test_workspace.id, payload, test_user, session)
+            result = invite_member(test_workspace.id, payload, test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert result == mock_member.to_dict.return_value
@@ -192,7 +193,7 @@ class TestWorkspaceRouter:
 
         with patch("app.features.workspace.permissions.assert_member"), \
              patch("app.features.workspace.service.list_members", return_value=[]):
-            result = list_members(test_workspace.id, test_user, session)
+            result = list_members(test_workspace.id, test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "members" in result
@@ -205,7 +206,7 @@ class TestWorkspaceRouter:
         mock_member.to_dict.return_value = {"user_id": 2}
         payload = MemberRoleUpdateRequest(role="admin")
         with patch("app.features.workspace.service.update_member_role", return_value=mock_member):
-            result = update_member_role(test_workspace.id, 2, payload, test_user, session)
+            result = update_member_role(test_workspace.id, 2, payload, test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert "user_id" in result
@@ -214,7 +215,7 @@ class TestWorkspaceRouter:
         from app.features.workspace.router import remove_member
 
         with patch("app.features.workspace.service.remove_member"):
-            result = remove_member(test_workspace.id, 2, test_user, session)
+            result = remove_member(test_workspace.id, 2, test_user, lambda: nullcontext(session))
             assert result['success'] is True
             result = result['data']
         assert result == {"message": "已移除"}

@@ -5,13 +5,15 @@ from fastapi.testclient import TestClient
 from app.api.dependencies import get_current_user
 from app.exceptions import register_exception_handlers
 from app.features.workspace import router as workspace
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 
 @pytest.fixture
 def client(session, test_user, test_workspace, monkeypatch):
     app = FastAPI(); register_exception_handlers(app)
     app.include_router(workspace.router)
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     app.dependency_overrides[get_current_user] = lambda: test_user
     for name in ['start', 'stop', 'restart', 'setup_mcp']:
         monkeypatch.setattr(workspace.docker_service, name, lambda *args: None)

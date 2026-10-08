@@ -2,6 +2,7 @@
 import asyncio
 import threading
 from types import SimpleNamespace
+from contextlib import nullcontext
 
 import httpx
 import pytest
@@ -10,7 +11,8 @@ from fastapi import Depends, FastAPI
 from app.api.dependencies import get_current_user, get_current_workspace, require_workspace_role
 from app.features.auth import user_service
 from app.features.workspace import router as workspace_router
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.mark.parametrize('boundary', ['create', 'workspace', 'role', 'profile', 'mcp', 'assistant_list', 'assistant_cancel'])
@@ -33,6 +35,7 @@ async def test_slow_sync_boundary_allows_concurrent_http_request(monkeypatch, bo
     app.dependency_overrides[get_current_user] = lambda: user
     session = SimpleNamespace(get=slow(workspace))
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: lambda: nullcontext(session)
     app.include_router(workspace_router.router)
 
     @app.get('/probe')
@@ -115,6 +118,7 @@ def test_http_create_workspace_preserves_description_and_validation(session, tes
     app.include_router(workspace_router.router)
     app.dependency_overrides[get_current_user] = lambda: test_user
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     with TestClient(app) as client:
         response = client.post('/workspace', json={'name': '  Created over HTTP  ', 'description': 'Description'})
         assert response.status_code == 201, response.text
