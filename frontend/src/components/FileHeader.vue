@@ -32,7 +32,7 @@
       <div v-else class="page-title">{{ title }}</div>
     </div>
     <div class="header-right">
-      <a-space v-if="showSearch">
+      <a-space v-if="showSearch" class="header-search">
         <div class="search-switch-wrapper">
           <span :class="{ active: searchType === 'fuzzy' }" @click="handleToggleSearchType('fuzzy')">模糊搜索</span>
           <a-switch :model-value="isVectorSearch" size="small" @change="handleSearchTypeChange" />
@@ -40,7 +40,7 @@
         </div>
         <a-input-search
           :model-value="searchKey"
-          :style="{ width: '280px' }"
+          class="search-input"
           allow-clear
           placeholder="搜索文件"
           search-button
@@ -259,5 +259,52 @@ const handleToggleSearchType = (type: 'fuzzy' | 'vector') => {
   justify-content: center;
   overflow: hidden;
   flex-shrink: 0;
+}
+.search-input {
+  width: 280px;
+}
+
+.search-switch-wrapper,
+.custom-breadcrumb,
+.user-info {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .header {
+    height: auto;
+    min-height: 64px;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 12px 16px;
+  }
+
+  .header-left {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .header-right {
+    flex: 1 1 100%;
+    min-width: 0;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .header-search {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .search-input {
+    width: min(280px, calc(100vw - 112px));
+  }
+
+  .username {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 </style>

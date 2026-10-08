@@ -5,6 +5,8 @@
     :loading="loading"
     :pagination="pagination"
     :row-selection="rowSelection"
+    :scroll="{ x: 840 }"
+    table-layout-fixed
     row-key="id"
     @page-change="$emit('page-change', $event)"
     @page-size-change="$emit('page-size-change', $event)"
@@ -17,10 +19,10 @@
         title="文件名"
       >
         <template #cell="{ record }">
-          <a-space>
+          <a-space class="file-name-cell">
             <icon-folder v-if="record.is_folder" :style="{ color: '#ffb400', fontSize: '18px' }" />
             <icon-file v-else :style="{ color: '#165dff', fontSize: '18px' }" />
-            <a-link @click="$emit('file-click', record)">{{ record.name }}</a-link>
+            <a-link class="file-name-link" :title="record.name" @click="$emit('file-click', record)">{{ record.name }}</a-link>
             <a-tooltip
               v-if="!record.is_folder && record.status && record.status !== 'success'"
               :content="getStatusTip(record.status)"
@@ -247,6 +249,24 @@ const getStatusTip = (status: string) => {
 </script>
 
 <style scoped>
+.file-name-cell {
+  display: flex;
+  min-width: 0;
+}
+
+.file-name-cell :deep(.arco-space-item:nth-child(2)) {
+  min-width: 0;
+  flex: 1;
+}
+
+.file-name-link {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
 .row-actions {
   display: flex;
   align-items: center;
@@ -256,7 +276,8 @@ const getStatusTip = (status: string) => {
   transition: opacity 0.2s;
 }
 
-:deep(.arco-table-tr:hover) .row-actions {
+:deep(.arco-table-tr:hover) .row-actions,
+:deep(.arco-table-tr:focus-within) .row-actions {
   opacity: 1;
 }
 
@@ -268,4 +289,10 @@ const getStatusTip = (status: string) => {
   color: rgb(var(--primary-6));
   background-color: var(--color-fill-2);
 }
+@media (max-width: 768px), (hover: none) {
+  .row-actions {
+    opacity: 1;
+  }
+}
+
 </style>
