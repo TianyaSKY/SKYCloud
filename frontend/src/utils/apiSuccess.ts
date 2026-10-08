@@ -11,5 +11,5 @@ export function usesSuccessEnvelope(url: string): boolean {
   const path = new URL(url, 'http://skycloud.local/api/').pathname.replace(/^\/api(?=\/)/, '')
   if (/^\/admin\/token-usage(?:\/|$)/.test(path)) return true
   if (/^\/share(?:\/(?:my|[0-9]+))?$/.test(path)) return true
-  return /^\/(token-usage|inbox|sys_dicts|auth|users|workspace|folder|files)(?:\/|$)/.test(path)
+  return /^\/(assistant|health|token-usage|inbox|sys_dicts|auth|users|workspace|folder|files)(?:\/|$)/.test(path)
 }

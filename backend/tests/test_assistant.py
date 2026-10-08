@@ -201,7 +201,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             session=session,
         )
     )
-    assert updated["title"] == "接口重命名"
+    assert updated["data"]["title"] == "接口重命名"
 
     active_run = (
         get_active_assistant_run_for_conversation(
@@ -211,7 +211,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             session=session,
         )
     )
-    assert active_run is None
+    assert active_run == {"success":True,"data":None}
 
     (
         update_assistant_conversation(
@@ -240,8 +240,8 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             session=session,
         )
     )
-    assert conversation.id not in {item["id"] for item in active_only["conversations"]}
-    assert conversation.id in {item["id"] for item in all_sessions["conversations"]}
+    assert conversation.id not in {item["id"] for item in active_only["data"]["conversations"]}
+    assert conversation.id in {item["id"] for item in all_sessions["data"]["conversations"]}
 
     assert (
         delete_assistant_conversation(

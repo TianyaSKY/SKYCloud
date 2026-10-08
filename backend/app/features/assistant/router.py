@@ -12,6 +12,8 @@ from app.api.dependencies import get_current_user, get_current_workspace
 from app.features.assistant import service
 from app.features.assistant.event_protocol import encode_sse
 from app.features.assistant.schemas import (
+    AssistantConversationResponse, AssistantConversationListResponse,
+    AssistantMessagesResponse, AssistantRunResponse,
     AssistantConversationCreate,
     AssistantConversationUpdate,
     AssistantHandoffRequest,
@@ -21,6 +23,8 @@ from app.features.assistant.schemas import (
 from app.infra.extensions import SessionLocal, get_db
 from app.models.user import User
 from app.models.workspace import Workspace
+
+from app.api.contracts import SuccessResponse, success_payload
 
 router = APIRouter(tags=["assistant"])
 
@@ -50,7 +54,7 @@ def _require_permission_ui() -> None:
         )
 
 
-@router.post("/assistant/conversations", status_code=status.HTTP_201_CREATED)
+@router.post("/assistant/conversations", status_code=status.HTTP_201_CREATED, response_model=SuccessResponse[AssistantConversationResponse])
 def create_assistant_conversation(
     payload: AssistantConversationCreate,
     current_user: User = Depends(get_current_user),
@@ -63,10 +67,10 @@ def create_assistant_conversation(
     conversation = service.create_conversation(
         session, workspace, current_user.id, payload.mode, payload.title
     )
-    return conversation.to_dict()
+    return success_payload(conversation.to_dict())
 
 
-@router.get("/assistant/conversations")
+@router.get("/assistant/conversations", response_model=SuccessResponse[AssistantConversationListResponse])
 def list_assistant_conversations(
     mode: str | None = None,
     include_archived: bool = False,
@@ -88,10 +92,10 @@ def list_assistant_conversations(
         mode,
         include_archived=include_archived,
     )
-    return {"conversations": [conversation.to_dict() for conversation in conversations]}
+    return success_payload({"conversations": [conversation.to_dict() for conversation in conversations]})
 
 
-@router.patch("/assistant/conversations/{conversation_id}")
+@router.patch("/assistant/conversations/{conversation_id}", response_model=SuccessResponse[AssistantConversationResponse])
 def update_assistant_conversation(
     conversation_id: int,
     payload: AssistantConversationUpdate,
@@ -108,7 +112,7 @@ def update_assistant_conversation(
         title=payload.title,
         status=payload.status,
     )
-    return conversation.to_dict()
+    return success_payload(conversation.to_dict())
 
 
 @router.delete("/assistant/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -123,7 +127,7 @@ def delete_assistant_conversation(
     return None
 
 
-@router.get("/assistant/conversations/{conversation_id}/messages")
+@router.get("/assistant/conversations/{conversation_id}/messages", response_model=SuccessResponse[AssistantMessagesResponse])
 def list_assistant_messages(
     conversation_id: int,
     current_user: User = Depends(get_current_user),
@@ -135,13 +139,13 @@ def list_assistant_messages(
     if conversation.mode == "expert":
         _require_expert()
     messages = service.get_conversation_messages(session, workspace, current_user.id, conversation_id)
-    return {
+    return success_payload({
         "conversation": conversation.to_dict(),
         "messages": [message.to_dict() for message in messages],
-    }
+    })
 
 
-@router.get("/assistant/conversations/{conversation_id}/active-run")
+@router.get("/assistant/conversations/{conversation_id}/active-run", response_model=SuccessResponse[AssistantRunResponse | None])
 def get_active_assistant_run_for_conversation(
     conversation_id: int,
     current_user: User = Depends(get_current_user),
@@ -155,10 +159,11 @@ def get_active_assistant_run_for_conversation(
         current_user.id,
         conversation_id,
     )
-    return run.to_dict() if run else None
+    return success_payload(run.to_dict() if run else None)
 
 
-@router.post("/assistant/conversations/{conversation_id}/messages/stream")
+@router.post("/assistant/conversations/{conversation_id}/messages/stream", response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {"schema": {"type": "string"}}}}})
 async def stream_assistant_message(
     conversation_id: int,
     payload: AssistantMessageRequest,
@@ -211,7 +216,7 @@ async def stream_assistant_message(
     )
 
 
-@router.post("/assistant/runs/{run_id}/cancel")
+@router.post("/assistant/runs/{run_id}/cancel", response_model=SuccessResponse[AssistantRunResponse])
 async def cancel_assistant_run(
     run_id: int,
     current_user: User = Depends(get_current_user),
@@ -225,10 +230,10 @@ async def cancel_assistant_run(
 
     result = await run_in_threadpool(persist_cancel)
     await service.run_registry.request_cancel(run_id)
-    return result
+    return success_payload(result)
 
 
-@router.get("/assistant/runs/active")
+@router.get("/assistant/runs/active", response_model=SuccessResponse[AssistantRunResponse | None])
 def get_active_assistant_run_for_member(
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
@@ -236,10 +241,10 @@ def get_active_assistant_run_for_member(
 ):
     _require_v2()
     run = service.get_active_expert_run_for_member(session, workspace, current_user.id)
-    return run.to_dict() if run else None
+    return success_payload(run.to_dict() if run else None)
 
 
-@router.get("/assistant/runs/{run_id}")
+@router.get("/assistant/runs/{run_id}", response_model=SuccessResponse[AssistantRunResponse])
 def get_assistant_run(
     run_id: int,
     current_user: User = Depends(get_current_user),
@@ -257,10 +262,10 @@ def get_assistant_run(
         from app.features.workspace.permissions import assert_can_write
 
         assert_can_write(session, int(workspace.id), int(current_user.id))
-    return run.to_dict()
+    return success_payload(run.to_dict())
 
 
-@router.post("/assistant/runs/{run_id}/permissions/{permission_id}")
+@router.post("/assistant/runs/{run_id}/permissions/{permission_id}", response_model=SuccessResponse[AssistantRunResponse])
 def respond_assistant_permission(
     run_id: int,
     permission_id: str,
@@ -280,10 +285,10 @@ def respond_assistant_permission(
         payload.response,
         payload.remember,
     )
-    return run.to_dict()
+    return success_payload(run.to_dict())
 
 
-@router.post("/assistant/conversations/{conversation_id}/handoff", status_code=status.HTTP_201_CREATED)
+@router.post("/assistant/conversations/{conversation_id}/handoff", status_code=status.HTTP_201_CREATED, response_model=SuccessResponse[AssistantConversationResponse])
 def handoff_assistant_conversation(
     conversation_id: int,
     payload: AssistantHandoffRequest,
@@ -300,4 +305,4 @@ def handoff_assistant_conversation(
         conversation_id,
         payload.message_id,
     )
-    return conversation.to_dict()
+    return success_payload(conversation.to_dict())

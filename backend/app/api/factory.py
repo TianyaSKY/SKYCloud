@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app import initialize_application
+from app.api.contracts import SuccessResponse, HealthResponse, success_payload
 from app.exceptions import register_exception_handlers
 from app.infra.upload_limits import UploadBodyLimitMiddleware
 from app.features.auth.router import router as auth_router
@@ -56,9 +57,9 @@ def create_fastapi_app() -> FastAPI:
     app.include_router(ui_gateway_router)
     app.include_router(assistant_router, prefix="/api")
 
-    @app.get("/api/health")
+    @app.get("/api/health", response_model=SuccessResponse[HealthResponse])
     def health():
         """进程存活探针，不依赖 DB。"""
-        return {"status": "ok"}
+        return success_payload({"status": "ok"})
 
     return app

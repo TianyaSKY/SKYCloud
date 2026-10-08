@@ -44,3 +44,7 @@ class SuccessResponse(BaseModel, Generic[DataT]):
 
 def success_payload(data):
     return {"success": True, "data": data}
+
+
+class HealthResponse(BaseModel):
+    status: Literal["ok"]

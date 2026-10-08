@@ -10,7 +10,7 @@ export interface AssistantConversation {
   user_id: number
   mode: AssistantMode
   title: string | null
-  status: string
+  status: 'active' | 'archived'
   source_conversation_id: number | null
   opencode_runtime_id: number | null
   opencode_session_id: string | null
@@ -39,10 +39,10 @@ export interface AssistantRunRecord {
   user_message_id: number | null
   assistant_message_id: number | null
   engine: AssistantMode
-  status: string
+  status: 'pending' | 'running' | 'waiting_permission' | 'completed' | 'failed' | 'cancelled'
   request_id: string | null
   opencode_session_id: string | null
-  pending_permission?: { permission_id: string; title: string; tool?: string } | null
+  pending_permission: { permission_id: string; title: string; tool: string | null } | null
   pending_permission_id: string | null
   cancel_requested: boolean
   error_code: string | null

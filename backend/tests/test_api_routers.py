@@ -182,7 +182,7 @@ class TestCreateFastapiApp:
             assert app.title == "SKYCloud API"
             # Check the public routing behavior; included routers may be lazy.
             with TestClient(app) as client:
-                assert client.get('/api/health').json() == {'status': 'ok'}
+                assert client.get('/api/health').json() == {'success':True,'data':{'status':'ok'}}
 
 
 class TestLifespan:

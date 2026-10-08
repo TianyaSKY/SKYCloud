@@ -398,6 +398,13 @@ asyncio.run(main())
                     with factory() as observer:
                         audit = observer.query(McpAuditLog).filter_by(workspace_id=ws_id, tool_name='search_files').one()
                         assert audit.success and audit.user_id == user_id and audit.runtime_id == runtime.id
+                    # Validate the public DTOs against actual persisted expert results.
+                    from app.features.assistant.schemas import (
+                        AssistantConversationResponse, AssistantRunResponse, AssistantMessageResponse)
+                    AssistantConversationResponse.model_validate(conversation.to_dict())
+                    AssistantRunResponse.model_validate(run.to_dict())
+                    for stored_message in repository.get_messages(db, conversation.id):
+                        AssistantMessageResponse.model_validate(stored_message.to_dict())
                     if permission_response == 'reject':
                         states = [part['state'] for message in messages for part in message.get('parts', []) if part.get('type') == 'tool' and part.get('tool') == 'bash']
                         assert any(state.get('status') == 'error' and 'rejected' in state.get('error', '').lower() for state in states)

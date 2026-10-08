@@ -49,7 +49,7 @@ async def test_slow_sync_boundary_allows_concurrent_http_request(monkeypatch, bo
             method, path, kwargs = 'GET', '/assistant/conversations', {}
         else:
             monkeypatch.setattr(assistant_router.service, 'request_cancel',
-                                slow(SimpleNamespace(to_dict=lambda: {'id': 2, 'cancel_requested': True})))
+                                slow(SimpleNamespace(to_dict=lambda: dict(id=2, conversation_id=1, user_message_id=None, assistant_message_id=None, engine='fast', status='cancelled', request_id=None, opencode_session_id=None, pending_permission_id=None, pending_permission=None, cancel_requested=True, error_code=None, error_message=None, metadata={}, started_at=None, completed_at=None, created_at=None))))
             async def notify_cancel(run_id):
                 assert threading.get_ident() == loop_thread
             monkeypatch.setattr(assistant_router.service.run_registry, 'request_cancel', notify_cancel)

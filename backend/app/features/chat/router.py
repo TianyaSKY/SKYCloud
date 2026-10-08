@@ -19,7 +19,8 @@ from app.models.workspace import Workspace
 router = APIRouter(tags=["chat"])
 
 
-@router.post("/chat")
+@router.post("/chat", response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {"schema": {"type": "string"}}}}})
 async def chat(
     payload: ChatRequest,
     current_user=Depends(get_current_user),
