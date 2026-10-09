@@ -15,7 +15,8 @@ from app.features.runtime_llm import quota, tokens
 from app.infra.extensions import get_session_factory
 from app.infra.llm.config import get_chat_model_config
 from app.infra.http_stream import UpstreamLease, UpstreamResponse
-from app.features.runtime_llm.waits import guarded_wait, close_reader
+from app.features.runtime_llm.waits import guarded_wait
+from app.infra.async_stream import close_reader
 
 router = APIRouter()
 MAX_BODY_BYTES = 256 * 1024

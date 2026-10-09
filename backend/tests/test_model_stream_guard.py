@@ -52,8 +52,8 @@ async def test_disconnected_model_client_closes_pending_reader_without_sql(monke
 async def test_model_iterator_cleanup_fault_preserves_outcome(monkeypatch,cause,close_error):
     started=asyncio.Event()
     calls,logs=[],[]
-    from app.features.runtime_llm import waits
-    monkeypatch.setattr(waits.logger,'error',lambda message,*args:logs.append(message.format(*args)))
+    from app.infra import async_stream
+    monkeypatch.setattr(async_stream.logger,'error',lambda message,*args:logs.append(message.format(*args)))
     class Iterator:
         def __aiter__(self):return self
         async def __anext__(self):
@@ -84,7 +84,7 @@ async def test_model_iterator_cleanup_fault_preserves_outcome(monkeypatch,cause,
         with pytest.raises(HTTPException) as error:await asyncio.wait_for(pending,1)
         assert error.value.status_code=={'revoked':401,'disconnect':499,'deadline':502}[cause]
     assert calls==['read-finished','close']
-    assert logs==[f'Model iterator close failed (error_type={close_error.__name__})']
+    assert logs==[f'Stream iterator close failed (error_type={close_error.__name__})']
 
 
 async def test_model_repeated_cancel_drains_reader_before_iterator_close(monkeypatch):

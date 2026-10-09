@@ -1423,8 +1423,8 @@ async def test_http_stream_initialization_abort_cleans_unclaimed_run(postgres, m
             ('user', 'completed'), ('assistant', 'cancelled')]
 
 
-@pytest.mark.parametrize('change,quiet', [('version',False),('version',True),('family',False),('family',True),('mcp',False),('expiry',True)])
-async def test_legacy_stream_live_signed_session_revocation(postgres, infrastructure, monkeypatch, change, quiet):
+@pytest.mark.parametrize('change,quiet,close_fault', [('version',False,None),('version',True,None),('family',False,None),('family',True,None),('mcp',False,None),('expiry',True,None),('version',False,'error'),('version',False,'cancel')])
+async def test_legacy_stream_live_signed_session_revocation(postgres, infrastructure, monkeypatch, change, quiet, close_fault):
     import time
     import httpx
     import jwt
@@ -1477,7 +1477,11 @@ async def test_legacy_stream_live_signed_session_revocation(postgres, infrastruc
             else:
                 revoke()
                 yield 'data: {"type":"token","content":"private-late-data"}\n\n'
-        finally: closed.set()
+        finally:
+            closed.set()
+            if close_fault:
+                error=RuntimeError if close_fault=='error' else asyncio.CancelledError
+                raise error('private-provider-close-credential')
     monkeypatch.setattr(router,'generate_chat_events',model)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
         pending=asyncio.create_task(client.post('/chat',headers={'Authorization':'Bearer '+raw,'X-Workspace-Id':'1'},json={'query':'question'}))
@@ -1489,7 +1493,7 @@ async def test_legacy_stream_live_signed_session_revocation(postgres, infrastruc
     assert 'allowed' in response.text and 'private-late-data' not in response.text and raw not in response.text
     payloads=[json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
     assert any('登录状态已失效' in payload.get('content','') for payload in payloads)
-    assert closed.is_set()
+    assert closed.is_set() and 'private-provider-close-credential' not in response.text
     with postgres.connect() as db:
         assert db.scalar(text('SELECT count(*) FROM workspace_members WHERE user_id=1'))==1
 
