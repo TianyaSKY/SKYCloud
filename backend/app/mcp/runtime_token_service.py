@@ -114,7 +114,7 @@ def refresh_runtime_token(
     )
 
 
-def get_active_runtime_token(session: Session, token: str) -> McpRuntimeToken | None:
+def get_active_runtime_token(session: Session, token: str, *, touch: bool = True) -> McpRuntimeToken | None:
     """Look up the raw token by hash and reject revoked/expired records."""
 
     record = (
@@ -124,8 +124,9 @@ def get_active_runtime_token(session: Session, token: str) -> McpRuntimeToken | 
     )
     if not record or not record.is_active:
         return None
-    record.last_used_at = utc_now()
-    session.commit()
+    if touch:
+        record.last_used_at = utc_now()
+        session.commit()
     return record
 
 
@@ -137,7 +138,7 @@ def validate_runtime_token(
 
 
 def validate_bound_token(
-    session: Session, token: str, *, expected_type: str
+    session: Session, token: str, *, expected_type: str, touch: bool = True
 ) -> tuple[dict[str, Any], OpenCodeRuntime] | None:
     """Shared signature, database revocation, binding and membership checks."""
     try:
@@ -156,7 +157,8 @@ def validate_bound_token(
     except (KeyError, TypeError, ValueError):
         return None
 
-    record = get_active_runtime_token(session, token)
+    record = (get_active_runtime_token(session, token) if touch
+              else get_active_runtime_token(session, token, touch=False))
     if not record:
         return None
     if (

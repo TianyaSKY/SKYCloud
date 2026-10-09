@@ -2,15 +2,17 @@
 
 import json
 import time
+import asyncio
+from contextlib import aclosing
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.features.runtime_llm import quota, tokens
 from app.infra.extensions import get_session_factory
 from app.infra.llm.config import get_chat_model_config
+from app.infra.http_stream import UpstreamLease, UpstreamResponse
 
 router = APIRouter()
 MAX_BODY_BYTES = 256 * 1024
@@ -21,15 +23,52 @@ ALLOWED_FIELDS = {
     "temperature", "top_p", "stop", "tools", "tool_choice", "parallel_tool_calls",
     "response_format", "seed", "presence_penalty", "frequency_penalty",
 }
+RECHECK_SECONDS = 1.0
+
+
+async def authorized_bytes(response, request, session_factory):
+    """Revalidate during quiet waits and before releasing every upstream chunk."""
+    pending = None
+    iterator = response.aiter_bytes().__aiter__()
+    deadline = time.monotonic() + MAX_STREAM_SECONDS
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HTTPException(502, 'Model response timed out')
+            if pending is None:
+                pending = asyncio.create_task(anext(iterator))
+            ready, _ = await asyncio.wait({pending}, timeout=min(RECHECK_SECONDS, remaining))
+            await run_in_threadpool(_validate_current_credential, request, session_factory, touch=False)
+            if not ready:
+                continue
+            try:
+                part = pending.result()
+            except StopAsyncIteration:
+                return
+            pending = None
+            if time.monotonic() >= deadline:
+                raise HTTPException(502, 'Model response timed out')
+            yield part
+    finally:
+        if pending is not None:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        await iterator.aclose()
 
 
 def current_credential(request: Request, session_factory=Depends(get_session_factory)) -> dict:
+    return _validate_current_credential(request, session_factory)
+
+
+def _validate_current_credential(request, session_factory, *, touch=True):
     auth = request.headers.get("Authorization", "")
     scheme, _, raw = auth.partition(" ")
     payload = None
     if scheme.lower() == "bearer" and raw:
         with session_factory() as session:
-            payload = tokens.validate_token(session, raw)
+            payload = (tokens.validate_token(session, raw) if touch
+                       else tokens.validate_token(session, raw, touch=False))
     if payload is None:
         raise HTTPException(status_code=401, detail="Invalid runtime model credential")
     return payload
@@ -76,7 +115,8 @@ def upstream_client() -> httpx.AsyncClient:
 
 
 @router.post("/v1/chat/completions")
-async def chat_completions(request: Request, credential: dict = Depends(current_credential)):
+async def chat_completions(request: Request, credential: dict = Depends(current_credential),
+                           session_factory=Depends(get_session_factory)):
     chunks = bytearray()
     async for part in request.stream():
         if len(chunks) + len(part) > MAX_BODY_BYTES:
@@ -87,10 +127,12 @@ async def chat_completions(request: Request, credential: dict = Depends(current_
     # Charge framing/message metadata as well as text; no reservation refund
     # on upstream failure or disconnect, which would permit quota bypass.
     await run_in_threadpool(quota.reserve, credential, len(chunks) + 1024, output_tokens)
+    await run_in_threadpool(current_credential, request, session_factory)
     config = get_chat_model_config()
     if not config["key"] or any(char in config["key"] for char in "\r\n"):
         raise HTTPException(status_code=503, detail="Model provider unavailable")
     client = upstream_client()
+    lease = UpstreamLease(client)
     response = None
     try:
         upstream_request = client.build_request(
@@ -98,37 +140,37 @@ async def chat_completions(request: Request, credential: dict = Depends(current_
             headers={"Authorization": f"Bearer {config['key']}", "Content-Type": "application/json"},
         )
         response = await client.send(upstream_request, stream=True)
+        lease.upstream = response
         if response.status_code >= 300:
             raise HTTPException(status_code=502, detail="Model provider rejected request")
         if not data.get("stream", False):
             result = bytearray()
-            async for part in response.aiter_bytes():
-                if len(result) + len(part) > MAX_RESPONSE_BYTES:
-                    raise HTTPException(status_code=502, detail="Model response too large")
-                result.extend(part)
+            async with aclosing(authorized_bytes(response, request, session_factory)) as parts:
+                async for part in parts:
+                    if len(result) + len(part) > MAX_RESPONSE_BYTES:
+                        raise HTTPException(status_code=502, detail="Model response too large")
+                    result.extend(part)
             return Response(content=bytes(result), media_type="application/json")
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail="Model provider unavailable") from exc
     finally:
         if response is None or not data.get("stream", False) or response.status_code >= 300:
-            if response is not None:
-                await response.aclose()
-            await client.aclose()
+            await lease.close()
 
     async def events():
         size = 0
         deadline = time.monotonic() + MAX_STREAM_SECONDS
         try:
-            async for part in response.aiter_bytes():
-                size += len(part)
-                if size > MAX_RESPONSE_BYTES or time.monotonic() > deadline:
-                    break
-                yield part
-        except httpx.HTTPError:
+            async with aclosing(authorized_bytes(response, request, session_factory)) as parts:
+                async for part in parts:
+                    size += len(part)
+                    if size > MAX_RESPONSE_BYTES or time.monotonic() > deadline:
+                        break
+                    yield part
+        except (httpx.HTTPError, HTTPException):
             # Never inject provider exception text into a user's SSE stream.
             return
         finally:
-            await response.aclose()
-            await client.aclose()
+            await lease.close()
 
-    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
+    return UpstreamResponse(events(), lease=lease, media_type="text/event-stream", headers={"Cache-Control": "no-store"})

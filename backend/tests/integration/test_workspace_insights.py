@@ -1635,3 +1635,68 @@ async def test_ui_header_send_failure_closes_real_upstream_http(postgres,infrast
                 await client.get('/runtime-ui/event',headers={'Host':parsed.netloc,'Cookie':ui_tickets.COOKIE+'='+raw})
         assert len(clients)==1 and clients[0].is_closed
         assert await asyncio.to_thread(upstream_closed.wait,3)
+
+
+@pytest.mark.parametrize('change,quiet,streaming', [('demote',True,True),('remove',True,True),('stop',True,True),('revoke',True,True),('delete-user',True,True),('demote',False,True),('demote',False,False)])
+async def test_model_stream_current_runtime_revocation(postgres,monkeypatch,change,quiet,streaming):
+    import httpx
+    from fastapi import FastAPI
+    from app.features.runtime_llm import router,tokens
+    from app.infra.extensions import get_db,get_session_factory
+    from app.models.opencode_runtime import OpenCodeRuntime
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+    factory=sessionmaker(bind=postgres)
+    with factory() as db:
+        runtime=OpenCodeRuntime(workspace_id=1,user_id=1,status='running')
+        db.add(runtime);db.commit()
+        raw=tokens.issue_token(db,runtime)
+        from app.infra.llm.config import get_chat_model_config
+        model=get_chat_model_config()['model']
+    entered,closed,first_sent=asyncio.Event(),asyncio.Event(),asyncio.Event()
+    def revoke():
+        sql={'demote':"UPDATE workspace_members SET role='viewer' WHERE user_id=1",
+             'remove':'DELETE FROM workspace_members WHERE user_id=1',
+             'stop':"UPDATE opencode_runtimes SET status='stopped' WHERE user_id=1",
+             'revoke':'UPDATE mcp_runtime_tokens SET revoked_at=now() WHERE user_id=1',
+             'delete-user':'DELETE FROM users WHERE id=1'}[change]
+        with postgres.begin() as db:db.execute(text(sql))
+    class Bytes(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            try:
+                yield b'data: allowed\n\n'
+                if streaming:await first_sent.wait()
+                entered.set()
+                if quiet:await asyncio.Event().wait()
+                else:
+                    revoke();yield b'data: private-late\n\n'
+            finally:closed.set()
+        async def aclose(self):closed.set()
+    actual_client=httpx.AsyncClient
+    upstreams=[]
+    def provider():
+        client=actual_client(transport=httpx.MockTransport(lambda _:httpx.Response(200,stream=Bytes())))
+        upstreams.append(client);return client
+    monkeypatch.setattr(router,'upstream_client',provider)
+    monkeypatch.setattr(router.quota,'reserve',lambda *args:None)
+    monkeypatch.setattr(router,'get_chat_model_config',lambda:{'api':'http://synthetic/v1','key':'synthetic-server-key','model':model})
+    app=FastAPI();app.include_router(router.router)
+    app.dependency_overrides[get_db]=lambda:None
+    app.dependency_overrides[get_session_factory]=lambda:factory
+    async def observed_app(scope,receive,send):
+        async def observe(message):
+            await send(message)
+            if message['type']=='http.response.body' and b'allowed' in message.get('body',b''):first_sent.set()
+        await app(scope,receive,observe)
+    async with actual_client(transport=httpx.ASGITransport(observed_app),base_url='http://test') as client:
+        pending=asyncio.create_task(client.post('/v1/chat/completions',headers={'Authorization':'Bearer '+raw},json={'model':model,'messages':[{'role':'user','content':'question'}],'stream':streaming}))
+        if quiet:
+            await asyncio.wait_for(entered.wait(),3);revoke()
+        response=await asyncio.wait_for(pending,5)
+    assert response.status_code==(200 if streaming else 401)
+    assert ('allowed' in response.text) is streaming
+    assert 'private-late' not in response.text and raw not in response.text
+    assert closed.is_set() and upstreams[0].is_closed

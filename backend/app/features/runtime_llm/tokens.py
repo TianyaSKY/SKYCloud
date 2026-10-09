@@ -53,8 +53,8 @@ def issue_token(session: Session, runtime: OpenCodeRuntime) -> str:
     return raw
 
 
-def validate_token(session: Session, raw: str) -> dict | None:
-    validated = validate_bound_token(session, raw, expected_type="runtime_llm")
+def validate_token(session: Session, raw: str, *, touch: bool = True) -> dict | None:
+    validated = validate_bound_token(session, raw, expected_type="runtime_llm", touch=touch)
     if not validated:
         return None
     payload, _runtime = validated

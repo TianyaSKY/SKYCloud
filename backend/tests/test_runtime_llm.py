@@ -219,3 +219,27 @@ def test_runtime_model_output_limit_matches_gateway(monkeypatch):
     monkeypatch.setenv('RUNTIME_LLM_CONTEXT_TOKENS', '2048')
     with pytest.raises(ValueError, match='context must exceed'):
         docker_service.merge_opencode_chat_provider({}, {'model': 'test-model', 'base_url': 'http://gateway/v1', 'api_key': 'scoped'})
+
+
+def test_continued_model_validation_does_not_touch_or_commit(session,credential,monkeypatch):
+    from app.models.mcp_runtime_token import McpRuntimeToken
+    record=session.query(McpRuntimeToken).filter_by(token_hash=McpRuntimeToken.hash_token(credential)).one()
+    before=record.last_used_at
+    monkeypatch.setattr(session,'commit',lambda:pytest.fail('continued authorization must be read-only'))
+    assert tokens.validate_token(session,credential,touch=False)
+    assert record.last_used_at==before and not session.dirty
+
+
+@pytest.mark.parametrize('streaming',[False,True])
+def test_response_limit_closes_guard_before_return(client,credential,monkeypatch,streaming):
+    from app.features.runtime_llm import router as module
+    closed=[]
+    async def guarded(*args):
+        try:yield b'over-limit'
+        finally:closed.append(True)
+    monkeypatch.setattr(module,'authorized_bytes',guarded)
+    monkeypatch.setattr(module,'MAX_RESPONSE_BYTES',1)
+    with patch('app.features.runtime_llm.quota.reserve'),patch.object(module,'upstream_client',lambda:httpx.AsyncClient(transport=httpx.MockTransport(lambda _:httpx.Response(200,content=b'ignored')))):
+        response=client.post('/v1/chat/completions',headers=auth(credential),json={**body(),'stream':streaming})
+    assert response.status_code==(200 if streaming else 502)
+    assert closed==[True]
