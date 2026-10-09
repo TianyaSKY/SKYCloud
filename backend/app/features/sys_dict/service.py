@@ -69,6 +69,11 @@ def _get_sys_dict_all_cached(session: Session) -> list[dict]:
     ]
 
 
+def get_sys_dict_all_sync(session: Session):
+    """Read the cache/SQL on the caller's owning worker."""
+    return _get_sys_dict_all_cached(session)
+
+
 async def get_sys_dict_all(session: Session):
     return await run_in_threadpool(_get_sys_dict_all_cached, session)
 
@@ -97,6 +102,13 @@ def get_sys_dict_by_key_sync(session: Session, key):
 async def get_sys_dict(session: Session, id):
     all_dicts = await get_sys_dict_all(session)
     for item in all_dicts:
+        if item["id"] == int(id):
+            return item
+    raise ResourceNotFoundError("SysDict not found")
+
+
+def get_sys_dict_sync(session: Session, id):
+    for item in get_sys_dict_all_sync(session):
         if item["id"] == int(id):
             return item
     raise ResourceNotFoundError("SysDict not found")

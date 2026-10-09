@@ -514,7 +514,7 @@ class TestInboxRouter:
 
         mock_result = {"items": [], "total": 0, "pages": 0, "page": 1}
         with patch("app.features.inbox.service.get_user_inbox", return_value=mock_result):
-            result = get_inbox(test_user, session, 1, 20)
+            result = get_inbox(test_user, lambda: nullcontext(session), 1, 20)
         assert "items" in result["data"]
 
     def test_mark_message_read(self, session, test_user):
@@ -523,21 +523,21 @@ class TestInboxRouter:
         mock_msg = MagicMock()
         mock_msg.to_dict.return_value = {"id": 1}
         with patch("app.features.inbox.service.mark_as_read", return_value=mock_msg):
-            result = mark_message_read(1, test_user, session)
+            result = mark_message_read(1, test_user, lambda: nullcontext(session))
         assert "id" in result["data"]
 
     def test_mark_all_messages_read(self, session, test_user):
         from app.features.inbox.router import mark_all_messages_read
 
         with patch("app.features.inbox.service.mark_all_as_read"):
-            result = mark_all_messages_read(test_user, session)
+            result = mark_all_messages_read(test_user, lambda: nullcontext(session))
         assert "message" in result["data"]
 
     def test_delete_message(self, session, test_user):
         from app.features.inbox.router import delete_message
 
         with patch("app.features.inbox.service.delete_inbox_message"):
-            result = delete_message(1, test_user, session)
+            result = delete_message(1, test_user, lambda: nullcontext(session))
         assert result.status_code == 204
 
 
@@ -546,23 +546,21 @@ class TestInboxRouter:
 # ---------------------------------------------------------------------------
 
 class TestSysDictRouter:
-    def test_get_sys_dicts(self, session, test_user):
+    def test_get_sys_dicts(self, session, admin_user):
         from app.features.sys_dict.router import get_sys_dicts
-        import asyncio
 
-        with patch("app.features.sys_dict.service.get_sys_dict_all", new_callable=AsyncMock, return_value=[]):
-            result = asyncio.run(get_sys_dicts(test_user, session))
+        with patch("app.features.sys_dict.service.get_sys_dict_all_sync", return_value=[]):
+            result = get_sys_dicts(admin_user, lambda: nullcontext(session))
         assert result == {"success": True, "data": []}
 
-    def test_get_sys_dict(self, session, test_user):
+    def test_get_sys_dict(self, session, admin_user):
         from app.features.sys_dict.router import get_sys_dict
-        import asyncio
 
-        with patch("app.features.sys_dict.service.get_sys_dict", new_callable=AsyncMock, return_value={"id": 1}):
-            result = asyncio.run(get_sys_dict(1, test_user, session))
+        with patch("app.features.sys_dict.service.get_sys_dict_sync", return_value={"id": 1}):
+            result = get_sys_dict(1, admin_user, lambda: nullcontext(session))
         assert "id" in result["data"]
 
-    def test_create_sys_dict(self, session, test_user):
+    def test_create_sys_dict(self, session, admin_user):
         from app.features.sys_dict.router import create_sys_dict
         from app.features.sys_dict.schemas import SysDictPayload
 
@@ -570,10 +568,10 @@ class TestSysDictRouter:
         mock_dict.to_dict.return_value = {"id": 1}
         payload = SysDictPayload(key="k", value="v")
         with patch("app.features.sys_dict.service.create_sys_dict", return_value=mock_dict):
-            result = create_sys_dict(payload, test_user, session)
+            result = create_sys_dict(payload, admin_user, lambda: nullcontext(session))
         assert result == {"success": True, "data": {"id": 1}}
 
-    def test_update_sys_dict(self, session, test_user):
+    def test_update_sys_dict(self, session, admin_user):
         from app.features.sys_dict.router import update_sys_dict
         from app.features.sys_dict.schemas import SysDictPayload
 
@@ -581,14 +579,14 @@ class TestSysDictRouter:
         mock_dict.to_dict.return_value = {"id": 1}
         payload = SysDictPayload(key="k", value="v")
         with patch("app.features.sys_dict.service.update_sys_dict", return_value=mock_dict):
-            result = update_sys_dict(1, payload, test_user, session)
+            result = update_sys_dict(1, payload, admin_user, lambda: nullcontext(session))
         assert "id" in result["data"]
 
-    def test_delete_sys_dict(self, session, test_user):
+    def test_delete_sys_dict(self, session, admin_user):
         from app.features.sys_dict.router import delete_sys_dict
 
         with patch("app.features.sys_dict.service.delete_sys_dict"):
-            result = delete_sys_dict(1, test_user, session)
+            result = delete_sys_dict(1, admin_user, lambda: nullcontext(session))
         assert result.status_code == 204
 
 

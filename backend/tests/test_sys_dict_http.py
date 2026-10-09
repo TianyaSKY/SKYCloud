@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 from app.api.dependencies import get_current_user
 from app.exceptions import register_exception_handlers
 from app.features.sys_dict import router as module
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 from app.models.sys_dict import SysDict
 
 
@@ -21,6 +22,7 @@ def test_real_http_dictionary_crud_cache_policy_and_admin(session, admin_user, t
     app.include_router(module.router)
     register_exception_handlers(app)
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     app.dependency_overrides[get_current_user] = lambda: admin_user
     with TestClient(app) as client:
         payload = {'key': 'http_dict', 'value': 'one', 'des': 'Description', 'enable': True}
@@ -63,8 +65,10 @@ async def test_slow_dictionary_read_leaves_http_loop_responsive(monkeypatch):
     monkeypatch.setattr(module.sys_dict_service, '_get_sys_dict_all_cached', slow)
     app = FastAPI()
     app.include_router(module.router)
-    app.dependency_overrides[get_db] = lambda: SimpleNamespace()
-    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(role='admin')
+    from contextlib import nullcontext
+    app.dependency_overrides[get_session_factory] = lambda: lambda: nullcontext(SimpleNamespace())
+    monkeypatch.setattr(module.user_service, 'authorize_account_mutation', lambda *args: 'admin')
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1, role='admin')
     @app.get('/probe')
     async def probe():
         assert not release.is_set()

@@ -724,3 +724,112 @@ async def test_mcp_share_publication_rejects_concurrent_workspace_change(postgre
             assert db.scalar(text('SELECT count(*) FROM shares')) == 0
     finally:
         reset_mcp_context(token)
+
+
+@pytest.mark.parametrize('change', ['demote', 'delete'])
+async def test_settings_owned_routes_reject_stale_admin_with_warm_cache(postgres, infrastructure, monkeypatch, change):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.api.dependencies import require_admin
+    from app.features.sys_dict import router
+    from app.infra.extensions import get_session_factory
+    from app.infra import cache
+    from app.exceptions import register_exception_handlers
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("DELETE FROM sys_dict"))
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin')"))
+        db.execute(text("INSERT INTO sys_dict(id,key,value,des,enable) VALUES (1,'original','value','description',true)"))
+    monkeypatch.setattr(cache, 'redis_client', infrastructure['redis'])
+    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    # Explicit stale identity seam; current SQL authorization is real.
+    app.dependency_overrides[require_admin] = lambda: SimpleNamespace(id=1, role='admin')
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+        assert (await client.get('/sys_dicts')).status_code == 200
+        assert (await client.get('/sys_dicts/1')).status_code == 200
+        assert infrastructure['redis'].exists('sys_dict:all:all') == 1
+        with postgres.begin() as independent:
+            independent.execute(text("UPDATE users SET role='common' WHERE id=1" if change == 'demote' else 'DELETE FROM users WHERE id=1'))
+        for method, path, body in [
+            ('GET','/sys_dicts',None), ('GET','/sys_dicts/1',None),
+            ('POST','/sys_dicts',{'key':'new','value':'forbidden'}),
+            ('PUT','/sys_dicts/1',{'key':'changed','value':'forbidden'}),
+            ('DELETE','/sys_dicts/1',None),
+        ]:
+            response = await client.request(method, path, json=body)
+            assert response.status_code == 403, response.text
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT id,key,value,des,enable FROM sys_dict')).all() == [(1,'original','value','description',True)]
+
+
+async def test_settings_http_write_keeps_actor_lock_until_commit(postgres, monkeypatch):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from sqlalchemy.exc import DBAPIError
+    from app.api.dependencies import require_admin
+    from app.features.sys_dict import router
+    from app.infra.extensions import get_session_factory
+    from app.exceptions import register_exception_handlers
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("DELETE FROM sys_dict"))
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin')"))
+    create = router.sys_dict_service.create_sys_dict
+    observed = []
+    def observe_then_create(session, data):
+        with postgres.connect() as independent:
+            independent.execute(text("SET LOCAL lock_timeout='100ms'"))
+            with pytest.raises(DBAPIError) as error:
+                independent.execute(text("UPDATE users SET role='common' WHERE id=1"))
+            assert error.value.orig.pgcode == '55P03'
+            independent.rollback()
+        observed.append(True)
+        return create(session, data)
+    monkeypatch.setattr(router.sys_dict_service, 'create_sys_dict', observe_then_create)
+    monkeypatch.setattr(router.sys_dict_service, '_invalidate_sys_dict_cache', lambda: None)
+    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    app.dependency_overrides[require_admin] = lambda: SimpleNamespace(id=1, role='admin')
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+        assert (await client.post('/sys_dicts', json={'key':'allowed','value':'one'})).status_code == 201
+        assert observed == [True]
+        with postgres.begin() as independent:
+            independent.execute(text("UPDATE users SET role='common' WHERE id=1"))
+        response = await client.post('/sys_dicts', json={'key':'denied','value':'two'})
+        assert response.status_code == 403, response.text
+        assert observed == [True]
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT key,value FROM sys_dict')).all() == [('allowed','one')]
+
+
+async def test_inbox_owned_http_routes_preserve_message_ownership(postgres):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.api.dependencies import get_current_user
+    from app.features.inbox import router
+    from app.infra.extensions import get_session_factory
+    from app.exceptions import register_exception_handlers
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common'),(2,'other','x','common')"))
+        db.execute(text("INSERT INTO inbox(id,user_id,content,is_read,is_deleted) VALUES (1,1,'own',false,false),(2,2,'private',false,false)"))
+    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+        listing = await client.get('/inbox')
+        assert listing.status_code == 200 and [row['id'] for row in listing.json()['data']['items']] == [1]
+        assert (await client.put('/inbox/2/read')).status_code == 404
+        assert (await client.delete('/inbox/2')).status_code == 404
+        read = await client.put('/inbox/1/read')
+        assert read.status_code == 200 and read.json()['data']['is_read'] is True
+        assert (await client.put('/inbox/read-all')).status_code == 200
+        deleted = await client.delete('/inbox/1')
+        assert deleted.status_code == 204 and deleted.content == b''
+        assert (await client.get('/inbox')).json()['data']['items'] == []
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT id,is_read,is_deleted FROM inbox ORDER BY id')).all() == [(1,True,True),(2,False,False)]

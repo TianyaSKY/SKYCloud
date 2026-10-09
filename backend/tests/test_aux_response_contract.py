@@ -58,11 +58,12 @@ def test_share_real_sql_creation_listing_cancel_and_stream(client,session,test_u
     assert data(client.delete(f"/share/{created['id']}"))=={'message':'Share cancelled successfully'}
     assert client.get(created['link'].removeprefix('/api')).status_code==404
 
-def test_settings_real_sql_crud_and_database_lengths(client,monkeypatch):
+def test_settings_real_sql_crud_and_database_lengths(client,session,test_user,monkeypatch):
+    test_user.role="admin";session.commit()
     monkeypatch.setattr(settings.sys_dict_service,'_invalidate_sys_dict_cache',lambda:None)
     # Read the actual DB rather than a shared Redis cache in this SQL fixture.
-    async def records(session):return settings.sys_dict_service._get_sys_dict_all_cached.__wrapped__(session)
-    monkeypatch.setattr(settings.sys_dict_service,'get_sys_dict_all',records)
+    def records(session):return settings.sys_dict_service._get_sys_dict_all_cached.__wrapped__(session)
+    monkeypatch.setattr(settings.sys_dict_service,'get_sys_dict_all_sync',records)
     body={'key':'k'*100,'value':'v'*255,'des':'d'*2048}
     created=data(client.post('/sys_dicts',json=body),201)
     assert data(client.get(f"/sys_dicts/{created['id']}"))==created
