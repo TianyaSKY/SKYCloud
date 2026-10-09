@@ -1,5 +1,6 @@
 """Real PostgreSQL/Redis/Controller/OpenCode interactive terminal and revocation."""
 import os
+import json
 import time
 import uuid
 import threading
@@ -20,6 +21,7 @@ from app.infra.extensions import get_db, get_session_factory
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
 from app.models.opencode_runtime import OpenCodeRuntime
+from app.models.runtime_operation import RuntimeOperation
 from app.features.workspace import docker_service, ui_gateway, ui_tickets
 from app.features.workspace.router import router
 from app.features.auth.service import generate_token
@@ -54,9 +56,27 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
         db.add(OpenCodeRuntime(id=runtime_id, workspace_id=ws_id, user_id=user_id, status='stopped'))
         db.commit()
         workspace = db.get(Workspace, ws_id)
-        container = docker_service._create(workspace, user_id, runtime_id)
+        try:
+            docker_service.start(db, workspace, user_id)
+        finally:
+            # Register exact candidates even when production start fails partway.
+            with factory() as cleanup_db:
+                for generation,candidate in cleanup_db.query(RuntimeOperation.generation,
+                        RuntimeOperation.candidate_container_id).filter_by(workspace_id=ws_id,user_id=user_id).all():
+                    generation_name=f'skycloud-opencode-w{ws_id}-u{user_id}-g{generation}'
+                    for identity in (generation_name,candidate):
+                        if identity and identity not in infrastructure['cleanup']:
+                            infrastructure['cleanup'].append(identity)
+        db.expire_all()
         runtime = db.get(OpenCodeRuntime, runtime_id)
-        runtime.container_id = container.id; runtime.status = 'running'; db.commit()
+        assert runtime.status=='running' and runtime.config_version>0
+        operation=db.query(RuntimeOperation).filter_by(runtime_id=runtime_id).one()
+        assert operation.state=='complete' and operation.finished_at is not None
+        assert operation.candidate_container_id==runtime.container_id and operation.previous_container_id is None
+        container=docker_service._client().containers.get(runtime.container_id)
+        inspected=json.loads(docker('inspect',container.id).stdout)[0]
+        assert inspected['Name']==f'/skycloud-opencode-w{ws_id}-u{user_id}-g{operation.generation}'
+        assert inspected['State']['Running'] is True
         mount_rows = docker('exec', container.id, 'cat', '/proc/mounts').stdout.splitlines()
         temporary = next(row for row in mount_rows if row.split()[1] == '/tmp')
         native = next(row for row in mount_rows if row.split()[1] == '/tmp/.native')
