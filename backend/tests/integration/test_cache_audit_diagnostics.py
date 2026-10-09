@@ -156,6 +156,8 @@ def test_actual_cache_eviction_is_batched_and_workspace_scoped(infrastructure, m
         pipeline.execute()
     batches = []
     class ObservedStore:
+        def set(self, *args, **kwargs):
+            return admin.set(*args, **kwargs)
         def scan_iter(self, **kwargs):
             assert kwargs == {'match': prefix+':*', 'count': 128}
             yield from admin.scan_iter(**kwargs)
@@ -171,3 +173,38 @@ def test_actual_cache_eviction_is_batched_and_workspace_scoped(infrastructure, m
     assert not list(admin.scan_iter(match=prefix+':*'))
     assert len(batches) >= 8
     assert len(list(admin.scan_iter(match='search:fuzzy:12:*'))) == 20
+
+
+def test_actual_redis_generation_fences_late_search_write(infrastructure, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+    from app.features.file import service as file_service, search_service
+    admin = infrastructure['redis']
+    monkeypatch.setattr(cache, 'redis_client', admin)
+    entered, release = threading.Event(), threading.Event()
+    names = ['old-name']
+    reads = []
+    def query(*args):
+        snapshot = names[0]
+        reads.append(snapshot)
+        if len(reads) == 1:
+            entered.set()
+            assert release.wait(3)
+        return SimpleNamespace(items=[SimpleNamespace(to_dict=lambda: {'name': snapshot})], total=1)
+    monkeypatch.setattr(search_service.repository, 'search_names', query)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        old = executor.submit(search_service._search_files_fuzzy, None, 1, 'name', 1, 10)
+        try:
+            assert entered.wait(1)
+            names[0] = 'new-name'
+            file_service._clear_search_cache(1)
+        finally:
+            release.set()
+        assert old.result()['items'][0]['name'] == 'old-name'
+    assert search_service._search_files_fuzzy(None, 1, 'name', 1, 10)['items'][0]['name'] == 'new-name'
+    assert reads == ['old-name', 'new-name']
+    # Eviction of only the generation marker must never resurrect old keys.
+    admin.delete('cache:generation:search:fuzzy:1')
+    names[0] = 'latest-name'
+    assert search_service._search_files_fuzzy(None, 1, 'name', 1, 10)['items'][0]['name'] == 'latest-name'

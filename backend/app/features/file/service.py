@@ -28,7 +28,7 @@ from app.exceptions import (
 from sqlalchemy.orm import Session
 
 from app.infra.extensions import UPLOAD_FOLDER, redis_client
-from app.infra.cache import evict_cache_pattern
+from app.infra.cache import evict_cache_pattern, invalidate_cache_generation
 from app.infra.file_task_outbox import stage_file_tasks
 from app.infra.file_object_deletion import stage_object_deletion_fallback, lock_object_path
 from app.infra.storage import get_storage_client
@@ -865,6 +865,7 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
 
 def _clear_search_cache(workspace_id: int | None) -> None:
     if workspace_id is not None:
+        invalidate_cache_generation(f"cache:generation:search:fuzzy:{workspace_id}")
         evict_cache_pattern(f"{SEARCH_CACHE_PREFIX}:{workspace_id}")
 
 

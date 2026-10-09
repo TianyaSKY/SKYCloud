@@ -12,6 +12,7 @@
 import asyncio
 import functools
 import json
+import uuid
 from typing import Any, Callable, Optional
 
 from app.infra.extensions import redis_client
@@ -50,11 +51,35 @@ def _build_cache_key(
 # @cacheable — 读穿缓存
 # ---------------------------------------------------------------------------
 
+def invalidate_cache_generation(scope: str) -> None:
+    """Rotate a cache namespace before removing old physical keys."""
+    try:
+        redis_client.set(scope, uuid.uuid4().hex)
+    except Exception as exc:
+        logger.warning("[cache] generation invalidation failed: error_type={}", type(exc).__name__)
+
+
+def _generation_cache_key(cache_key: str, scope: str) -> str:
+    generation = redis_client.get(scope)
+    if generation is None:
+        candidate = uuid.uuid4().hex
+        if redis_client.set(scope, candidate, nx=True):
+            generation = candidate
+        else:
+            generation = redis_client.get(scope)
+    if isinstance(generation, bytes):
+        generation = generation.decode('ascii')
+    if not isinstance(generation, str) or len(generation) != 32 or any(char not in '0123456789abcdef' for char in generation):
+        raise ValueError('Invalid cache generation')
+    return f"{cache_key}:generation:{generation}"
+
+
 def cacheable(
         prefix: str,
         expire: int = 3600,
         cache_none: bool = False,
         key: Optional[Callable] = None,
+        generation_key: Optional[Callable] = None,
 ):
     """先查 Redis，未命中再执行函数并写入。
 
@@ -69,15 +94,19 @@ def cacheable(
         def sync_wrapper(*args, **kwargs):
             cache_key = _build_cache_key(prefix, args, kwargs, key)
             try:
+                if generation_key is not None:
+                    cache_key = _generation_cache_key(cache_key, generation_key(*args, **kwargs))
                 cached = redis_client.get(cache_key)
                 if cached is not None:
                     return json.loads(cached)
             except Exception as e:
                 logger.warning("[cache] read failed: error_type={}", type(e).__name__)
+                if generation_key is not None:
+                    cache_key = None  # Failed generation reads bypass caching.
 
             result = func(*args, **kwargs)
 
-            if result is not None or cache_none:
+            if cache_key is not None and (result is not None or cache_none):
                 try:
                     redis_client.setex(
                         cache_key, expire,
@@ -91,15 +120,19 @@ def cacheable(
         async def async_wrapper(*args, **kwargs):
             cache_key = _build_cache_key(prefix, args, kwargs, key)
             try:
+                if generation_key is not None:
+                    cache_key = await run_owned(_generation_cache_key, cache_key, generation_key(*args, **kwargs))
                 cached = await run_owned(redis_client.get, cache_key)
                 if cached is not None:
                     return json.loads(cached)
             except Exception as e:
                 logger.warning("[cache] read failed: error_type={}", type(e).__name__)
+                if generation_key is not None:
+                    cache_key = None  # Failed generation reads bypass caching.
 
             result = await func(*args, **kwargs)
 
-            if result is not None or cache_none:
+            if cache_key is not None and (result is not None or cache_none):
                 try:
                     await run_owned(
                         redis_client.setex,

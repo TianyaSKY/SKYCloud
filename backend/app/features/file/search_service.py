@@ -14,6 +14,7 @@ from app.features.workspace.permissions import assert_member
 
 CACHE_EXPIRATION = 3600
 SEARCH_CACHE_PREFIX = 'search:fuzzy'
+SEARCH_GENERATION_PREFIX = 'cache:generation:search:fuzzy'
 
 
 async def search_files(
@@ -61,6 +62,7 @@ async def search_files(
 @cacheable(
     prefix=SEARCH_CACHE_PREFIX,
     expire=CACHE_EXPIRATION,
+    generation_key=lambda session, workspace_id, *args, **kwargs: f"{SEARCH_GENERATION_PREFIX}:{workspace_id}",
     key=lambda session, workspace_id, query, page, page_size, **_: f"{workspace_id}:{query}:{page}:{page_size}:fuzzy",
 )
 def _search_files_fuzzy(
