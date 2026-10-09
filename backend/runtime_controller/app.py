@@ -6,7 +6,6 @@ import hmac
 import logging
 import os
 import socket
-import time
 from contextlib import asynccontextmanager, aclosing
 from typing import Literal
 
@@ -18,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 from runtime_controller.http_decode import ACCEPT_ENCODING, content_encoding, decoded_bytes
-from runtime_controller.http_stream import UpstreamLease, UpstreamResponse
+from runtime_controller.http_stream import UpstreamLease, UpstreamResponse, deadline_reader
 from runtime_controller.engine import Engine, MissingRuntime, PolicyViolation, MissingGenerationCandidate
 from runtime_controller.policy import Settings
 from runtime_controller.socket_relay import direct_connect, pump, terminal_path, SocketSlots, MAX_MESSAGE
@@ -26,6 +25,8 @@ from urllib.parse import urlencode
 
 MAX_BODY = 256 * 1024
 MAX_RESPONSE = 64 * 1024 * 1024
+MAX_RESPONSE_SECONDS = 120
+MAX_EVENT_SECONDS = 3600
 RELAY_ROOTS = {"global", "event", "session", "permission", "question", "mcp", "config", "instance", "agent", "project", "path", "vcs", "file", "find", "experimental", "command", "log", "provider", "lsp", "formatter", "doc"}
 
 
@@ -254,10 +255,9 @@ def create_app(settings=None, engine=None):
         if not is_event:
             try:
                 output = bytearray()
-                deadline = time.monotonic() + 120
-                async with aclosing(decoded_bytes(response, MAX_RESPONSE)) as parts:
+                async with aclosing(deadline_reader(decoded_bytes(response, MAX_RESPONSE), MAX_RESPONSE_SECONDS)) as parts:
                     async for chunk in parts:
-                        if len(output) + len(chunk) > MAX_RESPONSE or time.monotonic() > deadline:
+                        if len(output) + len(chunk) > MAX_RESPONSE:
                             raise HTTPException(502, "Runtime response limit exceeded")
                         output.extend(chunk)
                 return Response(bytes(output), status_code=response.status_code,
@@ -269,15 +269,14 @@ def create_app(settings=None, engine=None):
 
         async def events():
             total = 0
-            deadline = time.monotonic() + 3600
             try:
-                async with aclosing(decoded_bytes(response, MAX_RESPONSE)) as parts:
+                async with aclosing(deadline_reader(decoded_bytes(response, MAX_RESPONSE), MAX_EVENT_SECONDS)) as parts:
                     async for chunk in parts:
                         total += len(chunk)
-                        if total > MAX_RESPONSE or time.monotonic() > deadline:
+                        if total > MAX_RESPONSE:
                             break
                         yield chunk
-            except httpx.HTTPError:
+            except (httpx.HTTPError, HTTPException):
                 return
             finally:
                 await lease.close()

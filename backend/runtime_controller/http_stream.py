@@ -2,6 +2,9 @@
 import asyncio
 import anyio
 import logging
+from time import monotonic
+from fastapi import HTTPException
+from starlette.responses import StreamingResponse
 
 
 async def close_reader(pending, iterator):
@@ -30,9 +33,6 @@ async def drain_cleanup(operation):
                 cancelled = True
         released.result()
     return cancelled
-
-
-from starlette.responses import StreamingResponse
 
 
 class UpstreamLease:
@@ -83,3 +83,33 @@ class UpstreamResponse(StreamingResponse):
             cancelled = await drain_cleanup(release())
             if cancelled and not failed:
                 raise asyncio.CancelledError()
+
+
+async def deadline_reader(iterator, seconds):
+    """Enforce a total lifetime even when a read produces no bytes."""
+    iterator = iterator.__aiter__()
+    deadline = monotonic() + seconds
+    pending = None
+    failed = False
+    try:
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise HTTPException(502, 'Runtime response timed out')
+            pending = asyncio.create_task(anext(iterator))
+            ready, _ = await asyncio.wait({pending}, timeout=remaining)
+            if not ready or monotonic() >= deadline:
+                raise HTTPException(502, 'Runtime response timed out')
+            try:
+                chunk = pending.result()
+            except StopAsyncIteration:
+                return
+            pending = None
+            yield chunk
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        cancelled = await close_reader(pending, iterator)
+        if cancelled and not failed:
+            raise asyncio.CancelledError()

@@ -13,16 +13,31 @@ pytestmark=pytest.mark.skipif(os.getenv('RUN_CONTROLLER_DIAGNOSTICS')!='1',reaso
 def relay_controller():
     name='skycloud-controller-decode-'+uuid.uuid4().hex[:12]
     script='''
-import gzip,threading
+import gzip,threading,json
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 import uvicorn
 from runtime_controller import app as controller_app
 from runtime_controller.policy import Settings
+closed_reads=[]
 class Provider(BaseHTTPRequestHandler):
     def do_GET(self):
         assert self.headers.get('Accept-Encoding') == 'gzip, deflate, identity'
         event='/event/' in self.path
         mode=self.path.rsplit('/',1)[-1]
+        if mode=='quiet':
+            self.send_response(200)
+            self.send_header('Content-Type','text/event-stream' if event else 'application/json')
+            self.send_header('Content-Length','1')
+            self.end_headers();self.wfile.flush()
+            self.connection.settimeout(3)
+            try:
+                if self.connection.recv(1)==b'':closed_reads.append(self.path)
+            except OSError:pass
+            return
+        if mode=='status':
+            output=json.dumps(closed_reads).encode()
+            self.send_response(200);self.send_header('Content-Length',str(len(output)))
+            self.end_headers();self.wfile.write(output);return
         output=b'data: valid\\n\\n' if event else b'{"healthy":true}'
         wire=gzip.compress(output if mode=='valid' else b'x'*4096)
         if mode=='truncated':wire=wire[:-1]
@@ -38,6 +53,8 @@ class Engine:
     def reconcile_retired(self):pass
 settings=Settings('T'*48,'S'*48,'test/runtime@sha256:'+'a'*64,'test', '1g',100000,'test','/state')
 controller_app.MAX_RESPONSE=1024
+controller_app.MAX_RESPONSE_SECONDS=.05
+controller_app.MAX_EVENT_SECONDS=.05
 uvicorn.run(controller_app.create_app(settings,Engine()),host='0.0.0.0',port=9101,log_level='warning')
 '''
     try:
@@ -97,3 +114,21 @@ asyncio.run(main())
 '''
     result=docker('exec',name,'python','-c',script)
     assert 'bounded decoder peak_bytes=' in result.stdout
+
+
+@pytest.mark.parametrize('path,event',[('http/global',False),('http/event',True),('ui/event',True)])
+def test_native_controller_quiet_deadline_disconnects_upstream(relay_controller,path,event):
+    _,url,headers=relay_controller
+    with httpx.Client(trust_env=False,timeout=2) as client:
+        response=client.get(url+'/runtimes/'+'a'*64+'/'+path+'/quiet',headers=headers)
+        assert response.status_code==(200 if event else 502)
+        if event:assert response.content==b''
+        else:assert response.json()=={'detail':'Runtime response timed out'}
+        # Independently prove that Controller closed the actual native provider
+        # connection; no injected reader cancellation or transport here.
+        deadline=time.monotonic()+1
+        while True:
+            status=client.get(url+'/runtimes/'+'a'*64+'/http/global/status',headers=headers)
+            if '/'+path.split('/',1)[1]+'/quiet' in status.json():break
+            assert time.monotonic()<deadline,'native upstream did not observe disconnect'
+            time.sleep(.01)
