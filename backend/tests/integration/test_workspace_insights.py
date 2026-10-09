@@ -1492,3 +1492,89 @@ async def test_legacy_stream_live_signed_session_revocation(postgres, infrastruc
     assert closed.is_set()
     with postgres.connect() as db:
         assert db.scalar(text('SELECT count(*) FROM workspace_members WHERE user_id=1'))==1
+
+
+@pytest.mark.parametrize('change,quiet', [('version',False),('version',True),('family',False),('family',True),('mcp',False),('expiry',True)])
+async def test_assistant_stream_live_signed_session_revocation(postgres, infrastructure, monkeypatch, change, quiet):
+    import time
+    import httpx
+    import jwt
+    from datetime import timedelta
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.features.auth import refresh_sessions
+    from app.features.assistant import router, service
+    from app.features.assistant.event_protocol import AssistantEvent
+    from app.infra.extensions import SECRET_KEY, get_db, get_session_factory
+    from app.infra.datetime_utils import utc_now
+    from app.models.mcp_token import McpToken
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'viewer')"))
+    factory=sessionmaker(bind=postgres)
+    with factory() as db:
+        conversation=service.create_conversation(db,SimpleNamespace(id=1),1,'fast','test')
+        cid=conversation.id
+    monkeypatch.setattr(refresh_sessions, 'redis_client', infrastructure['redis'])
+    claims={'sub':'1','ver':0,'exp':int(time.time())+(4 if change=='expiry' else 60)}
+    if change=='family':
+        with factory() as db:
+            _, payload=refresh_sessions.create(db, claims)
+            raw=payload['token']
+    else:
+        if change=='mcp': claims['type']='mcp'
+        raw=jwt.encode(claims,SECRET_KEY,algorithm='HS256')
+    if change=='mcp':
+        with factory() as db:
+            db.add(McpToken(user_id=1,token_hash=McpToken.hash_token(raw),token_preview='test',expires_at=utc_now()+timedelta(minutes=1)))
+            db.commit()
+    def revoke():
+        if change=='family': refresh_sessions.revoke_access('Bearer '+raw)
+        elif change=='version':
+            with postgres.begin() as db:db.execute(text('UPDATE users SET auth_version=auth_version+1 WHERE id=1'))
+        elif change=='mcp':
+            with postgres.begin() as db:db.execute(text('UPDATE mcp_tokens SET revoked_at=now() WHERE user_id=1'))
+    app=FastAPI();app.include_router(router.router)
+    app.dependency_overrides[get_db]=lambda:None
+    app.dependency_overrides[get_session_factory]=lambda:factory
+    first_sent,entered,closed=asyncio.Event(),asyncio.Event(),asyncio.Event()
+    aborted=[]
+    async def observed_app(scope,receive,send):
+        async def observe(message):
+            await send(message)
+            if message['type']=='http.response.body' and b'allowed' in message.get('body',b''):
+                first_sent.set()
+        await app(scope,receive,observe)
+    class Engine:
+        async def stream(self,controller,**kwargs):
+            async def abort():aborted.append(True)
+            controller.set_abort_callback(abort)
+            try:
+                yield AssistantEvent('token',{'content':'allowed'})
+                await first_sent.wait()
+                entered.set()
+                if quiet:await asyncio.Event().wait()
+                else:
+                    revoke()
+                    yield AssistantEvent('token',{'content':'private-late-data'})
+            finally:closed.set()
+    monkeypatch.setattr(service,'FastEngine',Engine)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(observed_app),base_url='http://test') as client:
+        pending=asyncio.create_task(client.post(f'/assistant/conversations/{cid}/messages/stream',headers={'Authorization':'Bearer '+raw,'X-Workspace-Id':'1'},json={'query':'question'}))
+        if quiet:
+            await asyncio.wait_for(entered.wait(),3)
+            revoke()
+        response=await asyncio.wait_for(pending,8)
+    assert response.status_code==200
+    assert 'allowed' in response.text and 'private-late-data' not in response.text and raw not in response.text
+    payloads=[json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+    assert payloads[-1]['type']=='cancelled'
+    assert closed.is_set() and aborted
+    run_id=int(response.headers['X-Assistant-Run-Id'])
+    assert service.run_registry.get(run_id) is None
+    with postgres.connect() as db:
+        assert db.scalar(text('SELECT count(*) FROM workspace_members WHERE user_id=1'))==1
+        assert db.scalar(text('SELECT status FROM assistant_runs WHERE id=:id'),{'id':run_id})=='cancelled'
+        assert db.execute(text("SELECT status,content FROM assistant_messages WHERE role='assistant'")).one()==('cancelled','allowed')

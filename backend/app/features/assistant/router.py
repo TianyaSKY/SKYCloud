@@ -211,6 +211,7 @@ async def stream_assistant_message(
         async with aclosing(service.stream_run(
             session_factory, stream_workspace_id, stream_user_id,
             stream_conversation_id, stream_run_id, history,
+            credential=getattr(current_user, '_http_stream_credential', None),
         )) as events:
             async for event in events:
                 yield encode_sse(event)

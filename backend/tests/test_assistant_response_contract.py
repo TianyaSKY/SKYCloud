@@ -90,7 +90,7 @@ def test_sse_preserves_events_and_headers(contract,monkeypatch):
     from app.features.assistant.event_protocol import AssistantEvent
     client,db,user,workspace=contract
     cid=create(client)['id']
-    async def events(*args):
+    async def events(*args, **kwargs):
         yield AssistantEvent(type='text_delta',payload={'delta':'hello'})
         yield AssistantEvent(type='done',payload={})
     monkeypatch.setattr(assistant.service,'stream_run',events)

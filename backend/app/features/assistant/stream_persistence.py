@@ -53,6 +53,7 @@ class StreamPersistence:
         if conversation.mode == 'expert':
             assert_can_write(session, int(workspace.id), self.user_id)
         self.run_id = int(run.id)
+        self.credential = None
         self.message = session.get(AssistantMessage, run.assistant_message_id)
         if self.message is None:
             raise ResourceNotFoundError('Assistant message not found')
@@ -65,11 +66,15 @@ class StreamPersistence:
         self.query = str(user_message.content)
 
     def initialize(self, now):
+        if self.credential is not None:
+            self.credential.validate(self.session, self.user_id)
         if not repository.touch_run_lease(self.session, self.run_id, now):
             raise ConflictError('任务已结束，不能继续执行')
         return self.run_id, self.message_id, self.workspace_id, self.mode, self.query
 
     def poll(self, renew_lease, now):
+        if self.credential is not None:
+            self.credential.validate(self.session, self.user_id)
         role = get_member_role(self.session, self.workspace_id, self.user_id)
         revoked = role is None or (self.mode == 'expert' and role not in {'editor', 'admin'})
         if renew_lease and not repository.touch_run_lease(self.session, self.run_id, now):

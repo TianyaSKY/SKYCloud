@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from loguru import logger
 
 from app.exceptions import (
+    AuthenticationError,
     BusinessRuleError,
     ConflictError,
     PermissionDeniedError,
@@ -406,6 +407,9 @@ async def _engine_events_with_heartbeats(
     engine_iterator: AsyncIterator[AssistantEvent],
     run_id: int,
     interval_seconds: float = 15.0,
+    *,
+    on_idle: Callable[[], Awaitable[Any]] | None = None,
+    poll_seconds: float = 1.0,
 ) -> AsyncIterator[AssistantEvent]:
     """Forward provider events while keeping reverse proxies' idle timers warm."""
 
@@ -425,13 +429,21 @@ async def _engine_events_with_heartbeats(
             await queue.put(("done", None))
 
     producer = asyncio.create_task(produce())
+    heartbeat_at = time.monotonic() + interval_seconds
     try:
         while True:
             try:
-                kind, value = await asyncio.wait_for(queue.get(), timeout=interval_seconds)
+                remaining = max(0, heartbeat_at - time.monotonic())
+                timeout = min(remaining, poll_seconds) if on_idle is not None else remaining
+                kind, value = await asyncio.wait_for(queue.get(), timeout=timeout)
             except asyncio.TimeoutError:
-                yield heartbeat_event(run_id)
+                if on_idle is not None:
+                    await on_idle()
+                if time.monotonic() >= heartbeat_at:
+                    yield heartbeat_event(run_id)
+                    heartbeat_at = time.monotonic() + interval_seconds
                 continue
+            heartbeat_at = time.monotonic() + interval_seconds
             if kind == "event":
                 assert isinstance(value, AssistantEvent)
                 yield value
@@ -460,6 +472,12 @@ async def _stream_persisted(worker, persistence, history):
     except asyncio.CancelledError:
         await worker.call(persistence.finish, "cancelled", "", {}, {}, [], None)
         raise
+    except AuthenticationError:
+        status = await worker.call(persistence.finish, "cancelled", "", {}, {}, [], None)
+        if status == "cancelled":
+            yield AssistantEvent("cancelled", {"status": status},
+                                 run_id=persistence.run_id, message_id=persistence.message_id)
+        return
     controller = run_registry.register(run_id)
     event_log = []
     answer_parts = []
@@ -472,13 +490,22 @@ async def _stream_persisted(worker, persistence, history):
         return await worker.call(persistence.finish, status, "".join(answer_parts),
                                  dict(metadata), dict(usage), list(event_log), error_code)
 
+    async def poll_idle():
+        nonlocal last_lease
+        renew = time.monotonic() - last_lease >= 10
+        terminal, cancelled = await worker.call(persistence.poll, renew, time.time())
+        if renew:
+            last_lease = time.monotonic()
+        if terminal or cancelled or controller.cancel_event.is_set():
+            raise PermissionDeniedError("Assistant stream authorization ended")
+
     try:
         yield AssistantEvent("run_started", {"engine": mode, "status": "running"},
                              run_id=run_id, message_id=message_id)
         engine = await worker.call(persistence.engine)
         iterator = engine.stream(run_id=run_id, user_id=persistence.user_id,
                                  workspace_id=workspace_id, query=query, history=history, controller=controller)
-        async with aclosing(_engine_events_with_heartbeats(iterator, run_id)) as engine_events:
+        async with aclosing(_engine_events_with_heartbeats(iterator, run_id, on_idle=poll_idle)) as engine_events:
             async for event in engine_events:
                 renew = time.monotonic() - last_lease >= 10
                 terminal, cancelled = await worker.call(persistence.poll, renew, time.time())
@@ -528,7 +555,7 @@ async def _stream_persisted(worker, persistence, history):
     except (asyncio.CancelledError, GeneratorExit):
         await finish("cancelled")
         raise
-    except PermissionDeniedError:
+    except (AuthenticationError, PermissionDeniedError):
         await controller.request_cancel()
         status = await finish("cancelled")
         if status == "cancelled":
@@ -572,7 +599,7 @@ async def stream_prepared_run(session, workspace, user_id, conversation, run, hi
             await worker.call(_cleanup_stream_session, session, "rollback")
 
 
-async def stream_run(session_factory, workspace_id, user_id, conversation_id, run_id, history):
+async def stream_run(session_factory, workspace_id, user_id, conversation_id, run_id, history, *, credential=None):
     """Own the streaming Session entirely within its dedicated worker thread."""
     from app.features.assistant.stream_persistence import StreamPersistence, StreamWorker
     async with StreamWorker() as worker:
@@ -585,7 +612,9 @@ async def stream_run(session_factory, workspace_id, user_id, conversation_id, ru
             run = session.get(AssistantRun, run_id)
             if workspace is None or conversation is None or run is None:
                 raise ResourceNotFoundError("Assistant stream records disappeared")
-            return StreamPersistence(session, workspace, user_id, conversation, run)
+            persistence = StreamPersistence(session, workspace, user_id, conversation, run)
+            persistence.credential = credential
+            return persistence
         try:
             persistence = await worker.call(create)
             async with aclosing(_stream_persisted(worker, persistence, history)) as events:

@@ -151,7 +151,7 @@ async def test_http_stream_disconnect_closes_underlying_iterator(monkeypatch):
     closed = []
     monkeypatch.setattr(service, 'get_user_conversation', lambda *args: conversation)
     monkeypatch.setattr(service, 'prepare_run', lambda *args, **kwargs: (conversation, run, []))
-    async def events(*args):
+    async def events(*args, **kwargs):
         try:
             yield AssistantEvent('run_started', {'status': 'running'}, run_id=4)
             await asyncio.Event().wait()
