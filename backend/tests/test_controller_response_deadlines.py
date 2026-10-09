@@ -116,3 +116,48 @@ async def test_deadline_eof_cleanup_preserves_new_cancellation(handled):
         release.set()
         with pytest.raises(asyncio.CancelledError):await asyncio.wait_for(pending,1)
     assert calls==['close']
+
+
+@pytest.mark.parametrize('stage',['ready','quiet'])
+async def test_buffered_response_caller_disconnect_closes_owned_reader(monkeypatch,tmp_path,stage):
+    from starlette.requests import Request
+    monkeypatch.setattr(controller,'MAX_RESPONSE_SECONDS',60)
+    disconnected=False
+    entered=asyncio.Event()
+    closed=[]
+    async def is_disconnected(self):return disconnected
+    monkeypatch.setattr(Request,'is_disconnected',is_disconnected)
+    class Stream(httpx.AsyncByteStream):
+        def __aiter__(self):
+            self.iterator=self.read()
+            return self.iterator
+        async def read(self):
+            nonlocal disconnected
+            try:
+                yield b'partial'
+                if stage=='ready':
+                    disconnected=True
+                    yield b'private-late'
+                else:
+                    entered.set()
+                    await asyncio.Event().wait()
+            finally:closed.append('reader')
+        async def aclose(self):
+            await self.iterator.aclose()
+            closed.append('response')
+    settings=Settings('T'*48,'S'*48,'test/runtime@sha256:'+'a'*64,'test','1g',100000,'test',str(tmp_path))
+    engine=Mock();engine.target.return_value=('http://runtime.test',('server','secret'))
+    actual_client=httpx.AsyncClient
+    clients=[]
+    def client(**kwargs):
+        opened=actual_client(transport=httpx.MockTransport(lambda request:httpx.Response(200,stream=Stream())),**kwargs)
+        clients.append(opened);return opened
+    monkeypatch.setattr(controller.httpx,'AsyncClient',client)
+    async with actual_client(transport=httpx.ASGITransport(app=controller.create_app(settings,engine)),base_url='http://controller.test') as downstream:
+        pending=asyncio.create_task(downstream.get('/runtimes/'+'a'*64+'/http/session',headers={'X-Runtime-Controller-Token':settings.token}))
+        if stage=='quiet':
+            await asyncio.wait_for(entered.wait(),1)
+            disconnected=True
+        result=await asyncio.wait_for(pending,1.5)
+    assert result.status_code==499 and result.json()=={'detail':'Runtime client disconnected'}
+    assert closed==['reader','response'] and all(client.is_closed for client in clients)

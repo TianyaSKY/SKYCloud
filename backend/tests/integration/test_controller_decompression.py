@@ -14,6 +14,7 @@ def relay_controller(request):
     name='skycloud-controller-decode-'+uuid.uuid4().hex[:12]
     script='''
 import gzip,threading,json,time
+from contextlib import aclosing
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 import uvicorn
 from runtime_controller import app as controller_app
@@ -22,6 +23,7 @@ closed_reads=[]
 opened_reads=[]
 class Provider(BaseHTTPRequestHandler):
     def do_GET(self):
+        opened_reads.append(self.path)
         assert self.headers.get('Accept-Encoding') == 'gzip, deflate, identity'
         event='/event/' in self.path
         mode=self.path.rsplit('/',1)[-1]
@@ -42,11 +44,13 @@ class Provider(BaseHTTPRequestHandler):
                     except OSError:
                         closed_reads.append(self.path);break
             return
-        if mode=='quiet':
+        if mode in ('quiet','bodyquiet'):
             self.send_response(200)
             self.send_header('Content-Type','text/event-stream' if event else 'application/json')
-            self.send_header('Content-Length','1')
-            self.end_headers();self.wfile.flush()
+            self.send_header('Content-Length','2' if mode=='bodyquiet' else '1')
+            self.end_headers()
+            if mode=='bodyquiet':self.wfile.write(b'{')
+            self.wfile.flush()
             self.connection.settimeout(3)
             try:
                 if self.connection.recv(1)==b'':closed_reads.append(self.path)
@@ -64,21 +68,40 @@ class Provider(BaseHTTPRequestHandler):
         self.send_header('Content-Encoding','br' if mode=='unsupported' else 'gzip')
         self.send_header('Content-Length',str(len(wire)))
         self.end_headers();self.wfile.write(wire)
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length','0')))
+        self.do_GET()
     def log_message(self,*args):pass
 threading.Thread(target=ThreadingHTTPServer(('127.0.0.1',9100),Provider).serve_forever,daemon=True).start()
 class Engine:
     def target(self,ref):return 'http://127.0.0.1:9100',('server','disposable')
     def reconcile_retired(self):pass
 settings=Settings('T'*48,'S'*48,'test/runtime@sha256:'+'a'*64,'test', '1g',100000,'test','/state')
+controller_app.MAX_BODY_SECONDS=.05
+controller_app.MAX_BODY_IDLE_SECONDS=.04
 controller_app.MAX_HEADER_SECONDS=.05
 controller_app.MAX_HEALTH_HEADER_SECONDS=.05
 controller_app.MAX_RESPONSE=1024
 controller_app.MAX_RESPONSE_SECONDS=.05
 controller_app.MAX_EVENT_SECONDS=.05
-uvicorn.run(controller_app.create_app(settings,Engine()),host='0.0.0.0',port=9101,log_level='warning')
+application=controller_app.create_app(settings,Engine())
+body_ready=False
+original_reader=controller_app.deadline_reader
+async def observed_reader(iterator,seconds,**kwargs):
+    global body_ready
+    async with aclosing(original_reader(iterator,seconds,**kwargs)) as parts:
+        async for chunk in parts:
+            if chunk==b'{':body_ready=True
+            yield chunk
+controller_app.deadline_reader=observed_reader
+@application.get('/boundary-state')
+async def boundary_state():return {'body_ready':body_ready}
+uvicorn.run(application,host='0.0.0.0',port=9101,log_level='warning')
 '''
     if getattr(request, 'param', None) == 'disconnect':
         script=script.replace('controller_app.MAX_HEADER_SECONDS=.05','controller_app.MAX_HEADER_SECONDS=60')
+    if getattr(request, 'param', None) == 'body-disconnect':
+        script=script.replace('controller_app.MAX_RESPONSE_SECONDS=.05','controller_app.MAX_RESPONSE_SECONDS=60')
     try:
         docker('run','-d','--name',name,'--read-only','--cap-drop','ALL','--security-opt','no-new-privileges:true',
                '-p','127.0.0.1::9101','--entrypoint','python',os.environ['SKYCLOUD_TEST_CONTROLLER_IMAGE'],'-u','-c',script)
@@ -193,4 +216,52 @@ def test_native_controller_caller_disconnect_during_headers(relay_controller):
             status=client.get(url+'/runtimes/'+'a'*64+'/http/global/status',headers=headers)
             if '/session/headerquiet' in status.json():break
             assert time.monotonic()<deadline,'caller disconnect did not release native upstream'
+            time.sleep(.02)
+
+
+def test_native_controller_drip_body_rejected_before_dispatch(relay_controller):
+    import socket
+    from urllib.parse import urlparse
+    _,url,headers=relay_controller
+    location=urlparse(url)
+    with socket.create_connection((location.hostname,location.port),timeout=2) as downstream:
+        raw=('POST /runtimes/'+'a'*64+'/http/session/valid HTTP/1.1\r\nHost: controller.test\r\nContent-Length: 6\r\nConnection: close\r\nX-Runtime-Controller-Token: '+headers['X-Runtime-Controller-Token']+'\r\n\r\n')
+        downstream.sendall(raw.encode())
+        for _ in range(6):
+            time.sleep(.015)
+            try:downstream.sendall(b'x')
+            except OSError:break
+        result=b''
+        while True:
+            chunk=downstream.recv(4096)
+            if not chunk:break
+            result+=chunk
+    assert result.startswith(b'HTTP/1.1 408') and b'Controller request timed out' in result
+    with httpx.Client(trust_env=False,timeout=2) as observer:
+        opened=observer.get(url+'/runtimes/'+'a'*64+'/http/global/opened',headers=headers)
+        assert '/session/valid' not in opened.json()
+
+
+@pytest.mark.parametrize('relay_controller',['body-disconnect'],indirect=True)
+def test_native_controller_buffered_body_caller_disconnect(relay_controller):
+    import socket
+    from urllib.parse import urlparse
+    _,url,headers=relay_controller
+    location=urlparse(url)
+    with socket.create_connection((location.hostname,location.port),timeout=2) as downstream:
+        raw=('GET /runtimes/'+'a'*64+'/http/session/bodyquiet HTTP/1.1\r\nHost: controller.test\r\nX-Runtime-Controller-Token: '+headers['X-Runtime-Controller-Token']+'\r\n\r\n')
+        downstream.sendall(raw.encode())
+        with httpx.Client(trust_env=False,timeout=2) as observer:
+            deadline=time.monotonic()+1
+            while True:
+                state=observer.get(url+'/boundary-state',headers=headers)
+                if state.json()['body_ready']:break
+                assert time.monotonic()<deadline,'buffered reader did not consume native bytes'
+                time.sleep(.01)
+    with httpx.Client(trust_env=False,timeout=2) as observer:
+        deadline=time.monotonic()+2
+        while True:
+            closed=observer.get(url+'/runtimes/'+'a'*64+'/http/global/status',headers=headers)
+            if '/session/bodyquiet' in closed.json():break
+            assert time.monotonic()<deadline,'buffered body retained disconnected upstream'
             time.sleep(.02)

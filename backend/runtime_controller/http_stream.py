@@ -85,7 +85,7 @@ class UpstreamResponse(StreamingResponse):
                 raise asyncio.CancelledError()
 
 
-async def deadline_reader(iterator, seconds):
+async def deadline_reader(iterator, seconds, *, check=None, interval=1.0):
     """Enforce a total lifetime even when a read produces no bytes."""
     iterator = iterator.__aiter__()
     deadline = monotonic() + seconds
@@ -96,10 +96,17 @@ async def deadline_reader(iterator, seconds):
             remaining = deadline - monotonic()
             if remaining <= 0:
                 raise HTTPException(502, 'Runtime response timed out')
-            pending = asyncio.create_task(anext(iterator))
-            ready, _ = await asyncio.wait({pending}, timeout=remaining)
-            if not ready or monotonic() >= deadline:
+            if pending is None:
+                pending = asyncio.create_task(anext(iterator))
+            ready, _ = await asyncio.wait({pending}, timeout=remaining if check is None else min(interval, remaining))
+            if monotonic() >= deadline:
                 raise HTTPException(502, 'Runtime response timed out')
+            if check is not None:
+                await check()
+            if monotonic() >= deadline:
+                raise HTTPException(502, 'Runtime response timed out')
+            if not ready:
+                continue
             try:
                 chunk = pending.result()
             except StopAsyncIteration:

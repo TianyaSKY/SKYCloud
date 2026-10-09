@@ -6,6 +6,7 @@ import hmac
 import logging
 import os
 import socket
+from time import monotonic
 from contextlib import asynccontextmanager, aclosing
 from typing import Literal
 
@@ -25,6 +26,8 @@ from runtime_controller.socket_relay import direct_connect, pump, terminal_path,
 from urllib.parse import urlencode
 
 MAX_BODY = 256 * 1024
+MAX_BODY_SECONDS = 30
+MAX_BODY_IDLE_SECONDS = 10
 MAX_RESPONSE = 64 * 1024 * 1024
 MAX_HEADER_SECONDS = 90
 MAX_HEALTH_HEADER_SECONDS = 2
@@ -57,9 +60,18 @@ class AuthAndBodyLimit:
             await JSONResponse({"detail": "Controller authentication required"}, status_code=401)(scope, receive, send)
             return
         body = bytearray()
+        deadline = monotonic() + MAX_BODY_SECONDS
+        async def check_body():
+            pass
         try:
             while True:
-                message = await asyncio.wait_for(receive(), timeout=10)
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise HTTPException(408, "Controller request timed out")
+                message = await guarded_wait(receive(), check=check_body,
+                    seconds=min(MAX_BODY_IDLE_SECONDS, remaining), status=408, detail="Controller request timed out")
+                if monotonic() >= deadline:
+                    raise HTTPException(408, "Controller request timed out")
                 if message["type"] == "http.disconnect":
                     return
                 part = message.get("body", b"")
@@ -69,7 +81,9 @@ class AuthAndBodyLimit:
                 body.extend(part)
                 if not message.get("more_body", False):
                     break
-        except asyncio.TimeoutError:
+        except HTTPException as exc:
+            if exc.status_code != 408:
+                raise
             await JSONResponse({"detail": "Controller request timed out"}, status_code=408)(scope, receive, send)
             return
         consumed = False
@@ -267,7 +281,7 @@ def create_app(settings=None, engine=None):
         if not is_event:
             try:
                 output = bytearray()
-                async with aclosing(deadline_reader(decoded_bytes(response, MAX_RESPONSE), MAX_RESPONSE_SECONDS)) as parts:
+                async with aclosing(deadline_reader(decoded_bytes(response, MAX_RESPONSE), MAX_RESPONSE_SECONDS, check=check)) as parts:
                     async for chunk in parts:
                         if len(output) + len(chunk) > MAX_RESPONSE:
                             raise HTTPException(502, "Runtime response limit exceeded")
@@ -282,7 +296,7 @@ def create_app(settings=None, engine=None):
         async def events():
             total = 0
             try:
-                async with aclosing(deadline_reader(decoded_bytes(response, MAX_RESPONSE), MAX_EVENT_SECONDS)) as parts:
+                async with aclosing(deadline_reader(decoded_bytes(response, MAX_RESPONSE), MAX_EVENT_SECONDS, check=check)) as parts:
                     async for chunk in parts:
                         total += len(chunk)
                         if total > MAX_RESPONSE:
