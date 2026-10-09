@@ -377,7 +377,15 @@ class ExpertEngine:
                     self._save_provider_session, workspace_id, user_id, connection.runtime_id, str(session_id)
                 )
 
-                controller.set_abort_callback(lambda: client.abort_session(str(session_id)))
+                async def abort_provider_session():
+                    # The event stream may finish/close its client while the
+                    # remote abort is in flight. Give this bounded control RPC
+                    # its own transport lifetime.
+                    async with OpenCodeClient(
+                        base_url, server_username(), password, timeout=5,
+                    ) as abort_client:
+                        return await abort_client.abort_session(str(session_id))
+                controller.set_abort_callback(abort_provider_session)
     
                 events = client.stream_events().__aiter__()
                 previous_ids = None

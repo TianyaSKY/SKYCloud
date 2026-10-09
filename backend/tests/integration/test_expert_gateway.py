@@ -50,7 +50,7 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None)],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None)],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
@@ -234,8 +234,66 @@ with Session(engine) as session:
                 with factory() as db:
                     workspace = db.get(Workspace, ws_id)
                     conversation = repository.create_conversation(db, ws_id, user_id, 'expert', 'gateway task'); db.commit()
-                    conversation, run, history = service.prepare_run(db, workspace, user_id, conversation.id, '只输出 E2E_GATEWAY_OK，不调用任何工具。')
+                    if permission_response != 'auth-version':
+                        conversation, run, history = service.prepare_run(db, workspace, user_id, conversation.id, '只输出 E2E_GATEWAY_OK，不调用任何工具。')
                     async def collect():
+                        if permission_response == 'auth-version':
+                            from app.features.assistant import router as assistant_router
+                            from app.features.assistant.event_protocol import AssistantEvent
+                            from app.features.auth.service import generate_token
+                            from app.features.assistant.clients.opencode_client import OpenCodeClient
+                            from app.models.assistant import AssistantRun
+                            raw = generate_token(user_id, 0)
+                            abort_acks, abort_closed, abort_errors, revoked, event_clients = [], [], [], [], []
+                            actual_abort = OpenCodeClient.abort_session
+                            actual_events = OpenCodeClient.stream_events
+                            async def observed_events(client):
+                                event_clients.append(client._client)
+                                async for event in actual_events(client):
+                                    yield event
+                            monkeypatch.setattr(OpenCodeClient, 'stream_events', observed_events)
+                            async def observed_abort(client, session_id):
+                                abort_closed.append(client._client.is_closed)
+                                assert client._client not in event_clients
+                                try:
+                                    result = await actual_abort(client, session_id)
+                                except Exception as exc:
+                                    abort_errors.append((type(exc).__name__, getattr(exc, 'status_code', None)))
+                                    raise
+                                abort_acks.append(result)
+                                return result
+                            monkeypatch.setattr(OpenCodeClient, 'abort_session', observed_abort)
+                            app = FastAPI(); app.include_router(assistant_router.router)
+                            app.dependency_overrides[get_db] = lambda: None
+                            app.dependency_overrides[get_session_factory] = lambda: factory
+                            async def revoke_version():
+                                def update():
+                                    with postgres.begin() as independent:
+                                        independent.execute(text('UPDATE users SET auth_version=auth_version+1 WHERE id=:id'), {'id': user_id})
+                                await asyncio.to_thread(update)
+                            async def observed_app(scope, receive, send):
+                                async def observe(message):
+                                    await send(message)
+                                    if message['type'] == 'http.response.body' and b'permission_required' in message.get('body', b'') and not revoked:
+                                        revoked.append(True)
+                                        await revoke_version()
+                                await app(scope, receive, observe)
+                            async with httpx.AsyncClient(transport=httpx.ASGITransport(observed_app), base_url='http://test') as client:
+                                response = await client.post(f'/assistant/conversations/{conversation.id}/messages/stream',
+                                    headers={'Authorization': 'Bearer '+raw, 'X-Workspace-Id': str(ws_id)},
+                                    json={'query':'只输出 E2E_GATEWAY_OK，不调用任何工具。'})
+                            assert response.status_code == 200 and raw not in response.text
+                            observed.extend(AssistantEvent(**json.loads(line[6:])) for line in response.text.splitlines() if line.startswith('data: '))
+                            assert revoked and abort_acks and all(abort_acks) and not any(abort_closed), (abort_closed, abort_errors)
+                            result = db.get(AssistantRun, int(response.headers['X-Assistant-Run-Id']))
+                            assert result.status == 'cancelled' and result.pending_permission_id is None
+                            assert observed[-1].type == 'cancelled'
+                            assert service.run_registry.get(result.id) is None
+                            with postgres.connect() as independent:
+                                assert independent.scalar(text('SELECT auth_version FROM users WHERE id=:id'), {'id':user_id}) == 1
+                                assert independent.scalar(text('SELECT role FROM workspace_members WHERE workspace_id=:ws AND user_id=:id'), {'ws':ws_id,'id':user_id}) == 'admin'
+                            assert not any('AUTHORIZED_ONLY' in str(message.get('content','')) for body in requests for message in body['messages'] if message.get('role') == 'tool')
+                            return observed
                         async for event in service.stream_run(factory, ws_id, user_id, conversation.id, run.id, history):
                             observed.append(event)
                             if event.type == 'permission_required':
@@ -253,6 +311,8 @@ with Session(engine) as session:
                                 await asyncio.to_thread(respond_from_worker)
                         return observed
                     events = asyncio.run(asyncio.wait_for(collect(), 120))
+                    if permission_response == 'auth-version':
+                        return
                     db.refresh(run)
                     if permission_response in ('demote','remove'):
                         assert run.status == 'cancelled'

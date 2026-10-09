@@ -1,6 +1,7 @@
 """Assistant orchestration: ownership, persistence, cancellation, and SSE."""
 
 import asyncio
+import anyio
 import os
 import math
 import time
@@ -45,14 +46,19 @@ class RunController:
         self.abort_callback = callback
 
     async def request_cancel(self) -> None:
-        self.cancel_event.set()
-        if self.abort_callback:
-            try:
-                await asyncio.wait_for(self.abort_callback(), timeout=5)
-            except Exception:
-                # The run is still marked cancelled in the database.  The
-                # provider abort is best effort during client disconnects.
-                pass
+        try:
+            if self.abort_callback:
+                try:
+                    await asyncio.wait_for(self.abort_callback(), timeout=5)
+                except Exception:
+                    # Durable cancellation is authoritative. Provider abort
+                    # remains best effort when its transport fails.
+                    pass
+        finally:
+            # The engine observes this event and closes its provider client.
+            # Signal it after the bounded abort RPC, so the client cannot be
+            # torn down concurrently with that RPC.
+            self.cancel_event.set()
 
     def wait_for_permission(self, permission_id: str) -> asyncio.Future[str]:
         future = self._permission_futures.get(permission_id)
@@ -409,6 +415,7 @@ async def _engine_events_with_heartbeats(
     interval_seconds: float = 15.0,
     *,
     on_idle: Callable[[], Awaitable[Any]] | None = None,
+    on_abort: Callable[[], Awaitable[Any]] | None = None,
     poll_seconds: float = 1.0,
 ) -> AsyncIterator[AssistantEvent]:
     """Forward provider events while keeping reverse proxies' idle timers warm."""
@@ -430,6 +437,7 @@ async def _engine_events_with_heartbeats(
 
     producer = asyncio.create_task(produce())
     heartbeat_at = time.monotonic() + interval_seconds
+    interrupted = False
     try:
         while True:
             try:
@@ -452,13 +460,35 @@ async def _engine_events_with_heartbeats(
                 raise value
             else:
                 break
+    except BaseException:
+        interrupted = True
+        raise
     finally:
-        if not producer.done():
-            producer.cancel()
-        try:
-            await producer
-        except BaseException:
-            pass
+        async def cleanup():
+            # The producer owns the provider client. Abort while that client
+            # is still open, before cancelling/draining its generator.
+            if interrupted and on_abort is not None:
+                try:
+                    await on_abort()
+                except (Exception, asyncio.CancelledError) as exc:
+                    logger.error("Assistant upstream abort failed (error_type={})", type(exc).__name__)
+            if not producer.done():
+                producer.cancel()
+            try:
+                await producer
+            except BaseException:
+                pass
+        pending_cleanup = asyncio.create_task(cleanup())
+        cancelled = False
+        with anyio.CancelScope(shield=True):
+            while not pending_cleanup.done():
+                try:
+                    await asyncio.shield(pending_cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
+        pending_cleanup.result()
+        if cancelled and not interrupted:
+            raise asyncio.CancelledError()
 
 
 def _event_content(event: AssistantEvent) -> str:
@@ -505,7 +535,9 @@ async def _stream_persisted(worker, persistence, history):
         engine = await worker.call(persistence.engine)
         iterator = engine.stream(run_id=run_id, user_id=persistence.user_id,
                                  workspace_id=workspace_id, query=query, history=history, controller=controller)
-        async with aclosing(_engine_events_with_heartbeats(iterator, run_id, on_idle=poll_idle)) as engine_events:
+        async with aclosing(_engine_events_with_heartbeats(
+            iterator, run_id, on_idle=poll_idle, on_abort=controller.request_cancel,
+        )) as engine_events:
             async for event in engine_events:
                 renew = time.monotonic() - last_lease >= 10
                 terminal, cancelled = await worker.call(persistence.poll, renew, time.time())
@@ -556,7 +588,8 @@ async def _stream_persisted(worker, persistence, history):
         await finish("cancelled")
         raise
     except (AuthenticationError, PermissionDeniedError):
-        await controller.request_cancel()
+        if not controller.cancel_event.is_set():
+            await controller.request_cancel()
         status = await finish("cancelled")
         if status == "cancelled":
             yield AssistantEvent("cancelled", {"status": status}, run_id=run_id, message_id=message_id)
