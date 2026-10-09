@@ -1,8 +1,10 @@
 """Own upstream HTTP resources through ASGI response delivery and teardown."""
 import asyncio
+import sys
 import anyio
 from loguru import logger
 from starlette.responses import StreamingResponse
+from app.infra.async_stream import close_reader, drain_cleanup
 
 
 class UpstreamLease:
@@ -43,10 +45,10 @@ class UpstreamResponse(StreamingResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            with anyio.CancelScope(shield=True):
-                try:
-                    await self.body_iterator.aclose()
-                except Exception as exc:
-                    logger.error("Upstream HTTP iterator close failed (error_type={})", type(exc).__name__)
-                finally:
-                    await self.lease.close()
+            original = sys.exception()
+            async def release():
+                await close_reader(None, self.body_iterator)
+                await self.lease.close()
+            cancelled = await drain_cleanup(release())
+            if cancelled and original is None:
+                raise asyncio.CancelledError()

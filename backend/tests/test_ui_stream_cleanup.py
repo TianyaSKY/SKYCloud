@@ -55,3 +55,49 @@ async def test_repeated_cancellation_drains_resource_close():
     with pytest.raises(asyncio.CancelledError):await pending
     await lease.close()
     assert calls==['closed']
+
+
+@pytest.mark.parametrize('delivery',['headers','cancel','normal'])
+@pytest.mark.parametrize('cleanup',['self-cancel','repeat-cancel'])
+async def test_upstream_response_drains_iterator_before_resources(monkeypatch,delivery,cleanup):
+    closing,release=asyncio.Event(),asyncio.Event()
+    calls,logs=[],[]
+    class Body:
+        def __aiter__(self):return self
+        async def __anext__(self):raise StopAsyncIteration
+        async def aclose(self):
+            closing.set()
+            if cleanup=='repeat-cancel':await release.wait()
+            calls.append('iterator')
+            if cleanup=='self-cancel':raise asyncio.CancelledError('private-close-url')
+    class Resource:
+        def __init__(self,name):self.name=name
+        async def aclose(self):
+            assert calls[0]=='iterator'
+            calls.append(self.name)
+    lease=ui_stream.UpstreamLease(Resource('client'));lease.upstream=Resource('response')
+    monkeypatch.setattr(ui_stream.logger,'error',lambda message,*args:logs.append(message.format(*args)))
+    response=ui_stream.UpstreamResponse(Body(),lease=lease)
+    async def receive():await asyncio.Event().wait()
+    async def send(message):
+        if delivery=='headers':raise OSError('header delivery failed')
+        if delivery=='cancel':raise asyncio.CancelledError('delivery-cancel')
+    pending=asyncio.create_task(response({'type':'http','asgi':{'spec_version':'2.4'}},receive,send))
+    try:
+        await asyncio.wait_for(closing.wait(),1)
+        if cleanup=='repeat-cancel':
+            pending.cancel();await asyncio.sleep(0)
+            pending.cancel();await asyncio.sleep(0.01)
+            assert not pending.done() and not calls
+    finally:
+        release.set()
+        if delivery=='headers':
+            with pytest.raises(ClientDisconnect):await asyncio.wait_for(pending,1)
+        elif delivery=='cancel' or cleanup=='repeat-cancel':
+            with pytest.raises(asyncio.CancelledError) as error:await asyncio.wait_for(pending,1)
+            assert 'private-close-url' not in str(error.value)
+        else:await asyncio.wait_for(pending,1)
+    await lease.close()
+    assert calls==['iterator','response','client']
+    assert ('CancelledError' in str(logs)) is (cleanup=='self-cancel')
+    assert 'private-close-url' not in str(logs)

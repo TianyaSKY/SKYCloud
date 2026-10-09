@@ -1610,7 +1610,8 @@ async def test_assistant_stream_live_signed_session_revocation(postgres, infrast
         assert db.execute(text("SELECT status,content FROM assistant_messages WHERE role='assistant'")).one()==('cancelled','allowed')
 
 
-async def test_ui_header_send_failure_closes_real_upstream_http(postgres,infrastructure,monkeypatch):
+@pytest.mark.parametrize('cleanup',[None,'self-cancel','repeat-cancel'])
+async def test_ui_header_send_failure_closes_real_upstream_http(postgres,infrastructure,monkeypatch,cleanup):
     import threading
     from urllib.parse import urlsplit,parse_qs
     import httpx
@@ -1654,6 +1655,23 @@ async def test_ui_header_send_failure_closes_real_upstream_http(postgres,infrast
         clients.append(client)
         return client
     monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',tracked_client)
+    closing,release=asyncio.Event(),asyncio.Event()
+    if cleanup:
+        actual_response=ui_gateway.UpstreamResponse
+        class WrappedResponse(actual_response):
+            def __init__(self,*args,**kwargs):
+                super().__init__(*args,**kwargs)
+                iterator=self.body_iterator
+                class Body:
+                    def __aiter__(self):return self
+                    async def __anext__(self):return await anext(iterator)
+                    async def aclose(self):
+                        closing.set()
+                        if cleanup=='repeat-cancel':await release.wait()
+                        await iterator.aclose()
+                        if cleanup=='self-cancel':raise asyncio.CancelledError('private-upstream-close')
+                self.body_iterator=Body()
+        monkeypatch.setattr(ui_gateway,'UpstreamResponse',WrappedResponse)
     async def fail_headers(scope,receive,send):
         scope={**scope,'asgi':{'version':'3.0','spec_version':'2.4'}}
         async def failed_send(message):raise OSError('header send failed')
@@ -1661,8 +1679,18 @@ async def test_ui_header_send_failure_closes_real_upstream_http(postgres,infrast
     with serve(controller) as port:
         monkeypatch.setattr(ui_gateway,'controller_url',lambda:f'http://127.0.0.1:{port}')
         async with real_client(transport=httpx.ASGITransport(fail_headers),base_url='http://test') as client:
-            with pytest.raises(ClientDisconnect):
-                await client.get('/runtime-ui/event',headers={'Host':parsed.netloc,'Cookie':ui_tickets.COOKIE+'='+raw})
+            pending=asyncio.create_task(client.get('/runtime-ui/event',headers={'Host':parsed.netloc,'Cookie':ui_tickets.COOKIE+'='+raw}))
+            try:
+                if cleanup:
+                    await asyncio.wait_for(closing.wait(),3)
+                if cleanup=='repeat-cancel':
+                    pending.cancel();await asyncio.sleep(0)
+                    pending.cancel();await asyncio.sleep(0.01)
+                    assert not pending.done() and len(clients)==1 and not clients[0].is_closed
+                    assert not upstream_closed.is_set()
+            finally:
+                release.set()
+                with pytest.raises(ClientDisconnect):await asyncio.wait_for(pending,3)
         assert len(clients)==1 and clients[0].is_closed
         assert await asyncio.to_thread(upstream_closed.wait,3)
 
