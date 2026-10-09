@@ -8,6 +8,7 @@ from contextlib import aclosing
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 
 from app.features.runtime_llm import quota, tokens
 from app.infra.extensions import get_session_factory
@@ -29,6 +30,14 @@ ALLOWED_FIELDS = {
 RECHECK_SECONDS = 1.0
 
 
+async def verify_connected(request, session_factory):
+    # Only called after the request body has been consumed. A receive probe
+    # during body ingestion could discard an unread upload chunk.
+    if await request.is_disconnected():
+        raise HTTPException(499, 'Model client disconnected')
+    await run_in_threadpool(_validate_current_credential, request, session_factory, touch=False)
+
+
 async def authorized_bytes(response, request, session_factory):
     """Revalidate during quiet waits and before releasing every upstream chunk."""
     pending = None
@@ -42,7 +51,7 @@ async def authorized_bytes(response, request, session_factory):
             if pending is None:
                 pending = asyncio.create_task(anext(iterator))
             ready, _ = await asyncio.wait({pending}, timeout=min(RECHECK_SECONDS, remaining))
-            await run_in_threadpool(_validate_current_credential, request, session_factory, touch=False)
+            await verify_connected(request, session_factory)
             if not ready:
                 continue
             try:
@@ -124,10 +133,13 @@ async def chat_completions(request: Request, credential: dict = Depends(current_
         await run_in_threadpool(_validate_current_credential, request, session_factory, touch=False)
     async def read_body():
         chunks = bytearray()
-        async for part in request.stream():
-            if len(chunks) + len(part) > MAX_BODY_BYTES:
-                raise HTTPException(status_code=413, detail="Model request too large")
-            chunks.extend(part)
+        try:
+            async for part in request.stream():
+                if len(chunks) + len(part) > MAX_BODY_BYTES:
+                    raise HTTPException(status_code=413, detail="Model request too large")
+                chunks.extend(part)
+        except ClientDisconnect as exc:
+            raise HTTPException(499, 'Model client disconnected') from exc
         return chunks
     chunks = await guarded_wait(read_body(), check=verify, seconds=MAX_BODY_SECONDS,
         status=408, detail='Model request timed out', interval=RECHECK_SECONDS)
@@ -154,7 +166,9 @@ async def chat_completions(request: Request, credential: dict = Depends(current_
             # accept a completed response with headers.
             lease.upstream = opened
             return opened
-        response = await guarded_wait(open_response(), check=verify, seconds=MAX_HEADER_SECONDS,
+        async def verify_headers():
+            await verify_connected(request, session_factory)
+        response = await guarded_wait(open_response(), check=verify_headers, seconds=MAX_HEADER_SECONDS,
             status=504, detail='Model provider timed out', interval=RECHECK_SECONDS, on_abort=lease.close)
         if response.status_code >= 300:
             raise HTTPException(status_code=502, detail="Model provider rejected request")

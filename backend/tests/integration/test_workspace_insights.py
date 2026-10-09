@@ -1760,3 +1760,72 @@ async def test_model_admission_wait_current_permission_and_timeout(postgres,monk
     assert len(charges)==(stage=='headers') and len(clients)==(stage=='headers')
     assert all(client.is_closed for client in clients)
     assert all(response.is_closed for response in responses)
+
+
+@pytest.mark.parametrize('stage',['body','headers','buffered'])
+async def test_model_native_client_disconnect_releases_wait(postgres,monkeypatch,stage):
+    import threading
+    import httpx
+    from fastapi import FastAPI
+    from app.features.runtime_llm import router,tokens
+    from app.infra.extensions import get_session_factory
+    from app.models.opencode_runtime import OpenCodeRuntime
+    from app.infra.llm.config import get_chat_model_config
+    from tests.integration.test_expert_gateway import serve
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+    factory=sessionmaker(bind=postgres)
+    with factory() as db:
+        runtime=OpenCodeRuntime(workspace_id=1,user_id=1,status='running')
+        db.add(runtime);db.commit();raw=tokens.issue_token(db,runtime)
+    model=get_chat_model_config()['model']
+    received,provider_ready,provider_closed,finished=(threading.Event() for _ in range(4))
+    clients,charges,errors=[],[],[]
+    async def provider(scope,receive,send):
+        try:
+            while True:
+                message=await receive()
+                if not message.get('more_body'):break
+            if stage=='buffered':
+                await send({'type':'http.response.start','status':200,'headers':[(b'content-type',b'application/json')]})
+                await send({'type':'http.response.body','body':b'{"partial":','more_body':True})
+            provider_ready.set()
+            while (await receive())['type']!='http.disconnect':pass
+        finally:provider_closed.set()
+    app=FastAPI();app.include_router(router.router)
+    app.dependency_overrides[get_session_factory]=lambda:factory
+    async def observed(scope,receive,send):
+        async def read():
+            message=await receive()
+            if message['type']=='http.request':received.set()
+            return message
+        try:await app(scope,read,send)
+        except BaseException as exc:
+            errors.append(type(exc).__name__);raise
+        finally:finished.set()
+    def upstream():
+        client=httpx.AsyncClient(timeout=10,trust_env=False);clients.append(client);return client
+    monkeypatch.setattr(router,'upstream_client',upstream)
+    monkeypatch.setattr(router.quota,'reserve',lambda *args:charges.append(True))
+    # A failure must also leave these disposable servers able to shut down.
+    monkeypatch.setattr(router,'MAX_HEADER_SECONDS',5)
+    monkeypatch.setattr(router,'MAX_STREAM_SECONDS',5)
+    body=json.dumps({'model':model,'messages':[{'role':'user','content':'question'}],'stream':False}).encode()
+    with serve(provider) as provider_port,serve(observed) as gateway_port:
+        monkeypatch.setattr(router,'get_chat_model_config',lambda:{'api':f'http://127.0.0.1:{provider_port}/v1','key':'synthetic-server-key','model':model})
+        reader,writer=await asyncio.open_connection('127.0.0.1',gateway_port)
+        try:
+            headers=f'POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {raw}\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n'.encode()
+            writer.write(headers+(body[:5] if stage=='body' else body));await writer.drain()
+            signal=received if stage=='body' else provider_ready
+            assert await asyncio.to_thread(signal.wait,3)
+        finally:
+            writer.close();await writer.wait_closed()
+        assert await asyncio.to_thread(finished.wait,2.5),'gateway kept processing disconnected client'
+        if stage!='body':assert await asyncio.to_thread(provider_closed.wait,2.5)
+    assert not errors
+    assert len(charges)==(stage!='body') and len(clients)==(stage!='body')
+    assert all(client.is_closed for client in clients)
