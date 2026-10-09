@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
 
 from sqlalchemy.orm import Session
+from loguru import logger
 
 from app.exceptions import (
     BusinessRuleError,
@@ -536,6 +537,18 @@ async def _stream_persisted(worker, persistence, history):
         run_registry.unregister(run_id)
 
 
+def _cleanup_stream_session(session: Session, operation: str) -> None:
+    """Run cleanup on the owning worker without replacing the stream outcome."""
+    try:
+        getattr(session, operation)()
+    except Exception as exc:
+        logger.error("Assistant stream session {} failed (error_type={})", operation, type(exc).__name__)
+        try:
+            session.invalidate()
+        except Exception as invalidation_exc:
+            logger.error("Assistant stream session invalidation failed (error_type={})", type(invalidation_exc).__name__)
+
+
 async def stream_prepared_run(session, workspace, user_id, conversation, run, history):
     """Compatibility seam for callers that own an existing prepared Session.
 
@@ -550,7 +563,7 @@ async def stream_prepared_run(session, workspace, user_id, conversation, run, hi
                 async for event in events:
                     yield event
         finally:
-            await worker.call(session.rollback)
+            await worker.call(_cleanup_stream_session, session, "rollback")
 
 
 async def stream_run(session_factory, workspace_id, user_id, conversation_id, run_id, history):
@@ -574,7 +587,7 @@ async def stream_run(session_factory, workspace_id, user_id, conversation_id, ru
                     yield event
         finally:
             for session in owned_sessions:
-                await worker.call(session.close)
+                await worker.call(_cleanup_stream_session, session, "close")
 
 
 def request_cancel(

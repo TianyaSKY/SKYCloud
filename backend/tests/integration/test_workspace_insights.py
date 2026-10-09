@@ -1071,3 +1071,73 @@ def test_accounting_faults_preserve_business_and_recover_actual_postgres(postgre
     with postgres.connect() as db:
         assert db.scalar(text('SELECT total_tokens FROM users WHERE id=1')) == initial + 5
         assert db.scalar(text('SELECT sum(total_tokens) FROM token_usage_logs')) == initial + 5
+
+
+@pytest.mark.parametrize('outcome', ['done','engine-error','creation-error','cancel'])
+async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, monkeypatch, outcome):
+    import threading
+    from sqlalchemy.orm import Session
+    from app.features.assistant import service
+    from app.features.assistant.event_protocol import AssistantEvent
+    from app.models.workspace import Workspace
+    from app.exceptions import ResourceNotFoundError
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+    with sessionmaker(bind=postgres)() as owned:
+        workspace = owned.get(Workspace, 1)
+        conversation = service.create_conversation(owned, workspace, 1, 'fast', 'original')
+        cid = conversation.id
+        _, run, history = service.prepare_run(owned, workspace, 1, cid, 'query')
+        rid, mid = run.id, run.assistant_message_id
+    loop_thread = threading.get_ident()
+    calls, logged = [], []
+    class FaultSession(Session):
+        def __init__(self, *args, **kwargs):
+            self.owner = threading.get_ident()
+            assert self.owner != loop_thread
+            super().__init__(*args, **kwargs)
+        def close(self):
+            assert threading.get_ident() == self.owner
+            calls.append('close')
+            raise RuntimeError('private-connection-url')
+        def invalidate(self):
+            assert threading.get_ident() == self.owner
+            calls.append('invalidate')
+            return super().invalidate()
+    entered = asyncio.Event()
+    class Engine:
+        async def stream(self, **kwargs):
+            yield AssistantEvent('token', {'content':'Answer'})
+            if outcome == 'engine-error': raise RuntimeError('private-provider-url')
+            if outcome == 'cancel':
+                entered.set()
+                await asyncio.Event().wait()
+    monkeypatch.setattr(service, 'FastEngine', Engine)
+    monkeypatch.setattr(service.logger, 'error', lambda message,*args: logged.append(message.format(*args)))
+    factory = sessionmaker(bind=postgres, class_=FaultSession)
+    async def collect():
+        return [event async for event in service.stream_run(factory, 1, 1,
+                999 if outcome == 'creation-error' else cid, rid, history)]
+    if outcome == 'creation-error':
+        with pytest.raises(ResourceNotFoundError): await collect()
+    elif outcome == 'cancel':
+        task = asyncio.create_task(collect())
+        await asyncio.wait_for(entered.wait(), 3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError): await task
+    else:
+        events = await collect()
+        assert events[-1].type == ('done' if outcome == 'done' else 'error')
+        assert 'private-' not in str(events)
+    assert calls == ['close','invalidate']
+    assert logged and 'private-' not in str(logged)
+    expected = {'done':'completed','engine-error':'failed','cancel':'cancelled','creation-error':'running'}[outcome]
+    with postgres.connect() as db:
+        assert db.scalar(text('SELECT status FROM assistant_runs WHERE id=:id'), {'id':rid}) == expected
+        row = db.execute(text('SELECT status,content FROM assistant_messages WHERE id=:id'), {'id':mid}).one()
+        assert row.status == ('streaming' if outcome == 'creation-error' else expected)
+        if outcome in {'done','engine-error'}: assert row.content == 'Answer'
+    assert service.run_registry.get(rid) is None
