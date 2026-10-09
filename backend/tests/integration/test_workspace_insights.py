@@ -1141,3 +1141,46 @@ async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, mo
         assert row.status == ('streaming' if outcome == 'creation-error' else expected)
         if outcome in {'done','engine-error'}: assert row.content == 'Answer'
     assert service.run_registry.get(rid) is None
+
+
+@pytest.mark.parametrize('quiet', [False,True])
+async def test_legacy_chat_http_stops_after_committed_member_removal(postgres, monkeypatch, quiet):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.api.dependencies import get_current_user,get_current_workspace
+    from app.features.chat import router
+    from app.infra.extensions import get_session_factory
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'viewer')"))
+    app=FastAPI();app.include_router(router.router)
+    app.dependency_overrides[get_current_user]=lambda:SimpleNamespace(id=1)
+    app.dependency_overrides[get_current_workspace]=lambda:SimpleNamespace(id=1)
+    app.dependency_overrides[get_session_factory]=lambda:sessionmaker(bind=postgres)
+    entered,closed=asyncio.Event(),asyncio.Event()
+    async def model(*args,**kwargs):
+        try:
+            yield 'data: {"type":"token","content":"allowed"}\n\n'
+            entered.set()
+            if quiet:await asyncio.Event().wait()
+            else:
+                with postgres.begin() as independent:
+                    independent.execute(text('DELETE FROM workspace_members WHERE user_id=1'))
+                yield 'data: {"type":"token","content":"private-late-data"}\n\n'
+        finally:closed.set()
+    monkeypatch.setattr(router,'generate_chat_events',model)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
+        pending=asyncio.create_task(client.post('/chat',json={'query':'question'}))
+        if quiet:
+            await asyncio.wait_for(entered.wait(),3)
+            with postgres.begin() as independent:
+                independent.execute(text('DELETE FROM workspace_members WHERE user_id=1'))
+        response=await asyncio.wait_for(pending,5)
+    assert response.status_code==200
+    assert 'allowed' in response.text and 'private-late-data' not in response.text
+    payloads=[json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+    assert any('权限已撤销' in payload.get('content','') for payload in payloads)
+    assert closed.is_set()

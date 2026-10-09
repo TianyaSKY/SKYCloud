@@ -1,15 +1,15 @@
 """Worker-owned, currently authorized pgvector chunk retrieval."""
+from contextlib import contextmanager
 from loguru import logger
 from sqlalchemy import text
 from app.exceptions import PermissionDeniedError
-from app.features.workspace.permissions import assert_member_locked
+from app.features.workspace.permissions import assert_member_locked, assert_member
 
 
 def vector_rows(session_factory, vector, workspace_id: int, user_id: int, limit: int):
     if type(user_id) is not int or user_id <= 0:
         raise PermissionDeniedError("Authenticated retrieval identity is required")
-    session = session_factory()
-    try:
+    with _owned_session(session_factory) as session:
         # Hold lifecycle identity/membership locks only during SQL, never model IO.
         assert_member_locked(session, workspace_id, user_id)
         return session.execute(text("""
@@ -20,6 +20,13 @@ def vector_rows(session_factory, vector, workspace_id: int, user_id: int, limit:
               AND c.vector_info IS NOT NULL
             ORDER BY c.vector_info <=> :vector LIMIT :limit
         """), {"vector":str(vector), "workspace_id":workspace_id, "limit":limit}).fetchall()
+
+
+@contextmanager
+def _owned_session(session_factory):
+    session = session_factory()
+    try:
+        yield session
     finally:
         try:
             session.close()
@@ -29,3 +36,10 @@ def vector_rows(session_factory, vector, workspace_id: int, user_id: int, limit:
                 session.invalidate()
             except Exception as invalidation_exc:
                 logger.error("Chat retrieval session invalidation failed (error_type={})", type(invalidation_exc).__name__)
+
+
+def require_membership(session_factory, workspace_id: int, user_id: int):
+    if type(user_id) is not int or user_id <= 0:
+        raise PermissionDeniedError("Authenticated retrieval identity is required")
+    with _owned_session(session_factory) as session:
+        assert_member(session, workspace_id, user_id)

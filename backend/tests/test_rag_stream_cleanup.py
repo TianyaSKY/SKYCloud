@@ -51,6 +51,9 @@ async def test_fast_engine_closes_legacy_stream_before_returning(cancel_waiting)
 
 
 async def test_legacy_http_stream_close_reaches_rag_generator(monkeypatch):
+    from app.features.chat import stream_authorization
+    # This test isolates nested generator cleanup; authorization has separate SQL cases.
+    monkeypatch.setattr(stream_authorization, "require_membership", lambda *args: None)
     closed = asyncio.Event()
 
     async def source(*args):
@@ -64,7 +67,7 @@ async def test_legacy_http_stream_close_reaches_rag_generator(monkeypatch):
     monkeypatch.setattr(chat_router, "generate_chat_events", lambda *args: inner)
     response = await chat_router.chat(
         SimpleNamespace(query="hello", history=[]),
-        SimpleNamespace(id=2), SimpleNamespace(id=3),
+        SimpleNamespace(id=2), SimpleNamespace(id=3), session_factory=lambda: None,
     )
     try:
         assert 'answer' in await anext(response.body_iterator)
