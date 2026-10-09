@@ -3,6 +3,7 @@
 RUN_FULL_BROWSER=1 SKYCLOUD_TEST_RUNTIME_IMAGE=<builder output> SKYCLOUD_TEST_MINIO_IMAGE=<builder output> pytest tests/integration/test_full_browser.py
 Read the synthetic fixture URL from /private/tmp/skycloud-full-browser.json;
 record verified in its completion file only after browser checks succeed.
+SKYCLOUD_BROWSER_STARTUP_ONLY=1 validates fixture startup without claiming browser checks.
 """
 import json
 import os
@@ -28,6 +29,7 @@ from app.features.auth import refresh_sessions, user_service
 from app.features.workspace import docker_service, ui_gateway, ui_tickets
 from app.models.workspace import Workspace
 from app.models.opencode_runtime import OpenCodeRuntime
+from app.models.runtime_operation import RuntimeOperation
 
 pytestmark = pytest.mark.skipif(os.getenv('RUN_FULL_BROWSER') != '1', reason='Opt-in manual full browser verification')
 
@@ -43,6 +45,9 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
     from app.infra import cache
     root = Path(__file__).resolve().parents[3]
     assert (root / 'frontend/dist/index.html').is_file(), 'Build the production frontend first'
+    nginx_image=next(line.split()[1] for line in (root/'frontend/Dockerfile').read_text().splitlines()
+                     if line.startswith('FROM nginx:'))
+    assert '@sha256:' in nginx_image, 'Browser fixture must use pinned production nginx'
     upgrade(postgres); check_schema(postgres)
     factory = sessionmaker(bind=postgres)
     from app.infra import storage
@@ -69,8 +74,21 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
         name = f'skycloud-opencode-w{ws_id}-u{user_id}'
         assert docker('inspect', name, check=False).returncode != 0
         infrastructure['cleanup'].append(name)
-        container = docker_service._create(workspace, user_id, runtime.id)
-        runtime.container_id = container.id; runtime.status = 'running'; db.commit()
+        runtime_id=runtime.id
+        try:
+            docker_service.start(db,workspace,user_id)
+        finally:
+            with factory() as cleanup_db:
+                for generation,candidate in cleanup_db.query(RuntimeOperation.generation,
+                        RuntimeOperation.candidate_container_id).filter_by(workspace_id=ws_id,user_id=user_id).all():
+                    for identity in (f'skycloud-opencode-w{ws_id}-u{user_id}-g{generation}',candidate):
+                        if identity and identity not in infrastructure['cleanup']:
+                            infrastructure['cleanup'].append(identity)
+        db.expire_all()
+        runtime=db.get(OpenCodeRuntime,runtime_id)
+        operation=db.query(RuntimeOperation).filter_by(runtime_id=runtime_id).one()
+        assert runtime.status=='running' and runtime.config_version>0
+        assert operation.state=='complete' and operation.candidate_container_id==runtime.container_id
     app = create_fastapi_app()
     def database():
         with factory() as db:
@@ -99,7 +117,7 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
         docker('run', '-d', '--name', frontend, '--network', infrastructure['infra'], '-p', f'127.0.0.1:{parent_port}:80',
                '-p', f'127.0.0.1:{ui_port}:8081', '-e', f'RUNTIME_UI_CSP_SOURCE=http://*.skycloud.localhost:{ui_port}',
                '-v', str(config) + ':/etc/nginx/templates/default.conf.template:ro',
-               '-v', str(root / 'frontend/dist') + ':/usr/share/nginx/html:ro', 'nginx:stable-alpine')
+               '-v', str(root / 'frontend/dist') + ':/usr/share/nginx/html:ro', nginx_image)
         deadline = time.monotonic() + 15
         ready = None
         while time.monotonic() < deadline:
@@ -117,6 +135,8 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
         document = httpx.get(f'http://127.0.0.1:{parent_port}/', timeout=3, trust_env=False)
         assert "script-src 'self'" in document.headers['content-security-policy']
         assert 'unsafe-eval' not in document.headers['content-security-policy']
+        if os.getenv('SKYCLOUD_BROWSER_STARTUP_ONLY')=='1':
+            return
         metadata.write_text(json.dumps({'url': parent, 'username': username, 'password': password,
             'workspace_id': ws_id, 'completion_file': str(completion)}))
         deadline = time.monotonic() + 1800
