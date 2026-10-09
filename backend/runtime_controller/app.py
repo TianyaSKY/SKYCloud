@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
+from runtime_controller.http_wait import guarded_wait
 from runtime_controller.http_decode import ACCEPT_ENCODING, content_encoding, decoded_bytes
 from runtime_controller.http_stream import UpstreamLease, UpstreamResponse, deadline_reader
 from runtime_controller.engine import Engine, MissingRuntime, PolicyViolation, MissingGenerationCandidate
@@ -25,6 +26,8 @@ from urllib.parse import urlencode
 
 MAX_BODY = 256 * 1024
 MAX_RESPONSE = 64 * 1024 * 1024
+MAX_HEADER_SECONDS = 90
+MAX_HEALTH_HEADER_SECONDS = 2
 MAX_RESPONSE_SECONDS = 120
 MAX_EVENT_SECONDS = 3600
 RELAY_ROOTS = {"global", "event", "session", "permission", "question", "mcp", "config", "instance", "agent", "project", "path", "vcs", "file", "find", "experimental", "command", "log", "provider", "lsp", "formatter", "doc"}
@@ -241,8 +244,17 @@ def create_app(settings=None, engine=None):
                 headers["x-opencode-ticket"] = "1"
             upstream = client.build_request(request.method, target + "/" + path,
                                             params=list(request.query_params.multi_items()), content=await request.body(), headers=headers)
-            response = await client.send(upstream, stream=True)
-            lease.upstream = response
+            async def open_response():
+                opened = await client.send(upstream, stream=True)
+                lease.upstream = opened
+                return opened
+            async def check():
+                # Body is already consumed by admission middleware and Request.
+                if await request.is_disconnected():
+                    raise HTTPException(499, "Runtime client disconnected")
+            response = await guarded_wait(open_response(), check=check,
+                seconds=MAX_HEALTH_HEADER_SECONDS if path == "global/health" else MAX_HEADER_SECONDS,
+                status=504, detail="Runtime upstream timed out", on_abort=lease.close)
             content_encoding(response)
         except httpx.HTTPError as exc:
             logging.warning("Runtime relay transport failed: %s", type(exc).__name__)

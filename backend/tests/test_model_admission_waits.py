@@ -4,6 +4,14 @@ from fastapi import HTTPException
 from app.infra.http_wait import guarded_wait
 
 
+@pytest.fixture(autouse=True, params=["backend", "controller"])
+def wait_surface(request, monkeypatch):
+    if request.param == "controller":
+        import sys
+        from runtime_controller import http_wait
+        monkeypatch.setattr(sys.modules[__name__], "guarded_wait", http_wait.guarded_wait)
+
+
 @pytest.mark.parametrize('cause',['revoke','timeout','cancel','late-response','abort-fault'])
 async def test_wait_drains_operation_and_cleans_completed_late_response(cause):
     entered,release=asyncio.Event(),asyncio.Event()
@@ -51,7 +59,11 @@ async def test_successful_wait_cancelled_during_teardown_closes_before_cancellat
     import anyio
     from app.infra import http_wait
     calls,logs,scopes=[],[],[]
-    monkeypatch.setattr(http_wait.logger,'error',lambda message,*args:logs.append(message.format(*args)))
+    if guarded_wait.__module__.startswith('runtime_controller'):
+        from runtime_controller import http_wait as standalone
+        monkeypatch.setattr(standalone.logging,'error',lambda message,*args:logs.append(message % args))
+    else:
+        monkeypatch.setattr(http_wait.logger,'error',lambda message,*args:logs.append(message.format(*args)))
     async def operation():calls.append('operation');return 'opened'
     async def check():
         if mode=='anyio':scopes[0].cancel()
@@ -93,3 +105,34 @@ async def test_teardown_cancellation_preserves_existing_wait_failure(phase):
     with pytest.raises(type(original)) as error:
         await guarded_wait(operation(),check=check,seconds=1,status=504,detail='timeout',on_abort=abort)
     assert error.value is original and calls==['abort']
+
+
+@pytest.mark.parametrize('outcome',['timeout','cancel'])
+async def test_admission_closes_response_published_during_cancel_drain(outcome):
+    from app.infra.http_stream import UpstreamLease
+    from fastapi import HTTPException
+    entered=asyncio.Event()
+    calls=[]
+    class Resource:
+        def __init__(self,name):self.name=name;self.closed=False
+        async def aclose(self):self.closed=True;calls.append(self.name)
+    client,late=Resource('client'),Resource('response')
+    lease=UpstreamLease(client)
+    async def operation():
+        entered.set()
+        try:await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # A provider can complete despite cancellation. Admission owns
+            # that late response too, before transferring anything downstream.
+            await asyncio.sleep(.01)
+            lease.upstream=late
+            return late
+    async def check():pass
+    pending=asyncio.create_task(guarded_wait(operation(),check=check,
+        seconds=.02 if outcome=='timeout' else 60,status=504,detail='timeout',on_abort=lease.close))
+    await asyncio.wait_for(entered.wait(),1)
+    if outcome=='cancel':pending.cancel()
+    with pytest.raises(HTTPException if outcome=='timeout' else asyncio.CancelledError):
+        await asyncio.wait_for(pending,1)
+    assert late.closed and client.closed
+    assert calls==['response','client']
