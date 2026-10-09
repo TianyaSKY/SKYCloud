@@ -118,6 +118,7 @@ jobs:
           RUN_TIME_BOUNDARY_TESTS: '1'
           RUN_UTC_MIGRATION_TESTS: '1'
           RUN_WORKSPACE_INSIGHTS_TESTS: '1'
+          RUN_VECTOR_TESTS: '1'
           RUN_OBJECT_DELETION_TESTS: '1'
           RUN_CONTAINER_DELETION_TESTS: '1'
           RUN_WORKSPACE_LIST_TESTS: '1'
@@ -139,6 +140,7 @@ jobs:
           tests/integration/test_time_boundaries.py
           tests/integration/test_utc_migration.py
           tests/integration/test_workspace_insights.py
+          tests/integration/test_vector_retrieval.py
           tests/integration/test_file_object_deletion.py
           tests/integration/test_runtime_container_deletion.py
           tests/integration/test_workspace_runtime_list.py
