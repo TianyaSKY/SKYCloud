@@ -3,7 +3,7 @@
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-EXPECTED_REVISION = "0016_generation_retirement"
+EXPECTED_REVISION = "0017_assistant_abort"
 
 
 def check_schema(database_engine):

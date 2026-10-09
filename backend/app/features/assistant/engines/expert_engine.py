@@ -186,6 +186,14 @@ class ExpertEngine:
             run.opencode_session_id = session_id
             session.commit()
 
+    def _save_runtime_lease(self, workspace_id: int, user_id: int, token: str, runtime_id: int, container_id: str):
+        with self.runtime_session_factory() as session:
+            run = self._owned_run(session, workspace_id, user_id)
+            run.runtime_lease_token = token
+            run.runtime_lease_runtime_id = runtime_id
+            run.runtime_lease_container_id = container_id
+            session.commit()
+
     def _persist_permission(self, workspace_id: int, user_id: int, payload: dict):
         with self.runtime_session_factory() as session:
             self._owned_run(session, workspace_id, user_id)
@@ -292,7 +300,8 @@ class ExpertEngine:
             yield status_event
 
         assert connection is not None
-        async with _runtime_lease(connection.runtime_id, on_lost=controller.request_cancel):
+        async with _runtime_lease(connection.runtime_id, on_lost=controller.request_cancel) as lease_token:
+            await run_in_threadpool(self._save_runtime_lease, workspace_id, user_id, lease_token, connection.runtime_id, connection.container_id)
             base_url = connection.base_url
             password = server_password(connection.runtime_id, user_id, workspace_id)
             agent = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")

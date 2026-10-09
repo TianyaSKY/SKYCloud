@@ -21,6 +21,7 @@ from app.exceptions import (
     ResourceNotFoundError,
 )
 from app.features.assistant import repository
+from app.features.assistant import abort_repository
 from app.features.assistant.engines.fast_engine import FastEngine
 from app.features.assistant.event_protocol import AssistantEvent, heartbeat_event
 from app.features.workspace.permissions import assert_can_write, assert_member, assert_can_write_locked, assert_member_locked
@@ -147,14 +148,17 @@ def _recover_abandoned_run(session: Session, run: AssistantRun, *, commit: bool 
         grace_seconds = max(int(os.getenv("ASSISTANT_ABANDONED_RUN_GRACE_SECONDS", "45")), 30)
     except ValueError:
         grace_seconds = 45
+    from sqlalchemy import func, select
+    now = session.scalar(select(func.clock_timestamp())) if session.get_bind().dialect.name == 'postgresql' else utc_now()
     heartbeat = run.metadata_dict.get("worker_heartbeat_unix")
     if isinstance(heartbeat, (float, int)) and not isinstance(heartbeat, bool) and math.isfinite(heartbeat):
-        age = time.time() - heartbeat
+        age = now.timestamp() - heartbeat
         if -5 <= age < grace_seconds:
             return False
-    if (utc_now() - started_at).total_seconds() < grace_seconds:
+    if (now - started_at).total_seconds() < grace_seconds:
         return False
 
+    abort_repository.stage(session, run)
     assistant_message = session.get(AssistantMessage, run.assistant_message_id)
     if assistant_message is not None and assistant_message.status in {"pending", "streaming"}:
         assistant_message.status = "failed"
@@ -379,6 +383,9 @@ def prepare_run(
         active = None
     if active:
         raise ConflictError("This assistant conversation already has a running task")
+
+    if conversation.mode == 'expert' and abort_repository.pending_for_member(session, int(workspace.id), int(user_id)):
+        raise ConflictError('Expert runtime cleanup is still pending')
 
     # The history excludes the new user message and pending assistant shell.
     history = [

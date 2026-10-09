@@ -117,7 +117,7 @@ async def runtime_lease(runtime_id: int, *, on_lost=None):
         if loop.time() >= deadline:
             raise ServiceOperationError('Expert runtime lock confirmation expired')
         keeper = asyncio.create_task(keep_alive(deadline))
-        yield
+        yield token
     except asyncio.CancelledError:
         failed = True
         if lost:

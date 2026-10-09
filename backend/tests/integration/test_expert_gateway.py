@@ -50,7 +50,7 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel'),('once',False,'command-crash')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel','command-crash'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
@@ -122,8 +122,10 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
                  'usage': {'prompt_tokens': 20, 'completion_tokens': 5, 'total_tokens': 25}}
         tool_request = permission_response is not None and any(tool.get('function', {}).get('name') == 'bash' for tool in body.get('tools', [])) and not any(message.get('role') == 'tool' for message in body['messages'])
         command = "printf 'AUTHORIZED_ONLY'"
-        if missing_candidate in ('command-lease-loss','command-cancel'):
+        if missing_candidate in ('command-lease-loss','command-cancel','command-crash'):
             command += """; sleep 4 & child=$!; printf '%s %s' "$$" "$child" > /tmp/skycloud-command-pids; wait "$child"; printf LATE > /tmp/skycloud-command-late"""
+        if missing_candidate == 'command-crash':
+            command = command.replace('sleep 4 &', 'sleep 60 &')
         call = {'id': 'call_skycloud_test', 'type': 'function', 'function': {'name': 'bash', 'arguments': json.dumps({'command': command, 'description': 'Print synthetic test marker'})}}
         if tool_request:
             reply['choices'][0]['message'] = {'role': 'assistant', 'content': None, 'tool_calls': [call]}
@@ -265,6 +267,90 @@ with Session(engine) as session:
                     conversation = repository.create_conversation(db, ws_id, user_id, 'expert', 'gateway task'); db.commit()
                     if permission_response != 'auth-version':
                         conversation, run, history = service.prepare_run(db, workspace, user_id, conversation.id, '只输出 E2E_GATEWAY_OK，不调用任何工具。')
+                    if missing_candidate == 'command-crash':
+                        # Kill an actual streaming API worker after a native
+                        # permission grant and actual shell/child start.
+                        stream_code = """
+import asyncio,json,sys
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.features.assistant.service import stream_run
+settings=json.load(sys.stdin)
+engine=create_engine(settings['database'])
+async def run():
+    async for event in stream_run(sessionmaker(bind=engine),settings['workspace'],settings['user'],settings['conversation'],settings['run'],[]):
+        print(event.type,flush=True)
+asyncio.run(run())
+"""
+                        with (tmp_path / 'stream-worker.log').open('w') as stream_output:
+                            boot_process = subprocess.Popen([sys.executable,'-c',stream_code],env=environment,
+                                stdin=subprocess.PIPE,stdout=stream_output,stderr=subprocess.STDOUT,text=True)
+                            boot_process.stdin.write(json.dumps({'database':postgres.url.render_as_string(hide_password=False),
+                                'workspace':ws_id,'user':user_id,'conversation':conversation.id,'run':run.id}))
+                            boot_process.stdin.close()
+                            deadline = time.monotonic() + 40
+                            from app.models.assistant import AssistantRun
+                            while True:
+                                assert boot_process.poll() is None, 'native streaming worker exited before permission request'
+                                with factory() as responder:
+                                    restored = responder.get(AssistantRun, run.id)
+                                    permission = restored.pending_permission_id
+                                    if permission:
+                                        service.respond_permission(responder,responder.get(Workspace,ws_id),user_id,run.id,permission,'once')
+                                        break
+                                assert time.monotonic() < deadline, 'native worker never requested tool permission'
+                                time.sleep(.05)
+                            with factory() as reader:
+                                runtime = docker_service.runtime_service.get_runtime(reader,ws_id,user_id)
+                                container_id = runtime.container_id
+                            while True:
+                                assert boot_process.poll() is None, 'native worker exited before command started'
+                                probe = docker('exec',container_id,'cat','/tmp/skycloud-command-pids',check=False)
+                                if probe.returncode == 0:
+                                    pids = probe.stdout.split()
+                                    assert len(pids) == 2 and all(pid.isdecimal() for pid in pids)
+                                    break
+                                assert time.monotonic() < deadline, 'native granted command never started'
+                                time.sleep(.05)
+                            boot_process.kill()
+                            assert boot_process.wait(5) < 0
+                        # Explicitly age durable SQL times to trigger the
+                        # production grace predicate without a 45-second wait.
+                        from datetime import timedelta
+                        from app.infra.datetime_utils import utc_now
+                        with factory() as recovery:
+                            abandoned = recovery.get(AssistantRun,run.id)
+                            assert abandoned.status == 'running'
+                            abandoned.started_at = utc_now() - timedelta(seconds=60)
+                            abandoned.metadata_dict = {**abandoned.metadata_dict,'worker_heartbeat_unix':time.time()-60}
+                            recovery.commit()
+                        from app.infra.assistant_abort import abort_pending_sessions, recover_abandoned_runs
+                        assert recover_abandoned_runs(session_factory=factory) == 1
+                        from app.exceptions import ConflictError
+                        from app.models.assistant_runtime_abort import AssistantRuntimeAbort
+                        with factory() as recovery:
+                            assert recovery.get(AssistantRun, run.id).status == 'failed'
+                            intent = recovery.get(AssistantRuntimeAbort, run.id)
+                            assert intent.lease_token and infrastructure['redis'].get(f'assistant:expert:runtime:{intent.runtime_id}') == intent.lease_token
+                            with pytest.raises(ConflictError, match='cleanup'):
+                                service.prepare_run(recovery, recovery.get(Workspace, ws_id), user_id, conversation.id, 'new task')
+                        def unavailable(target):
+                            raise ConnectionError('synthetic-control-unavailable')
+                        assert abort_pending_sessions(session_factory=factory, abort_function=unavailable) == 0
+                        with factory() as recovery:
+                            intent = recovery.get(AssistantRuntimeAbort, run.id)
+                            assert intent.completed_at is None and intent.attempts == 1
+                            intent.next_attempt_at = utc_now() - timedelta(seconds=1)
+                            recovery.commit()
+                        assert abort_pending_sessions(session_factory=factory) == 1
+                        assert abort_pending_sessions(session_factory=factory) == 0
+                        assert not infrastructure['redis'].exists(f'assistant:expert:runtime:{runtime.id}')
+                        for pid in pids:
+                            state = docker('exec',container_id,'cat',f'/proc/{pid}/stat',check=False)
+                            if state.returncode == 0:
+                                assert state.stdout.rsplit(')',1)[1].split()[0] == 'Z', 'abandoned native command still executing after SQL recovery'
+                        assert docker('exec',container_id,'test','-e','/tmp/skycloud-command-late',check=False).returncode == 1
+                        return
                     command_observers = []
                     command_state = {}
                     async def interrupt_started_command():
