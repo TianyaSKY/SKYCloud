@@ -1027,3 +1027,47 @@ async def test_runtime_model_owned_dependency_rejects_independent_revocation(pos
         denied = await client.get('/credential', headers=headers)
         assert denied.status_code == 401
         assert raw not in denied.text
+
+
+@pytest.mark.parametrize('phase', ['sql-reject','rollback-fault','commit-ack','close-fault'])
+def test_accounting_faults_preserve_business_and_recover_actual_postgres(postgres, monkeypatch, phase):
+    from sqlalchemy.orm import Session
+    from app.features.token_usage import service
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+    active, calls, logged = [True], [], []
+    private = 'private-accounting-query'
+    class FaultSession(Session):
+        def commit(self):
+            super().commit()
+            if active[0] and phase == 'commit-ack': raise RuntimeError(private)
+        def rollback(self):
+            calls.append('rollback')
+            if active[0] and phase == 'rollback-fault': raise RuntimeError(private)
+            return super().rollback()
+        def close(self):
+            calls.append('close')
+            if active[0] and phase == 'close-fault': raise RuntimeError(private)
+            return super().close()
+        def invalidate(self):
+            calls.append('invalidate')
+            return super().invalidate()
+    monkeypatch.setattr(service, 'SessionLocal', sessionmaker(bind=postgres, class_=FaultSession))
+    monkeypatch.setattr(service.logger, 'error', lambda message,*args: logged.append(message.format(*args)))
+    # SQL rejection is native varchar(50) enforcement after the aggregate UPDATE.
+    action = 'x'*51 if phase in {'sql-reject','rollback-fault'} else 'chat'
+    assert service.record_usage(1, action, prompt_tokens=2, completion_tokens=3, query_summary=private) is None
+    assert logged and private not in str(logged)
+    assert 'close' in calls
+    if phase in {'rollback-fault','close-fault'}: assert 'invalidate' in calls
+    initial = 0 if phase in {'sql-reject','rollback-fault'} else 5
+    with postgres.connect() as db:
+        assert db.scalar(text('SELECT total_tokens FROM users WHERE id=1')) == initial
+        assert db.scalar(text('SELECT count(*) FROM token_usage_logs')) == (0 if initial == 0 else 1)
+    # A later accounting call succeeds on the same real engine/pool without retries.
+    active[0] = False
+    assert service.record_usage(1, 'chat', prompt_tokens=2, completion_tokens=3) is None
+    with postgres.connect() as db:
+        assert db.scalar(text('SELECT total_tokens FROM users WHERE id=1')) == initial + 5
+        assert db.scalar(text('SELECT sum(total_tokens) FROM token_usage_logs')) == initial + 5

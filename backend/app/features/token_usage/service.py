@@ -34,11 +34,11 @@ def record_usage(
 
     使用独立 session，避免干扰调用方事务；失败只打日志。
     """
-    if total_tokens == 0:
-        total_tokens = prompt_tokens + completion_tokens
-
-    session = SessionLocal()
+    session = None
     try:
+        if total_tokens == 0:
+            total_tokens = prompt_tokens + completion_tokens
+        session = SessionLocal()
         log = TokenUsageLog(
             user_id=user_id,
             action=action,
@@ -73,10 +73,24 @@ def record_usage(
         )
         session.commit()
     except Exception as exc:
-        session.rollback()
         logger.error("Failed to record token usage for user {} (error_type={})", user_id, type(exc).__name__)
+        if session is not None:
+            _cleanup_usage_session(session, "rollback")
     finally:
-        session.close()
+        if session is not None:
+            _cleanup_usage_session(session, "close")
+
+
+def _cleanup_usage_session(session: Session, operation: str) -> None:
+    """Keep accounting cleanup best-effort and discard a damaged connection."""
+    try:
+        getattr(session, operation)()
+    except Exception as exc:
+        logger.error("Token usage session {} failed (error_type={})", operation, type(exc).__name__)
+        try:
+            session.invalidate()
+        except Exception as invalidation_exc:
+            logger.error("Token usage session invalidation failed (error_type={})", type(invalidation_exc).__name__)
 
 
 def get_user_token_stats(session: Session, user_id: int) -> dict:
