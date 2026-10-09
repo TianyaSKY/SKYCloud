@@ -1946,3 +1946,78 @@ async def test_ui_admission_current_permission_and_timeout(postgres,infrastructu
     assert raw not in response.text and 'private-late' not in response.text
     assert len(clients)==(stage=='headers') and all(client.is_closed for client in clients)
     assert all(response.is_closed for response in responses)
+
+
+@pytest.mark.parametrize('change,quiet',[('membership',False),('membership',True),('version',True),('family',True),('stop',True),('expiry',True)])
+async def test_ui_response_current_identity_after_forwarded_chunk(postgres,infrastructure,monkeypatch,change,quiet):
+    import time
+    import httpx
+    import jwt
+    from urllib.parse import urlsplit,parse_qs
+    from fastapi import FastAPI
+    from app.features.workspace import ui_gateway,ui_tickets
+    from app.features.auth import refresh_sessions
+    from app.features.auth.service import generate_token
+    from app.infra.extensions import get_session_factory,SECRET_KEY
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+        db.execute(text("INSERT INTO opencode_runtimes(id,workspace_id,user_id,status,container_id) VALUES (1,1,1,'running',:id)"),{'id':'a'*64})
+    factory=sessionmaker(bind=postgres)
+    for module in (ui_tickets,refresh_sessions):monkeypatch.setattr(module,'redis_client',infrastructure['redis'])
+    monkeypatch.setenv('APP_ORIGIN','http://app.skycloud.localhost')
+    monkeypatch.setenv('RUNTIME_UI_ORIGIN_TEMPLATE','http://r{runtime_id}.skycloud.localhost:8081')
+    parent=None
+    with factory() as db:
+        if change=='family':
+            _,access=refresh_sessions.create(db,jwt.decode(generate_token(1,0),SECRET_KEY,algorithms=['HS256']))
+            parent=jwt.decode(access['token'],SECRET_KEY,algorithms=['HS256'])['sid']
+        issued=ui_tickets.issue(db,1,1,parent_session=parent)
+        parsed=urlsplit(issued['launch_url'])
+        raw,_=ui_tickets.redeem(db,parse_qs(parsed.query)['ticket'][0],parsed.netloc)
+    if change=='expiry':
+        key=ui_tickets._key('session',raw)
+        payload=json.loads(infrastructure['redis'].get(key));payload['expires_at']=time.time()+3
+        infrastructure['redis'].set(key,json.dumps(payload),ex=60)
+    def revoke():
+        if change=='family':refresh_sessions.revoke_access('Bearer '+access['token'])
+        elif change!='expiry':
+            statements={'membership':"UPDATE workspace_members SET role='viewer' WHERE user_id=1",
+                        'version':'UPDATE users SET auth_version=auth_version+1 WHERE id=1',
+                        'stop':"UPDATE opencode_runtimes SET status='stopped' WHERE id=1"}
+            with postgres.begin() as db:db.execute(text(statements[change]))
+    entered,closed=asyncio.Event(),asyncio.Event()
+    class Stream(httpx.AsyncByteStream):
+        def __init__(self):self.iterator=self.events()
+        def __aiter__(self):return self.iterator
+        async def events(self):
+            try:
+                yield b'data: allowed\n\n'
+                if quiet:await asyncio.Event().wait()
+                else:revoke()
+                yield b'data: private-late\n\n'
+            finally:closed.set()
+        async def aclose(self):await self.iterator.aclose()
+    real_client=httpx.AsyncClient
+    clients=[]
+    def upstream(**kwargs):
+        client=real_client(transport=httpx.MockTransport(lambda request:httpx.Response(200,stream=Stream())),**kwargs)
+        clients.append(client);return client
+    monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',upstream)
+    app=FastAPI();app.include_router(ui_gateway.router)
+    app.dependency_overrides[get_session_factory]=lambda:factory
+    async def observed(scope,receive,send):
+        async def forwarded(message):
+            await send(message)
+            if message['type']=='http.response.body' and b'allowed' in message.get('body',b''):entered.set()
+        await app(scope,receive,forwarded)
+    async with real_client(transport=httpx.ASGITransport(observed),base_url=f'{parsed.scheme}://{parsed.netloc}') as client:
+        pending=asyncio.create_task(client.get('/runtime-ui/event',headers={'Cookie':ui_tickets.COOKIE+'='+raw}))
+        await asyncio.wait_for(entered.wait(),3)
+        if quiet:revoke()
+        response=await asyncio.wait_for(pending,5)
+    assert response.status_code==200 and 'allowed' in response.text
+    assert 'private-late' not in response.text and raw not in response.text
+    assert closed.is_set() and len(clients)==1 and clients[0].is_closed

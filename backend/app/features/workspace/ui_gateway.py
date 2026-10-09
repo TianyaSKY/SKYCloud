@@ -1,5 +1,6 @@
 """Dedicated UI ingress: only opaque runtime sessions, never web Bearer tokens."""
 import asyncio
+import sys
 import time
 import os
 import json
@@ -12,6 +13,7 @@ from fastapi.responses import RedirectResponse, HTMLResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from app.infra.http_wait import guarded_wait
+from app.infra.async_stream import close_reader, drain_cleanup
 
 from app.infra.extensions import get_session_factory, SessionLocal
 from app.features.workspace import ui_tickets
@@ -144,19 +146,19 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
         pending = None
         iterator = upstream.aiter_bytes().__aiter__()
         deadline = time.monotonic() + max(0, payload['expires_at'] - time.time())
-        check_at = time.monotonic() + RECHECK_SECONDS
         try:
             while time.monotonic() < deadline:
-                if time.monotonic() >= check_at:
-                    await run_in_threadpool(reauthenticate, _credential(request), _host(request), session_factory)
-                    check_at = time.monotonic() + RECHECK_SECONDS
                 if pending is None:
                     pending = asyncio.create_task(anext(iterator))
-                try:
-                    chunk = await asyncio.wait_for(asyncio.shield(pending),
-                        timeout=max(0.001, min(RECHECK_SECONDS, deadline - time.monotonic())))
-                except asyncio.TimeoutError:
+                ready, _ = await asyncio.wait({pending},
+                    timeout=max(0.001, min(HTTP_RECHECK_SECONDS, deadline - time.monotonic())))
+                # Recheck after the read, before any newly arrived bytes leave
+                # this gateway; quiet upstreams also get periodic checks.
+                await verify_headers()
+                if not ready:
                     continue
+                try:
+                    chunk = pending.result()
                 except StopAsyncIteration:
                     break
                 pending = None
@@ -167,10 +169,13 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
         except (httpx.HTTPError, HTTPException):
             return
         finally:
-            if pending is not None:
-                pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
-            await lease.close()
+            original = sys.exception()
+            async def release():
+                await close_reader(pending, iterator)
+                await lease.close()
+            cancelled = await drain_cleanup(release())
+            if cancelled and original is None:
+                raise asyncio.CancelledError()
     return UpstreamResponse(output(), lease=lease, status_code=upstream.status_code, headers={
         'Content-Type': upstream.headers.get('content-type', 'application/octet-stream'),
         'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
