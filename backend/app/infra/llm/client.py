@@ -4,6 +4,7 @@ LangChain 等无法替换底层调用的场景，用 record_llm_usage() 手动�
 """
 
 import asyncio
+from app.infra.owned_work import run_owned
 from typing import Any
 
 from langchain_openai import OpenAIEmbeddings
@@ -72,8 +73,8 @@ async def chat_completion(
     )
 
     if resp.usage:
-        await asyncio.to_thread(
-            _safe_record,
+        await run_owned(
+            _safe_record, cancel_queued=False,
             user_id=user_id,
             action=action,
             model_name=model,
@@ -107,8 +108,8 @@ async def embed_texts(
     vectors = [item.embedding[:1024] for item in sorted_data]
 
     if resp.usage and resp.usage.total_tokens:
-        await asyncio.to_thread(
-            _safe_record,
+        await run_owned(
+            _safe_record, cancel_queued=False,
             user_id=user_id,
             action="embedding",
             model_name=model,

@@ -2,7 +2,7 @@
 
 Upload, object publication and multipart lifecycle belong to the file service.
 """
-import asyncio
+from app.infra.owned_work import run_owned
 from typing import Any
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -35,7 +35,7 @@ async def search_files(
             if user_id is not None:
                 assert_member(session, workspace_id, user_id)
             return function(session, *args) if function is not None else None
-        return await asyncio.to_thread(work)
+        return await run_owned(work)
 
     if not query:
         return {"items": [], "total": 0, "page": page, "page_size": page_size}

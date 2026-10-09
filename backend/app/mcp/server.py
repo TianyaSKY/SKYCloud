@@ -9,7 +9,7 @@
 3. 工具参数与名称保持稳定，供 Claude Desktop / Cursor / OpenCode 长期配置
 """
 
-import asyncio
+from app.infra.owned_work import run_owned
 from app.mcp.unit_of_work import worker_session
 import json
 import os
@@ -69,7 +69,7 @@ async def _run_sync(fn, *args, **kwargs):
         with worker_session(SessionLocal) as session:
             return fn(session, *args, **kwargs)
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 def _error_json(msg: str) -> str:
@@ -134,7 +134,7 @@ async def get_current_user() -> str:
             except (DomainError, HTTPException) as exc:
                 return _service_error_json(exc)
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 @mcp.tool()
@@ -213,7 +213,7 @@ async def list_files(
             except (DomainError, HTTPException) as exc:
                 return json.loads(_service_error_json(exc))
 
-    result = await asyncio.to_thread(_work)
+    result = await run_owned(_work)
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
@@ -235,7 +235,7 @@ async def get_file_info(file_id: int) -> str:
             except (DomainError, HTTPException) as e:
                 return _service_error_json(e)
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 @mcp.tool()
@@ -277,7 +277,7 @@ async def create_folder(
             except (DomainError, HTTPException) as e:
                 return _service_error_json(e)
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 @mcp.tool()
@@ -317,7 +317,7 @@ async def move_file(
             except (DomainError, HTTPException) as e:
                 return _service_error_json(e)
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 @mcp.tool()
@@ -344,7 +344,7 @@ async def delete_file(file_id: int) -> str:
             except (DomainError, HTTPException) as e:
                 return _service_error_json(e)
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +440,7 @@ async def get_file_download_url(
             except (DomainError, HTTPException) as e:
                 return _service_error_json(e)
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 @mcp.tool()
@@ -519,7 +519,7 @@ async def read_file_content(
             except (DomainError, HTTPException) as e:
                 return _service_error_json(e)
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 @mcp.tool()
@@ -559,7 +559,7 @@ async def move_folder(
             except (DomainError, HTTPException) as e:
                 return _service_error_json(e)
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 @mcp.tool()
@@ -587,7 +587,7 @@ async def delete_folder(folder_id: int) -> str:
             except (DomainError, HTTPException) as e:
                 return _service_error_json(e)
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 @mcp.tool()
@@ -650,7 +650,7 @@ async def batch_delete(
                 ensure_ascii=False,
             )
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 @mcp.tool()
@@ -754,7 +754,7 @@ async def upload_file(
 
     context = _require_write_context()
     try:
-        adapter = await asyncio.to_thread(
+        adapter = await run_owned(
             _inline_upload_adapter, filename, content, content_encoding, mime_type
         )
     except (TypeError, UnicodeError, ValueError) as exc:
@@ -816,7 +816,7 @@ async def get_user_file(file_id: int) -> str:
             except (DomainError, HTTPException) as e:
                 return _service_error_json(e)
 
-    return await asyncio.to_thread(_work)
+    return await run_owned(_work)
 
 
 # ---------------------------------------------------------------------------

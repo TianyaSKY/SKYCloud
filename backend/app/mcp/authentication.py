@@ -1,5 +1,5 @@
 """Request authentication: resolve current SQL scope on a worker, then install/reset context."""
-import asyncio
+from app.infra.owned_work import run_owned
 from app.mcp.unit_of_work import worker_session
 import jwt
 from app.infra.extensions import SECRET_KEY, SessionLocal
@@ -108,7 +108,7 @@ class JWTAuthMiddleware:
                         # no verified workspace context could be resolved.
                         result = decode_token(session, token)
                         return None, int(result) if result and str(result).isdigit() else None
-                context, user_id = await asyncio.to_thread(authenticate)
+                context, user_id = await run_owned(authenticate)
 
         request_active_ctx = set_mcp_request_active(True)
         token_ctx = _current_user_id.set(user_id)

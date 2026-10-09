@@ -56,7 +56,8 @@ def indexed(postgres):
                   FileChunk(file_id=files[0].id, workspace_id=second.id, chunk_index=1,
                             content='INCONSISTENT_LOCAL_SECRET', vector_info=vector(1))]
         db.add_all(chunks); db.commit()
-        yield factory, first.id, second.id, [file.id for file in files]
+        identifiers = first.id, second.id, [file.id for file in files]
+    yield factory, *identifiers
 
 
 def test_file_vector_cosine_pages_and_scope(indexed):
@@ -270,3 +271,70 @@ async def test_semantic_search_provider_admission_and_actual_usage(indexed,postg
         logs=db.execute(text('SELECT user_id,total_tokens FROM token_usage_logs')).all()
         assert logs==([] if change=='before' else [(actor,12)])
         assert db.scalar(text('SELECT total_tokens FROM users WHERE id=:actor'),{'actor':actor})==(0 if change=='before' else 12)
+
+
+@pytest.mark.parametrize('kind',['search','status','mcp-write'])
+async def test_cancelled_owned_sql_drains_native_lock_before_return(indexed,postgres,monkeypatch,kind):
+    import asyncio
+    import threading
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+    from app.features.file import search_service,service
+    factory,first,_,_=indexed
+    with factory() as db:actor=db.get(Workspace,first).owner_id
+    pids=[];closed=threading.Event()
+    class OwnedSession(Session):
+        def __init__(self,*args,**kwargs):
+            super().__init__(*args,**kwargs)
+            pids.append(self.execute(text('SELECT pg_backend_pid()')).scalar_one())
+        def close(self):
+            try:super().close()
+            finally:closed.set()
+    owned=sessionmaker(bind=postgres,class_=OwnedSession)
+    table='folder' if kind=='mcp-write' else 'files'
+    gate=postgres.connect();transaction=gate.begin()
+    token=None
+    if kind=='mcp-write':
+        from app.mcp import server,audit
+        from app.mcp.context import McpRequestContext,set_mcp_context,reset_mcp_context
+        from app.models.folder import Folder
+        with factory() as db:
+            root=Folder(name='Root',workspace_id=first,parent_id=None)
+            db.add(root);db.commit();root_id=root.id
+        with postgres.begin() as db:
+            db.execute(text("UPDATE workspace_members SET role='editor' WHERE workspace_id=:workspace AND user_id=:actor"),
+                       {'workspace':first,'actor':actor})
+        monkeypatch.setattr(server,'SessionLocal',owned)
+        monkeypatch.setattr(audit,'SessionLocal',factory)
+        token=set_mcp_context(McpRequestContext(actor,first,'editor'))
+        operation=server.create_folder('accepted-before-cancel',parent_id=root_id)
+    elif kind=='search':
+        operation=search_service.search_files(None,first,'unique-native-held-query',session_factory=owned,user_id=actor)
+    else:operation=service.process_status(None,first,session_factory=owned,user_id=actor)
+    pending=None
+    try:
+        gate.execute(text("SET LOCAL lock_timeout='2s'"))
+        gate.execute(text('LOCK TABLE '+table+' IN ACCESS EXCLUSIVE MODE'))
+        pending=asyncio.create_task(operation)
+        deadline=asyncio.get_running_loop().time()+2
+        while True:
+            with postgres.connect() as observer:
+                waiting=bool(pids) and observer.scalar(text("SELECT wait_event_type='Lock' FROM pg_stat_activity WHERE pid=:pid"),{'pid':pids[0]})
+            if waiting:break
+            assert asyncio.get_running_loop().time()<deadline,'native SQL never reached the held table lock'
+            await asyncio.sleep(.01)
+        pending.cancel('native-caller-stop');await asyncio.sleep(.01)
+        pending.cancel('repeat-stop');await asyncio.sleep(.01)
+        assert not pending.done() and not closed.is_set()
+    finally:
+        transaction.rollback();gate.close()
+        if pending is not None:
+            with pytest.raises(asyncio.CancelledError):await asyncio.wait_for(pending,2)
+        else:operation.close()
+        if token is not None:reset_mcp_context(token)
+    assert closed.is_set()
+    if kind=='mcp-write':
+        with postgres.connect() as db:
+            assert db.scalar(text("SELECT count(*) FROM folder WHERE workspace_id=:workspace AND name='accepted-before-cancel'"),{'workspace':first})==1
+    # SQL work that had already started completes before cancellation returns;
+    # no assertion of database-side cancellation or rollback of accepted writes.

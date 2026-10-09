@@ -1,6 +1,7 @@
 """MCP call audit recording without retaining tokens or file contents."""
 
 import asyncio
+from app.infra.owned_work import run_owned
 import json
 import time
 from functools import wraps
@@ -91,6 +92,7 @@ def audited_tool(tool_name: str) -> Callable:
             arguments = summarize_call(func, args, kwargs)
             started = time.perf_counter()
             success = True
+            raised = False
             error_type = None
             try:
                 result = await func(*args, **kwargs)
@@ -100,20 +102,25 @@ def audited_tool(tool_name: str) -> Callable:
                     error_type = returned_error
                 return result
             except BaseException as exc:
+                raised = True
                 success = False
                 error_type = type(exc).__name__
                 raise
             finally:
                 duration_ms = int((time.perf_counter() - started) * 1000)
                 # Do not make a user-facing tool depend on audit persistence.
-                await asyncio.to_thread(
-                    record_mcp_call,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    success=success,
-                    error_type=error_type,
-                    duration_ms=duration_ms,
-                )
+                try:
+                    await run_owned(
+                        record_mcp_call, cancel_queued=False,
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        success=success,
+                        error_type=error_type,
+                        duration_ms=duration_ms,
+                    )
+                except asyncio.CancelledError:
+                    if not raised:
+                        raise
 
         return wrapped
 

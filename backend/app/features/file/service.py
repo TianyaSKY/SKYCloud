@@ -4,7 +4,7 @@
 存储后端已迁移至 MinIO 对象存储（兼容 S3 API）。
 """
 
-import asyncio
+from app.infra.owned_work import run_owned
 import hashlib
 import math
 import mimetypes
@@ -988,7 +988,7 @@ async def process_status(session: Session | None, workspace_id: int, *, session_
                     assert_member(owned_session, workspace_id, user_id)
                 return _process_status(owned_session, workspace_id)
         return _process_status(session, workspace_id)
-    return await asyncio.to_thread(work)
+    return await run_owned(work)
 
 
 def _process_status(session: Session, workspace_id: int) -> dict[str, int]:
