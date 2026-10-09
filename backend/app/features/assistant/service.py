@@ -339,6 +339,8 @@ def prepare_run(
     conversation_id: int,
     query: str,
     request_id: str | None = None,
+    *,
+    on_run_created: Callable[[tuple[int, int, int, int]], None] | None = None,
 ) -> tuple[AssistantConversation, AssistantRun, list[dict[str, str]]]:
     """Create the durable message/run records before opening the SSE stream."""
 
@@ -392,6 +394,10 @@ def prepare_run(
     )
     repository.update_run_status(run, "running")
     assistant_message.status = "streaming"
+    if on_run_created is not None:
+        # create_run has flushed its ID. Capture internal identity before commit
+        # so a lost acknowledgement can be compensated in a fresh transaction.
+        on_run_created((int(workspace.id), int(user_id), int(conversation.id), int(run.id)))
     session.commit()
     return conversation, run, history
 

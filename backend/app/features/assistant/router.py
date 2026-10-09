@@ -10,7 +10,9 @@ from starlette.concurrency import run_in_threadpool
 from app.api.dependencies import get_current_user, get_current_workspace
 from app.features.assistant import service
 from app.features.assistant.event_protocol import encode_sse
-from app.features.assistant.stream_response import PreparedStreamResponse
+from app.features.assistant.stream_response import (
+    PreparedStreamResponse, prepare_response_run, preparation_session,
+)
 from app.features.assistant.schemas import (
     AssistantConversationResponse, AssistantConversationListResponse,
     AssistantMessagesResponse, AssistantRunResponse,
@@ -182,8 +184,8 @@ async def stream_assistant_message(
     _require_v2()
     if not payload.query.strip():
         raise HTTPException(status_code=400, detail="Query is required")
-    def prepare_stream():
-        with session_factory() as session:
+    def prepare_stream(on_run_created):
+        with preparation_session(session_factory) as session:
             existing_conversation = service.get_user_conversation(
                 session, workspace, current_user.id, conversation_id
             )
@@ -196,12 +198,13 @@ async def stream_assistant_message(
                 conversation_id,
                 payload.query,
                 request.headers.get("X-Request-Id"),
+                on_run_created=on_run_created,
             )
             return int(workspace.id), int(current_user.id), int(conversation.id), int(run.id), history
 
     # Resolve all commit-expired attributes in the blocking preparation unit.
     stream_workspace_id, stream_user_id, stream_conversation_id, stream_run_id, history = (
-        await run_in_threadpool(prepare_stream)
+        await prepare_response_run(prepare_stream, session_factory)
     )
 
     async def stream():

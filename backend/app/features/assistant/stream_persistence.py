@@ -1,5 +1,6 @@
 """Serialize stream persistence in one worker; ORM values stay on that worker."""
 import asyncio
+import anyio
 from concurrent.futures import ThreadPoolExecutor
 
 from app.exceptions import ConflictError, ResourceNotFoundError
@@ -19,13 +20,14 @@ class StreamWorker:
         except asyncio.CancelledError:
             # A running SQL operation cannot be cancelled. Drain it before
             # cleanup or another operation can touch the same Session.
-            while not future.done():
-                try:
-                    await asyncio.shield(future)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
+            with anyio.CancelScope(shield=True):
+                while not future.done():
+                    try:
+                        await asyncio.shield(future)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
             if future.done() and not future.cancelled():
                 future.exception()
             raise

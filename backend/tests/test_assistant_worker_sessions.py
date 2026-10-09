@@ -37,6 +37,8 @@ async def test_assistant_worker_session_cleanup_and_responsiveness(monkeypatch, 
         def __enter__(self):
             return self
         def __exit__(self, *args):
+            self.close()
+        def close(self):
             assert threading.get_ident() == self.thread
             closed.append(self)
     def missing(session, *args, **kwargs):

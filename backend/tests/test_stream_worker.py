@@ -143,7 +143,6 @@ def test_replayed_permission_preserves_response_and_finish_preserves_terminal(se
 async def test_http_stream_disconnect_closes_underlying_iterator(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import Mock
-    from contextlib import nullcontext
     from app.features.assistant import router as module
     from app.features.assistant.schemas import AssistantMessageRequest
     from app.features.assistant.event_protocol import AssistantEvent
@@ -151,7 +150,7 @@ async def test_http_stream_disconnect_closes_underlying_iterator(monkeypatch):
     run = SimpleNamespace(id=4)
     closed = []
     monkeypatch.setattr(service, 'get_user_conversation', lambda *args: conversation)
-    monkeypatch.setattr(service, 'prepare_run', lambda *args: (conversation, run, []))
+    monkeypatch.setattr(service, 'prepare_run', lambda *args, **kwargs: (conversation, run, []))
     async def events(*args):
         try:
             yield AssistantEvent('run_started', {'status': 'running'}, run_id=4)
@@ -161,7 +160,7 @@ async def test_http_stream_disconnect_closes_underlying_iterator(monkeypatch):
     monkeypatch.setattr(service, 'stream_run', events)
     response = await module.stream_assistant_message(3, AssistantMessageRequest(query='query'),
         SimpleNamespace(headers={}), current_user=SimpleNamespace(id=1),
-        workspace=SimpleNamespace(id=2), session_factory=lambda: nullcontext(Mock()))
+        workspace=SimpleNamespace(id=2), session_factory=Mock)
     assert 'run_started' in await anext(response.body_iterator)
     await response.body_iterator.aclose()
     assert closed == [True]

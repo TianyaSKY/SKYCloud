@@ -1250,3 +1250,174 @@ def test_prepared_compensation_serializes_with_native_lease_claim(postgres):
         db.commit()
     with factory() as independent:
         assert repository.touch_run_lease(independent, scope[-1], 2) is False
+
+
+@pytest.mark.parametrize('fault', ['cancel-before-commit', 'cancel-after-commit', 'commit-rejected', 'ack-lost', 'close-failed'])
+async def test_http_preparation_abort_compensates_after_owned_transaction(postgres, monkeypatch, fault):
+    import threading
+    from types import SimpleNamespace
+    from sqlalchemy.orm import Session
+    from app.features.assistant import router, service
+    from app.features.assistant.schemas import AssistantMessageRequest
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'admin')"))
+    workspace = SimpleNamespace(id=1)
+    with sessionmaker(bind=postgres)() as db:
+        conversation = service.create_conversation(db, workspace, 1, 'fast', 'test')
+        conversation_id = conversation.id
+    loop_thread = threading.get_ident()
+    entered, release = threading.Event(), threading.Event()
+    opened, calls = [], []
+    original = RuntimeError('controlled preparation fault')
+    class OwnedSession(Session):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.owner = threading.get_ident()
+            assert self.owner != loop_thread
+            self.preparing = not opened
+            opened.append(self)
+            calls.append('prepare-open' if self.preparing else 'cleanup-open')
+        def check(self): assert threading.get_ident() == self.owner
+        def commit(self):
+            self.check()
+            if self.preparing and fault == 'cancel-before-commit':
+                entered.set()
+                assert release.wait(5)
+            if self.preparing and fault == 'commit-rejected':
+                raise original
+            super().commit()
+            calls.append('prepare-commit' if self.preparing else 'cleanup-commit')
+            if self.preparing and fault == 'cancel-after-commit':
+                entered.set()
+                assert release.wait(5)
+            if self.preparing and fault == 'ack-lost':
+                raise original
+        def close(self):
+            self.check()
+            calls.append('prepare-close' if self.preparing else 'cleanup-close')
+            if self.preparing and fault == 'close-failed':
+                raise original
+            super().close()
+        def invalidate(self):
+            self.check()
+            calls.append('prepare-invalidate' if self.preparing else 'cleanup-invalidate')
+            super().invalidate()
+    factory = sessionmaker(bind=postgres, class_=OwnedSession)
+    pending = asyncio.create_task(router.stream_assistant_message(
+        conversation_id, AssistantMessageRequest(query='question'), SimpleNamespace(headers={}),
+        current_user=SimpleNamespace(id=1), workspace=workspace, session_factory=factory))
+    if fault.startswith('cancel-'):
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            pending.cancel()
+            await asyncio.sleep(0)
+            pending.cancel()
+            await asyncio.sleep(0)
+            assert not pending.done() and len(opened) == 1
+            with postgres.connect() as independent:
+                assert independent.scalar(text('SELECT count(*) FROM assistant_runs')) == (fault == 'cancel-after-commit')
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(pending, 3)
+    elif fault == 'close-failed':
+        from starlette.requests import ClientDisconnect
+        response = await pending
+        assert calls[-1] == 'prepare-invalidate'
+        async def receive(): await asyncio.Event().wait()
+        async def send(message): raise OSError('header send failed')
+        with pytest.raises(ClientDisconnect):
+            await response({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send)
+    else:
+        with pytest.raises(RuntimeError) as error:
+            await pending
+        assert error.value is original
+    assert len(opened) == 2
+    if fault != 'close-failed':
+        assert opened[0].owner == opened[1].owner
+    assert calls.index('prepare-close') < calls.index('cleanup-open')
+    assert calls[-2:] == ['cleanup-commit', 'cleanup-close']
+    with postgres.connect() as db:
+        if fault == 'commit-rejected':
+            assert db.scalar(text('SELECT count(*) FROM assistant_runs')) == 0
+            assert db.scalar(text('SELECT count(*) FROM assistant_messages')) == 0
+        else:
+            assert db.execute(text('SELECT status,cancel_requested FROM assistant_runs')).one() == ('cancelled', True)
+            assert db.execute(text('SELECT role,status FROM assistant_messages ORDER BY sequence')).all() == [
+                ('user', 'completed'), ('assistant', 'cancelled')]
+
+
+@pytest.mark.parametrize('fault', ['revoked', 'cancel'])
+async def test_http_stream_initialization_abort_cleans_unclaimed_run(postgres, monkeypatch, fault):
+    import threading
+    from types import SimpleNamespace
+    from sqlalchemy.orm import Session
+    from app.exceptions import PermissionDeniedError
+    from app.features.assistant import router, service
+    from app.features.assistant.schemas import AssistantMessageRequest
+    from app.models.workspace import Workspace
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'admin')"))
+    workspace = SimpleNamespace(id=1)
+    with sessionmaker(bind=postgres)() as db:
+        conversation = service.create_conversation(db, workspace, 1, 'fast', 'test')
+        conversation_id = conversation.id
+    entered, release = threading.Event(), threading.Event()
+    opened, closed = [], []
+    loop_thread = threading.get_ident()
+    class OwnedSession(Session):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.owner = threading.get_ident()
+            assert self.owner != loop_thread
+            opened.append(self)
+        def get(self, entity, *args, **kwargs):
+            assert threading.get_ident() == self.owner
+            if fault == 'cancel' and entity is Workspace:
+                entered.set()
+                assert release.wait(5)
+            return super().get(entity, *args, **kwargs)
+        def close(self):
+            assert threading.get_ident() == self.owner
+            super().close()
+            closed.append(self)
+    def forbidden_engine(*args, **kwargs): raise AssertionError('model must not start')
+    monkeypatch.setattr(service, 'FastEngine', forbidden_engine)
+    factory = sessionmaker(bind=postgres, class_=OwnedSession)
+    response = await router.stream_assistant_message(
+        conversation_id, AssistantMessageRequest(query='question'), SimpleNamespace(headers={}),
+        current_user=SimpleNamespace(id=1), workspace=workspace, session_factory=factory)
+    run_id = int(response.headers['X-Assistant-Run-Id'])
+    if fault == 'revoked':
+        with postgres.begin() as independent:
+            independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
+    sent = []
+    async def receive(): await asyncio.Event().wait()
+    async def send(message): sent.append(message['type'])
+    pending = asyncio.create_task(response({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send))
+    if fault == 'cancel':
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            pending.cancel()
+            await asyncio.sleep(0)
+            pending.cancel()
+            await asyncio.sleep(0)
+            assert not pending.done() and len(opened) == 2
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError): await asyncio.wait_for(pending, 3)
+    else:
+        with pytest.raises(PermissionDeniedError): await pending
+    assert sent == ['http.response.start']
+    assert len(opened) == 3 and closed == opened
+    assert service.run_registry.get(run_id) is None
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT status,cancel_requested FROM assistant_runs')).one() == ('cancelled', True)
+        assert db.execute(text('SELECT role,status FROM assistant_messages ORDER BY sequence')).all() == [
+            ('user', 'completed'), ('assistant', 'cancelled')]

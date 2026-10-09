@@ -1,10 +1,37 @@
 """Close prepared runs even when ASGI fails before entering their iterator."""
 import anyio
+from contextlib import contextmanager
 from loguru import logger
 from starlette.responses import StreamingResponse
 
 from app.features.assistant import repository
 from app.features.assistant.stream_persistence import StreamWorker
+
+
+@contextmanager
+def preparation_session(session_factory):
+    session = session_factory()
+    try:
+        yield session
+    finally:
+        from app.features.assistant.service import _cleanup_stream_session
+        _cleanup_stream_session(session, "close")
+
+
+async def prepare_response_run(prepare, session_factory):
+    """Drain SQL preparation before compensating an interrupted HTTP request."""
+    created_scope = None
+    def capture(scope):
+        nonlocal created_scope
+        created_scope = scope
+    async with StreamWorker() as worker:
+        try:
+            return await worker.call(prepare, capture)
+        except BaseException:
+            if created_scope is not None:
+                with anyio.CancelScope(shield=True):
+                    await worker.call(cleanup_unclaimed_run, session_factory, created_scope)
+            raise
 
 
 def cleanup_unclaimed_run(session_factory, scope):
