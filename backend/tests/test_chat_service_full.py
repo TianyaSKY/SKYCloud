@@ -29,16 +29,16 @@ class TestChatServiceModels:
             side_effect=lambda i: [11, 1, "file.txt", "命中的正文", "text/plain", 0, None, 0.1][i]
         )
         mock_session.execute.return_value.fetchall.return_value = [mock_result]
-        with patch("app.features.chat.service.SessionLocal", return_value=mock_session):
-            docs = _db_search_by_vector([0.1] * 1024, "test", 1, 10)
+        with patch("app.features.chat.service.SessionLocal", return_value=mock_session), patch("app.features.chat.repository.assert_member_locked"):
+            docs = _db_search_by_vector([0.1] * 1024, "test", 1, 10, 77)
         assert len(docs) == 1
 
     def test_db_search_by_vector_empty(self):
         from app.features.chat.service import _db_search_by_vector
         mock_session = MagicMock()
         mock_session.execute.return_value.fetchall.return_value = []
-        with patch("app.features.chat.service.SessionLocal", return_value=mock_session):
-            docs = _db_search_by_vector([0.1] * 1024, "test", 1, 10)
+        with patch("app.features.chat.service.SessionLocal", return_value=mock_session), patch("app.features.chat.repository.assert_member_locked"):
+            docs = _db_search_by_vector([0.1] * 1024, "test", 1, 10, 77)
         assert docs == []
 
     def test_vector_search_docs(self):
@@ -46,7 +46,7 @@ class TestChatServiceModels:
         mock_emb = MagicMock()
         mock_emb.embed_query.return_value = [0.1] * 2048
         with patch("app.features.chat.service._db_search_by_vector", return_value=[]):
-            docs = _vector_search_docs("test", 1, mock_emb, 10)
+            docs = _vector_search_docs([0.1] * 1024, "test", 1, 10, 77)
         assert docs == []
 
     def test_custom_db_retriever(self):

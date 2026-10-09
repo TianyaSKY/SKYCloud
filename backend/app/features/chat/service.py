@@ -14,12 +14,13 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableParallel, RunnableLambda
 from langchain_openai import ChatOpenAI
-from sqlalchemy import text
 
 if TYPE_CHECKING:
     from langchain_openai import OpenAIEmbeddings
 
 from app.infra.extensions import SessionLocal
+from app.features.chat import repository
+from app.exceptions import PermissionDeniedError
 from app.infra.llm.config import get_chat_model_config, get_embedding_model_config
 from app.features.chat.query_rewrite import (
     build_multi_queries,
@@ -76,9 +77,10 @@ def _vector_search_docs(
         query_text: str,
         workspace_id: int,
         limit: int,
+        user_id: int,
 ) -> list[Document]:
     """按已生成的向量查询数据库；由调用方异步请求 embedding。"""
-    return _db_search_by_vector(query_vector, query_text, workspace_id, limit)
+    return _db_search_by_vector(query_vector, query_text, workspace_id, limit, user_id)
 
 
 def _db_search_by_vector(
@@ -86,28 +88,10 @@ def _db_search_by_vector(
         query_text: str,
         workspace_id: int,
         limit: int,
+        user_id: int,
 ) -> list[Document]:
     """用预计算向量查库；独立 session 保证线程池并发安全。"""
-    sql = text("""
-               SELECT c.id, f.id, f.name, c.content, f.mime_type, c.chunk_index,
-                      c.page_number, (c.vector_info <=> :vector) AS distance
-                FROM file_chunks c
-                JOIN files f ON f.id = c.file_id
-                WHERE c.workspace_id = :workspace_id
-                  AND f.workspace_id = :workspace_id
-                  AND c.vector_info IS NOT NULL
-                ORDER BY c.vector_info <=> :vector
-                   LIMIT :limit
-                """)
-
-    session = SessionLocal()
-    try:
-        results = session.execute(
-            sql,
-            {"vector": str(query_vector), "workspace_id": workspace_id, "limit": limit},
-        ).fetchall()
-    finally:
-        session.close()
+    results = repository.vector_rows(SessionLocal, query_vector, workspace_id, user_id, limit)
 
     docs: list[Document] = []
     for rank, row in enumerate(results, start=1):
@@ -159,8 +143,8 @@ def _fuse_docs_with_rrf(
     return fused_docs
 
 
-async def custom_db_retriever(query_text: str, workspace_id: int, *, user_id: int = 0):
-    """单查询向量检索 + rerank；保留兼容旧调用。"""
+async def custom_db_retriever(query_text: str, workspace_id: int, *, user_id: int):
+    """单查询向量检索 + rerank；SQL 边界核验当前成员资格。"""
     embeddings = get_embeddings_model()
     query_vector = (await embeddings.aembed_query(query_text, user_id=user_id))[:1024]
     docs = await asyncio.to_thread(
@@ -169,6 +153,7 @@ async def custom_db_retriever(query_text: str, workspace_id: int, *, user_id: in
         query_text,
         workspace_id,
         RAG_VECTOR_FETCH_K,
+        user_id,
     )
     docs = await rerank_documents(query_text, docs)
     logger.info(f"单查询检索结果: {len(docs)}")
@@ -180,7 +165,7 @@ async def multi_query_db_retriever(
         workspace_id: int,
         dimensions: RewriteKeywordDimensions,
         original_vector: list[float] | None = None,
-        *, user_id: int = 0,
+        *, user_id: int,
 ):
     """多查询并行召回 → RRF → Rerank。
 
@@ -227,17 +212,19 @@ async def multi_query_db_retriever(
     # ---------------------------------------------------------------------------
     async def _search_one(q_text: str, vec: list[float]) -> list[Document]:
         return await loop.run_in_executor(
-            None, _db_search_by_vector, vec, q_text, workspace_id, RAG_VECTOR_FETCH_K
+            None, _db_search_by_vector, vec, q_text, workspace_id, RAG_VECTOR_FETCH_K, user_id
         )
 
     search_tasks = [_search_one(qt, v) for qt, v in zip(queries, all_vectors)]
     raw_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
+    for result in raw_results:
+        if isinstance(result, PermissionDeniedError):
+            raise result
     result_sets: list[list[Document]] = []
-    for qt, res in zip(queries, raw_results):
+    for res in raw_results:
         if isinstance(res, Exception):
-            logger.warning(
-                f"Multi-query recall failed for query='{qt}': {res}")
+            logger.warning("Multi-query recall failed (error_type={})", type(res).__name__)
         elif res:
             result_sets.append(res)
     t3 = time.perf_counter()

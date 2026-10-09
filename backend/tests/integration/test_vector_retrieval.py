@@ -12,7 +12,7 @@ from app.features.file.service import _search_files_vector_by_embedding
 from app.models.file import File
 from app.models.file_chunk import FileChunk
 from app.models.user import User
-from app.models.workspace import Workspace
+from app.models.workspace import Workspace, WorkspaceMember
 from entry.migrate import upgrade
 from tests.integration.test_migrations import postgres  # noqa: F401
 
@@ -34,6 +34,8 @@ def indexed(postgres):
         first = Workspace(name='First', owner_id=user.id)
         second = Workspace(name='Second', owner_id=other_user.id)
         db.add_all([first, second]); db.flush()
+        db.add_all([WorkspaceMember(workspace_id=first.id,user_id=user.id,role="viewer"),
+                    WorkspaceMember(workspace_id=second.id,user_id=other_user.id,role="viewer")])
         files = [File(name=name, file_path=name, workspace_id=workspace.id, uploader_id=workspace.owner_id,
                       mime_type='text/plain', status='success', vector_info=embedding)
                  for name, workspace, embedding in [('near', first, vector(1)), ('orthogonal', first, vector(0, 1)),
@@ -80,13 +82,16 @@ import json, sys
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.features.chat import service
+from app.models.workspace import Workspace
 settings = json.load(sys.stdin)
 engine = create_engine(settings['database'])
 service.SessionLocal = sessionmaker(bind=engine)
 try:
     results = []
     for workspace in settings['workspaces']:
-        docs = service._db_search_by_vector(settings['vector'], 'synthetic query', workspace, 20)
+        with service.SessionLocal() as db:
+            actor = db.get(Workspace, workspace).owner_id
+        docs = service._db_search_by_vector(settings['vector'], 'synthetic query', workspace, 20, actor)
         results.append([{'content': doc.page_content, 'metadata': doc.metadata} for doc in docs])
     print(json.dumps(results))
 finally:
@@ -160,3 +165,58 @@ def test_legacy_native_user_role_upgrade_preserves_data_and_rolls_back_failure(p
         db.commit()
         assert {user.role for user in db.query(User).filter(User.username.like('bulk-%')).all()} == {'common', 'admin'}
     upgrade(postgres)  # Already at head: idempotent.
+
+
+@pytest.mark.parametrize('kind', ['single','multi'])
+async def test_chat_retrieval_denies_membership_removed_during_embedding(indexed, postgres, monkeypatch, kind):
+    from app.features.chat import service
+    from app.features.chat.query_rewrite import RewriteKeywordDimensions
+    from app.exceptions import PermissionDeniedError
+    factory, first, second, identifiers = indexed
+    with factory() as db: actor = db.get(Workspace,first).owner_id
+    monkeypatch.setattr(service, 'SessionLocal', factory)
+    class Embeddings:
+        async def aembed_query(self, *args, **kwargs):
+            assert kwargs['user_id'] == actor
+            with postgres.begin() as independent:
+                independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=:ws AND user_id=:actor'), {'ws':first,'actor':actor})
+            return vector(1)
+        async def aembed_documents(self, queries, **kwargs):
+            await self.aembed_query('',**kwargs)
+            return [vector(1) for query in queries]
+    monkeypatch.setattr(service,'get_embeddings_model',lambda:Embeddings())
+    async def forbidden_rerank(*args): raise AssertionError('denied content must not reach reranker')
+    monkeypatch.setattr(service,'rerank_documents',forbidden_rerank)
+    with pytest.raises(PermissionDeniedError):
+        if kind == 'single': await service.custom_db_retriever('private query',first,user_id=actor)
+        else:
+            dims = RewriteKeywordDimensions(topic_terms=[],entity_terms=[],time_terms=[],file_type_terms=[],action_terms=[],synonym_terms=[])
+            await service.multi_query_db_retriever('private query',first,dims,user_id=actor)
+    with postgres.connect() as db:
+        assert db.scalar(text('SELECT count(*) FROM files')) == 5
+        assert db.scalar(text('SELECT count(*) FROM file_chunks')) == 6
+
+
+def test_chat_chunk_query_holds_current_membership_until_session_close(indexed, postgres, monkeypatch):
+    from sqlalchemy import event
+    from sqlalchemy.exc import DBAPIError
+    from app.features.chat import service
+    factory, first, second, identifiers = indexed
+    with factory() as db: actor = db.get(Workspace,first).owner_id
+    monkeypatch.setattr(service,'SessionLocal',factory)
+    observed=[]
+    def before_query(conn, cursor, statement, parameters, context, executemany):
+        if 'SELECT c.id' not in statement: return
+        with postgres.connect() as independent:
+            independent.execute(text("SET LOCAL lock_timeout='100ms'"))
+            with pytest.raises(DBAPIError) as error:
+                independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=:ws AND user_id=:actor'), {'ws':first,'actor':actor})
+            assert error.value.orig.pgcode == '55P03'
+            independent.rollback()
+        observed.append(True)
+    event.listen(postgres,'before_cursor_execute',before_query)
+    try: assert len(service._db_search_by_vector(vector(1),'query',first,20,actor)) == 2
+    finally: event.remove(postgres,'before_cursor_execute',before_query)
+    assert observed == [True]
+    with postgres.begin() as independent:
+        independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=:ws AND user_id=:actor'), {'ws':first,'actor':actor})
