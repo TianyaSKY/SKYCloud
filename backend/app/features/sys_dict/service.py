@@ -1,4 +1,4 @@
-from app.infra.cache import cacheable, evict_cache
+from app.infra.cache import cacheable, evict_cache, sql_cache_allowed
 from app.exceptions import BusinessRuleError, ResourceNotFoundError
 from sqlalchemy.orm import Session
 from app.infra.owned_work import run_owned
@@ -59,7 +59,7 @@ def delete_sys_dict(session: Session, id):
     _invalidate_sys_dict_cache()
 
 
-@cacheable(prefix=SYS_DICT_CACHE_PREFIX, expire=SYS_DICT_CACHE_EXPIRE, key=lambda session: "all")
+@cacheable(prefix=SYS_DICT_CACHE_PREFIX, expire=SYS_DICT_CACHE_EXPIRE, key=lambda session: "all", cache_allowed=sql_cache_allowed)
 def _get_sys_dict_all_cached(session: Session) -> list[dict]:
     sys_dicts = session.query(SysDict).all()
     return [

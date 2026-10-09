@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
 from app.infra.extensions import redis_client
-from app.infra.cache import cacheable, evict_cache
+from app.infra.cache import cacheable, evict_cache, sql_cache_allowed
 from app.infra.task_queue import publish_organize_task
 from app.models.file import File
 from app.models.folder import Folder
@@ -183,6 +183,7 @@ def _delete_folder_recursive(session: Session, folder, deleted_events: list[dict
 
 
 @cacheable(
+    cache_allowed=sql_cache_allowed,
     prefix=ROOT_FOLDER_CACHE_PREFIX,
     expire=FOLDER_CACHE_EXPIRE,
     key=lambda session, workspace_id, **_: workspace_id,
@@ -192,6 +193,7 @@ def get_root_folder_id(session: Session, workspace_id) -> int | None:
 
 
 @cacheable(
+    cache_allowed=sql_cache_allowed,
     prefix=ROOT_FILES_CACHE_PREFIX,
     expire=FOLDER_CACHE_EXPIRE,
     key=lambda session, workspace_id, **_: workspace_id,
@@ -206,6 +208,7 @@ def get_files_in_root_folder(session: Session, workspace_id) -> List[dict]:
 
 
 @cacheable(
+    cache_allowed=sql_cache_allowed,
     prefix=FOLDER_CACHE_PREFIX,
     expire=FOLDER_CACHE_EXPIRE,
     key=lambda session, workspace_id, **_: workspace_id,

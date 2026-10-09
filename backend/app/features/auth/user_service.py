@@ -6,7 +6,7 @@ from app.features.auth import account_repository
 from app.infra.owned_work import run_owned
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
-from app.infra.cache import cacheable, evict_cache
+from app.infra.cache import cacheable, evict_cache, sql_cache_allowed
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
 from app.models.folder import Folder
@@ -45,6 +45,7 @@ def create_user(session: Session, data):
 
 
 @cacheable(
+    cache_allowed=sql_cache_allowed,
     prefix=USER_CACHE_PREFIX,
     expire=USER_CACHE_EXPIRE,
     key=lambda session, id, **_: id,

@@ -5,11 +5,11 @@ Upload, object publication and multipart lifecycle belong to the file service.
 from app.infra.owned_work import run_owned
 from typing import Any
 from sqlalchemy.orm import Session
-from sqlalchemy import select, text
+from sqlalchemy import select
 from app.models.workspace import Workspace
 from loguru import logger
 from app.exceptions import PermissionDeniedError
-from app.infra.cache import cacheable
+from app.infra.cache import cacheable, sql_cache_allowed
 from app.infra.llm.config import get_embedding_model_config
 from app.features.file import repository
 from app.features.workspace.permissions import assert_member
@@ -61,14 +61,7 @@ async def search_files(
         }
 
 
-def _search_cache_allowed(session, *args, **kwargs):
-    if session.new or session.dirty or session.deleted:
-        return False
-    if session.get_bind().dialect.name == 'postgresql':
-        # Dirty ORM state is empty after flush/direct SQL. An assigned XID
-        # identifies a transaction which may still roll back its writes.
-        return session.scalar(text('SELECT pg_current_xact_id_if_assigned()')) is None
-    return not session.in_transaction()
+_search_cache_allowed = sql_cache_allowed
 
 
 def _search_revision(session, workspace_id):

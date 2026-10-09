@@ -381,3 +381,56 @@ async def test_cached_read_cancel_drains_actual_blocked_sql(postgres, infrastruc
                     shared.close()
         assert str(error.value) == 'caller-stop'
     assert closed == (['closed'] if operation == 'user-owned' else [])
+
+
+@pytest.mark.parametrize('kind', ['profile', 'dictionary', 'folders', 'root-id', 'root-files'])
+def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructure, monkeypatch, kind):
+    from app.features.auth import user_service
+    from app.features.sys_dict import service as dictionaries
+    from app.features.folder import service as folders
+    from app.models.folder import Folder
+    from app.models.file import File
+    from app.models.sys_dict import SysDict
+    upgrade(postgres)
+    factory = sessionmaker(bind=postgres)
+    admin = infrastructure['redis']
+    monkeypatch.setattr(cache, 'redis_client', admin)
+    with factory() as db:
+        user = User(username='original-name', password_hash='unused', role='common')
+        db.add(user); db.flush()
+        workspace = Workspace(name='other-cache', owner_id=user.id)
+        db.add(workspace); db.flush()
+        root = Folder(name='/', workspace_id=workspace.id)
+        db.add(root); db.flush()
+        child = Folder(name='original-name', workspace_id=workspace.id, parent_id=root.id)
+        item = File(name='original-name',file_path='other-cache-object',workspace_id=workspace.id,parent_id=root.id)
+        option = SysDict(key='transaction-test-option',value='original-name',enable=True)
+        db.add_all([child,item,option]); db.commit()
+        uid, wid, root_id, child_id, file_id, option_id = user.id,workspace.id,root.id,child.id,item.id,option.id
+    def read(db):
+        if kind == 'profile': return user_service._get_user_data(db,uid)['username']
+        if kind == 'dictionary': return next(row['value'] for row in dictionaries.get_sys_dict_all_sync(db) if row['key']=='transaction-test-option')
+        if kind == 'folders': return next(row['name'] for row in folders.get_folders(db,wid) if row['id']==child_id)
+        if kind == 'root-files': return folders.get_files_in_root_folder(db,wid)[0]['name']
+        return folders.get_root_folder_id(db,wid)
+    expected_original = root_id if kind == 'root-id' else 'original-name'
+    with factory() as db:
+        assert read(db) == expected_original
+    before = {key:admin.get(key) for key in admin.scan_iter()}
+    assert before
+    with factory() as db:
+        if kind == 'profile': db.get(User,uid).username = 'uncommitted-name'
+        elif kind == 'dictionary': db.get(SysDict,option_id).value = 'uncommitted-name'
+        elif kind == 'folders': db.get(Folder,child_id).name = 'uncommitted-name'
+        elif kind == 'root-files': db.get(File,file_id).name = 'uncommitted-name'
+        else:
+            replacement = Folder(name='new-root',workspace_id=wid)
+            db.add(replacement); db.flush()
+            db.get(Folder,root_id).parent_id = replacement.id
+        db.flush()
+        expected = replacement.id if kind == 'root-id' else 'uncommitted-name'
+        assert read(db) == expected
+        db.rollback()
+    assert {key:admin.get(key) for key in admin.scan_iter()} == before
+    with factory() as db:
+        assert read(db) == expected_original

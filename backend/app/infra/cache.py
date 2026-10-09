@@ -14,6 +14,7 @@ import functools
 import json
 import uuid
 from typing import Any, Callable, Optional
+from sqlalchemy import text
 
 from app.infra.extensions import redis_client
 from app.infra.owned_work import run_owned
@@ -50,6 +51,19 @@ def _build_cache_key(
 # ---------------------------------------------------------------------------
 # @cacheable — 读穿缓存
 # ---------------------------------------------------------------------------
+
+def sql_cache_allowed(session, *args, **kwargs) -> bool:
+    """Keep shared SQL caches outside transactions which may roll back writes."""
+    if session.new or session.dirty or session.deleted:
+        return False
+    dialect = session.get_bind().dialect.name
+    if dialect == 'postgresql':
+        # Flush/direct SQL can empty ORM dirty state while writes remain live.
+        return session.scalar(text('SELECT pg_current_xact_id_if_assigned()')) is None
+    if dialect == 'sqlite':
+        return not session.connection().connection.driver_connection.in_transaction
+    return not session.in_transaction()
+
 
 def invalidate_cache_generation(scope: str) -> None:
     """Rotate a cache namespace before removing old physical keys."""
