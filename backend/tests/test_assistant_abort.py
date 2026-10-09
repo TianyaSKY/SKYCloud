@@ -236,3 +236,18 @@ def test_interrupted_stream_finish_atomically_stages_remote_cleanup(seeded, stat
         assert db.get(AssistantRun, identity[-1]).status == status
         intent = db.get(AssistantRuntimeAbort, identity[-1])
         assert intent is not None and intent.session_id == 'captured-session'
+
+
+def test_idle_stream_commits_partial_checkpoint_before_quiet_provider_wait(seeded):
+    from app.features.assistant.stream_persistence import StreamPersistence
+    from app.models.assistant import AssistantConversation, AssistantMessage
+    factory, identity = seeded
+    with factory() as db:
+        run = db.get(AssistantRun, identity[-1])
+        message_id = run.assistant_message_id
+        persistence = StreamPersistence(db, db.get(Workspace, identity[1]), identity[0],
+            db.get(AssistantConversation, identity[3]), run)
+        assert persistence.checkpoint('partial answer', {}, {}, None, False)
+        assert persistence.poll(False, time.time(), True) == (False, False)
+        db.rollback()
+        assert db.get(AssistantMessage, message_id).content == 'partial answer'

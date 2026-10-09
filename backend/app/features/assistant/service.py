@@ -530,7 +530,7 @@ async def _stream_persisted(worker, persistence, history):
     async def poll_idle():
         nonlocal last_lease
         renew = time.monotonic() - last_lease >= 10
-        terminal, cancelled = await worker.call(persistence.poll, renew, time.time())
+        terminal, cancelled = await worker.call(persistence.poll, renew, time.time(), True)
         if renew:
             last_lease = time.monotonic()
         if terminal or cancelled or controller.cancel_event.is_set():

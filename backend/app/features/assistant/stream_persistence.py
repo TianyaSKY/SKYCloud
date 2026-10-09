@@ -2,6 +2,7 @@
 import asyncio
 import anyio
 from concurrent.futures import ThreadPoolExecutor
+from sqlalchemy import text
 
 from app.exceptions import ConflictError, ResourceNotFoundError
 from app.features.workspace.permissions import assert_member, assert_can_write, get_member_role
@@ -72,7 +73,11 @@ class StreamPersistence:
             raise ConflictError('任务已结束，不能继续执行')
         return self.run_id, self.message_id, self.workspace_id, self.mode, self.query
 
-    def poll(self, renew_lease, now):
+    def poll(self, renew_lease, now, idle=False):
+        if idle:
+            # Flush checkpoints before waiting for more provider events. Quiet
+            # healthy streams must not hit the idle-write-transaction bound.
+            self.session.commit()
         if self.credential is not None:
             self.credential.validate(self.session, self.user_id)
         role = get_member_role(self.session, self.workspace_id, self.user_id)
@@ -84,6 +89,11 @@ class StreamPersistence:
         return row is None or row[0] in repository.TERMINAL_RUN_STATUSES, revoked or bool(row and row[1])
 
     def checkpoint(self, content, metadata, usage, permission, commit):
+        if self.session.get_bind().dialect.name == 'postgresql':
+            # A suspended/dead API worker must not retain message/run write
+            # locks forever between streaming checkpoints. Transaction-local
+            # configuration cannot leak into other pooled-session callers.
+            self.session.execute(text("SET LOCAL idle_in_transaction_session_timeout = '5s'"))
         if permission is not None:
             run = repository.lock_run(self.session, self.run_id)
             if run is None or run.status in repository.TERMINAL_RUN_STATUSES:

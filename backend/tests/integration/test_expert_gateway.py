@@ -50,7 +50,7 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel'),('once',False,'command-crash'),(None,False,'lease-before-sql'),(None,False,'lease-set-reply'),('once',False,'command-cancel-retry')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel','command-crash','lease-before-sql','lease-set-reply','command-cancel-retry'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel'),('once',False,'command-crash'),(None,False,'lease-before-sql'),(None,False,'lease-set-reply'),('once',False,'command-cancel-retry'),(None,False,'paused-prompt')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel','command-crash','lease-before-sql','lease-set-reply','command-cancel-retry','paused-prompt'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
@@ -270,6 +270,71 @@ with Session(engine) as session:
                     conversation = repository.create_conversation(db, ws_id, user_id, 'expert', 'gateway task'); db.commit()
                     if permission_response != 'auth-version':
                         conversation, run, history = service.prepare_run(db, workspace, user_id, conversation.id, '只输出 E2E_GATEWAY_OK，不调用任何工具。')
+                    if missing_candidate == 'paused-prompt':
+                        import signal
+                        marker = tmp_path / 'paused-prompt'
+                        child_code = """
+import asyncio,json,sys,os,signal
+from pathlib import Path
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.features.assistant.service import stream_run
+from app.features.assistant.clients.opencode_client import OpenCodeClient
+settings=json.load(sys.stdin)
+actual=OpenCodeClient.prompt_async
+async def hold(self,*args,**kwargs):
+    if not kwargs.get('no_reply'):
+        Path(settings['marker']).write_text('ready')
+        os.kill(os.getpid(),signal.SIGSTOP)
+    return await actual(self,*args,**kwargs)
+OpenCodeClient.prompt_async=hold
+engine=create_engine(settings['database'])
+async def run():
+    async for event in stream_run(sessionmaker(bind=engine),settings['workspace'],settings['user'],settings['conversation'],settings['run'],[]):
+        print(event.type,flush=True)
+asyncio.run(run())
+"""
+                        with (tmp_path / 'paused-worker.log').open('w') as output:
+                            boot_process = subprocess.Popen([sys.executable,'-c',child_code],env=environment,
+                                stdin=subprocess.PIPE,stdout=output,stderr=subprocess.STDOUT,text=True)
+                            boot_process.stdin.write(json.dumps({'database':postgres.url.render_as_string(hide_password=False),
+                                'workspace':ws_id,'user':user_id,'conversation':conversation.id,'run':run.id,'marker':str(marker)}))
+                            boot_process.stdin.close()
+                            deadline = time.monotonic()+40
+                            while not marker.exists():
+                                assert boot_process.poll() is None
+                                assert time.monotonic()<deadline
+                                time.sleep(.05)
+                            waited, stopped = os.waitpid(boot_process.pid,os.WUNTRACED)
+                            assert waited == boot_process.pid and os.WIFSTOPPED(stopped)
+                            from app.models.assistant import AssistantRun
+                            from app.infra.assistant_abort import recover_abandoned_runs, abort_pending_sessions
+                            from app.infra.datetime_utils import utc_now
+                            from datetime import timedelta
+                            with factory() as recovery:
+                                abandoned = recovery.get(AssistantRun,run.id)
+                                captured_session = abandoned.opencode_session_id
+                                assert captured_session and not requests
+                                abandoned.started_at = utc_now()-timedelta(seconds=60)
+                                abandoned.metadata_dict = {**abandoned.metadata_dict,'worker_heartbeat_unix':time.time()-60}
+                                recovery.commit()
+                            def bounded_recovery_session():
+                                recovery = factory()
+                                recovery.execute(text("SET LOCAL lock_timeout = '8s'"))
+                                return recovery
+                            assert recover_abandoned_runs(session_factory=bounded_recovery_session)==1
+                            assert abort_pending_sessions(session_factory=factory)==1
+                            os.kill(boot_process.pid,signal.SIGCONT)
+                            deadline=time.monotonic()+8
+                            while boot_process.poll() is None and not requests and time.monotonic()<deadline:
+                                time.sleep(.05)
+                            assert not requests, 'recovered paused worker dispatched a new model request after remote cleanup'
+                            assert boot_process.wait(5)==0
+                        with factory() as recovery:
+                            assert recovery.get(AssistantRun,run.id).status == 'failed'
+                            runtime = docker_service.runtime_service.get_runtime(recovery,ws_id,user_id)
+                            assert not infrastructure['redis'].exists(f'assistant:expert:runtime:{runtime.id}')
+                        return
                     if missing_candidate in ('lease-before-sql','lease-set-reply'):
                         marker = tmp_path / 'lease-checkpoint'
                         lease_code = """
