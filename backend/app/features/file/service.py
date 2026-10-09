@@ -864,7 +864,8 @@ def delete_file(session: Session, id: int, commit: bool = True, log_event: bool 
 
 
 def _clear_search_cache(workspace_id: int | None) -> None:
-    evict_cache_pattern(SEARCH_CACHE_PREFIX)
+    if workspace_id is not None:
+        evict_cache_pattern(f"{SEARCH_CACHE_PREFIX}:{workspace_id}")
 
 
 def get_root_file_id(session: Session, workspace_id: int) -> int | None:

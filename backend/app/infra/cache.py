@@ -230,16 +230,22 @@ def evict_cache(prefix: str, *key_parts: Any) -> None:
 
 
 def _evict_pattern(prefix: str) -> int:
-    """删除 ``prefix:*`` 下全部键，返回删除数量。"""
+    """分批删除匹配键，返回成功提交删除请求的键数。"""
+    completed = 0
+    batch = []
     try:
-        pattern = f"{prefix}:*"
-        keys = list(redis_client.scan_iter(match=pattern))
-        if keys:
-            redis_client.delete(*keys)
-        return len(keys)
+        for cache_key in redis_client.scan_iter(match=f"{prefix}:*", count=128):
+            batch.append(cache_key)
+            if len(batch) == 128:
+                redis_client.delete(*batch)
+                completed += len(batch)
+                batch.clear()
+        if batch:
+            redis_client.delete(*batch)
+            completed += len(batch)
     except Exception as e:
         logger.warning("[cache] pattern evict failed: error_type={}", type(e).__name__)
-        return 0
+    return completed
 
 
 def evict_cache_pattern(prefix: str) -> int:

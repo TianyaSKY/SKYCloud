@@ -141,3 +141,33 @@ async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, 
         assert business == ['accepted'] and json.loads(actual) == {'updated': True}
     else:
         assert business == ['accepted'] and actual is None
+
+
+@pytest.mark.parametrize('mode', ['generic', 'workspace'])
+def test_actual_cache_eviction_is_batched_and_workspace_scoped(infrastructure, monkeypatch, mode):
+    from app.features.file import service as file_service
+    admin = infrastructure['redis']
+    prefix = 'large-cache' if mode == 'generic' else 'search:fuzzy:1'
+    with admin.pipeline() as pipeline:
+        for index in range(1001):
+            pipeline.set(f'{prefix}:{index}', 'cached')
+        for index in range(20):
+            pipeline.set(f'search:fuzzy:12:{index}', 'other-workspace')
+        pipeline.execute()
+    batches = []
+    class ObservedStore:
+        def scan_iter(self, **kwargs):
+            assert kwargs == {'match': prefix+':*', 'count': 128}
+            yield from admin.scan_iter(**kwargs)
+        def delete(self, *keys):
+            assert 0 < len(keys) <= 128
+            batches.append(len(keys))
+            return admin.delete(*keys)
+    monkeypatch.setattr(cache, 'redis_client', ObservedStore())
+    if mode == 'generic':
+        assert cache.evict_cache_pattern(prefix) >= 1001
+    else:
+        file_service._clear_search_cache(1)
+    assert not list(admin.scan_iter(match=prefix+':*'))
+    assert len(batches) >= 8
+    assert len(list(admin.scan_iter(match='search:fuzzy:12:*'))) == 20
