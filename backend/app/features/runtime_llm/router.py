@@ -15,6 +15,7 @@ from app.infra.extensions import get_session_factory
 from app.infra.llm.config import get_chat_model_config
 from app.infra.http_stream import UpstreamLease, UpstreamResponse
 from app.infra.http_wait import guarded_wait
+from app.infra.http_decode import ACCEPT_ENCODING, content_encoding, decoded_bytes
 from app.infra.async_stream import close_reader
 
 router = APIRouter()
@@ -42,7 +43,7 @@ async def verify_connected(request, session_factory):
 async def authorized_bytes(response, request, session_factory):
     """Revalidate during quiet waits and before releasing every upstream chunk."""
     pending = None
-    iterator = response.aiter_bytes().__aiter__()
+    iterator = decoded_bytes(response, MAX_RESPONSE_BYTES).__aiter__()
     deadline = time.monotonic() + MAX_STREAM_SECONDS
     failed = False
     try:
@@ -159,10 +160,11 @@ async def chat_completions(request: Request, credential: dict = Depends(current_
     client = upstream_client()
     lease = UpstreamLease(client)
     response = None
+    accepted = False
     try:
         upstream_request = client.build_request(
             "POST", config["api"].rstrip("/") + "/chat/completions", json=data,
-            headers={"Authorization": f"Bearer {config['key']}", "Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {config['key']}", "Content-Type": "application/json", "Accept-Encoding": ACCEPT_ENCODING},
         )
         async def open_response():
             opened = await client.send(upstream_request, stream=True)
@@ -176,6 +178,8 @@ async def chat_completions(request: Request, credential: dict = Depends(current_
             status=504, detail='Model provider timed out', interval=RECHECK_SECONDS, on_abort=lease.close)
         if response.status_code >= 300:
             raise HTTPException(status_code=502, detail="Model provider rejected request")
+        content_encoding(response)
+        accepted = True
         if not data.get("stream", False):
             result = bytearray()
             async with aclosing(authorized_bytes(response, request, session_factory)) as parts:
@@ -187,7 +191,7 @@ async def chat_completions(request: Request, credential: dict = Depends(current_
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail="Model provider unavailable") from exc
     finally:
-        if response is None or not data.get("stream", False) or response.status_code >= 300:
+        if not accepted or not data.get("stream", False):
             await lease.close()
 
     async def events():

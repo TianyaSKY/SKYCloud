@@ -12,6 +12,7 @@ async def test_quiet_model_wait_rechecks_and_closes_pending_read(monkeypatch,cau
     checks=[]
     loop_thread=threading.get_ident()
     class Response:
+        headers = {}
         async def aiter_bytes(self):
             try:
                 entered.set();await asyncio.Event().wait();yield b'never'
@@ -34,6 +35,7 @@ async def test_quiet_model_wait_rechecks_and_closes_pending_read(monkeypatch,cau
 async def test_disconnected_model_client_closes_pending_reader_without_sql(monkeypatch):
     closed=asyncio.Event()
     class Response:
+        headers = {}
         async def aiter_bytes(self):
             try:await asyncio.Event().wait();yield b'never'
             finally:closed.set()
@@ -66,6 +68,7 @@ async def test_model_iterator_cleanup_fault_preserves_outcome(monkeypatch,cause,
             calls.append('close')
             raise close_error('private-provider-credential')
     class Response:
+        headers = {}
         def aiter_bytes(self):return Iterator()
     async def verify(*args):
         if cause in ('revoked','disconnect'):raise HTTPException(401 if cause=='revoked' else 499,'fixed')
@@ -100,6 +103,7 @@ async def test_model_repeated_cancel_drains_reader_before_iterator_close(monkeyp
             assert closed.is_set()
             calls.append('close')
     class Response:
+        headers = {}
         def aiter_bytes(self):return Iterator()
     async def verify(*args):pass
     monkeypatch.setattr(router,'verify_connected',verify)
@@ -124,6 +128,7 @@ async def test_model_cancel_during_successful_eof_cleanup_is_preserved(monkeypat
         async def aclose(self):
             closing.set();await release.wait();calls.append('close')
     class Response:
+        headers = {}
         def aiter_bytes(self):return Iterator()
     async def verify(*args):pass
     monkeypatch.setattr(router,'verify_connected',verify)
@@ -150,6 +155,7 @@ async def test_model_anyio_scope_cancel_drains_reader(monkeypatch):
             finally:cleaning.set();await release.wait();calls.append('read-finished')
         async def aclose(self):calls.append('close')
     class Response:
+        headers = {}
         def aiter_bytes(self):return Iterator()
     async def verify(*args):pass
     monkeypatch.setattr(router,'verify_connected',verify)

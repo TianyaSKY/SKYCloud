@@ -12,6 +12,7 @@ from fastapi.responses import RedirectResponse, HTMLResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from app.infra.http_wait import guarded_wait
+from app.infra.http_decode import ACCEPT_ENCODING, content_encoding, decoded_bytes
 from app.infra.async_stream import close_reader, drain_cleanup
 
 from app.infra.extensions import get_session_factory, SessionLocal
@@ -120,6 +121,7 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
     if request.headers.get('x-opencode-ticket') == '1':
         headers['x-opencode-ticket'] = '1'
     headers.update(auth_headers())
+    headers["Accept-Encoding"] = ACCEPT_ENCODING
     client = httpx.AsyncClient(timeout=httpx.Timeout(90, connect=5), trust_env=False, follow_redirects=False)
     lease = UpstreamLease(client)
     try:
@@ -135,6 +137,7 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
         upstream = await guarded_wait(open_response(), check=verify_headers,
             seconds=max(0.001, min(MAX_HEADER_SECONDS, payload['expires_at'] - time.time())),
             status=504, detail='Runtime UI upstream timed out', interval=HTTP_RECHECK_SECONDS, on_abort=lease.close)
+        content_encoding(upstream)
     except BaseException as exc:
         await lease.close()
         if isinstance(exc, httpx.HTTPError):
@@ -143,7 +146,7 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
     async def output():
         size = 0
         pending = None
-        iterator = upstream.aiter_bytes().__aiter__()
+        iterator = decoded_bytes(upstream, MAX_RESPONSE).__aiter__()
         deadline = time.monotonic() + max(0, payload['expires_at'] - time.time())
         failed = False
         try:

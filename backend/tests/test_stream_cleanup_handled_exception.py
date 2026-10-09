@@ -60,6 +60,7 @@ async def test_cleanup_cancellation_ignores_handled_caller_exception(monkeypatch
                 async for _ in response.body_iterator:pass
             elif kind=='model-reader':
                 class Response:
+                    headers = {}
                     def aiter_bytes(self):return Iterator()
                 async for _ in router.authorized_bytes(Response(),None,None):pass
             else:
