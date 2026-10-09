@@ -14,6 +14,32 @@ from app.models.workspace import WorkspaceMember
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
 
+def cancel_unclaimed_run(session, workspace_id, user_id, conversation_id, run_id):
+    """Compensate a prepared HTTP run whose worker never acquired its lease."""
+    run = (
+        session.query(AssistantRun)
+        .join(AssistantConversation, AssistantConversation.id == AssistantRun.conversation_id)
+        .filter(
+            AssistantRun.id == run_id,
+            AssistantRun.conversation_id == conversation_id,
+            AssistantConversation.workspace_id == workspace_id,
+            AssistantConversation.user_id == user_id,
+        )
+        .populate_existing()
+        .with_for_update(of=AssistantRun)
+        .first()
+    )
+    if (run is None or run.status in TERMINAL_RUN_STATUSES
+            or "worker_heartbeat_unix" in run.metadata_dict):
+        return False
+    message = session.get(AssistantMessage, run.assistant_message_id)
+    if message is not None:
+        message.status = "cancelled"
+    run.cancel_requested = True
+    update_run_status(run, "cancelled")
+    return True
+
+
 def get_conversation(
     session: Session,
     conversation_id: int,

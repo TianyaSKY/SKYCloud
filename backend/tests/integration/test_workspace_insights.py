@@ -1184,3 +1184,69 @@ async def test_legacy_chat_http_stops_after_committed_member_removal(postgres, m
     payloads=[json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
     assert any('权限已撤销' in payload.get('content','') for payload in payloads)
     assert closed.is_set()
+
+
+@pytest.mark.parametrize('leased', [False, True])
+async def test_prepared_response_header_failure_after_member_removal(postgres, leased):
+    from types import SimpleNamespace
+    from starlette.requests import ClientDisconnect
+    from app.features.assistant import repository, service
+    from app.features.assistant.stream_response import PreparedStreamResponse
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'admin')"))
+    factory = sessionmaker(bind=postgres)
+    with factory() as db:
+        workspace = SimpleNamespace(id=1)
+        conversation = service.create_conversation(db, workspace, 1, 'fast', 'test')
+        _, run, _ = service.prepare_run(db, workspace, 1, conversation.id, 'question')
+        scope = (1, 1, conversation.id, run.id)
+        if leased:
+            repository.touch_run_lease(db, run.id, 1)
+    with postgres.begin() as independent:
+        independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
+    entered = False
+    async def body():
+        nonlocal entered
+        entered = True
+        yield b'unreachable'
+    async def receive(): await asyncio.Event().wait()
+    async def send(message): raise OSError('header send failed')
+    response = PreparedStreamResponse(body(), session_factory=factory, run_scope=scope)
+    with pytest.raises(ClientDisconnect):
+        await response({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send)
+    assert not entered
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT status,cancel_requested FROM assistant_runs')).one() == (
+            'running' if leased else 'cancelled', not leased)
+        assert db.scalar(text("SELECT status FROM assistant_messages WHERE role='assistant'")) == (
+            'streaming' if leased else 'cancelled')
+
+
+def test_prepared_compensation_serializes_with_native_lease_claim(postgres):
+    from types import SimpleNamespace
+    from sqlalchemy.exc import DBAPIError
+    from app.features.assistant import repository, service
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'admin')"))
+    factory = sessionmaker(bind=postgres)
+    with factory() as db:
+        workspace = SimpleNamespace(id=1)
+        conversation = service.create_conversation(db, workspace, 1, 'fast', 'test')
+        _, run, _ = service.prepare_run(db, workspace, 1, conversation.id, 'question')
+        scope = (1, 1, conversation.id, run.id)
+        assert repository.cancel_unclaimed_run(db, *scope)
+        with postgres.connect() as independent:
+            independent.execute(text("SET lock_timeout='100ms'"))
+            with pytest.raises(DBAPIError) as error:
+                independent.execute(text("UPDATE assistant_runs SET metadata_json='{}' WHERE id=:id"), {'id': scope[-1]})
+            assert error.value.orig.pgcode == '55P03'
+            independent.rollback()
+        db.commit()
+    with factory() as independent:
+        assert repository.touch_run_lease(independent, scope[-1], 2) is False

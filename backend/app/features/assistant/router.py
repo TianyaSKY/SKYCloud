@@ -10,6 +10,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.dependencies import get_current_user, get_current_workspace
 from app.features.assistant import service
 from app.features.assistant.event_protocol import encode_sse
+from app.features.assistant.stream_response import PreparedStreamResponse
 from app.features.assistant.schemas import (
     AssistantConversationResponse, AssistantConversationListResponse,
     AssistantMessagesResponse, AssistantRunResponse,
@@ -211,8 +212,10 @@ async def stream_assistant_message(
             async for event in events:
                 yield encode_sse(event)
 
-    return StreamingResponse(
+    return PreparedStreamResponse(
         stream(),
+        session_factory=session_factory,
+        run_scope=(stream_workspace_id, stream_user_id, stream_conversation_id, stream_run_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
