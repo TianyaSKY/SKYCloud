@@ -2,8 +2,6 @@
 
 import asyncio
 import os
-import uuid
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 from dataclasses import dataclass
@@ -15,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.exceptions import ConflictError, ServiceOperationError
 from app.features.assistant import repository
+from app.features.assistant.engines.runtime_lease import runtime_lease as _runtime_lease
 from app.features.assistant.clients.opencode_auth import server_password, server_username
 from app.features.assistant.clients.opencode_client import OpenCodeClient, OpenCodeClientError, OpenCodeActionError
 from app.features.assistant.clients.opencode_events import (
@@ -24,7 +23,6 @@ from app.features.assistant.clients.opencode_events import (
 from app.features.assistant.event_protocol import AssistantEvent
 from app.features.workspace import docker_service, runtime_service
 from app.features.workspace.permissions import assert_can_write
-import app.infra.extensions as extensions
 from app.models.assistant import AssistantConversation, AssistantRun
 from app.models.workspace import Workspace
 
@@ -137,49 +135,6 @@ def _conversation_context(
     if conversation.source_conversation_id:
         lines.append(f"\n本会话由快速模式会话 {conversation.source_conversation_id} 转交。")
     return "\n".join(lines)
-
-
-_LOCAL_RUNTIME_LOCKS: dict[int, asyncio.Lock] = {}
-
-
-@asynccontextmanager
-async def _runtime_lease(runtime_id: int):
-    """Keep one expert run active per runtime, with Redis cross-worker lock."""
-
-    local_lock = _LOCAL_RUNTIME_LOCKS.setdefault(runtime_id, asyncio.Lock())
-    if local_lock.locked():
-        raise ConflictError("Expert runtime is already busy")
-    await local_lock.acquire()
-    redis_key = f"assistant:expert:runtime:{runtime_id}"
-    lock_token = uuid.uuid4().hex
-    redis_acquired = False
-    try:
-        try:
-            result = await asyncio.to_thread(
-                extensions.redis_client.set,
-                redis_key,
-                lock_token,
-                nx=True,
-                ex=int(os.getenv("ASSISTANT_RUNTIME_LOCK_TTL", "3600")),
-            )
-            if result is False or result is None:
-                raise ConflictError("Expert runtime is already busy")
-            redis_acquired = True
-        except ConflictError:
-            raise
-        except Exception:
-            # A Redis outage must not strand a local run. The local lock still
-            # protects a single API worker; deployment health should alert on
-            # the degraded cross-worker guarantee.
-            redis_acquired = False
-        yield
-    finally:
-        if redis_acquired:
-            try:
-                await asyncio.to_thread(extensions.redis_client.delete, redis_key)
-            except Exception:
-                pass
-        local_lock.release()
 
 
 @dataclass(frozen=True)

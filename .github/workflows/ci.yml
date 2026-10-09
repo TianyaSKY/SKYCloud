@@ -180,6 +180,7 @@ jobs:
         run: >-
           python -m pytest -o addopts='' -q
           tests/integration/test_expert_gateway.py
+          tests/integration/test_expert_runtime_lease.py
           tests/integration/test_runtime_ui_terminal.py
           tests/integration/test_refresh_sessions.py
 

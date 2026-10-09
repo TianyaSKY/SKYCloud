@@ -119,6 +119,8 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
     gateway.dependency_overrides[get_db] = database
     gateway.dependency_overrides[get_session_factory] = lambda: factory
     monkeypatch.setattr(quota, 'redis_client', infrastructure['redis'])
+    from app.infra import extensions
+    monkeypatch.setattr(extensions, 'redis_client', infrastructure['redis'])
     monkeypatch.setenv('CHAT_API_MODEL', model)
     monkeypatch.setenv('CHAT_API_KEY', provider_key)
     monkeypatch.setenv('OPENCODE_LLM_GATEWAY_URL', 'http://skycloud-llm-gateway:5002/v1')
@@ -403,6 +405,7 @@ with Session(engine) as session:
                         assert db.get(RuntimeOperation,first_generation).state == 'cancelled'
 
                     runtime = docker_service.runtime_service.get_runtime(db, ws_id, user_id)
+                    assert not infrastructure['redis'].exists(f'assistant:expert:runtime:{runtime.id}')
                     operation = db.query(RuntimeOperation).filter_by(workspace_id=ws_id,user_id=user_id,state='complete').one()
                     assert operation.state == 'complete' and operation.finished_at is not None
                     assert operation.candidate_container_id == runtime.container_id
