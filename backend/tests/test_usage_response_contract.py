@@ -5,7 +5,8 @@ from fastapi.testclient import TestClient
 from app.api.dependencies import get_current_user
 from app.exceptions import register_exception_handlers
 from app.features.token_usage import router as usage
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 from app.infra.datetime_utils import utc_now
 from app.models.token_usage_log import TokenUsageLog
 
@@ -16,6 +17,7 @@ def contract(session,test_user,admin_user):
     session.add(log);session.commit()
     app=FastAPI();register_exception_handlers(app);app.include_router(usage.router)
     app.dependency_overrides[get_db]=lambda:session
+    app.dependency_overrides[get_session_factory]=lambda:sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     app.dependency_overrides[get_current_user]=lambda:test_user
     return TestClient(app,raise_server_exceptions=False),app,test_user,admin_user,log
 
@@ -84,3 +86,16 @@ def test_stats_output_private_field_filtered_and_invalid_output_safe(contract,mo
     response=client.get('/token-usage/stats')
     assert response.status_code==500 and response.json()['error']['code']=='INTERNAL_ERROR'
     assert 'private-secret' not in response.text
+
+
+def test_usage_log_model_cascades_account_deletion(session, test_user, admin_user):
+    from sqlalchemy import delete, select
+    from app.models.user import User
+    session.add_all([
+        TokenUsageLog(user_id=test_user.id, action='chat', total_tokens=5),
+        TokenUsageLog(user_id=admin_user.id, action='chat', total_tokens=7),
+    ])
+    session.commit()
+    session.execute(delete(User).where(User.id == test_user.id))
+    session.commit()
+    assert session.execute(select(TokenUsageLog.user_id, TokenUsageLog.total_tokens)).all() == [(admin_user.id, 7)]

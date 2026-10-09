@@ -1,5 +1,5 @@
 from app.infra.utc_datetime import UTCDateTime
-from sqlalchemy import Column, Integer, String, Text
+from sqlalchemy import Column, Integer, String, Text, ForeignKey
 
 from app.infra.extensions import Base
 from app.infra.datetime_utils import utc_now, local_isoformat
@@ -11,7 +11,7 @@ class TokenUsageLog(Base):
     __tablename__ = "token_usage_logs"
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     # 调用场景：chat / embedding / rewrite / vl_describe / organize 等
     action = Column(String(50), nullable=False, index=True)
     model_name = Column(String(255), nullable=True)

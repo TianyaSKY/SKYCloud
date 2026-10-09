@@ -599,7 +599,7 @@ class TestTokenUsageRouter:
         from app.features.token_usage.router import my_token_stats
 
         with patch("app.features.token_usage.service.get_user_token_stats", return_value={"total": 100}):
-            result = my_token_stats(test_user, session)
+            result = my_token_stats(test_user, lambda: nullcontext(session))
         assert "total" in result["data"]
 
     def test_user_stats(self, session, test_user):
@@ -607,14 +607,14 @@ class TestTokenUsageRouter:
 
         with patch("app.features.auth.user_service.ensure_user_access"), \
              patch("app.features.token_usage.service.get_user_token_stats", return_value={}):
-            result = user_token_stats(test_user.id, test_user, session)
+            result = user_token_stats(test_user.id, test_user, lambda: nullcontext(session))
         assert result == {"success":True,"data":{}}
 
     def test_my_logs(self, session, test_user):
         from app.features.token_usage.router import my_usage_logs
 
         with patch("app.features.token_usage.service.get_usage_logs", return_value={"items": []}):
-            result = my_usage_logs(1, 20, None, None, None, test_user, session)
+            result = my_usage_logs(1, 20, None, None, None, test_user, lambda: nullcontext(session))
         assert "items" in result["data"]
 
     def test_user_logs(self, session, test_user):
@@ -622,14 +622,14 @@ class TestTokenUsageRouter:
 
         with patch("app.features.auth.user_service.ensure_user_access"), \
              patch("app.features.token_usage.service.get_usage_logs", return_value={"items": []}):
-            result = user_usage_logs(test_user.id, 1, 20, None, None, None, test_user, session)
+            result = user_usage_logs(test_user.id, 1, 20, None, None, None, test_user, lambda: nullcontext(session))
         assert "items" in result["data"]
 
     def test_my_daily(self, session, test_user):
         from app.features.token_usage.router import my_daily_stats
 
         with patch("app.features.token_usage.service.get_daily_stats", return_value=[]):
-            result = my_daily_stats(30, test_user, session)
+            result = my_daily_stats(30, test_user, lambda: nullcontext(session))
         assert result == {"success":True,"data":[]}
 
     def test_user_daily(self, session, test_user):
@@ -637,35 +637,35 @@ class TestTokenUsageRouter:
 
         with patch("app.features.auth.user_service.ensure_user_access"), \
              patch("app.features.token_usage.service.get_daily_stats", return_value=[]):
-            result = user_daily_stats(test_user.id, 30, test_user, session)
+            result = user_daily_stats(test_user.id, 30, test_user, lambda: nullcontext(session))
         assert result == {"success":True,"data":[]}
 
-    def test_admin_users_stats(self, session, test_user):
+    def test_admin_users_stats(self, session, admin_user):
         from app.features.token_usage.router import admin_all_users_stats
 
         with patch("app.features.token_usage.service.get_all_users_token_stats", return_value=[]):
-            result = admin_all_users_stats(test_user, session)
+            result = admin_all_users_stats(admin_user, lambda: nullcontext(session))
         assert result == {"success":True,"data":[]}
 
-    def test_admin_logs(self, session, test_user):
+    def test_admin_logs(self, session, admin_user):
         from app.features.token_usage.router import admin_all_logs
 
         with patch("app.features.token_usage.service.get_all_users_usage_logs", return_value={"items": []}):
-            result = admin_all_logs(1, 20, None, None, None, None, test_user, session)
+            result = admin_all_logs(1, 20, None, None, None, None, admin_user, lambda: nullcontext(session))
         assert "items" in result["data"]
 
-    def test_admin_daily(self, session, test_user):
+    def test_admin_daily(self, session, admin_user):
         from app.features.token_usage.router import admin_daily_stats
 
         with patch("app.features.token_usage.service.get_all_users_daily_stats", return_value=[]):
-            result = admin_daily_stats(30, test_user, session)
+            result = admin_daily_stats(30, admin_user, lambda: nullcontext(session))
         assert result == {"success":True,"data":[]}
 
-    def test_admin_per_user_daily(self, session, test_user):
+    def test_admin_per_user_daily(self, session, admin_user):
         from app.features.token_usage.router import admin_per_user_daily_stats
 
         with patch("app.features.token_usage.service.get_per_user_daily_stats", return_value=[]):
-            result = admin_per_user_daily_stats(30, test_user, session)
+            result = admin_per_user_daily_stats(30, admin_user, lambda: nullcontext(session))
         assert result == {"success":True,"data":[]}
 
 

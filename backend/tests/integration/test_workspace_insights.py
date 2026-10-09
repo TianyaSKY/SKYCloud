@@ -833,3 +833,48 @@ async def test_inbox_owned_http_routes_preserve_message_ownership(postgres):
         assert (await client.get('/inbox')).json()['data']['items'] == []
     with postgres.connect() as db:
         assert db.execute(text('SELECT id,is_read,is_deleted FROM inbox ORDER BY id')).all() == [(1,True,True),(2,False,False)]
+
+
+@pytest.mark.parametrize('change', ['demote', 'delete'])
+async def test_usage_owned_http_rejects_stale_admin_and_preserves_self_reads(postgres, change):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.api.dependencies import get_current_user, require_admin
+    from app.features.token_usage import router
+    from app.infra.extensions import get_session_factory
+    from app.exceptions import register_exception_handlers
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role,total_prompt_tokens,total_completion_tokens,total_tokens) VALUES (1,'actor','x','admin',2,3,5),(2,'other','x','common',7,11,18)"))
+        db.execute(text("INSERT INTO token_usage_logs(user_id,action,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES (1,'chat',2,3,5,now()),(2,'chat',7,11,18,now())"))
+    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    # Explicit stale authenticated identity; permissions and aggregate SQL are real.
+    identity = SimpleNamespace(id=1, role='admin')
+    app.dependency_overrides[get_current_user] = lambda: identity
+    app.dependency_overrides[require_admin] = lambda: identity
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
+    admin_paths = ['/admin/token-usage/users', '/admin/token-usage/logs',
+                   '/admin/token-usage/daily', '/admin/token-usage/daily/per-user']
+    foreign_paths = ['/token-usage/'+kind+'/2' for kind in ['stats','logs','daily']]
+    self_paths = ['/token-usage/'+kind+suffix for kind in ['stats','logs','daily'] for suffix in ['', '/1']]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+        for path in admin_paths + foreign_paths + self_paths:
+            first = await client.get(path)
+            assert first.status_code == 200, first.text
+        assert (await client.get('/admin/token-usage/daily')).json()['data'][0]['total_tokens'] == 23
+        assert (await client.get('/token-usage/stats/2')).json()['data']['total_tokens'] == 18
+        with postgres.begin() as independent:
+            independent.execute(text("UPDATE users SET role='common' WHERE id=1" if change == 'demote' else 'DELETE FROM users WHERE id=1'))
+        for path in admin_paths + foreign_paths:
+            response = await client.get(path)
+            assert response.status_code == 403, response.text
+        for path in self_paths:
+            response = await client.get(path)
+            assert response.status_code == (200 if change == 'demote' else 403), response.text
+        if change == 'demote':
+            assert (await client.get('/token-usage/stats')).json()['data']['total_tokens'] == 5
+            assert [row['user_id'] for row in (await client.get('/token-usage/logs')).json()['data']['items']] == [1]
+            assert (await client.get('/token-usage/daily')).json()['data'][0]['total_tokens'] == 5
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT user_id,total_tokens FROM token_usage_logs ORDER BY user_id')).all() == ([(1,5),(2,18)] if change == 'demote' else [(2,18)])
