@@ -194,6 +194,7 @@ def test_actual_redis_generation_fences_late_search_write(infrastructure, monkey
         return SimpleNamespace(items=[SimpleNamespace(to_dict=lambda: {'name': snapshot})], total=1)
     monkeypatch.setattr(search_service.repository, 'search_names', query)
     monkeypatch.setattr(search_service, '_search_revision', lambda *args: 0)
+    monkeypatch.setattr(search_service, '_search_cache_allowed', lambda *args, **kwargs: True)
     with ThreadPoolExecutor(max_workers=1) as executor:
         old = executor.submit(search_service._search_files_fuzzy, None, 1, 'name', 1, 10)
         try:
@@ -281,3 +282,42 @@ def test_sql_search_revision_is_atomic_scoped_and_covers_direct_writes(postgres)
         db.execute(text('DELETE FROM files WHERE id=:id'), {'id':file_id})
         db.commit()
         assert (revision(a), revision(b)) == (2, 2)
+
+
+@pytest.mark.parametrize('mode', ['dirty', 'flushed', 'direct-sql'])
+def test_rolled_back_search_does_not_publish_uncommitted_cache(postgres, infrastructure, monkeypatch, mode):
+    from app.models.file import File
+    from app.features.file import search_service
+    from sqlalchemy import text
+    upgrade(postgres)
+    factory = sessionmaker(bind=postgres)
+    admin = infrastructure['redis']
+    monkeypatch.setattr(cache, 'redis_client', admin)
+    with factory() as db:
+        user = User(username='uncommitted-cache-owner', password_hash='unused', role='common')
+        db.add(user); db.flush()
+        workspace = Workspace(name='uncommitted-cache', owner_id=user.id)
+        db.add(workspace); db.flush()
+        item = File(name='original-name', file_path='uncommitted-object', workspace_id=workspace.id)
+        db.add(item); db.commit()
+        workspace_id, file_id = workspace.id, item.id
+    with factory() as db:
+        assert search_service._search_files_fuzzy(db,workspace_id,'name',1,10)['items'][0]['name'] == 'original-name'
+    before = {key:admin.get(key) for key in admin.scan_iter(match=f'search:fuzzy:{workspace_id}:*')}
+    assert before, 'healthy read-only search must still populate the shared cache'
+    with factory() as db:
+        if mode == 'direct-sql':
+            db.execute(text('UPDATE files SET name=:name WHERE id=:id'), {'name':'uncommitted-name','id':file_id})
+        else:
+            db.get(File,file_id).name = 'uncommitted-name'
+            if mode == 'flushed':
+                db.flush()
+        assert search_service._search_files_fuzzy(db,workspace_id,'name',1,10)['items'][0]['name'] == 'uncommitted-name'
+        db.rollback()
+    after = {key:admin.get(key) for key in admin.scan_iter(match=f'search:fuzzy:{workspace_id}:*')}
+    assert after == before, 'uncommitted search result was published to shared Redis'
+    with factory() as db:
+        db.get(File,file_id).name = 'committed-name'
+        db.commit()
+    with factory() as db:
+        assert search_service._search_files_fuzzy(db,workspace_id,'name',1,10)['items'][0]['name'] == 'committed-name'

@@ -80,6 +80,7 @@ def cacheable(
         cache_none: bool = False,
         key: Optional[Callable] = None,
         generation_key: Optional[Callable] = None,
+        cache_allowed: Optional[Callable] = None,
 ):
     """先查 Redis，未命中再执行函数并写入。
 
@@ -87,11 +88,14 @@ def cacheable(
     :param expire: TTL 秒，默认 3600
     :param cache_none: False 时不缓存 None（对应 unless="#result == null"）
     :param key: 可选 ``(*args, **kwargs) -> Any`` 生成键后缀
+    :param cache_allowed: 可选同步检查，在读取和回写前决定是否允许共享缓存
     """
 
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
+            if cache_allowed is not None and not cache_allowed(*args, **kwargs):
+                return func(*args, **kwargs)
             cache_key = _build_cache_key(prefix, args, kwargs, key)
             try:
                 if generation_key is not None:
@@ -105,6 +109,8 @@ def cacheable(
                     cache_key = None  # Failed generation reads bypass caching.
 
             result = func(*args, **kwargs)
+            if cache_allowed is not None and not cache_allowed(*args, **kwargs):
+                return result
 
             if cache_key is not None and (result is not None or cache_none):
                 try:
@@ -118,6 +124,8 @@ def cacheable(
 
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
+            if cache_allowed is not None and not await run_owned(cache_allowed, *args, **kwargs):
+                return await func(*args, **kwargs)
             cache_key = _build_cache_key(prefix, args, kwargs, key)
             try:
                 if generation_key is not None:
@@ -131,6 +139,8 @@ def cacheable(
                     cache_key = None  # Failed generation reads bypass caching.
 
             result = await func(*args, **kwargs)
+            if cache_allowed is not None and not await run_owned(cache_allowed, *args, **kwargs):
+                return result
 
             if cache_key is not None and (result is not None or cache_none):
                 try:

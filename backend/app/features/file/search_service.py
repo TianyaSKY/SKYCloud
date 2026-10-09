@@ -5,7 +5,7 @@ Upload, object publication and multipart lifecycle belong to the file service.
 from app.infra.owned_work import run_owned
 from typing import Any
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, text
 from app.models.workspace import Workspace
 from loguru import logger
 from app.exceptions import PermissionDeniedError
@@ -61,6 +61,16 @@ async def search_files(
         }
 
 
+def _search_cache_allowed(session, *args, **kwargs):
+    if session.new or session.dirty or session.deleted:
+        return False
+    if session.get_bind().dialect.name == 'postgresql':
+        # Dirty ORM state is empty after flush/direct SQL. An assigned XID
+        # identifies a transaction which may still roll back its writes.
+        return session.scalar(text('SELECT pg_current_xact_id_if_assigned()')) is None
+    return not session.in_transaction()
+
+
 def _search_revision(session, workspace_id):
     return session.scalar(select(Workspace.search_cache_revision).where(Workspace.id == workspace_id)) or 0
 
@@ -68,6 +78,7 @@ def _search_revision(session, workspace_id):
 @cacheable(
     prefix=SEARCH_CACHE_PREFIX,
     expire=CACHE_EXPIRATION,
+    cache_allowed=lambda *args, **kwargs: _search_cache_allowed(*args, **kwargs),
     generation_key=lambda session, workspace_id, *args, **kwargs: f"{SEARCH_GENERATION_PREFIX}:{workspace_id}",
     key=lambda session, workspace_id, query, page, page_size, **_: f"{workspace_id}:sql:{_search_revision(session, workspace_id)}:{query}:{page}:{page_size}:fuzzy",
 )

@@ -1,4 +1,5 @@
 import threading
+import pytest
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from app.infra import cache
@@ -40,6 +41,7 @@ def test_completed_invalidation_cannot_be_undone_by_an_older_search(monkeypatch)
         return SimpleNamespace(items=[SimpleNamespace(to_dict=lambda: {'name': snapshot})], total=1)
     monkeypatch.setattr(search_service.repository, 'search_names', query)
     monkeypatch.setattr(search_service, '_search_revision', lambda *args: 0)
+    monkeypatch.setattr(search_service, '_search_cache_allowed', lambda *args, **kwargs: True)
     with ThreadPoolExecutor(max_workers=1) as executor:
         old = executor.submit(search_service._search_files_fuzzy, None, 1, 'name', 1, 10)
         try:
@@ -76,4 +78,35 @@ def test_failed_generation_read_bypasses_both_cache_read_and_write(monkeypatch):
         return {'current': True}
     assert query() == {'current': True}
     store.get.assert_called_once_with('scope')
+    store.setex.assert_not_called()
+
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
+@pytest.mark.parametrize('stage', ['before', 'after'])
+async def test_cache_policy_skips_shared_effects_when_transaction_becomes_unsafe(monkeypatch, asynchronous, stage):
+    from unittest.mock import MagicMock
+    store = MagicMock()
+    store.get.return_value = None
+    monkeypatch.setattr(cache, 'redis_client', store)
+    allowed = [stage != 'before']
+    def policy():
+        return allowed[0]
+    if asynchronous:
+        @cache.cacheable('policy', cache_allowed=policy)
+        async def query():
+            allowed[0] = False
+            return {'own-transaction': True}
+        result = await query()
+    else:
+        @cache.cacheable('policy', cache_allowed=policy)
+        def query():
+            allowed[0] = False
+            return {'own-transaction': True}
+        result = query()
+    assert result == {'own-transaction': True}
+    if stage == 'before':
+        store.get.assert_not_called()
+    else:
+        store.get.assert_called_once_with('policy')
     store.setex.assert_not_called()
