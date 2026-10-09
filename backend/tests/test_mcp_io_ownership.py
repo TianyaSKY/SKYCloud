@@ -82,7 +82,7 @@ async def test_mcp_search_worker_owned_session_scope_and_revocation(monkeypatch,
         assert threading.get_ident() == session.owner and workspace_id == 2
         return {'items': [{'id': 9}], 'total': 1}
     monkeypatch.setattr(server, 'SessionLocal', Session)
-    monkeypatch.setattr(server, 'assert_member', membership)
+    monkeypatch.setattr(search_service, 'assert_member', membership)
     monkeypatch.setattr(search_service, '_search_files_fuzzy', fetch)
     monkeypatch.setattr(search_service, '_search_files_vector_by_embedding', fetch)
     monkeypatch.setattr(search_service, 'embedding_desc', AsyncMock(return_value=[0.1]))
@@ -97,5 +97,6 @@ async def test_mcp_search_worker_owned_session_scope_and_revocation(monkeypatch,
             assert result['items'] == [{'id': 9}]
     finally:
         reset_mcp_context(token)
-    assert len(created) == 1 and closed == created
-    assert members == [(2, 1)]
+    expected = 2 if mode == 'vector' and not revoked else 1
+    assert len(created) == expected and closed == created
+    assert members == [(2, 1)] * expected

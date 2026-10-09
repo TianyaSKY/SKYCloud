@@ -220,3 +220,53 @@ def test_chat_chunk_query_holds_current_membership_until_session_close(indexed, 
     assert observed == [True]
     with postgres.begin() as independent:
         independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=:ws AND user_id=:actor'), {'ws':first,'actor':actor})
+
+
+@pytest.mark.parametrize('caller',['service','mcp'])
+@pytest.mark.parametrize('change',['allowed','before','after'])
+async def test_semantic_search_provider_admission_and_actual_usage(indexed,postgres,monkeypatch,change,caller):
+    from types import SimpleNamespace
+    from sqlalchemy import text
+    from app.exceptions import PermissionDeniedError
+    from app.features.file import search_service
+    from app.features.token_usage import service as usage
+    from app.infra.llm import client as llm
+    factory,first,second,identifiers=indexed
+    with factory() as db:actor=db.get(Workspace,first).owner_id
+    calls=[]
+    def revoke():
+        with postgres.begin() as db:
+            db.execute(text('DELETE FROM workspace_members WHERE workspace_id=:workspace AND user_id=:actor'),
+                       {'workspace':first,'actor':actor})
+    async def embed(**kwargs):
+        calls.append('provider')
+        if change=='after':revoke()
+        return SimpleNamespace(data=[SimpleNamespace(index=0,embedding=vector(1))],
+                               usage=SimpleNamespace(total_tokens=12,prompt_tokens=12))
+    monkeypatch.setattr(search_service,'get_embedding_model_config',lambda:{'api':'http://provider.test','key':'disposable','model':'embedding'})
+    # Only the provider SDK response is synthetic. Authorization, pgvector
+    # retrieval, receipt persistence and user aggregate update stay native.
+    monkeypatch.setattr(llm,'_get_client',lambda *args:SimpleNamespace(embeddings=SimpleNamespace(create=embed)))
+    monkeypatch.setattr(usage,'SessionLocal',factory)
+    async def search():
+        if caller=='service':
+            return await search_service.search_files(None,first,'query',search_type='semantic',session_factory=factory,user_id=actor)
+        from app.mcp import server
+        from app.mcp.context import McpRequestContext,set_mcp_context,reset_mcp_context
+        monkeypatch.setattr(server,'SessionLocal',factory)
+        token=set_mcp_context(McpRequestContext(user_id=actor,workspace_id=first,role='viewer'))
+        try:return json.loads(await server.search_files('query',search_type='vector'))
+        finally:reset_mcp_context(token)
+    if change=='before':revoke()
+    if change=='allowed':
+        result=await search()
+        assert result['total']==3 and result['items'][0]['id']==identifiers[0]
+        assert all(item['workspace_id']==first for item in result['items'])
+    else:
+        with pytest.raises((PermissionDeniedError,PermissionError)):
+            await search()
+    assert calls==([] if change=='before' else ['provider'])
+    with postgres.connect() as db:
+        logs=db.execute(text('SELECT user_id,total_tokens FROM token_usage_logs')).all()
+        assert logs==([] if change=='before' else [(actor,12)])
+        assert db.scalar(text('SELECT total_tokens FROM users WHERE id=:actor'),{'actor':actor})==(0 if change=='before' else 12)

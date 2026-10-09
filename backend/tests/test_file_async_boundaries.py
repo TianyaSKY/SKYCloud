@@ -20,7 +20,7 @@ async def test_semantic_search_uses_embedding_and_vector_adapter(monkeypatch, se
     session = Mock()
     result = await service.search_files(session, 2, 'query', 1, 10, search_type)
     assert result['items'] == [{'id': 8}]
-    embedding.assert_awaited_once_with('query', {'configured': True})
+    embedding.assert_awaited_once_with('query', {'configured': True}, user_id=0)
     vector.assert_called_once_with(session, 2, [0.1, 0.2], 1, 10)
     fuzzy.assert_not_called()
 
@@ -139,4 +139,4 @@ async def test_http_reads_own_session_and_membership_check_on_worker(monkeypatch
             release.set()
             result = await pending
     assert result.status_code == 200
-    assert len(sessions) == 1 and checks == sessions and closed == sessions
+    assert len(sessions) == (2 if mode == 'semantic' else 1) and checks == sessions and closed == sessions

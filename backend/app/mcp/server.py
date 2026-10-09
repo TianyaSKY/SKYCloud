@@ -157,16 +157,13 @@ async def search_files(
               如果需要按文件内容查找，请使用 vector 模式。
     """
     context = _require_read_context()
-    strict = is_mcp_request_active() or get_optional_mcp_context() is not None
     @contextmanager
     def search_session():
         with worker_session(SessionLocal) as session:
-            if strict:
-                assert_member(session, context.workspace_id, context.user_id)
             yield session
     result = await file_service.search_files(
         None, context.workspace_id, query, page, page_size, search_type,
-        session_factory=search_session,
+        session_factory=search_session, user_id=context.user_id,
     )
     return json.dumps(result, ensure_ascii=False, default=str)
 

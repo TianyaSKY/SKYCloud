@@ -25,14 +25,16 @@ async def search_files(
         search_type: str = "fuzzy",
         *, session_factory=None, user_id: int | None = None,
 ) -> dict[str, Any]:
-    async def execute(function, *args):
+    async def execute(function=None, *args):
         def work():
             if session_factory is not None:
                 with session_factory() as owned_session:
                     if user_id is not None:
                         assert_member(owned_session, workspace_id, user_id)
-                    return function(owned_session, *args)
-            return function(session, *args)
+                    return function(owned_session, *args) if function is not None else None
+            if user_id is not None:
+                assert_member(session, workspace_id, user_id)
+            return function(session, *args) if function is not None else None
         return await asyncio.to_thread(work)
 
     if not query:
@@ -42,7 +44,9 @@ async def search_files(
         return await execute(_search_files_fuzzy, workspace_id, query, page, page_size)
 
     try:
-        embeddings = await embedding_desc(query, get_embedding_model_config())
+        if user_id is not None:
+            await execute()  # Authorize before spending provider resources.
+        embeddings = await embedding_desc(query, get_embedding_model_config(), user_id=user_id or 0)
         return await execute(_search_files_vector_by_embedding, workspace_id, embeddings, page, page_size)
     except (PermissionDeniedError, PermissionError):
         raise
