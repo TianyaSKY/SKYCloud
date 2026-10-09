@@ -7,16 +7,18 @@ import logging
 import os
 import socket
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, aclosing
 from typing import Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
+from runtime_controller.http_decode import ACCEPT_ENCODING, content_encoding, decoded_bytes
+from runtime_controller.http_stream import UpstreamLease, UpstreamResponse
 from runtime_controller.engine import Engine, MissingRuntime, PolicyViolation, MissingGenerationCandidate
 from runtime_controller.policy import Settings
 from runtime_controller.socket_relay import direct_connect, pump, terminal_path, SocketSlots, MAX_MESSAGE
@@ -230,53 +232,57 @@ def create_app(settings=None, engine=None):
         timeout = httpx.Timeout(2, connect=1) if path == "global/health" else httpx.Timeout(90, connect=5)
         client = httpx.AsyncClient(auth=auth, timeout=timeout, trust_env=False, follow_redirects=False)
         response = None
+        lease = UpstreamLease(client)
         try:
             headers = {key: request.headers[key] for key in ("content-type", "accept") if key in request.headers}
+            headers["Accept-Encoding"] = ACCEPT_ENCODING
             if is_ui and request.headers.get("x-opencode-ticket") == "1":
                 headers["x-opencode-ticket"] = "1"
             upstream = client.build_request(request.method, target + "/" + path,
                                             params=list(request.query_params.multi_items()), content=await request.body(), headers=headers)
             response = await client.send(upstream, stream=True)
+            lease.upstream = response
+            content_encoding(response)
         except httpx.HTTPError as exc:
             logging.warning("Runtime relay transport failed: %s", type(exc).__name__)
-            await client.aclose()
+            await lease.close()
             raise HTTPException(502, "Runtime unavailable") from exc
         except BaseException:
-            await client.aclose()
+            await lease.close()
             raise
         is_event = "text/event-stream" in response.headers.get("content-type", "")
         if not is_event:
             try:
                 output = bytearray()
                 deadline = time.monotonic() + 120
-                async for chunk in response.aiter_bytes():
-                    if len(output) + len(chunk) > MAX_RESPONSE or time.monotonic() > deadline:
-                        raise HTTPException(502, "Runtime response limit exceeded")
-                    output.extend(chunk)
+                async with aclosing(decoded_bytes(response, MAX_RESPONSE)) as parts:
+                    async for chunk in parts:
+                        if len(output) + len(chunk) > MAX_RESPONSE or time.monotonic() > deadline:
+                            raise HTTPException(502, "Runtime response limit exceeded")
+                        output.extend(chunk)
                 return Response(bytes(output), status_code=response.status_code,
                                 headers={"Content-Type": response.headers.get("content-type", "application/json")})
             except httpx.HTTPError as exc:
                 raise HTTPException(502, "Runtime unavailable") from exc
             finally:
-                await response.aclose()
-                await client.aclose()
+                await lease.close()
 
         async def events():
             total = 0
             deadline = time.monotonic() + 3600
             try:
-                async for chunk in response.aiter_bytes():
-                    total += len(chunk)
-                    if total > MAX_RESPONSE or time.monotonic() > deadline:
-                        break
-                    yield chunk
+                async with aclosing(decoded_bytes(response, MAX_RESPONSE)) as parts:
+                    async for chunk in parts:
+                        total += len(chunk)
+                        if total > MAX_RESPONSE or time.monotonic() > deadline:
+                            break
+                        yield chunk
             except httpx.HTTPError:
                 return
             finally:
-                await response.aclose()
-                await client.aclose()
+                await lease.close()
 
-        return StreamingResponse(events(), status_code=response.status_code,
+        return UpstreamResponse(events(), lease=lease, status_code=response.status_code,
                                  media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 
     return app

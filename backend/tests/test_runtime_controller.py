@@ -536,3 +536,39 @@ def test_retired_scan_skips_busy_shard_then_retries_without_losing_fence(setting
         managed_container.remove.assert_not_called()
     assert Engine(settings,client).reconcile_retired()==1
     managed_container.remove.assert_called_once_with(force=True,v=True)
+
+
+@pytest.mark.parametrize('path,event',[('http/global/health',False),('http/event',True),('ui/event',True)])
+@pytest.mark.parametrize('mode',['valid','oversize','truncated','unsupported'])
+def test_controller_bounded_compression_and_release(settings,monkeypatch,path,event,mode):
+    import gzip
+    from runtime_controller import app as controller_app
+    engine=Mock();engine.target.return_value=('http://runtime.test',('server','secret'))
+    monkeypatch.setattr(controller_app,'MAX_RESPONSE',1024)
+    real_client=httpx.AsyncClient
+    clients,responses=[],[]
+    expected=b'data: valid\n\n' if event else b'{"healthy":true}'
+    class Stream(httpx.AsyncByteStream):
+        closed=False
+        async def __aiter__(self):
+            if mode=='unsupported':raise AssertionError('unnegotiated content must not be read')
+            yield gzip.compress(expected if mode=='valid' else b'x'*4096)[:-1] if mode=='truncated' else gzip.compress(expected if mode=='valid' else b'x'*4096)
+        async def aclose(self):self.closed=True
+    def provider(request):
+        assert request.headers['accept-encoding']=='gzip, deflate, identity'
+        stream=Stream()
+        response=httpx.Response(200,headers={'content-encoding':'br' if mode=='unsupported' else 'gzip',
+                                            'content-type':'text/event-stream' if event else 'application/json'},stream=stream)
+        responses.append((response,stream));return response
+    def client(**kwargs):
+        opened=real_client(transport=httpx.MockTransport(provider),**kwargs)
+        clients.append(opened);return opened
+    monkeypatch.setattr(controller_app.httpx,'AsyncClient',client)
+    response=TestClient(create_app(settings,engine)).get('/runtimes/'+'a'*64+'/'+path,
+                              headers={'X-Runtime-Controller-Token':settings.token})
+    assert response.status_code==(502 if mode=='unsupported' or (not event and mode!='valid') else 200)
+    if mode=='valid':assert response.content==expected
+    if event and mode=='oversize':assert response.content==b''
+    if mode=='unsupported':assert response.json()=={'detail':'Runtime unavailable'}
+    assert all(c.is_closed for c in clients)
+    assert all(r.is_closed and s.closed for r,s in responses)

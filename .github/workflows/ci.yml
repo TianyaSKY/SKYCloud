@@ -150,6 +150,7 @@ jobs:
           tests/integration/test_server_diagnostics.py
           tests/integration/test_cache_audit_diagnostics.py
           tests/integration/test_controller_diagnostics.py
+          tests/integration/test_controller_decompression.py
       - name: Authenticated uploads, object recovery and indexing workflows
         working-directory: backend
         env:

@@ -5,6 +5,21 @@ from starlette.requests import ClientDisconnect
 from app.features.workspace import ui_stream
 
 
+@pytest.fixture(autouse=True, params=['backend', 'controller'])
+def stream_surface(request, monkeypatch):
+    if request.param == 'controller':
+        import sys
+        from runtime_controller import http_stream
+        monkeypatch.setattr(sys.modules[__name__], 'ui_stream', http_stream)
+
+
+def capture_logs(monkeypatch, logs):
+    if hasattr(ui_stream, 'logger'):
+        monkeypatch.setattr(ui_stream.logger, 'error', lambda message, *args: logs.append(message.format(*args)))
+    else:
+        monkeypatch.setattr(ui_stream.logging, 'error', lambda message, *args: logs.append(message % args))
+
+
 @pytest.mark.parametrize('phase',['header','body','cancel','normal'])
 @pytest.mark.parametrize('fault',['none','response','client','both'])
 async def test_delivery_outcome_and_both_resources_closed_once(monkeypatch,phase,fault):
@@ -16,7 +31,7 @@ async def test_delivery_outcome_and_both_resources_closed_once(monkeypatch,phase
             if fault in (self.name,'both'):raise RuntimeError('private-upstream-url')
     lease=ui_stream.UpstreamLease(Resource('client'))
     lease.upstream=Resource('response')
-    monkeypatch.setattr(ui_stream.logger,'error',lambda msg,*args:logs.append(msg.format(*args)))
+    capture_logs(monkeypatch, logs)
     closed=[]
     async def body():
         try:yield b'allowed'
@@ -76,7 +91,7 @@ async def test_upstream_response_drains_iterator_before_resources(monkeypatch,de
             assert calls[0]=='iterator'
             calls.append(self.name)
     lease=ui_stream.UpstreamLease(Resource('client'));lease.upstream=Resource('response')
-    monkeypatch.setattr(ui_stream.logger,'error',lambda message,*args:logs.append(message.format(*args)))
+    capture_logs(monkeypatch, logs)
     response=ui_stream.UpstreamResponse(Body(),lease=lease)
     async def receive():await asyncio.Event().wait()
     async def send(message):
