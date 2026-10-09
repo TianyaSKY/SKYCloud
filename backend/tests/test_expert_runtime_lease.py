@@ -20,10 +20,12 @@ class Store:
     def delete(self, key):
         return self.values.pop(key, None) is not None
 
-    def eval(self, script, keys, key, token):
+    def eval(self, script, keys, key, token, *args):
         assert keys == 1
         if self.values.get(key) != token:
             return 0
+        if args:
+            return 1
         return self.delete(key)
 
 
@@ -132,3 +134,77 @@ async def test_busy_redis_lease_is_not_deleted_by_failed_acquirer(monkeypatch):
             pytest.fail('busy lease admitted')
     assert store.values['assistant:expert:runtime:81005'] == 'other-worker'
     assert not engine._LOCAL_RUNTIME_LOCKS[81005].locked()
+
+
+@pytest.mark.parametrize('loss', ['replacement', 'outage'])
+async def test_renewal_loss_stops_body_and_aborts_before_releasing(monkeypatch, loss):
+    store = Store()
+    aborted = []
+    body_entered = asyncio.Event()
+    key = 'assistant:expert:runtime:81006'
+    monkeypatch.setenv('ASSISTANT_RUNTIME_LOCK_TTL', '1')
+    real_eval = store.eval
+    def evaluate(script, *args):
+        if len(args) > 3:
+            if loss == 'outage':
+                raise ConnectionError('private-redis-url')
+            store.values[key] = 'successor-worker'
+        return real_eval(script, *args)
+    store.eval = evaluate
+    monkeypatch.setattr(engine.extensions, 'redis_client', store)
+    async def abort():
+        aborted.append(True)
+    async def caller():
+        async with engine.runtime_lease(81006, on_lost=abort):
+            body_entered.set()
+            await asyncio.Event().wait()
+    pending = asyncio.create_task(caller())
+    try:
+        with pytest.raises(ServiceOperationError) as error:
+            await asyncio.wait_for(pending, 2)
+        assert 'private-redis-url' not in str(error.value)
+        assert body_entered.is_set() and aborted == [True]
+    finally:
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+    assert store.values == ({key: 'successor-worker'} if loss == 'replacement' else {})
+    assert not engine._LOCAL_RUNTIME_LOCKS[81006].locked()
+
+
+async def test_renewal_deadline_aborts_before_slow_redis_worker_finishes(monkeypatch):
+    store = Store()
+    entered, release = threading.Event(), threading.Event()
+    aborted = asyncio.Event()
+    stopped = []
+    real_eval = store.eval
+    def held_renew(script, *args):
+        result = real_eval(script, *args)
+        if len(args) > 3:
+            entered.set()
+            assert release.wait(3)
+        return result
+    store.eval = held_renew
+    monkeypatch.setattr(engine.extensions, 'redis_client', store)
+    monkeypatch.setenv('ASSISTANT_RUNTIME_LOCK_TTL', '1')
+    async def abort():
+        aborted.set()
+    async def caller():
+        async with engine.runtime_lease(81007, on_lost=abort):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.append(True)
+    pending = asyncio.create_task(caller())
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        await asyncio.wait_for(aborted.wait(), 2)
+        assert stopped == [True] and not pending.done()
+        pending.cancel('repeat-stop')
+        await asyncio.sleep(.01)
+        assert not pending.done() and engine._LOCAL_RUNTIME_LOCKS[81007].locked()
+    finally:
+        release.set()
+        with pytest.raises(ServiceOperationError):
+            await asyncio.wait_for(pending, 1)
+    assert not store.values and not engine._LOCAL_RUNTIME_LOCKS[81007].locked()

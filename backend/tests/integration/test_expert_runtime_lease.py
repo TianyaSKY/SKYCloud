@@ -93,3 +93,49 @@ async def test_native_lease_admission_and_atomic_token_release(infrastructure, m
                 pytest.fail('failed Redis admission must not execute expert work')
         assert client.get(key) == ('other-worker' if outcome == 'busy' else None)
     assert not engine._LOCAL_RUNTIME_LOCKS[92002].locked()
+
+
+async def test_native_lease_stays_owned_beyond_original_ttl(infrastructure, monkeypatch):
+    client = infrastructure['redis']
+    key = 'assistant:expert:runtime:92003'
+    monkeypatch.setattr(engine.extensions, 'redis_client', client)
+    monkeypatch.setenv('ASSISTANT_RUNTIME_LOCK_TTL', '1')
+    async with engine.runtime_lease(92003):
+        token = client.get(key)
+        assert token is not None
+        await asyncio.sleep(2.1)
+        assert client.get(key) == token, 'active expert lease expired while its task still runs'
+        assert client.set(key, 'other-worker', nx=True, ex=60) is None
+    assert not client.exists(key)
+
+
+@pytest.mark.parametrize('loss', ['replacement', 'outage'])
+async def test_native_renewal_loss_aborts_owner_and_preserves_successor(infrastructure, monkeypatch, loss):
+    client = infrastructure['redis']
+    key = 'assistant:expert:runtime:92004'
+    aborted, stopped = [], []
+    class Proxy:
+        def set(self, *args, **kwargs):
+            return client.set(*args, **kwargs)
+
+        def eval(self, script, *args):
+            if len(args) > 3:
+                if loss == 'outage':
+                    raise ConnectionError('synthetic-renewal-unavailable')
+                client.set(key, 'successor-worker', ex=60)
+            return client.eval(script, *args)
+    monkeypatch.setattr(engine.extensions, 'redis_client', Proxy())
+    monkeypatch.setenv('ASSISTANT_RUNTIME_LOCK_TTL', '1')
+    async def abort():
+        aborted.append(True)
+    async def caller():
+        async with engine.runtime_lease(92004, on_lost=abort):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.append(True)
+    with pytest.raises(ServiceOperationError):
+        await asyncio.wait_for(caller(), 2)
+    assert aborted == stopped == [True]
+    assert client.get(key) == ('successor-worker' if loss == 'replacement' else None)
+    assert not engine._LOCAL_RUNTIME_LOCKS[92004].locked()

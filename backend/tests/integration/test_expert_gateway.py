@@ -50,7 +50,7 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None)],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
@@ -63,6 +63,18 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
                 return False
             return await original_json(client,method,path,**kwargs)
         monkeypatch.setattr(OpenCodeClient,'_json',unconfirmed_permission)
+    lease_abort_acks = []
+    provider_disconnected = threading.Event()
+    replaced_lease_keys = []
+    if missing_candidate == 'lease-loss':
+        monkeypatch.setenv('ASSISTANT_RUNTIME_LOCK_TTL', '1')
+        from app.features.assistant.clients.opencode_client import OpenCodeClient
+        actual_abort = OpenCodeClient.abort_session
+        async def observe_lease_abort(client, session_id):
+            result = await actual_abort(client, session_id)
+            lease_abort_acks.append(result)
+            return result
+        monkeypatch.setattr(OpenCodeClient, 'abort_session', observe_lease_abort)
     disconnects = []
     if missing_candidate == 'completed-disconnect':
         from app.features.assistant.clients.opencode_client import OpenCodeClient, OpenCodeClientError
@@ -93,6 +105,18 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
         assert request.headers.get('authorization') == 'Bearer ' + provider_key
         assert body['model'] == model
         requests.append(body)
+        if missing_candidate == 'lease-loss':
+            # All SQL, Controller, OpenCode and Redis operations are native.
+            # Only model output is synthetic, held until its caller aborts.
+            keys = list(infrastructure['redis'].scan_iter('assistant:expert:runtime:*'))
+            assert len(keys) == 1
+            replaced_lease_keys.extend(keys)
+            infrastructure['redis'].set(keys[0], 'successor-worker', ex=60)
+            deadline = time.monotonic() + 10
+            while not await request.is_disconnected():
+                assert time.monotonic() < deadline, 'native model transport did not disconnect after lease loss'
+                await asyncio.sleep(.01)
+            provider_disconnected.set()
         reply = {'id': 'chatcmpl-test', 'object': 'chat.completion', 'created': int(time.time()), 'model': model,
                  'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'E2E_GATEWAY_OK'}, 'finish_reason': 'stop'}],
                  'usage': {'prompt_tokens': 20, 'completion_tokens': 5, 'total_tokens': 25}}
@@ -316,6 +340,16 @@ with Session(engine) as session:
                     if permission_response == 'auth-version':
                         return
                     db.refresh(run)
+                    if missing_candidate == 'lease-loss':
+                        assert run.status in ('failed', 'cancelled')
+                        assert not any(event.type == 'done' for event in events)
+                        assert not any(event.type == 'token' for event in events)
+                        assert lease_abort_acks and all(lease_abort_acks)
+                        assert provider_disconnected.wait(5), 'provider HTTP remained open after acknowledged OpenCode abort'
+                        assert len(replaced_lease_keys) == 1
+                        assert infrastructure['redis'].get(replaced_lease_keys[0]) == 'successor-worker'
+                        assert repository.get_messages(db, conversation.id)[-1].content == ''
+                        return
                     if permission_response in ('demote','remove'):
                         assert run.status == 'cancelled'
                         assert run.pending_permission_id is None

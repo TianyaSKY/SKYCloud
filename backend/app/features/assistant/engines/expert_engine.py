@@ -292,7 +292,7 @@ class ExpertEngine:
             yield status_event
 
         assert connection is not None
-        async with _runtime_lease(connection.runtime_id):
+        async with _runtime_lease(connection.runtime_id, on_lost=controller.request_cancel):
             base_url = connection.base_url
             password = server_password(connection.runtime_id, user_id, workspace_id)
             agent = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
