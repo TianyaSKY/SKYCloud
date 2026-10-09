@@ -675,10 +675,14 @@ def request_cancel(
     run = repository.get_owned_run(session, run_id, int(workspace.id), int(user_id))
     if run is None:
         raise ResourceNotFoundError("Assistant run not found")
+    run = repository.lock_run(session, run_id)
+    if run is None:
+        raise ResourceNotFoundError("Assistant run not found")
     if run.engine == "expert":
         assert_can_write(session, int(workspace.id), int(user_id))
     if run.status in repository.TERMINAL_RUN_STATUSES:
         return run
+    abort_repository.stage(session, run)
     run.cancel_requested = True
     session.commit()
     return run

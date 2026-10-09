@@ -50,7 +50,7 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel'),('once',False,'command-crash'),(None,False,'lease-before-sql'),(None,False,'lease-set-reply')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel','command-crash','lease-before-sql','lease-set-reply'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel'),('once',False,'command-crash'),(None,False,'lease-before-sql'),(None,False,'lease-set-reply'),('once',False,'command-cancel-retry')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel','command-crash','lease-before-sql','lease-set-reply','command-cancel-retry'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
@@ -66,11 +66,14 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
     lease_abort_acks = []
     provider_disconnected = threading.Event()
     replaced_lease_keys = []
-    if missing_candidate in ('lease-loss','command-lease-loss','command-cancel'):
+    if missing_candidate in ('lease-loss','command-lease-loss','command-cancel','command-cancel-retry'):
         monkeypatch.setenv('ASSISTANT_RUNTIME_LOCK_TTL', '1')
         from app.features.assistant.clients.opencode_client import OpenCodeClient
         actual_abort = OpenCodeClient.abort_session
         async def observe_lease_abort(client, session_id):
+            if missing_candidate == 'command-cancel-retry':
+                from app.features.assistant.clients.opencode_client import OpenCodeClientError
+                raise OpenCodeClientError('Synthetic control outage')
             result = await actual_abort(client, session_id)
             lease_abort_acks.append(result)
             return result
@@ -122,9 +125,9 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
                  'usage': {'prompt_tokens': 20, 'completion_tokens': 5, 'total_tokens': 25}}
         tool_request = permission_response is not None and any(tool.get('function', {}).get('name') == 'bash' for tool in body.get('tools', [])) and not any(message.get('role') == 'tool' for message in body['messages'])
         command = "printf 'AUTHORIZED_ONLY'"
-        if missing_candidate in ('command-lease-loss','command-cancel','command-crash'):
+        if missing_candidate in ('command-lease-loss','command-cancel','command-crash','command-cancel-retry'):
             command += """; sleep 4 & child=$!; printf '%s %s' "$$" "$child" > /tmp/skycloud-command-pids; wait "$child"; printf LATE > /tmp/skycloud-command-late"""
-        if missing_candidate == 'command-crash':
+        if missing_candidate in ('command-crash','command-cancel-retry'):
             command = command.replace('sleep 4 &', 'sleep 60 &')
         call = {'id': 'call_skycloud_test', 'type': 'function', 'function': {'name': 'bash', 'arguments': json.dumps({'command': command, 'description': 'Print synthetic test marker'})}}
         if tool_request:
@@ -525,7 +528,7 @@ asyncio.run(run())
                                         else:
                                             service.respond_permission(responder, responder.get(Workspace, ws_id), user_id, run.id, event.payload['permission_id'], 'once' if permission_response == 'unconfirmed' else permission_response)
                                 await asyncio.to_thread(respond_from_worker)
-                                if missing_candidate in ('command-lease-loss','command-cancel'):
+                                if missing_candidate in ('command-lease-loss','command-cancel','command-cancel-retry'):
                                     command_observers.append(asyncio.create_task(interrupt_started_command()))
                         if command_observers:
                             await asyncio.gather(*command_observers)
@@ -534,16 +537,42 @@ asyncio.run(run())
                     if permission_response == 'auth-version':
                         return
                     db.refresh(run)
-                    if missing_candidate in ('command-lease-loss','command-cancel'):
+                    if missing_candidate in ('command-lease-loss','command-cancel','command-cancel-retry'):
                         assert command_state, 'command cancellation boundary was not exercised'
                         assert run.status in ('failed','cancelled')
                         assert not any(event.type == 'done' for event in events)
-                        assert lease_abort_acks and all(lease_abort_acks)
+                        if missing_candidate == 'command-cancel-retry':
+                            from app.infra.assistant_abort import abort_pending_sessions
+                            from app.models.assistant_runtime_abort import AssistantRuntimeAbort
+                            from app.infra.datetime_utils import utc_now
+                            from datetime import timedelta
+                            from app.features.assistant.clients.opencode_client import OpenCodeClient
+                            with factory() as reader:
+                                intent = reader.get(AssistantRuntimeAbort,run.id)
+                                assert intent is not None and intent.completed_at is None
+                                assert intent.session_id == run.opencode_session_id
+                                from app.exceptions import ConflictError
+                                with pytest.raises(ConflictError, match='cleanup'):
+                                    service.prepare_run(reader,reader.get(Workspace,ws_id),user_id,conversation.id,'new work')
+                            probe = docker('exec',command_state['container'],'cat',f"/proc/{command_state['pids'][0]}/stat",check=False)
+                            assert probe.returncode == 0 and probe.stdout.rsplit(')',1)[1].split()[0] != 'Z', 'control outage did not leave a running command to recover'
+                            assert abort_pending_sessions(session_factory=factory)==0
+                            with factory() as writer:
+                                intent = writer.get(AssistantRuntimeAbort,run.id)
+                                assert intent.attempts == 1 and intent.completed_at is None
+                                intent.next_attempt_at = utc_now()-timedelta(seconds=1)
+                                writer.commit()
+                            monkeypatch.setattr(OpenCodeClient,'abort_session',actual_abort)
+                            assert abort_pending_sessions(session_factory=factory)==1
+                            assert abort_pending_sessions(session_factory=factory)==0
+                        else:
+                            assert lease_abort_acks and all(lease_abort_acks)
                         for pid in command_state['pids']:
                             result = docker('exec', command_state['container'], 'cat', f'/proc/{pid}/stat', check=False)
                             if result.returncode == 0:
                                 assert result.stdout.rsplit(')', 1)[1].split()[0] == 'Z', 'granted command process still executing after acknowledged abort'
-                        time.sleep(max(0, command_state['started'] + 4.5 - time.monotonic()))
+                        if missing_candidate != 'command-cancel-retry':
+                            time.sleep(max(0, command_state['started'] + 4.5 - time.monotonic()))
                         assert docker('exec', command_state['container'], 'test', '-e', '/tmp/skycloud-command-late', check=False).returncode == 1
                         assert len(requests) == 1, 'aborted command triggered a later model call'
                         runtime = docker_service.runtime_service.get_runtime(db, ws_id, user_id)

@@ -207,3 +207,32 @@ def test_paused_expert_cannot_resume_provider_work_after_run_ends(seeded, state,
         conversation = db.get(AssistantConversation, identity[3])
         assert conversation.opencode_session_id is None
         assert db.get(AssistantRun, identity[-1]).opencode_session_id == 'captured-session'
+
+
+def test_explicit_cancel_atomically_stages_remote_cleanup_and_blocks_new_run(seeded):
+    factory, identity = seeded
+    with factory() as db:
+        service.request_cancel(db, db.get(Workspace, identity[1]), identity[0], identity[-1])
+    with factory() as db:
+        assert db.get(AssistantRun, identity[-1]).cancel_requested
+        intent = db.get(AssistantRuntimeAbort, identity[-1])
+        assert intent is not None and intent.session_id == 'captured-session'
+        db.get(AssistantRun, identity[-1]).status = 'cancelled'
+        db.commit()
+        with pytest.raises(ConflictError, match='cleanup'):
+            service.prepare_run(db, db.get(Workspace, identity[1]), identity[0], identity[3], 'new work')
+
+
+@pytest.mark.parametrize('status', ['cancelled', 'failed'])
+def test_interrupted_stream_finish_atomically_stages_remote_cleanup(seeded, status):
+    from app.features.assistant.stream_persistence import StreamPersistence
+    from app.models.assistant import AssistantConversation
+    factory, identity = seeded
+    with factory() as db:
+        persistence = StreamPersistence(db, db.get(Workspace, identity[1]), identity[0],
+            db.get(AssistantConversation, identity[3]), db.get(AssistantRun, identity[-1]))
+        assert persistence.finish(status, '', {}, {}, [], None) == status
+    with factory() as db:
+        assert db.get(AssistantRun, identity[-1]).status == status
+        intent = db.get(AssistantRuntimeAbort, identity[-1])
+        assert intent is not None and intent.session_id == 'captured-session'

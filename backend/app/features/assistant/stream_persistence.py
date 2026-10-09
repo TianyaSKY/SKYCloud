@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app.exceptions import ConflictError, ResourceNotFoundError
 from app.features.workspace.permissions import assert_member, assert_can_write, get_member_role
-from app.features.assistant import repository
+from app.features.assistant import repository, abort_repository
 from app.models.assistant import AssistantMessage, AssistantRun
 
 
@@ -111,11 +111,15 @@ class StreamPersistence:
             self.session.commit()
             return None
         if run.status in repository.TERMINAL_RUN_STATUSES:
+            if run.status in {"failed", "cancelled"}:
+                abort_repository.stage(self.session, run)
             result = run.status
             self.session.commit()
             return result
         if run.cancel_requested:
             status = 'cancelled'
+        if status in {'failed', 'cancelled'}:
+            abort_repository.stage(self.session, run)
         self.message.content = content
         self.message.status = status
         self.message.metadata_dict = dict(metadata)
