@@ -986,3 +986,44 @@ def test_assistant_recovery_retains_member_lock_until_outer_write_commit(postgre
         independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE user_id=1"))
         statuses = independent.execute(text('SELECT status FROM assistant_runs ORDER BY id')).scalars().all()
         assert statuses == (['failed','running'] if operation == 'prepare' else ['failed'] if operation == 'archive' else [])
+
+
+@pytest.mark.parametrize('change', ['demote','remove','stop','revoke','delete-user'])
+async def test_runtime_model_owned_dependency_rejects_independent_revocation(postgres, change):
+    import httpx
+    from fastapi import Depends, FastAPI
+    from app.features.runtime_llm import router, tokens
+    from app.infra.extensions import get_session_factory
+    from app.models.opencode_runtime import OpenCodeRuntime
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+    factory = sessionmaker(bind=postgres)
+    with factory() as owned:
+        runtime = OpenCodeRuntime(workspace_id=1, user_id=1, status='running')
+        owned.add(runtime); owned.commit()
+        raw = tokens.issue_token(owned, runtime)
+    app = FastAPI()
+    app.dependency_overrides[get_session_factory] = lambda: factory
+    # Production authentication dependency with actual signed/hash-bound token.
+    # Probe avoids a provider request; it proves dependency admission only.
+    @app.get('/credential')
+    async def credential(payload=Depends(router.current_credential)):
+        return {'user_id':int(payload['sub']), 'workspace_id':payload['workspace_id']}
+    statements = {
+        'demote': "UPDATE workspace_members SET role='viewer' WHERE user_id=1",
+        'remove': 'DELETE FROM workspace_members WHERE user_id=1',
+        'stop': "UPDATE opencode_runtimes SET status='stopped' WHERE user_id=1",
+        'revoke': 'UPDATE mcp_runtime_tokens SET revoked_at=now() WHERE user_id=1',
+        'delete-user': 'DELETE FROM users WHERE id=1',
+    }
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+        headers = {'Authorization':'Bearer '+raw}
+        first = await client.get('/credential', headers=headers)
+        assert first.status_code == 200 and first.json() == {'user_id':1,'workspace_id':1}
+        with postgres.begin() as independent: independent.execute(text(statements[change]))
+        denied = await client.get('/credential', headers=headers)
+        assert denied.status_code == 401
+        assert raw not in denied.text

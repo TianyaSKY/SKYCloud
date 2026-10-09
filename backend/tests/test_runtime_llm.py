@@ -14,7 +14,8 @@ from app.features.auth.service import decode_token, generate_token
 from app.features.runtime_llm import quota, tokens
 from app.features.runtime_llm.router import router
 from app.features.workspace import docker_service
-from app.infra.extensions import SECRET_KEY, get_db
+from app.infra.extensions import SECRET_KEY, get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 from app.mcp import runtime_token_service
 from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.workspace import WorkspaceMember
@@ -39,6 +40,7 @@ def client(session):
     register_exception_handlers(app)
     app.include_router(router)
     app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
 

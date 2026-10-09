@@ -6,11 +6,10 @@ import time
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.features.runtime_llm import quota, tokens
-from app.infra.extensions import get_db
+from app.infra.extensions import get_session_factory
 from app.infra.llm.config import get_chat_model_config
 
 router = APIRouter()
@@ -24,10 +23,13 @@ ALLOWED_FIELDS = {
 }
 
 
-def current_credential(request: Request, session: Session = Depends(get_db)) -> dict:
+def current_credential(request: Request, session_factory=Depends(get_session_factory)) -> dict:
     auth = request.headers.get("Authorization", "")
     scheme, _, raw = auth.partition(" ")
-    payload = tokens.validate_token(session, raw) if scheme.lower() == "bearer" and raw else None
+    payload = None
+    if scheme.lower() == "bearer" and raw:
+        with session_factory() as session:
+            payload = tokens.validate_token(session, raw)
     if payload is None:
         raise HTTPException(status_code=401, detail="Invalid runtime model credential")
     return payload
