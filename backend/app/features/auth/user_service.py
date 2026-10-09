@@ -3,7 +3,7 @@
 from sqlalchemy.orm import Session
 
 from app.features.auth import account_repository
-from starlette.concurrency import run_in_threadpool
+from app.infra.owned_work import run_owned
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
 from app.infra.cache import cacheable, evict_cache
@@ -70,9 +70,9 @@ async def get_user(session: Session | None, id: int, *, session_factory=None,
                 if role is None or not user_data:
                     raise ResourceNotFoundError("User not found")
                 return User.from_cache({**user_data, "role": role})
-        return await run_in_threadpool(work)
+        return await run_owned(work)
     # Explicit synchronous-session callers retain their existing service seam.
-    user_data = await run_in_threadpool(_get_user_data, session, id)
+    user_data = await run_owned(_get_user_data, session, id)
     if not user_data:
         raise ResourceNotFoundError("User not found")
     return User.from_cache(user_data)

@@ -321,3 +321,63 @@ def test_rolled_back_search_does_not_publish_uncommitted_cache(postgres, infrast
         db.commit()
     with factory() as db:
         assert search_service._search_files_fuzzy(db,workspace_id,'name',1,10)['items'][0]['name'] == 'committed-name'
+
+
+@pytest.mark.parametrize('operation', ['user-owned', 'dictionary-shared'])
+async def test_cached_read_cancel_drains_actual_blocked_sql(postgres, infrastructure, monkeypatch, operation):
+    import asyncio
+    import time
+    from contextlib import contextmanager
+    from sqlalchemy import text
+    from app.features.auth import user_service
+    from app.features.sys_dict import service as dictionary
+    upgrade(postgres)
+    factory = sessionmaker(bind=postgres)
+    monkeypatch.setattr(cache, 'redis_client', infrastructure['redis'])
+    with factory() as db:
+        user = User(username='blocked-profile-reader', password_hash='unused', role='common')
+        db.add(user); db.commit()
+        user_id = user.id
+    pids, closed = [], []
+    @contextmanager
+    def tracked_factory():
+        with factory() as db:
+            pids.append(db.scalar(text('SELECT pg_backend_pid()')))
+            try:
+                yield db
+            finally:
+                closed.append('closed')
+    shared = None
+    with postgres.connect() as locker:
+        transaction = locker.begin()
+        locker.execute(text('LOCK TABLE '+('users' if operation == 'user-owned' else 'sys_dict')+' IN ACCESS EXCLUSIVE MODE'))
+        if operation == 'user-owned':
+            pending = asyncio.create_task(user_service.get_user(None,user_id,session_factory=tracked_factory))
+        else:
+            shared = factory()
+            pids.append(shared.scalar(text('SELECT pg_backend_pid()')))
+            pending = asyncio.create_task(dictionary.get_sys_dict_all(shared))
+        try:
+            deadline = time.monotonic()+5
+            while True:
+                with postgres.connect() as observer:
+                    waiting = observer.scalar(text("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid = ANY(:pids) AND wait_event_type='Lock')"), {'pids':pids})
+                if waiting:
+                    break
+                assert time.monotonic()<deadline, 'owned SQL read never reached real table lock'
+                await asyncio.sleep(.01)
+            pending.cancel('caller-stop')
+            await asyncio.sleep(.01)
+            pending.cancel('repeat-stop')
+            await asyncio.sleep(.01)
+            assert not pending.done() and not closed
+        finally:
+            transaction.rollback()
+            try:
+                with pytest.raises(asyncio.CancelledError) as error:
+                    await asyncio.wait_for(pending,5)
+            finally:
+                if shared is not None:
+                    shared.close()
+        assert str(error.value) == 'caller-stop'
+    assert closed == (['closed'] if operation == 'user-owned' else [])

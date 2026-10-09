@@ -1,7 +1,7 @@
 from app.infra.cache import cacheable, evict_cache
 from app.exceptions import BusinessRuleError, ResourceNotFoundError
 from sqlalchemy.orm import Session
-from starlette.concurrency import run_in_threadpool
+from app.infra.owned_work import run_owned
 from app.models.sys_dict import SysDict
 from app.infra.llm.config import is_model_config_sys_dict_key
 
@@ -75,7 +75,7 @@ def get_sys_dict_all_sync(session: Session):
 
 
 async def get_sys_dict_all(session: Session):
-    return await run_in_threadpool(_get_sys_dict_all_cached, session)
+    return await run_owned(_get_sys_dict_all_cached, session)
 
 
 async def get_sys_dict_by_key(session: Session, key):
