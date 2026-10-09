@@ -48,7 +48,7 @@ def socket_setup(ui, session, test_user, test_workspace, monkeypatch):
     def connect(url, headers):
         peer = EchoSocket(); peers.append(peer); requests.append((url, headers)); return peer
     monkeypatch.setattr(ui_gateway, 'socket_slots', TrackingSlots())
-    with patch.object(ui_gateway, 'reauthenticate', side_effect=lambda raw, host:
+    with patch.object(ui_gateway, 'reauthenticate', side_effect=lambda raw, host, session_factory=None:
                       ui_tickets.authenticate(session, raw, host)), \
          patch.object(ui_gateway, 'direct_connect', side_effect=connect):
         yield ui[0], headers, peers, requests
@@ -108,12 +108,12 @@ def test_idle_socket_is_closed_on_revocation_or_expiry(socket_setup, monkeypatch
     client, headers, peers, _ = socket_setup
     original = ui_gateway.reauthenticate
     calls = 0
-    def validate(raw, host):
+    def validate(raw, host, session_factory=None):
         nonlocal calls
         calls += 1
         if end == 'revoke' and calls > 1:
             raise HTTPException(401, 'revoked')
-        payload = original(raw, host)
+        payload = original(raw, host, session_factory)
         if end == 'expire':
             payload = {**payload, 'expires_at': time.time() + 0.08}
         return payload

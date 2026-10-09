@@ -29,11 +29,14 @@ pytestmark = pytest.mark.skipif(os.getenv('RUN_RUNTIME_UI_TESTS') != '1',
 
 
 @pytest.mark.parametrize('use_ticket', [False, True])
-def test_real_terminal_and_current_permission_revocation(infrastructure, controller, postgres, monkeypatch, use_ticket, tmp_path):
+@pytest.mark.parametrize('revocation', ['membership', 'refresh-replay'])
+def test_real_terminal_and_current_session_revocation(infrastructure, controller, postgres, monkeypatch, use_ticket, revocation, tmp_path):
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(ui_tickets, 'redis_client', infrastructure['redis'])
-    monkeypatch.setattr(ui_gateway, 'SessionLocal', factory)
+    def global_factory():
+        pytest.fail('Gateway must use injected factory for ongoing authorization')
+    monkeypatch.setattr(ui_gateway, 'SessionLocal', global_factory)
     monkeypatch.setattr(ui_gateway, 'RECHECK_SECONDS', 0.05)
     monkeypatch.setenv('APP_ORIGIN', 'http://app.skycloud.localhost')
     monkeypatch.setenv('RUNTIME_UI_ORIGIN_TEMPLATE', 'http://r{runtime_id}.skycloud.localhost:8081')
@@ -67,6 +70,16 @@ def test_real_terminal_and_current_permission_revocation(infrastructure, control
     app.dependency_overrides[get_db] = database
     app.dependency_overrides[get_session_factory] = lambda: factory
     auth = {'Authorization': 'Bearer ' + generate_token(user_id, 0)}
+    if revocation == 'refresh-replay':
+        import jwt
+        from app.features.auth import refresh_sessions
+        from app.infra.extensions import SECRET_KEY
+        monkeypatch.setattr(refresh_sessions, 'redis_client', infrastructure['redis'])
+        with factory() as db:
+            refresh_raw, access = refresh_sessions.create(db, jwt.decode(auth['Authorization'][7:], SECRET_KEY, algorithms=['HS256']))
+            replacement, _, _ = refresh_sessions.refresh(db, refresh_raw)
+        assert replacement != refresh_raw
+        auth = {'Authorization': 'Bearer ' + access['token']}
     if os.getenv('RUN_RUNTIME_UI_BROWSER') == '1':
         from tests.integration.runtime_ui_browser import exercise_browser
         exercise_browser(app, monkeypatch, user_id, ws_id, auth, tmp_path)
@@ -116,11 +129,17 @@ def test_real_terminal_and_current_permission_revocation(infrastructure, control
                     assert len(output) < 1024 * 1024
             finally:
                 watchdog.cancel()
-            # Separate committed connection changes membership while socket is idle.
             with factory() as db:
-                db.execute(update(WorkspaceMember).where(WorkspaceMember.workspace_id == ws_id,
-                    WorkspaceMember.user_id == user_id).values(role='viewer'))
-                db.commit()
+                if revocation == 'membership':
+                    db.execute(update(WorkspaceMember).where(WorkspaceMember.workspace_id == ws_id,
+                        WorkspaceMember.user_id == user_id).values(role='viewer'))
+                    db.commit()
+                else:
+                    from fastapi import HTTPException
+                    with pytest.raises(HTTPException) as replay:
+                        refresh_sessions.refresh(db, refresh_raw)
+                    assert replay.value.status_code == 401
+                    assert db.query(WorkspaceMember.role).filter_by(workspace_id=ws_id,user_id=user_id).scalar() == 'editor'
             while True:
                 message = socket.receive()
                 if message['type'] == 'websocket.close':
@@ -130,5 +149,5 @@ def test_real_terminal_and_current_permission_revocation(infrastructure, control
             with client.websocket_connect(path, headers=headers):
                 pass
         assert exc.value.code == 1008
-        assert client.post(f'/api/workspace/{ws_id}/opencode/ui-ticket', headers=auth).status_code == 403
+        assert client.post(f'/api/workspace/{ws_id}/opencode/ui-ticket', headers=auth).status_code == (403 if revocation == 'membership' else 401)
     container.remove()

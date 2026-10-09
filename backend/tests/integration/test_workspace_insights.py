@@ -1578,3 +1578,60 @@ async def test_assistant_stream_live_signed_session_revocation(postgres, infrast
         assert db.scalar(text('SELECT count(*) FROM workspace_members WHERE user_id=1'))==1
         assert db.scalar(text('SELECT status FROM assistant_runs WHERE id=:id'),{'id':run_id})=='cancelled'
         assert db.execute(text("SELECT status,content FROM assistant_messages WHERE role='assistant'")).one()==('cancelled','allowed')
+
+
+async def test_ui_header_send_failure_closes_real_upstream_http(postgres,infrastructure,monkeypatch):
+    import threading
+    from urllib.parse import urlsplit,parse_qs
+    import httpx
+    from fastapi import FastAPI
+    from fastapi.responses import StreamingResponse
+    from starlette.requests import ClientDisconnect
+    from app.features.workspace import ui_gateway,ui_tickets
+    from app.infra.extensions import get_session_factory
+    from tests.integration.test_expert_gateway import serve
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+        db.execute(text("INSERT INTO opencode_runtimes(id,workspace_id,user_id,status,container_id) VALUES (1,1,1,'running',:id)"),{'id':'a'*64})
+    factory=sessionmaker(bind=postgres)
+    monkeypatch.setattr(ui_tickets,'redis_client',infrastructure['redis'])
+    monkeypatch.setenv('APP_ORIGIN','http://app.skycloud.localhost')
+    monkeypatch.setenv('RUNTIME_UI_ORIGIN_TEMPLATE','http://r{runtime_id}.skycloud.localhost:8081')
+    with factory() as db:
+        issued=ui_tickets.issue(db,1,1)
+        parsed=urlsplit(issued['launch_url'])
+        raw,_=ui_tickets.redeem(db,parse_qs(parsed.query)['ticket'][0],parsed.netloc)
+    upstream_closed=threading.Event()
+    controller=FastAPI()
+    @controller.get('/runtimes/{container_id}/ui/event')
+    async def event(container_id):
+        assert container_id=='a'*64
+        async def chunks():
+            try:
+                yield b'data: upstream\n\n'
+                await asyncio.Event().wait()
+            finally:upstream_closed.set()
+        return StreamingResponse(chunks(),media_type='text/event-stream')
+    app=FastAPI();app.include_router(ui_gateway.router)
+    app.dependency_overrides[get_session_factory]=lambda:factory
+    real_client=httpx.AsyncClient
+    clients=[]
+    def tracked_client(**kwargs):
+        client=real_client(**kwargs)
+        clients.append(client)
+        return client
+    monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',tracked_client)
+    async def fail_headers(scope,receive,send):
+        scope={**scope,'asgi':{'version':'3.0','spec_version':'2.4'}}
+        async def failed_send(message):raise OSError('header send failed')
+        await app(scope,receive,failed_send)
+    with serve(controller) as port:
+        monkeypatch.setattr(ui_gateway,'controller_url',lambda:f'http://127.0.0.1:{port}')
+        async with real_client(transport=httpx.ASGITransport(fail_headers),base_url='http://test') as client:
+            with pytest.raises(ClientDisconnect):
+                await client.get('/runtime-ui/event',headers={'Host':parsed.netloc,'Cookie':ui_tickets.COOKIE+'='+raw})
+        assert len(clients)==1 and clients[0].is_closed
+        assert await asyncio.to_thread(upstream_closed.wait,3)

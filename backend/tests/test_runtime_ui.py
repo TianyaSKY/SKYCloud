@@ -241,7 +241,7 @@ def test_live_stream_ends_on_revocation_or_session_expiry(ui, test_user, test_wo
     real_client = httpx.AsyncClient
     def transport(request):
         return httpx.Response(200, stream=stream, headers={'Content-Type': 'text/event-stream'})
-    def recheck(raw, host):
+    def recheck(raw, host, session_factory=None):
         if end == 'revoke':
             raise HTTPException(401, 'revoked')
         return {}
@@ -280,7 +280,7 @@ def test_mutation_revalidates_before_forwarding(ui, session, test_user, test_wor
     def transport(request):
         sent.append(request)
         return httpx.Response(200, json={'id': 'session-id'})
-    with patch.object(ui_gateway, 'reauthenticate', side_effect=lambda raw, host:
+    with patch.object(ui_gateway, 'reauthenticate', side_effect=lambda raw, host, session_factory=None:
                       ui_tickets.authenticate(session, raw, host)), \
          patch('app.features.workspace.ui_gateway.httpx.AsyncClient', side_effect=lambda **kw:
                real_client(transport=httpx.MockTransport(transport), **kw)):

@@ -8,11 +8,12 @@ from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
-from fastapi.responses import RedirectResponse, StreamingResponse, HTMLResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.infra.extensions import get_session_factory, SessionLocal
 from app.features.workspace import ui_tickets
+from app.features.workspace.ui_stream import UpstreamLease, UpstreamResponse
 from runtime_controller.client import auth_headers, controller_url
 from runtime_controller.socket_relay import direct_connect, pump, terminal_path, SocketSlots
 
@@ -41,10 +42,10 @@ def redeem_owned(session_factory, raw, host):
         return ui_tickets.redeem(session, raw, host)
 
 
-def reauthenticate(raw, host):
+def reauthenticate(raw, host, session_factory=None):
     # Streaming responses outlive yield dependencies on supported FastAPI
     # versions; each periodic check owns and closes its independent Session.
-    return authenticate_owned(SessionLocal, raw, host)
+    return authenticate_owned(SessionLocal if session_factory is None else session_factory, raw, host)
 
 
 @router.get('/__skycloud/launch')
@@ -107,18 +108,20 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
     except asyncio.TimeoutError as exc:
         raise HTTPException(408, 'Runtime UI request timed out') from exc
     if request.method not in {'GET', 'HEAD'} or time.monotonic() - started >= RECHECK_SECONDS:
-        payload = await run_in_threadpool(reauthenticate, _credential(request), _host(request))
+        payload = await run_in_threadpool(reauthenticate, _credential(request), _host(request), session_factory)
     url = controller_url() + '/runtimes/' + quote(payload['container_id'], safe='') + '/ui/' + quote(path, safe='/')
     headers = {key: request.headers[key] for key in ('content-type', 'accept') if key in request.headers}
     if request.headers.get('x-opencode-ticket') == '1':
         headers['x-opencode-ticket'] = '1'
     headers.update(auth_headers())
     client = httpx.AsyncClient(timeout=httpx.Timeout(90, connect=5), trust_env=False, follow_redirects=False)
+    lease = UpstreamLease(client)
     try:
         upstream = await client.send(client.build_request(request.method, url, headers=headers,
                     content=body, params=list(request.query_params.multi_items())), stream=True)
+        lease.upstream = upstream
     except BaseException as exc:
-        await client.aclose()
+        await lease.close()
         if isinstance(exc, httpx.HTTPError):
             raise HTTPException(502, 'Runtime UI unavailable') from exc
         raise
@@ -131,7 +134,7 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
         try:
             while time.monotonic() < deadline:
                 if time.monotonic() >= check_at:
-                    await run_in_threadpool(reauthenticate, _credential(request), _host(request))
+                    await run_in_threadpool(reauthenticate, _credential(request), _host(request), session_factory)
                     check_at = time.monotonic() + RECHECK_SECONDS
                 if pending is None:
                     pending = asyncio.create_task(anext(iterator))
@@ -153,9 +156,8 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
             if pending is not None:
                 pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
-            await upstream.aclose()
-            await client.aclose()
-    return StreamingResponse(output(), status_code=upstream.status_code, headers={
+            await lease.close()
+    return UpstreamResponse(output(), lease=lease, status_code=upstream.status_code, headers={
         'Content-Type': upstream.headers.get('content-type', 'application/octet-stream'),
         'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
         'X-Content-Type-Options': 'nosniff',
@@ -164,11 +166,11 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
 
 
 @router.websocket('/{path:path}')
-async def terminal(path: str, websocket: WebSocket):
+async def terminal(path: str, websocket: WebSocket, session_factory=Depends(get_session_factory)):
     acquired = False
     owner = None
     try:
-        payload = await run_in_threadpool(reauthenticate, _credential(websocket), _host(websocket))
+        payload = await run_in_threadpool(reauthenticate, _credential(websocket), _host(websocket), session_factory)
         if (websocket.cookies.get(ui_tickets.cookie_name(payload['origin'])) != _credential(websocket)
                 or websocket.headers.get('origin') != payload['origin'] or not terminal_path(path)
                 or len(websocket.scope.get('query_string', b'')) > 4096
@@ -186,7 +188,7 @@ async def terminal(path: str, websocket: WebSocket):
         if query:
             url += '?' + query
         async def guard():
-            await run_in_threadpool(reauthenticate, _credential(websocket), _host(websocket))
+            await run_in_threadpool(reauthenticate, _credential(websocket), _host(websocket), session_factory)
         async with direct_connect(url, auth_headers()) as upstream:
             await websocket.accept()
             await pump(websocket, upstream, seconds=payload['expires_at'] - time.time(),
