@@ -25,4 +25,3 @@ async def close_reader(pending, iterator):
                 cancelled = True
         released.result()
     return cancelled
-
