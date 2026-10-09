@@ -5,6 +5,8 @@ Upload, object publication and multipart lifecycle belong to the file service.
 from app.infra.owned_work import run_owned
 from typing import Any
 from sqlalchemy.orm import Session
+from sqlalchemy import select
+from app.models.workspace import Workspace
 from loguru import logger
 from app.exceptions import PermissionDeniedError
 from app.infra.cache import cacheable
@@ -59,11 +61,15 @@ async def search_files(
         }
 
 
+def _search_revision(session, workspace_id):
+    return session.scalar(select(Workspace.search_cache_revision).where(Workspace.id == workspace_id)) or 0
+
+
 @cacheable(
     prefix=SEARCH_CACHE_PREFIX,
     expire=CACHE_EXPIRATION,
     generation_key=lambda session, workspace_id, *args, **kwargs: f"{SEARCH_GENERATION_PREFIX}:{workspace_id}",
-    key=lambda session, workspace_id, query, page, page_size, **_: f"{workspace_id}:{query}:{page}:{page_size}:fuzzy",
+    key=lambda session, workspace_id, query, page, page_size, **_: f"{workspace_id}:sql:{_search_revision(session, workspace_id)}:{query}:{page}:{page_size}:fuzzy",
 )
 def _search_files_fuzzy(
         session: Session,

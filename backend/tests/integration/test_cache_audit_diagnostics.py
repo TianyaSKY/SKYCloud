@@ -193,6 +193,7 @@ def test_actual_redis_generation_fences_late_search_write(infrastructure, monkey
             assert release.wait(3)
         return SimpleNamespace(items=[SimpleNamespace(to_dict=lambda: {'name': snapshot})], total=1)
     monkeypatch.setattr(search_service.repository, 'search_names', query)
+    monkeypatch.setattr(search_service, '_search_revision', lambda *args: 0)
     with ThreadPoolExecutor(max_workers=1) as executor:
         old = executor.submit(search_service._search_files_fuzzy, None, 1, 'name', 1, 10)
         try:
@@ -208,3 +209,75 @@ def test_actual_redis_generation_fences_late_search_write(infrastructure, monkey
     admin.delete('cache:generation:search:fuzzy:1')
     names[0] = 'latest-name'
     assert search_service._search_files_fuzzy(None, 1, 'name', 1, 10)['items'][0]['name'] == 'latest-name'
+
+
+@pytest.mark.parametrize("mode", ["no-cleanup", "redis-denied"])
+def test_actual_sql_commit_invalidates_search_without_redis_cleanup(postgres, infrastructure, monkeypatch, mode):
+    from app.features.file import search_service
+    from app.models.file import File
+    upgrade(postgres)
+    factory = sessionmaker(bind=postgres)
+    monkeypatch.setattr(cache, 'redis_client', infrastructure['redis'])
+    with factory() as db:
+        user = User(username='cache-revision-owner', password_hash='unused', role='common')
+        db.add(user); db.flush()
+        workspace = Workspace(name='cache-revision', owner_id=user.id)
+        db.add(workspace); db.flush()
+        item = File(name='old-name', file_path='cache-revision-object', workspace_id=workspace.id, uploader_id=user.id)
+        db.add(item); db.commit()
+        workspace_id, file_id = workspace.id, item.id
+        assert search_service._search_files_fuzzy(db, workspace_id, 'name', 1, 10)['items'][0]['name'] == 'old-name'
+    # Simulates process exit immediately after the authoritative SQL commit:
+    # no file-service Redis generation rotation or physical deletion runs.
+    with factory() as db:
+        db.get(File, file_id).name = 'new-name'
+        db.commit()
+    client = None
+    try:
+        if mode == 'redis-denied':
+            admin = infrastructure['redis']
+            admin.acl_setuser('revision-reader', enabled=True, reset=True, passwords=['+disposable-test'],
+                keys=['*'], commands=['+@all', '-set', '-del'])
+            options = dict(admin.connection_pool.connection_kwargs)
+            options.update(username='revision-reader', password='disposable-test')
+            client = Redis(**options)
+            monkeypatch.setattr(cache, 'redis_client', client)
+            from app.features.file import service as file_service
+            file_service._clear_search_cache(workspace_id)
+        with factory() as db:
+            assert search_service._search_files_fuzzy(db, workspace_id, 'name', 1, 10)['items'][0]['name'] == 'new-name'
+    finally:
+        if client is not None:
+            client.close()
+            infrastructure['redis'].acl_deluser('revision-reader')
+
+
+def test_sql_search_revision_is_atomic_scoped_and_covers_direct_writes(postgres):
+    from app.models.file import File
+    from sqlalchemy import select, text
+    upgrade(postgres)
+    factory = sessionmaker(bind=postgres)
+    with factory() as db:
+        user = User(username='revision-trigger-owner', password_hash='unused', role='common')
+        db.add(user); db.flush()
+        first = Workspace(name='revision-first', owner_id=user.id)
+        second = Workspace(name='revision-second', owner_id=user.id)
+        db.add_all([first, second]); db.flush()
+        a, b = first.id, second.id
+        item = File(name='trigger-name', file_path='trigger-object', workspace_id=a)
+        db.add(item); db.commit()
+        file_id = item.id
+        def revision(workspace):
+            return db.scalar(select(Workspace.search_cache_revision).where(Workspace.id == workspace))
+        assert (revision(a), revision(b)) == (1, 0)
+        assert 'search_cache_revision' not in first.to_dict()
+        db.execute(text('UPDATE files SET name=:name WHERE id=:id'), {'name':'rollback-name','id':file_id})
+        assert revision(a) == 2
+        db.rollback()
+        assert revision(a) == 1 and db.get(File,file_id).name == 'trigger-name'
+        db.execute(text('UPDATE files SET workspace_id=:workspace WHERE id=:id'), {'workspace':b,'id':file_id})
+        db.commit()
+        assert (revision(a), revision(b)) == (2, 1)
+        db.execute(text('DELETE FROM files WHERE id=:id'), {'id':file_id})
+        db.commit()
+        assert (revision(a), revision(b)) == (2, 2)

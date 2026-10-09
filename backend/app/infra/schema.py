@@ -3,7 +3,7 @@
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-EXPECTED_REVISION = "0017_assistant_abort"
+EXPECTED_REVISION = "0018_search_cache_revision"
 
 
 def check_schema(database_engine):

@@ -8,7 +8,7 @@ from app.infra.utc_datetime import UTCDateTime
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Column, Integer, String, ForeignKey, UniqueConstraint, Index, Text
+from sqlalchemy import Column, BigInteger, Integer, String, ForeignKey, UniqueConstraint, Index, Text
 from sqlalchemy.orm import relationship
 
 from app.infra.extensions import Base
@@ -25,6 +25,7 @@ class Workspace(Base):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(128), nullable=False)
+    search_cache_revision = Column(BigInteger, nullable=False, default=0, server_default="0")
     description = Column(String(512))
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(UTCDateTime(), default=utc_now)

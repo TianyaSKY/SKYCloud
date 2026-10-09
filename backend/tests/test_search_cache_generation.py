@@ -39,6 +39,7 @@ def test_completed_invalidation_cannot_be_undone_by_an_older_search(monkeypatch)
             assert release.wait(3)
         return SimpleNamespace(items=[SimpleNamespace(to_dict=lambda: {'name': snapshot})], total=1)
     monkeypatch.setattr(search_service.repository, 'search_names', query)
+    monkeypatch.setattr(search_service, '_search_revision', lambda *args: 0)
     with ThreadPoolExecutor(max_workers=1) as executor:
         old = executor.submit(search_service._search_files_fuzzy, None, 1, 'name', 1, 10)
         try:
