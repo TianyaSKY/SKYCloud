@@ -3,7 +3,7 @@
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-EXPECTED_REVISION = "0018_search_cache_revision"
+EXPECTED_REVISION = "0019_sql_cache_revisions"
 
 
 def check_schema(database_engine):

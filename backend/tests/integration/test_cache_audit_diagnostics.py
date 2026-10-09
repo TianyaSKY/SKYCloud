@@ -384,7 +384,8 @@ async def test_cached_read_cancel_drains_actual_blocked_sql(postgres, infrastruc
 
 
 @pytest.mark.parametrize('kind', ['profile', 'dictionary', 'folders', 'root-id', 'root-files'])
-def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructure, monkeypatch, kind):
+@pytest.mark.parametrize('finish', ['rollback', 'commit'])
+def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructure, monkeypatch, kind, finish):
     from app.features.auth import user_service
     from app.features.sys_dict import service as dictionaries
     from app.features.folder import service as folders
@@ -430,7 +431,44 @@ def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructu
         db.flush()
         expected = replacement.id if kind == 'root-id' else 'uncommitted-name'
         assert read(db) == expected
-        db.rollback()
+        if finish == "commit":
+            db.commit()
+        else:
+            db.rollback()
     assert {key:admin.get(key) for key in admin.scan_iter()} == before
     with factory() as db:
-        assert read(db) == expected_original
+        assert read(db) == (expected if finish == "commit" else expected_original)
+
+
+def test_generic_cache_revisions_are_scoped_atomic_and_survive_owner_deletion(postgres):
+    from sqlalchemy import text
+    from app.models.folder import Folder
+    from app.models.file import File
+    upgrade(postgres)
+    factory = sessionmaker(bind=postgres)
+    with factory() as db:
+        user = User(username='revision-retention', password_hash='unused',role='common')
+        db.add(user); db.flush()
+        first = Workspace(name='revision-a',owner_id=user.id)
+        second = Workspace(name='revision-b',owner_id=user.id)
+        db.add_all([first,second]); db.flush()
+        root = Folder(name='/',workspace_id=first.id)
+        db.add(root); db.flush()
+        item = File(name='revision-item',file_path='revision-object',workspace_id=first.id,parent_id=root.id)
+        db.add(item); db.commit()
+        uid,a,b,file_id = user.id,first.id,second.id,item.id
+        profile = f'user:profile:{uid}'
+        tree_a,tree_b = f'workspace:tree:{a}',f'workspace:tree:{b}'
+        revision = lambda scope: cache.sql_cache_revision(db,scope)
+        assert (revision(profile),revision(tree_a),revision(tree_b)) == (1,2,0)
+        db.add(Folder(name='child',workspace_id=a,parent_id=root.id)); db.commit()
+        assert (revision(tree_a),revision(tree_b)) == (3,0)
+        db.execute(text('UPDATE files SET workspace_id=:workspace WHERE id=:id'),{'workspace':b,'id':file_id})
+        assert (revision(tree_a),revision(tree_b)) == (4,1)
+        db.rollback()
+        assert (revision(tree_a),revision(tree_b)) == (3,0)
+        db.execute(text('DELETE FROM files WHERE id=:id'),{'id':file_id}); db.commit()
+        assert revision(tree_a) == 4
+        db.execute(text('DELETE FROM users WHERE id=:id'),{'id':uid}); db.commit()
+        assert revision(profile) == 2 and revision(tree_a) > 4
+        assert revision(tree_b) == 0

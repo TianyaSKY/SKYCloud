@@ -28,3 +28,5 @@ from .file_object_deletion import FileObjectDeletion
 from .runtime_container_deletion import RuntimeContainerDeletion
 from .runtime_operation import RuntimeOperation
 from .assistant_runtime_abort import AssistantRuntimeAbort
+
+from .cache_revision import SqlCacheRevision

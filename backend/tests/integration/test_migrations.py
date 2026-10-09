@@ -351,7 +351,7 @@ def test_legacy_mcp_audit_redaction_preserves_event_metadata(postgres):
     upgrade(postgres)
     with postgres.connect() as db:
         assert db.scalar(text("SELECT arguments_summary FROM mcp_audit_logs WHERE request_id='legacy'")) == 'safe-summary'
-    with pytest.raises(RuntimeError, match="durable search cache revisions"):
+    with pytest.raises(RuntimeError, match="durable .*cache revisions"):
         with postgres.begin() as db:
             command.downgrade(migration_config(db), "0009_utc_timestamps")
     check_schema(postgres)

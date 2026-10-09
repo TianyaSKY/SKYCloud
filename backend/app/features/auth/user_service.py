@@ -6,7 +6,7 @@ from app.features.auth import account_repository
 from app.infra.owned_work import run_owned
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
-from app.infra.cache import cacheable, evict_cache, sql_cache_allowed
+from app.infra.cache import cacheable, evict_cache, sql_cache_allowed, sql_cache_revision
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
 from app.models.folder import Folder
@@ -48,7 +48,7 @@ def create_user(session: Session, data):
     cache_allowed=sql_cache_allowed,
     prefix=USER_CACHE_PREFIX,
     expire=USER_CACHE_EXPIRE,
-    key=lambda session, id, **_: id,
+    key=lambda session, id, **_: f"{id}:sql:{sql_cache_revision(session, f'user:profile:{id}')}",
 )
 def _get_user_data(session: Session, id: int) -> dict | None:
     """缓存友好：返回 dict；None 表示不存在（不会被缓存）。"""

@@ -14,7 +14,8 @@ import functools
 import json
 import uuid
 from typing import Any, Callable, Optional
-from sqlalchemy import text
+from sqlalchemy import text, select
+from app.models.cache_revision import SqlCacheRevision
 
 from app.infra.extensions import redis_client
 from app.infra.owned_work import run_owned
@@ -51,6 +52,10 @@ def _build_cache_key(
 # ---------------------------------------------------------------------------
 # @cacheable — 读穿缓存
 # ---------------------------------------------------------------------------
+
+def sql_cache_revision(session, scope: str) -> int:
+    return session.scalar(select(SqlCacheRevision.revision).where(SqlCacheRevision.scope == scope)) or 0
+
 
 def sql_cache_allowed(session, *args, **kwargs) -> bool:
     """Keep shared SQL caches outside transactions which may roll back writes."""

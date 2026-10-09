@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
 from app.infra.extensions import redis_client
-from app.infra.cache import cacheable, evict_cache, sql_cache_allowed
+from app.infra.cache import cacheable, evict_cache, sql_cache_allowed, sql_cache_revision
 from app.infra.task_queue import publish_organize_task
 from app.models.file import File
 from app.models.folder import Folder
@@ -186,7 +186,7 @@ def _delete_folder_recursive(session: Session, folder, deleted_events: list[dict
     cache_allowed=sql_cache_allowed,
     prefix=ROOT_FOLDER_CACHE_PREFIX,
     expire=FOLDER_CACHE_EXPIRE,
-    key=lambda session, workspace_id, **_: workspace_id,
+    key=lambda session, workspace_id, **_: f"{workspace_id}:sql:{sql_cache_revision(session, f'workspace:tree:{workspace_id}')}",
 )
 def get_root_folder_id(session: Session, workspace_id) -> int | None:
     return repository.root_id(session, workspace_id)
@@ -196,7 +196,7 @@ def get_root_folder_id(session: Session, workspace_id) -> int | None:
     cache_allowed=sql_cache_allowed,
     prefix=ROOT_FILES_CACHE_PREFIX,
     expire=FOLDER_CACHE_EXPIRE,
-    key=lambda session, workspace_id, **_: workspace_id,
+    key=lambda session, workspace_id, **_: f"{workspace_id}:sql:{sql_cache_revision(session, f'workspace:tree:{workspace_id}')}",
 )
 def get_files_in_root_folder(session: Session, workspace_id) -> List[dict]:
     root_folder_id = get_root_folder_id(session, workspace_id)
@@ -211,7 +211,7 @@ def get_files_in_root_folder(session: Session, workspace_id) -> List[dict]:
     cache_allowed=sql_cache_allowed,
     prefix=FOLDER_CACHE_PREFIX,
     expire=FOLDER_CACHE_EXPIRE,
-    key=lambda session, workspace_id, **_: workspace_id,
+    key=lambda session, workspace_id, **_: f"{workspace_id}:sql:{sql_cache_revision(session, f'workspace:tree:{workspace_id}')}",
 )
 def get_folders(session: Session, workspace_id) -> List[dict]:
     folders = session.query(Folder).filter_by(workspace_id=workspace_id).all()
