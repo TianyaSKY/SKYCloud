@@ -20,7 +20,7 @@ from app.exceptions import (
 from app.features.assistant import repository
 from app.features.assistant.engines.fast_engine import FastEngine
 from app.features.assistant.event_protocol import AssistantEvent, heartbeat_event
-from app.features.workspace.permissions import assert_can_write, assert_member
+from app.features.workspace.permissions import assert_can_write, assert_member, assert_can_write_locked, assert_member_locked
 from app.infra.datetime_utils import utc_now, to_utc_datetime
 from app.models.assistant import AssistantConversation, AssistantMessage, AssistantRun
 from app.models.workspace import Workspace
@@ -115,7 +115,7 @@ class RunRegistry:
 run_registry = RunRegistry()
 
 
-def _recover_abandoned_run(session: Session, run: AssistantRun) -> bool:
+def _recover_abandoned_run(session: Session, run: AssistantRun, *, commit: bool = True) -> bool:
     """Release a run left active after its SSE worker has disappeared.
 
     A browser disconnect normally cancels the generator and records a terminal
@@ -158,7 +158,10 @@ def _recover_abandoned_run(session: Session, run: AssistantRun) -> bool:
         error_code="stream_abandoned",
         error_message="助手请求在服务重启或连接中断后未完成，请重新发送。",
     )
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     return True
 
 
@@ -178,7 +181,7 @@ def create_conversation(
     mode: str,
     title: str | None = None,
 ) -> AssistantConversation:
-    assert_member(session, int(workspace.id), int(user_id))
+    assert_member_locked(session, int(workspace.id), int(user_id))
     if mode == "expert":
         assert_can_write(session, int(workspace.id), int(user_id))
     conversation = repository.create_conversation(
@@ -221,6 +224,7 @@ def get_active_run_for_conversation(
     user_id: int,
     conversation_id: int,
 ) -> AssistantRun | None:
+    assert_member_locked(session, int(workspace.id), int(user_id))
     conversation = get_user_conversation(session, workspace, user_id, conversation_id)
     run = repository.active_run_for_conversation(session, int(conversation.id))
     if run and _recover_abandoned_run(session, run):
@@ -233,7 +237,7 @@ def get_active_expert_run_for_member(
     workspace: Workspace,
     user_id: int,
 ) -> AssistantRun | None:
-    assert_can_write(session, int(workspace.id), int(user_id))
+    assert_can_write_locked(session, int(workspace.id), int(user_id))
     run = repository.active_expert_run_for_member(session, int(workspace.id), int(user_id))
     if run and _recover_abandoned_run(session, run):
         return None
@@ -246,6 +250,7 @@ def get_user_conversation(
     user_id: int,
     conversation_id: int,
 ) -> AssistantConversation:
+    assert_member(session, int(workspace.id), int(user_id))
     conversation = _conversation_or_404(session, conversation_id, int(workspace.id), int(user_id))
     if conversation.mode == "expert":
         assert_can_write(session, int(workspace.id), int(user_id))
@@ -271,6 +276,7 @@ def update_conversation(
     title: str | None = None,
     status: str | None = None,
 ) -> AssistantConversation:
+    assert_member_locked(session, int(workspace.id), int(user_id))
     get_user_conversation(session, workspace, user_id, conversation_id)
     conversation = repository.lock_conversation(
         session,
@@ -290,7 +296,7 @@ def update_conversation(
         if status not in {"active", "archived"}:
             raise BusinessRuleError("会话状态无效")
         active_run = repository.active_run_for_conversation(session, int(conversation.id))
-        if active_run and _recover_abandoned_run(session, active_run):
+        if active_run and _recover_abandoned_run(session, active_run, commit=False):
             active_run = None
         if active_run and status == "archived":
             raise ConflictError("当前会话仍有任务运行，请先停止任务")
@@ -306,6 +312,7 @@ def delete_conversation(
     user_id: int,
     conversation_id: int,
 ) -> None:
+    assert_member_locked(session, int(workspace.id), int(user_id))
     get_user_conversation(session, workspace, user_id, conversation_id)
     conversation = repository.lock_conversation(
         session,
@@ -316,7 +323,7 @@ def delete_conversation(
     if conversation is None:
         raise ResourceNotFoundError("Assistant conversation not found")
     active_run = repository.active_run_for_conversation(session, int(conversation.id))
-    if active_run and _recover_abandoned_run(session, active_run):
+    if active_run and _recover_abandoned_run(session, active_run, commit=False):
         active_run = None
     if active_run:
         raise ConflictError("当前会话仍有任务运行，请先停止任务")
@@ -334,6 +341,7 @@ def prepare_run(
 ) -> tuple[AssistantConversation, AssistantRun, list[dict[str, str]]]:
     """Create the durable message/run records before opening the SSE stream."""
 
+    assert_member_locked(session, int(workspace.id), int(user_id))
     conversation = get_user_conversation(session, workspace, user_id, conversation_id)
     locked_conversation = repository.lock_conversation(
         session,
@@ -347,21 +355,17 @@ def prepare_run(
     if conversation.status != "active":
         raise ConflictError("会话已归档，请先恢复后再发送")
     if conversation.mode == "expert":
-        if repository.lock_workspace_member(session, int(workspace.id), int(user_id)) is None:
-            raise PermissionDeniedError("您不是该工作空间的成员")
-        # Re-read the role after acquiring the member row lock so a concurrent
-        # viewer downgrade cannot race this authorization check.
         assert_can_write(session, int(workspace.id), int(user_id))
         active_member_run = repository.active_expert_run_for_member(
             session, int(workspace.id), int(user_id)
         )
-        if active_member_run and _recover_abandoned_run(session, active_member_run):
+        if active_member_run and _recover_abandoned_run(session, active_member_run, commit=False):
             active_member_run = None
         if active_member_run:
             raise ConflictError("Expert runtime is already busy")
 
     active = repository.active_run_for_conversation(session, int(conversation.id))
-    if active and _recover_abandoned_run(session, active):
+    if active and _recover_abandoned_run(session, active, commit=False):
         active = None
     if active:
         raise ConflictError("This assistant conversation already has a running task")
@@ -579,6 +583,7 @@ def request_cancel(
     user_id: int,
     run_id: int,
 ) -> AssistantRun:
+    assert_member_locked(session, int(workspace.id), int(user_id))
     run = repository.get_owned_run(session, run_id, int(workspace.id), int(user_id))
     if run is None:
         raise ResourceNotFoundError("Assistant run not found")
@@ -600,6 +605,7 @@ def respond_permission(
     response: str,
     remember: bool = False,
 ) -> AssistantRun:
+    assert_member_locked(session, int(workspace.id), int(user_id))
     run = repository.get_owned_run(session, run_id, int(workspace.id), int(user_id))
     if run is None:
         raise ResourceNotFoundError("Assistant run not found")
@@ -631,6 +637,7 @@ def handoff_to_expert(
     source_conversation_id: int,
     message_id: int | None = None,
 ) -> AssistantConversation:
+    assert_can_write_locked(session, int(workspace.id), int(user_id))
     source = get_user_conversation(session, workspace, user_id, source_conversation_id)
     if source.mode != "fast":
         raise ConflictError("Only a fast conversation can be handed off")

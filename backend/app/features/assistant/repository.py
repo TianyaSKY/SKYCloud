@@ -52,6 +52,7 @@ def lock_conversation(
             AssistantConversation.workspace_id == workspace_id,
             AssistantConversation.user_id == user_id,
         )
+        .populate_existing()
         .with_for_update()
         .first()
     )

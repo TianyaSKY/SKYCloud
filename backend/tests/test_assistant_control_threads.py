@@ -47,6 +47,7 @@ def test_permission_notification_only_after_successful_commit(monkeypatch, commi
     run = SimpleNamespace(engine='expert', status='waiting_permission', pending_permission_id='p1')
     monkeypatch.setattr(service.repository, 'get_owned_run', lambda *args: run)
     monkeypatch.setattr(service, 'assert_can_write', lambda *args: None)
+    monkeypatch.setattr(service, 'assert_member_locked', lambda *args: None)
     monkeypatch.setattr(service.repository, 'set_permission_response', lambda *args: True)
     committed = []
     def commit():

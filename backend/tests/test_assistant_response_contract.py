@@ -5,7 +5,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.api.dependencies import get_current_user,get_current_workspace
 from app.exceptions import register_exception_handlers
-from app.infra.extensions import get_db
+from app.infra.extensions import get_db, get_session_factory
+from sqlalchemy.orm import sessionmaker
 from app.features.assistant import router as assistant
 from app.features.chat import router as chat
 from app.models.assistant import AssistantRun
@@ -15,6 +16,7 @@ def contract(session,test_user,test_workspace):
     app=FastAPI();register_exception_handlers(app)
     app.include_router(assistant.router);app.include_router(chat.router)
     app.dependency_overrides[get_db]=lambda:session
+    app.dependency_overrides[get_session_factory]=lambda:sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     app.dependency_overrides[get_current_user]=lambda:test_user
     app.dependency_overrides[get_current_workspace]=lambda:test_workspace
     return TestClient(app,raise_server_exceptions=False),session,test_user,test_workspace
@@ -70,6 +72,7 @@ def test_permission_once_response(contract):
     assert data(client.get('/assistant/runs/active'))['id']==run.id
     replied=data(client.post(f'/assistant/runs/{run.id}/permissions/p1',json={'response':'once'}))
     assert replied['pending_permission'] is None
+    db.expire_all()
     assert db.get(AssistantRun,run.id).permission_response=='once'
     assert client.post(f'/assistant/runs/{run.id}/permissions/p1',json={'response':'once'}).status_code==409
 

@@ -1,6 +1,7 @@
 """Assistant persistence, event mapping, and security regression tests."""
 
 import asyncio
+from contextlib import nullcontext
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -198,7 +199,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             AssistantConversationUpdate(title="接口重命名"),
             current_user=test_user,
             workspace=test_workspace,
-            session=session,
+            session_factory=lambda: nullcontext(session),
         )
     )
     assert updated["data"]["title"] == "接口重命名"
@@ -208,7 +209,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             conversation.id,
             current_user=test_user,
             workspace=test_workspace,
-            session=session,
+            session_factory=lambda: nullcontext(session),
         )
     )
     assert active_run == {"success":True,"data":None}
@@ -219,7 +220,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             AssistantConversationUpdate(status="archived"),
             current_user=test_user,
             workspace=test_workspace,
-            session=session,
+            session_factory=lambda: nullcontext(session),
         )
     )
     active_only = (
@@ -228,7 +229,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             include_archived=False,
             current_user=test_user,
             workspace=test_workspace,
-            session=session,
+            session_factory=lambda: nullcontext(session),
         )
     )
     all_sessions = (
@@ -237,7 +238,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             include_archived=True,
             current_user=test_user,
             workspace=test_workspace,
-            session=session,
+            session_factory=lambda: nullcontext(session),
         )
     )
     assert conversation.id not in {item["id"] for item in active_only["data"]["conversations"]}
@@ -248,7 +249,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             conversation.id,
             current_user=test_user,
             workspace=test_workspace,
-            session=session,
+            session_factory=lambda: nullcontext(session),
         )
     ) is None
     assert repository.get_conversation(

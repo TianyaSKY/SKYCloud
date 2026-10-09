@@ -878,3 +878,111 @@ async def test_usage_owned_http_rejects_stale_admin_and_preserves_self_reads(pos
             assert (await client.get('/token-usage/daily')).json()['data'][0]['total_tokens'] == 5
     with postgres.connect() as db:
         assert db.execute(text('SELECT user_id,total_tokens FROM token_usage_logs ORDER BY user_id')).all() == ([(1,5),(2,18)] if change == 'demote' else [(2,18)])
+
+
+@pytest.mark.parametrize('change', ['demote', 'remove'])
+async def test_assistant_owned_http_rechecks_committed_membership(postgres, change):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.api.dependencies import get_current_user, get_current_workspace
+    from app.features.assistant import router, service
+    from app.infra.extensions import get_session_factory
+    from app.models.workspace import Workspace
+    from app.exceptions import register_exception_handlers
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+    factory = sessionmaker(bind=postgres)
+    mode = 'expert' if change == 'demote' else 'fast'
+    with factory() as owned:
+        workspace = owned.get(Workspace, 1)
+        conversation = service.create_conversation(owned, workspace, 1, mode, 'original')
+        cid = conversation.id
+        _, run, _ = service.prepare_run(owned, workspace, 1, cid, 'original query')
+        run.status = 'waiting_permission'; run.pending_permission_id = 'p1'
+        owned.commit(); rid = run.id
+        source = service.create_conversation(owned, workspace, 1, 'fast', 'source')
+        sid = source.id
+    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    # Explicit identity/workspace snapshots; all service SQL and permission checks are real.
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_current_workspace] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_session_factory] = lambda: factory
+    calls = [
+        ('POST','/assistant/conversations',{'mode':mode}),
+        ('GET','/assistant/conversations?mode='+mode,None),
+        ('PATCH',f'/assistant/conversations/{cid}',{'title':'forbidden'}),
+        ('DELETE',f'/assistant/conversations/{cid}',None),
+        ('GET',f'/assistant/conversations/{cid}/messages',None),
+        ('GET',f'/assistant/conversations/{cid}/active-run',None),
+        ('POST',f'/assistant/conversations/{cid}/messages/stream',{'query':'forbidden'}),
+        ('POST',f'/assistant/runs/{rid}/cancel',None),
+        ('GET','/assistant/runs/active',None),
+        ('GET',f'/assistant/runs/{rid}',None),
+        ('POST',f'/assistant/runs/{rid}/permissions/p1',{'response':'once'}),
+        ('POST',f'/assistant/conversations/{sid}/handoff',{}),
+    ]
+    with postgres.begin() as independent:
+        independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE user_id=1" if change=='demote' else 'DELETE FROM workspace_members WHERE user_id=1'))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+        for method, path, body in calls:
+            response = await client.request(method, path, json=body)
+            assert response.status_code == 403, (path,response.text)
+        if change == 'demote':
+            listing = await client.get('/assistant/conversations')
+            assert listing.status_code == 200
+            assert [row['id'] for row in listing.json()['data']['conversations']] == [sid]
+    with postgres.connect() as db:
+        assert db.execute(text('SELECT title FROM assistant_conversations ORDER BY id')).scalars().all() == ['original','source']
+        assert db.execute(text('SELECT cancel_requested,pending_permission_id,permission_response FROM assistant_runs')).all() == [(False,'p1',None)]
+        assert db.scalar(text('SELECT count(*) FROM assistant_messages')) == 2
+
+
+@pytest.mark.parametrize('operation', ['prepare', 'archive', 'delete'])
+def test_assistant_recovery_retains_member_lock_until_outer_write_commit(postgres, monkeypatch, operation):
+    from datetime import timedelta
+    from sqlalchemy.exc import DBAPIError
+    from app.features.assistant import service
+    from app.models.workspace import Workspace
+    from app.infra.datetime_utils import utc_now
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+    factory = sessionmaker(bind=postgres)
+    with factory() as owned:
+        workspace = owned.get(Workspace, 1)
+        conversation = service.create_conversation(owned, workspace, 1, 'expert', 'original')
+        cid = conversation.id
+        _, old, _ = service.prepare_run(owned, workspace, 1, cid, 'old query')
+        old.started_at = utc_now() - timedelta(minutes=5)
+        old.metadata_dict = {}; owned.commit()
+    recover = service._recover_abandoned_run
+    observed = []
+    def observe_recovery(session, run, *, commit=True):
+        assert commit is False
+        result = recover(session, run, commit=commit)
+        if result:
+            with postgres.connect() as independent:
+                independent.execute(text("SET LOCAL lock_timeout='100ms'"))
+                with pytest.raises(DBAPIError) as error:
+                    independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE user_id=1"))
+                assert error.value.orig.pgcode == '55P03'
+                independent.rollback()
+            observed.append(True)
+        return result
+    monkeypatch.setattr(service, '_recover_abandoned_run', observe_recovery)
+    with factory() as owned:
+        workspace = owned.get(Workspace, 1)
+        if operation == 'prepare': service.prepare_run(owned, workspace, 1, cid, 'replacement')
+        elif operation == 'archive': service.update_conversation(owned, workspace, 1, cid, status='archived')
+        else: service.delete_conversation(owned, workspace, 1, cid)
+    assert observed == [True]
+    with postgres.begin() as independent:
+        independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE user_id=1"))
+        statuses = independent.execute(text('SELECT status FROM assistant_runs ORDER BY id')).scalars().all()
+        assert statuses == (['failed','running'] if operation == 'prepare' else ['failed'] if operation == 'archive' else [])

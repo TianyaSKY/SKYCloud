@@ -5,7 +5,6 @@ from contextlib import aclosing
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.api.dependencies import get_current_user, get_current_workspace
@@ -20,7 +19,8 @@ from app.features.assistant.schemas import (
     AssistantMessageRequest,
     AssistantPermissionResponse,
 )
-from app.infra.extensions import SessionLocal, get_db
+from app.infra.extensions import get_session_factory
+from app.features.workspace.permissions import assert_member
 from app.models.user import User
 from app.models.workspace import Workspace
 
@@ -59,15 +59,16 @@ def create_assistant_conversation(
     payload: AssistantConversationCreate,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
-    _require_v2()
-    if payload.mode == "expert":
-        _require_expert()
-    conversation = service.create_conversation(
-        session, workspace, current_user.id, payload.mode, payload.title
-    )
-    return success_payload(conversation.to_dict())
+    with session_factory() as session:
+        _require_v2()
+        if payload.mode == "expert":
+            _require_expert()
+        conversation = service.create_conversation(
+            session, workspace, current_user.id, payload.mode, payload.title
+        )
+        return success_payload(conversation.to_dict())
 
 
 @router.get("/assistant/conversations", response_model=SuccessResponse[AssistantConversationListResponse])
@@ -76,23 +77,24 @@ def list_assistant_conversations(
     include_archived: bool = False,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
-    _require_v2()
-    if mode not in {None, "fast", "expert"}:
-        raise HTTPException(status_code=400, detail="Invalid assistant mode")
-    if mode == "expert":
-        _require_expert()
-    elif mode is None and not _enabled("ASSISTANT_EXPERT_ENABLED", True):
-        mode = "fast"
-    conversations = service.list_user_conversations(
-        session,
-        workspace,
-        current_user.id,
-        mode,
-        include_archived=include_archived,
-    )
-    return success_payload({"conversations": [conversation.to_dict() for conversation in conversations]})
+    with session_factory() as session:
+        _require_v2()
+        if mode not in {None, "fast", "expert"}:
+            raise HTTPException(status_code=400, detail="Invalid assistant mode")
+        if mode == "expert":
+            _require_expert()
+        elif mode is None and not _enabled("ASSISTANT_EXPERT_ENABLED", True):
+            mode = "fast"
+        conversations = service.list_user_conversations(
+            session,
+            workspace,
+            current_user.id,
+            mode,
+            include_archived=include_archived,
+        )
+        return success_payload({"conversations": [conversation.to_dict() for conversation in conversations]})
 
 
 @router.patch("/assistant/conversations/{conversation_id}", response_model=SuccessResponse[AssistantConversationResponse])
@@ -101,18 +103,19 @@ def update_assistant_conversation(
     payload: AssistantConversationUpdate,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
-    _require_v2()
-    conversation = service.update_conversation(
-        session,
-        workspace,
-        current_user.id,
-        conversation_id,
-        title=payload.title,
-        status=payload.status,
-    )
-    return success_payload(conversation.to_dict())
+    with session_factory() as session:
+        _require_v2()
+        conversation = service.update_conversation(
+            session,
+            workspace,
+            current_user.id,
+            conversation_id,
+            title=payload.title,
+            status=payload.status,
+        )
+        return success_payload(conversation.to_dict())
 
 
 @router.delete("/assistant/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -120,11 +123,12 @@ def delete_assistant_conversation(
     conversation_id: int,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
-    _require_v2()
-    service.delete_conversation(session, workspace, current_user.id, conversation_id)
-    return None
+    with session_factory() as session:
+        _require_v2()
+        service.delete_conversation(session, workspace, current_user.id, conversation_id)
+        return None
 
 
 @router.get("/assistant/conversations/{conversation_id}/messages", response_model=SuccessResponse[AssistantMessagesResponse])
@@ -132,17 +136,18 @@ def list_assistant_messages(
     conversation_id: int,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
-    _require_v2()
-    conversation = service.get_user_conversation(session, workspace, current_user.id, conversation_id)
-    if conversation.mode == "expert":
-        _require_expert()
-    messages = service.get_conversation_messages(session, workspace, current_user.id, conversation_id)
-    return success_payload({
-        "conversation": conversation.to_dict(),
-        "messages": [message.to_dict() for message in messages],
-    })
+    with session_factory() as session:
+        _require_v2()
+        conversation = service.get_user_conversation(session, workspace, current_user.id, conversation_id)
+        if conversation.mode == "expert":
+            _require_expert()
+        messages = service.get_conversation_messages(session, workspace, current_user.id, conversation_id)
+        return success_payload({
+            "conversation": conversation.to_dict(),
+            "messages": [message.to_dict() for message in messages],
+        })
 
 
 @router.get("/assistant/conversations/{conversation_id}/active-run", response_model=SuccessResponse[AssistantRunResponse | None])
@@ -150,16 +155,17 @@ def get_active_assistant_run_for_conversation(
     conversation_id: int,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
-    _require_v2()
-    run = service.get_active_run_for_conversation(
-        session,
-        workspace,
-        current_user.id,
-        conversation_id,
-    )
-    return success_payload(run.to_dict() if run else None)
+    with session_factory() as session:
+        _require_v2()
+        run = service.get_active_run_for_conversation(
+            session,
+            workspace,
+            current_user.id,
+            conversation_id,
+        )
+        return success_payload(run.to_dict() if run else None)
 
 
 @router.post("/assistant/conversations/{conversation_id}/messages/stream", response_class=StreamingResponse,
@@ -170,26 +176,27 @@ async def stream_assistant_message(
     request: Request,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
     _require_v2()
     if not payload.query.strip():
         raise HTTPException(status_code=400, detail="Query is required")
     def prepare_stream():
-        existing_conversation = service.get_user_conversation(
-            session, workspace, current_user.id, conversation_id
-        )
-        if existing_conversation.mode == "expert":
-            _require_expert()
-        conversation, run, history = service.prepare_run(
-            session,
-            workspace,
-            current_user.id,
-            conversation_id,
-            payload.query,
-            request.headers.get("X-Request-Id"),
-        )
-        return int(workspace.id), int(current_user.id), int(conversation.id), int(run.id), history
+        with session_factory() as session:
+            existing_conversation = service.get_user_conversation(
+                session, workspace, current_user.id, conversation_id
+            )
+            if existing_conversation.mode == "expert":
+                _require_expert()
+            conversation, run, history = service.prepare_run(
+                session,
+                workspace,
+                current_user.id,
+                conversation_id,
+                payload.query,
+                request.headers.get("X-Request-Id"),
+            )
+            return int(workspace.id), int(current_user.id), int(conversation.id), int(run.id), history
 
     # Resolve all commit-expired attributes in the blocking preparation unit.
     stream_workspace_id, stream_user_id, stream_conversation_id, stream_run_id, history = (
@@ -198,7 +205,7 @@ async def stream_assistant_message(
 
     async def stream():
         async with aclosing(service.stream_run(
-            SessionLocal, stream_workspace_id, stream_user_id,
+            session_factory, stream_workspace_id, stream_user_id,
             stream_conversation_id, stream_run_id, history,
         )) as events:
             async for event in events:
@@ -221,12 +228,13 @@ async def cancel_assistant_run(
     run_id: int,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
     _require_v2()
     def persist_cancel():
-        # Keep commit-expired ORM serialization in the same blocking unit.
-        return service.request_cancel(session, workspace, current_user.id, run_id).to_dict()
+        with session_factory() as session:
+            # Keep commit-expired ORM serialization in the same blocking unit.
+            return service.request_cancel(session, workspace, current_user.id, run_id).to_dict()
 
     result = await run_in_threadpool(persist_cancel)
     await service.run_registry.request_cancel(run_id)
@@ -237,11 +245,12 @@ async def cancel_assistant_run(
 def get_active_assistant_run_for_member(
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
-    _require_v2()
-    run = service.get_active_expert_run_for_member(session, workspace, current_user.id)
-    return success_payload(run.to_dict() if run else None)
+    with session_factory() as session:
+        _require_v2()
+        run = service.get_active_expert_run_for_member(session, workspace, current_user.id)
+        return success_payload(run.to_dict() if run else None)
 
 
 @router.get("/assistant/runs/{run_id}", response_model=SuccessResponse[AssistantRunResponse])
@@ -249,20 +258,22 @@ def get_assistant_run(
     run_id: int,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
-    _require_v2()
-    from app.features.assistant import repository
+    with session_factory() as session:
+        _require_v2()
+        from app.features.assistant import repository
 
-    run = repository.get_owned_run(session, run_id, int(workspace.id), int(current_user.id))
-    if run is None:
-        raise HTTPException(status_code=404, detail="Assistant run not found")
-    if run.engine == "expert":
-        _require_expert()
-        from app.features.workspace.permissions import assert_can_write
+        assert_member(session, int(workspace.id), int(current_user.id))
+        run = repository.get_owned_run(session, run_id, int(workspace.id), int(current_user.id))
+        if run is None:
+            raise HTTPException(status_code=404, detail="Assistant run not found")
+        if run.engine == "expert":
+            _require_expert()
+            from app.features.workspace.permissions import assert_can_write
 
-        assert_can_write(session, int(workspace.id), int(current_user.id))
-    return success_payload(run.to_dict())
+            assert_can_write(session, int(workspace.id), int(current_user.id))
+        return success_payload(run.to_dict())
 
 
 @router.post("/assistant/runs/{run_id}/permissions/{permission_id}", response_model=SuccessResponse[AssistantRunResponse])
@@ -272,20 +283,21 @@ def respond_assistant_permission(
     payload: AssistantPermissionResponse,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
-    _require_v2()
-    _require_permission_ui()
-    run = service.respond_permission(
-        session,
-        workspace,
-        current_user.id,
-        run_id,
-        permission_id,
-        payload.response,
-        payload.remember,
-    )
-    return success_payload(run.to_dict())
+    with session_factory() as session:
+        _require_v2()
+        _require_permission_ui()
+        run = service.respond_permission(
+            session,
+            workspace,
+            current_user.id,
+            run_id,
+            permission_id,
+            payload.response,
+            payload.remember,
+        )
+        return success_payload(run.to_dict())
 
 
 @router.post("/assistant/conversations/{conversation_id}/handoff", status_code=status.HTTP_201_CREATED, response_model=SuccessResponse[AssistantConversationResponse])
@@ -294,15 +306,16 @@ def handoff_assistant_conversation(
     payload: AssistantHandoffRequest,
     current_user: User = Depends(get_current_user),
     workspace: Workspace = Depends(get_current_workspace),
-    session: Session = Depends(get_db),
+    session_factory=Depends(get_session_factory),
 ):
-    _require_v2()
-    _require_expert()
-    conversation = service.handoff_to_expert(
-        session,
-        workspace,
-        current_user.id,
-        conversation_id,
-        payload.message_id,
-    )
-    return success_payload(conversation.to_dict())
+    with session_factory() as session:
+        _require_v2()
+        _require_expert()
+        conversation = service.handoff_to_expert(
+            session,
+            workspace,
+            current_user.id,
+            conversation_id,
+            payload.message_id,
+        )
+        return success_payload(conversation.to_dict())
