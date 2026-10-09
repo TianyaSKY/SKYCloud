@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from app.exceptions import ConflictError, ServiceOperationError
 from app.features.assistant import repository
 from app.features.assistant.engines.runtime_lease import runtime_lease as _runtime_lease
+from app.infra.owned_work import run_owned
 from app.features.assistant.clients.opencode_auth import server_password, server_username
 from app.features.assistant.clients.opencode_client import OpenCodeClient, OpenCodeClientError, OpenCodeActionError
 from app.features.assistant.clients.opencode_events import (
@@ -188,7 +189,10 @@ class ExpertEngine:
 
     def _save_runtime_lease(self, workspace_id: int, user_id: int, token: str, runtime_id: int, container_id: str):
         with self.runtime_session_factory() as session:
-            run = self._owned_run(session, workspace_id, user_id)
+            self._owned_run(session, workspace_id, user_id)
+            run = repository.lock_run(session, self.run_id)
+            if run is None or run.status in repository.TERMINAL_RUN_STATUSES or run.cancel_requested:
+                raise ConflictError('Expert task has ended before runtime admission')
             run.runtime_lease_token = token
             run.runtime_lease_runtime_id = runtime_id
             run.runtime_lease_container_id = container_id
@@ -300,8 +304,9 @@ class ExpertEngine:
             yield status_event
 
         assert connection is not None
-        async with _runtime_lease(connection.runtime_id, on_lost=controller.request_cancel) as lease_token:
-            await run_in_threadpool(self._save_runtime_lease, workspace_id, user_id, lease_token, connection.runtime_id, connection.container_id)
+        async def prepare_lease(token):
+            await run_owned(self._save_runtime_lease, workspace_id, user_id, token, connection.runtime_id, connection.container_id)
+        async with _runtime_lease(connection.runtime_id, on_lost=controller.request_cancel, before_acquire=prepare_lease):
             base_url = connection.base_url
             password = server_password(connection.runtime_id, user_id, workspace_id)
             agent = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")

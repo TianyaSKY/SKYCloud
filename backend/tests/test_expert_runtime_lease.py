@@ -208,3 +208,64 @@ async def test_renewal_deadline_aborts_before_slow_redis_worker_finishes(monkeyp
         with pytest.raises(ServiceOperationError):
             await asyncio.wait_for(pending, 1)
     assert not store.values and not engine._LOCAL_RUNTIME_LOCKS[81007].locked()
+
+
+@pytest.mark.parametrize('failure', [False, True])
+async def test_checkpoint_precedes_set_and_preserves_its_error(monkeypatch, failure):
+    from app.exceptions import PermissionDeniedError
+    store = Store()
+    calls = []
+    original = PermissionDeniedError('checkpoint-denied')
+    real_set = store.set
+    def observed_set(key, token, **kwargs):
+        assert calls == [('checkpoint', token)]
+        calls.append(('set', token))
+        return real_set(key, token, **kwargs)
+    store.set = observed_set
+    monkeypatch.setattr(engine.extensions, 'redis_client', store)
+    async def checkpoint(token):
+        calls.append(('checkpoint', token))
+        if failure:
+            raise original
+    async def caller():
+        async with engine.runtime_lease(81008, before_acquire=checkpoint):
+            calls.append(('body', None))
+    if failure:
+        with pytest.raises(PermissionDeniedError) as error:
+            await caller()
+        assert error.value is original and len(calls) == 1
+    else:
+        await caller()
+        assert [call[0] for call in calls] == ['checkpoint', 'set', 'body']
+    assert not store.values and not engine._LOCAL_RUNTIME_LOCKS[81008].locked()
+
+
+async def test_cancelled_checkpoint_drains_sql_before_unlock_without_redis_set(monkeypatch):
+    from app.infra.owned_work import run_owned
+    store = Store()
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    monkeypatch.setattr(engine.extensions, 'redis_client', store)
+    def persist(token):
+        entered.set()
+        assert release.wait(3)
+        calls.append(token)
+    async def checkpoint(token):
+        await run_owned(persist, token)
+    async def caller():
+        async with engine.runtime_lease(81009, before_acquire=checkpoint):
+            pytest.fail('cancelled checkpoint must not execute provider work')
+    pending = asyncio.create_task(caller())
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        pending.cancel('caller-stop')
+        await asyncio.sleep(.01)
+        pending.cancel('repeat-stop')
+        await asyncio.sleep(.01)
+        assert not pending.done() and not store.values and engine._LOCAL_RUNTIME_LOCKS[81009].locked()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as error:
+            await asyncio.wait_for(pending, 1)
+    assert str(error.value) == 'caller-stop' and len(calls) == 1
+    assert not store.values and not engine._LOCAL_RUNTIME_LOCKS[81009].locked()

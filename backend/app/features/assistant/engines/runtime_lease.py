@@ -28,7 +28,7 @@ return 0
 
 
 @asynccontextmanager
-async def runtime_lease(runtime_id: int, *, on_lost=None):
+async def runtime_lease(runtime_id: int, *, on_lost=None, before_acquire=None):
     local_lock = _LOCAL_RUNTIME_LOCKS.setdefault(runtime_id, asyncio.Lock())
     if local_lock.locked():
         raise ConflictError('Expert runtime is already busy')
@@ -104,6 +104,8 @@ async def runtime_lease(runtime_id: int, *, on_lost=None):
             logger.error('Expert runtime lease release failed (error_type={})', type(exc).__name__)
 
     try:
+        if before_acquire is not None:
+            await before_acquire(token)
         try:
             ttl = int(os.getenv('ASSISTANT_RUNTIME_LOCK_TTL', '3600'))
             if ttl <= 0:

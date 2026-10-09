@@ -159,3 +159,22 @@ def test_sweep_does_not_starve_dead_run_behind_older_live_run(seeded):
     with factory() as db:
         assert db.get(AssistantRun, identity[-1]).status == 'running'
         assert db.get(AssistantRun, newer_id).status == 'failed'
+
+
+@pytest.mark.parametrize('state', ['failed', 'cancel-requested'])
+def test_expert_lease_checkpoint_refuses_ended_or_cancelled_run(seeded, state):
+    from app.features.assistant.engines.expert_engine import ExpertEngine
+    from app.models.assistant import AssistantConversation
+    factory, identity = seeded
+    with factory() as db:
+        run = db.get(AssistantRun, identity[-1])
+        if state == 'failed':
+            run.status = 'failed'
+        else:
+            run.cancel_requested = True
+        db.commit()
+        engine = ExpertEngine(session=db, conversation=db.get(AssistantConversation, identity[3]), run=run)
+    with pytest.raises(ConflictError):
+        engine._save_runtime_lease(identity[1], identity[0], 'c'*32, identity[2], 'a'*64)
+    with factory() as db:
+        assert db.get(AssistantRun, identity[-1]).runtime_lease_token is None

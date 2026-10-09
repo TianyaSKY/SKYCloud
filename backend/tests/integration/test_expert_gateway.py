@@ -50,7 +50,7 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel'),('once',False,'command-crash')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel','command-crash'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel'),('once',False,'command-crash'),(None,False,'lease-before-sql'),(None,False,'lease-set-reply')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel','command-crash','lease-before-sql','lease-set-reply'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
@@ -267,6 +267,80 @@ with Session(engine) as session:
                     conversation = repository.create_conversation(db, ws_id, user_id, 'expert', 'gateway task'); db.commit()
                     if permission_response != 'auth-version':
                         conversation, run, history = service.prepare_run(db, workspace, user_id, conversation.id, '只输出 E2E_GATEWAY_OK，不调用任何工具。')
+                    if missing_candidate in ('lease-before-sql','lease-set-reply'):
+                        marker = tmp_path / 'lease-checkpoint'
+                        lease_code = """
+import asyncio,json,sys,time
+from pathlib import Path
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.features.assistant.service import stream_run
+from app.features.assistant.engines.expert_engine import ExpertEngine
+from app.infra import extensions
+settings=json.load(sys.stdin)
+if settings['mode']=='lease-before-sql':
+    original=ExpertEngine._save_runtime_lease
+    def hold(self,*args):
+        Path(settings['marker']).write_text('before-sql')
+        time.sleep(120)
+        return original(self,*args)
+    ExpertEngine._save_runtime_lease=hold
+else:
+    original=extensions.redis_client.set
+    def hold(key,*args,**kwargs):
+        result=original(key,*args,**kwargs)
+        if key.startswith('assistant:expert:runtime:'):
+            Path(settings['marker']).write_text('set-applied')
+            time.sleep(120)
+        return result
+    extensions.redis_client.set=hold
+engine=create_engine(settings['database'])
+async def run():
+    async for event in stream_run(sessionmaker(bind=engine),settings['workspace'],settings['user'],settings['conversation'],settings['run'],[]):
+        print(event.type,flush=True)
+asyncio.run(run())
+"""
+                        with (tmp_path / 'lease-worker.log').open('w') as output:
+                            boot_process = subprocess.Popen([sys.executable,'-c',lease_code],env=environment,
+                                stdin=subprocess.PIPE,stdout=output,stderr=subprocess.STDOUT,text=True)
+                            boot_process.stdin.write(json.dumps({'database':postgres.url.render_as_string(hide_password=False),
+                                'workspace':ws_id,'user':user_id,'conversation':conversation.id,'run':run.id,
+                                'mode':missing_candidate,'marker':str(marker)}))
+                            boot_process.stdin.close()
+                            deadline = time.monotonic()+40
+                            while not marker.exists():
+                                assert boot_process.poll() is None, 'native worker exited before lease checkpoint'
+                                assert time.monotonic()<deadline, 'native worker did not reach lease checkpoint'
+                                time.sleep(.05)
+                            boot_process.kill()
+                            assert boot_process.wait(5)<0
+                        from app.models.assistant import AssistantRun
+                        from app.infra.assistant_abort import recover_abandoned_runs, abort_pending_sessions
+                        from app.infra.datetime_utils import utc_now
+                        from datetime import timedelta
+                        from app.models.assistant_runtime_abort import AssistantRuntimeAbort
+                        with factory() as observer:
+                            runtime = docker_service.runtime_service.get_runtime(observer,ws_id,user_id)
+                            key = f'assistant:expert:runtime:{runtime.id}'
+                            abandoned = observer.get(AssistantRun,run.id)
+                            assert abandoned.opencode_session_id is None and not requests
+                            if missing_candidate == 'lease-before-sql':
+                                assert infrastructure['redis'].get(key) is None, 'Redis acquired before durable SQL ownership existed'
+                                assert abandoned.runtime_lease_token is None
+                            else:
+                                assert abandoned.runtime_lease_token and infrastructure['redis'].get(key)==abandoned.runtime_lease_token, 'applied Redis SET has no recoverable SQL token'
+                            abandoned.started_at = utc_now()-timedelta(seconds=60)
+                            abandoned.metadata_dict = {**abandoned.metadata_dict,'worker_heartbeat_unix':time.time()-60}
+                            observer.commit()
+                        assert recover_abandoned_runs(session_factory=factory)==1
+                        if missing_candidate == 'lease-set-reply':
+                            with factory() as observer:
+                                assert observer.get(AssistantRuntimeAbort,run.id).session_id is None
+                            assert abort_pending_sessions(session_factory=factory)==1
+                        else:
+                            assert abort_pending_sessions(session_factory=factory)==0
+                        assert not infrastructure['redis'].exists(key)
+                        return
                     if missing_candidate == 'command-crash':
                         # Kill an actual streaming API worker after a native
                         # permission grant and actual shell/child start.
