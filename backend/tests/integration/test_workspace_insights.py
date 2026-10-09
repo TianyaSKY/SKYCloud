@@ -2021,3 +2021,83 @@ async def test_ui_response_current_identity_after_forwarded_chunk(postgres,infra
     assert response.status_code==200 and 'allowed' in response.text
     assert 'private-late' not in response.text and raw not in response.text
     assert closed.is_set() and len(clients)==1 and clients[0].is_closed
+
+
+@pytest.mark.parametrize('kind',['model','ui'])
+async def test_http_completed_header_teardown_cancel_closes_native_upstream(postgres,infrastructure,monkeypatch,kind):
+    import threading
+    import httpx
+    from fastapi import FastAPI
+    from urllib.parse import urlsplit,parse_qs
+    from app.infra.http_wait import guarded_wait
+    from app.infra.extensions import get_session_factory
+    from app.features.runtime_llm import router as model,tokens
+    from app.features.workspace import ui_gateway,ui_tickets
+    from app.infra.llm.config import get_chat_model_config
+    from app.models.opencode_runtime import OpenCodeRuntime
+    from tests.integration.test_expert_gateway import serve
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+        db.execute(text("INSERT INTO opencode_runtimes(id,workspace_id,user_id,status,container_id) VALUES (1,1,1,'running',:id)"),{'id':'a'*64})
+    factory=sessionmaker(bind=postgres)
+    if kind=='model':
+        with factory() as db:raw=tokens.issue_token(db,db.get(OpenCodeRuntime,1))
+        headers={'Authorization':'Bearer '+raw};base='http://test';path='/v1/chat/completions'
+        model_name=get_chat_model_config()['model']
+        body=json.dumps({'model':model_name,'messages':[{'role':'user','content':'question'}],'stream':True}).encode()
+        monkeypatch.setattr(model.quota,'reserve',lambda *args:None)
+        gateway=model
+    else:
+        monkeypatch.setattr(ui_tickets,'redis_client',infrastructure['redis'])
+        monkeypatch.setenv('APP_ORIGIN','http://app.skycloud.localhost')
+        monkeypatch.setenv('RUNTIME_UI_ORIGIN_TEMPLATE','http://r{runtime_id}.skycloud.localhost:8081')
+        with factory() as db:
+            issued=ui_tickets.issue(db,1,1);parsed=urlsplit(issued['launch_url'])
+            raw,_=ui_tickets.redeem(db,parse_qs(parsed.query)['ticket'][0],parsed.netloc)
+        base=f'{parsed.scheme}://{parsed.netloc}';headers={'Cookie':ui_tickets.COOKIE+'='+raw,'Origin':base}
+        path='/runtime-ui/event';body=b'question';gateway=ui_gateway
+    clients,responses,forwarded=[],[],[]
+    upstream_closed=threading.Event()
+    async def provider(scope,receive,send):
+        try:
+            while (await receive()).get('more_body'):pass
+            await send({'type':'http.response.start','status':200,'headers':[(b'content-type',b'text/event-stream')]})
+            await send({'type':'http.response.body','body':b'data: private-late\n\n','more_body':True})
+            while (await receive())['type']!='http.disconnect':pass
+        finally:upstream_closed.set()
+    real_client=httpx.AsyncClient
+    def upstream(**kwargs):
+        client=real_client(**kwargs);clients.append(client)
+        send=client.send
+        async def opened(*args,**kw):
+            response=await send(*args,**kw);responses.append(response)
+            assert not response.is_closed
+            return response
+        client.send=opened
+        return client
+    async def checked_wait(operation,*,check,**options):
+        async def checked():
+            await check()
+            if responses:asyncio.get_running_loop().call_soon(asyncio.current_task().cancel)
+        return await guarded_wait(operation,check=checked,**options)
+    monkeypatch.setattr(gateway,'guarded_wait',checked_wait)
+    if kind=='model':monkeypatch.setattr(gateway,'upstream_client',lambda:upstream(timeout=60,trust_env=False))
+    else:monkeypatch.setattr(gateway.httpx,'AsyncClient',upstream)
+    app=FastAPI();app.include_router(gateway.router)
+    app.dependency_overrides[get_session_factory]=lambda:factory
+    async def observed(scope,receive,send):
+        async def sent(message):
+            forwarded.append(message['type']);await send(message)
+        await app(scope,receive,sent)
+    with serve(provider) as port:
+        if kind=='model':monkeypatch.setattr(model,'get_chat_model_config',lambda:{'api':f'http://127.0.0.1:{port}/v1','key':'synthetic-provider-key','model':model_name})
+        else:monkeypatch.setattr(ui_gateway,'controller_url',lambda:f'http://127.0.0.1:{port}')
+        async with real_client(transport=httpx.ASGITransport(observed),base_url=base) as client:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(client.post(path,headers=headers,content=body),3)
+        assert await asyncio.to_thread(upstream_closed.wait,3)
+    assert len(clients)==len(responses)==1
+    assert clients[0].is_closed and responses[0].is_closed and forwarded==[]

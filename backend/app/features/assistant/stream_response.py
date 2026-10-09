@@ -1,6 +1,5 @@
 """Close prepared runs even when ASGI fails before entering their iterator."""
 import asyncio
-import sys
 import anyio
 from contextlib import contextmanager
 from loguru import logger
@@ -63,14 +62,17 @@ class PreparedStreamResponse(StreamingResponse):
         self.run_scope = run_scope
 
     async def __call__(self, scope, receive, send):
+        failed = False
         try:
             await super().__call__(scope, receive, send)
+        except BaseException:
+            failed = True
+            raise
         finally:
-            original = sys.exception()
             async def release():
                 await close_reader(None, self.body_iterator)
                 async with StreamWorker() as worker:
                     await worker.call(cleanup_unclaimed_run, self.session_factory, self.run_scope)
             cancelled = await drain_cleanup(release())
-            if cancelled and original is None:
+            if cancelled and not failed:
                 raise asyncio.CancelledError()

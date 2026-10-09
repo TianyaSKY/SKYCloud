@@ -1,6 +1,5 @@
 """Own upstream HTTP resources through ASGI response delivery and teardown."""
 import asyncio
-import sys
 import anyio
 from loguru import logger
 from starlette.responses import StreamingResponse
@@ -42,13 +41,16 @@ class UpstreamResponse(StreamingResponse):
         self.lease = lease
 
     async def __call__(self, scope, receive, send):
+        failed = False
         try:
             await super().__call__(scope, receive, send)
+        except BaseException:
+            failed = True
+            raise
         finally:
-            original = sys.exception()
             async def release():
                 await close_reader(None, self.body_iterator)
                 await self.lease.close()
             cancelled = await drain_cleanup(release())
-            if cancelled and original is None:
+            if cancelled and not failed:
                 raise asyncio.CancelledError()

@@ -3,7 +3,6 @@
 import json
 import time
 import asyncio
-import sys
 from contextlib import aclosing
 
 import httpx
@@ -45,6 +44,7 @@ async def authorized_bytes(response, request, session_factory):
     pending = None
     iterator = response.aiter_bytes().__aiter__()
     deadline = time.monotonic() + MAX_STREAM_SECONDS
+    failed = False
     try:
         while True:
             remaining = deadline - time.monotonic()
@@ -64,10 +64,12 @@ async def authorized_bytes(response, request, session_factory):
             if time.monotonic() >= deadline:
                 raise HTTPException(502, 'Model response timed out')
             yield part
+    except BaseException:
+        failed = True
+        raise
     finally:
-        original = sys.exception()
         cancelled = await close_reader(pending, iterator)
-        if cancelled and original is None:
+        if cancelled and not failed:
             raise asyncio.CancelledError()
 
 

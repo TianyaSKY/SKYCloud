@@ -1,6 +1,5 @@
 """Recheck legacy stream membership while waiting and before each event."""
 import asyncio
-import sys
 from app.infra.async_stream import close_reader
 from app.features.chat.repository import require_membership
 
@@ -9,6 +8,7 @@ POLL_SECONDS = 1.0
 
 async def authorized_events(iterator, session_factory, workspace_id: int, user_id: int, credential=None):
     pending = None
+    failed = False
     async def check():
         await asyncio.to_thread(require_membership, session_factory, workspace_id, user_id, credential)
     try:
@@ -25,8 +25,10 @@ async def authorized_events(iterator, session_factory, workspace_id: int, user_i
                 return
             pending = None
             yield event
+    except BaseException:
+        failed = True
+        raise
     finally:
-        original = sys.exception()
         cancelled = await close_reader(pending, iterator)
-        if cancelled and original is None:
+        if cancelled and not failed:
             raise asyncio.CancelledError()

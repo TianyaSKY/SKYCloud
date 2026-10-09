@@ -1,6 +1,5 @@
 """Dedicated UI ingress: only opaque runtime sessions, never web Bearer tokens."""
 import asyncio
-import sys
 import time
 import os
 import json
@@ -146,6 +145,7 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
         pending = None
         iterator = upstream.aiter_bytes().__aiter__()
         deadline = time.monotonic() + max(0, payload['expires_at'] - time.time())
+        failed = False
         try:
             while time.monotonic() < deadline:
                 if pending is None:
@@ -168,13 +168,15 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
                 yield chunk
         except (httpx.HTTPError, HTTPException):
             return
+        except BaseException:
+            failed = True
+            raise
         finally:
-            original = sys.exception()
             async def release():
                 await close_reader(pending, iterator)
                 await lease.close()
             cancelled = await drain_cleanup(release())
-            if cancelled and original is None:
+            if cancelled and not failed:
                 raise asyncio.CancelledError()
     return UpstreamResponse(output(), lease=lease, status_code=upstream.status_code, headers={
         'Content-Type': upstream.headers.get('content-type', 'application/octet-stream'),

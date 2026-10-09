@@ -4,6 +4,7 @@ import time
 import anyio
 from fastapi import HTTPException
 from loguru import logger
+from app.infra.async_stream import drain_cleanup
 
 
 async def guarded_wait(operation, *, check, seconds, status, detail, interval=1.0, on_abort=None):
@@ -25,22 +26,28 @@ async def guarded_wait(operation, *, check, seconds, status, detail, interval=1.
         interrupted = True
         raise
     finally:
+        async def abort():
+            if on_abort is not None:
+                try:
+                    await on_abort()
+                except (Exception, asyncio.CancelledError) as exc:
+                    logger.error("HTTP admission cleanup failed (error_type={})", type(exc).__name__)
         async def cleanup():
             if not pending.done():
                 pending.cancel()
             try:
-                if interrupted and on_abort is not None:
-                    try:
-                        await on_abort()
-                    except (Exception, asyncio.CancelledError) as exc:
-                        logger.error("HTTP admission cleanup failed (error_type={})", type(exc).__name__)
+                if interrupted:
+                    await abort()
             finally:
                 await asyncio.gather(pending, return_exceptions=True)
-        released = asyncio.create_task(cleanup())
-        with anyio.CancelScope(shield=True):
-            while not released.done():
-                try:
-                    await asyncio.shield(released)
-                except asyncio.CancelledError:
-                    continue
-        released.result()
+        cancelled = await drain_cleanup(cleanup())
+        if not interrupted:
+            try:
+                if cancelled:
+                    raise asyncio.CancelledError()
+                # An outer AnyIO scope may already be cancelled, with no
+                # checkpoint outside shielded cleanup to deliver it yet.
+                await anyio.lowlevel.checkpoint_if_cancelled()
+            except asyncio.CancelledError:
+                await drain_cleanup(abort())
+                raise
