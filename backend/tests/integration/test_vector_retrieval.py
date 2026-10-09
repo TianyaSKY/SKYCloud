@@ -338,3 +338,91 @@ async def test_cancelled_owned_sql_drains_native_lock_before_return(indexed,post
             assert db.scalar(text("SELECT count(*) FROM folder WHERE workspace_id=:workspace AND name='accepted-before-cancel'"),{'workspace':first})==1
     # SQL work that had already started completes before cancellation returns;
     # no assertion of database-side cancellation or rollback of accepted writes.
+
+
+@pytest.mark.parametrize('kind', ['single', 'multi', 'membership'])
+async def test_chat_cancelled_native_sql_closes_all_owned_sessions(indexed, postgres, monkeypatch, kind):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from sqlalchemy.orm import Session
+    from app.features.chat import service, stream_authorization
+
+    factory, workspace, _, _ = indexed
+    with factory() as db:
+        actor = db.get(Workspace, workspace).owner_id
+    pids, closed = [], []
+
+    class OwnedSession(Session):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.pid = self.execute(text('SELECT pg_backend_pid()')).scalar_one()
+            pids.append(self.pid)
+
+        def close(self):
+            try:
+                super().close()
+            finally:
+                closed.append(self.pid)
+
+    owned = sessionmaker(bind=postgres, class_=OwnedSession)
+    monkeypatch.setattr(service, 'SessionLocal', owned)
+    # Provider response is synthetic; production membership and pgvector SQL
+    # execute on the native database, including parallel identity row locks.
+    monkeypatch.setattr(service, 'get_embeddings_model', lambda: SimpleNamespace(
+        aembed_query=AsyncMock(return_value=vector(1)),
+        aembed_documents=AsyncMock(return_value=[vector(1), vector(1), vector(1)]),
+    ))
+    monkeypatch.setattr(service, 'build_multi_queries', lambda *args, **kwargs: ['one', 'two', 'three'])
+    iterator_closed = []
+
+    class Iterator:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            iterator_closed.append(sorted(closed) == sorted(pids))
+
+    if kind == 'single':
+        operation = service.custom_db_retriever('query', workspace, user_id=actor)
+    elif kind == 'multi':
+        operation = service.multi_query_db_retriever('query', workspace, object(), user_id=actor)
+    else:
+        operation = anext(stream_authorization.authorized_events(Iterator(), owned, workspace, actor))
+    table = 'workspace_members' if kind == 'membership' else 'file_chunks'
+    expected = 3 if kind == 'multi' else 1
+    gate = postgres.connect()
+    transaction = gate.begin()
+    pending = None
+    try:
+        gate.execute(text("SET LOCAL lock_timeout='2s'"))
+        gate.execute(text('LOCK TABLE ' + table + ' IN ACCESS EXCLUSIVE MODE'))
+        pending = asyncio.create_task(operation)
+        deadline = asyncio.get_running_loop().time() + 2
+        while True:
+            with postgres.connect() as observer:
+                waiting = observer.scalar(text(
+                    "SELECT count(*) FROM pg_stat_activity WHERE pid=ANY(:pids) AND wait_event_type='Lock'"
+                ), {'pids': pids}) if pids else 0
+            if len(pids) == expected and waiting == expected:
+                break
+            assert asyncio.get_running_loop().time() < deadline, 'chat SQL never reached native locks'
+            await asyncio.sleep(.01)
+        pending.cancel('native-caller-stop')
+        await asyncio.sleep(.01)
+        pending.cancel('repeat-stop')
+        await asyncio.sleep(.01)
+        assert not pending.done() and not closed and not iterator_closed
+    finally:
+        transaction.rollback()
+        gate.close()
+        if pending is not None:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(pending, 2)
+        else:
+            operation.close()
+    assert len(closed) == expected and sorted(closed) == sorted(pids)
+    assert iterator_closed == ([True] if kind == 'membership' else [])

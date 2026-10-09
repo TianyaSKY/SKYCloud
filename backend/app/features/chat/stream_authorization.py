@@ -1,6 +1,7 @@
 """Recheck legacy stream membership while waiting and before each event."""
 import asyncio
 from app.infra.async_stream import close_reader
+from app.infra.owned_work import run_owned
 from app.features.chat.repository import require_membership
 
 POLL_SECONDS = 1.0
@@ -10,7 +11,7 @@ async def authorized_events(iterator, session_factory, workspace_id: int, user_i
     pending = None
     failed = False
     async def check():
-        await asyncio.to_thread(require_membership, session_factory, workspace_id, user_id, credential)
+        await run_owned(require_membership, session_factory, workspace_id, user_id, credential)
     try:
         await check()
         while True:

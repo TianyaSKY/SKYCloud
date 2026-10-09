@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from langchain_openai import OpenAIEmbeddings
 
 from app.infra.extensions import SessionLocal
+from app.infra.owned_work import run_owned
 from app.features.chat import repository
 from app.exceptions import PermissionDeniedError
 from app.infra.llm.config import get_chat_model_config, get_embedding_model_config
@@ -147,7 +148,7 @@ async def custom_db_retriever(query_text: str, workspace_id: int, *, user_id: in
     """单查询向量检索 + rerank；SQL 边界核验当前成员资格。"""
     embeddings = get_embeddings_model()
     query_vector = (await embeddings.aembed_query(query_text, user_id=user_id))[:1024]
-    docs = await asyncio.to_thread(
+    docs = await run_owned(
         _vector_search_docs,
         query_vector,
         query_text,
@@ -183,7 +184,6 @@ async def multi_query_db_retriever(
         queries = [question.strip()]
 
     embeddings = get_embeddings_model()
-    loop = asyncio.get_running_loop()
 
     # ---------------------------------------------------------------------------
     # 阶段 1: embedding
@@ -210,13 +210,19 @@ async def multi_query_db_retriever(
     # ---------------------------------------------------------------------------
     # 阶段 2: 并行数据库向量检索
     # ---------------------------------------------------------------------------
-    async def _search_one(q_text: str, vec: list[float]) -> list[Document]:
-        return await loop.run_in_executor(
-            None, _db_search_by_vector, vec, q_text, workspace_id, RAG_VECTOR_FETCH_K, user_id
-        )
+    async def _search_one(q_text: str, vec: list[float]):
+        try:
+            return await run_owned(
+                _db_search_by_vector, vec, q_text, workspace_id, RAG_VECTOR_FETCH_K, user_id
+            )
+        except Exception as exc:
+            # Keep partial recall on ordinary failures. Cancellation still
+            # propagates, and TaskGroup waits for every owned worker to drain.
+            return exc
 
-    search_tasks = [_search_one(qt, v) for qt, v in zip(queries, all_vectors)]
-    raw_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+    async with asyncio.TaskGroup() as group:
+        search_tasks = [group.create_task(_search_one(qt, v)) for qt, v in zip(queries, all_vectors)]
+    raw_results = [task.result() for task in search_tasks]
 
     for result in raw_results:
         if isinstance(result, PermissionDeniedError):
@@ -381,6 +387,7 @@ async def generate_chat_events(user_id: int, workspace_id: int, query: str, hist
     }
     model_name_seen: str | None = None
 
+    failed = False
     try:
         iterator = rag_chain.astream_events(
                 {"question": query, "history": formatted_history, "user_id": user_id, "workspace_id": workspace_id},
@@ -446,15 +453,22 @@ async def generate_chat_events(user_id: int, workspace_id: int, query: str, hist
     except Exception as e:
         logger.error("Chat request failed (error_type={})", type(e).__name__)
         yield f"data: {json.dumps({'type': 'status', 'content': '对话请求失败，请稍后重试。'})}\n\n"
+    except BaseException:
+        failed = True
+        raise
     finally:
         # 成功或异常都记用量，避免漏计费
-        await asyncio.to_thread(
-            record_llm_usage,
-            user_id=user_id,
-            action="chat",
-            model_name=model_name_seen,
-            prompt_tokens=usage_accumulator["prompt_tokens"],
-            completion_tokens=usage_accumulator["completion_tokens"],
-            total_tokens=usage_accumulator["total_tokens"],
-            query_summary=query,
-        )
+        try:
+            await run_owned(
+                record_llm_usage, cancel_queued=False,
+                user_id=user_id,
+                action="chat",
+                model_name=model_name_seen,
+                prompt_tokens=usage_accumulator["prompt_tokens"],
+                completion_tokens=usage_accumulator["completion_tokens"],
+                total_tokens=usage_accumulator["total_tokens"],
+                query_summary=query,
+            )
+        except asyncio.CancelledError:
+            if not failed:
+                raise
