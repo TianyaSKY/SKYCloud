@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from app.exceptions import ServiceOperationError
 from app.infra.datetime_utils import utc_now
@@ -102,6 +103,16 @@ def get_user_mcp_token_payload(session: Session, user_id: int) -> dict[str, Any]
         "expires_in_days": 365,
         "usage": "Set as Authorization header: Bearer <mcp_token>",
     }
+
+
+def is_active_http_token(session: Session, token: str, user_id: int) -> bool:
+    """Read-only continued HTTP authorization, bypassing ORM identity state."""
+    return session.scalar(select(McpToken.id).where(
+        McpToken.user_id == user_id,
+        McpToken.token_hash == McpToken.hash_token(token),
+        McpToken.revoked_at.is_(None),
+        McpToken.expires_at > utc_now(),
+    )) is not None
 
 
 def get_active_mcp_token(session: Session, token: str) -> McpToken | None:

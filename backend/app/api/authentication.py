@@ -20,4 +20,9 @@ def resolve_http_user(session_factory, payload, token):
         if role is None or not data:
             raise HTTPException(status_code=401, detail='User not found!')
         # Do not mutate cached profile data. Authorization role comes from SQL.
-        return User.from_cache({**data, 'role': role})
+        user = User.from_cache({**data, 'role': role})
+        from app.api.stream_credentials import StreamCredential
+        # Only the request-local detached object carries the raw credential.
+        # It is never put in cached profile data or User.to_dict().
+        user._http_stream_credential = StreamCredential(token, user_id)
+        return user

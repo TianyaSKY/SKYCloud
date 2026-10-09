@@ -53,6 +53,10 @@ async def test_authentication_worker_ownership_and_fresh_role(monkeypatch, kind)
     finally:
         release.set();user=await pending
     assert user.id==1 and user.role=='common'
+    assert user._http_stream_credential.token == credential.credentials
+    assert credential.credentials not in repr(user._http_stream_credential)
+    assert '_http_stream_credential' not in user.to_dict()
+    assert profile == {'id': 1, 'role': 'admin'}
     assert user._sa_instance_state.session is None
     assert profile['role']=='admin'
     assert len(opened)==1 and closed==opened

@@ -6,10 +6,10 @@ from app.features.chat.repository import require_membership
 POLL_SECONDS = 1.0
 
 
-async def authorized_events(iterator, session_factory, workspace_id: int, user_id: int):
+async def authorized_events(iterator, session_factory, workspace_id: int, user_id: int, credential=None):
     pending = None
     async def check():
-        await asyncio.to_thread(require_membership, session_factory, workspace_id, user_id)
+        await asyncio.to_thread(require_membership, session_factory, workspace_id, user_id, credential)
     async with aclosing(iterator):
         try:
             await check()

@@ -38,8 +38,10 @@ def _owned_session(session_factory):
                 logger.error("Chat retrieval session invalidation failed (error_type={})", type(invalidation_exc).__name__)
 
 
-def require_membership(session_factory, workspace_id: int, user_id: int):
+def require_membership(session_factory, workspace_id: int, user_id: int, credential=None):
     if type(user_id) is not int or user_id <= 0:
         raise PermissionDeniedError("Authenticated retrieval identity is required")
     with _owned_session(session_factory) as session:
+        if credential is not None:
+            credential.validate(session, user_id)
         assert_member(session, workspace_id, user_id)

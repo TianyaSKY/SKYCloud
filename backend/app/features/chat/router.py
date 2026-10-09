@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from app.api.dependencies import get_current_user, get_current_workspace
 from app.features.chat.schemas import ChatRequest
 from app.features.chat.stream_authorization import authorized_events
-from app.exceptions import PermissionDeniedError
+from app.exceptions import AuthenticationError, PermissionDeniedError
 from app.infra.extensions import get_session_factory
 from app.features.chat.service import generate_chat_events
 from app.features.assistant.engines.fast_engine import FastEngine
@@ -47,7 +47,10 @@ async def chat(
             history=payload.history,
         )
         try:
-            async with aclosing(authorized_events(iterator, session_factory, int(workspace.id), int(current_user.id))) as events:
+            async with aclosing(authorized_events(
+                iterator, session_factory, int(workspace.id), int(current_user.id),
+                getattr(current_user, '_http_stream_credential', None),
+            )) as events:
                 async for event in events:
                     legacy_payload = {"type": event.type, **event.payload}
                     if event.type == "error":
@@ -56,6 +59,8 @@ async def chat(
                             "content": f"出错了: {event.payload.get('message', '请求失败')}",
                         }
                     yield f"data: {json.dumps(legacy_payload, ensure_ascii=False)}\n\n"
+        except AuthenticationError:
+            yield f"data: {json.dumps({'type': 'status', 'content': '登录状态已失效，对话已停止，请重新登录。'})}\n\n"
         except PermissionDeniedError:
             yield f"data: {json.dumps({'type': 'status', 'content': '工作空间访问权限已撤销，对话已停止。'})}\n\n"
         except Exception as exc:
