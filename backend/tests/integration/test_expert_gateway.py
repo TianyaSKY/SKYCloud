@@ -50,7 +50,7 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
@@ -66,7 +66,7 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
     lease_abort_acks = []
     provider_disconnected = threading.Event()
     replaced_lease_keys = []
-    if missing_candidate == 'lease-loss':
+    if missing_candidate in ('lease-loss','command-lease-loss','command-cancel'):
         monkeypatch.setenv('ASSISTANT_RUNTIME_LOCK_TTL', '1')
         from app.features.assistant.clients.opencode_client import OpenCodeClient
         actual_abort = OpenCodeClient.abort_session
@@ -121,7 +121,10 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
                  'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'E2E_GATEWAY_OK'}, 'finish_reason': 'stop'}],
                  'usage': {'prompt_tokens': 20, 'completion_tokens': 5, 'total_tokens': 25}}
         tool_request = permission_response is not None and any(tool.get('function', {}).get('name') == 'bash' for tool in body.get('tools', [])) and not any(message.get('role') == 'tool' for message in body['messages'])
-        call = {'id': 'call_skycloud_test', 'type': 'function', 'function': {'name': 'bash', 'arguments': json.dumps({'command': "printf 'AUTHORIZED_ONLY'", 'description': 'Print synthetic test marker'})}}
+        command = "printf 'AUTHORIZED_ONLY'"
+        if missing_candidate in ('command-lease-loss','command-cancel'):
+            command += """; sleep 4 & child=$!; printf '%s %s' "$$" "$child" > /tmp/skycloud-command-pids; wait "$child"; printf LATE > /tmp/skycloud-command-late"""
+        call = {'id': 'call_skycloud_test', 'type': 'function', 'function': {'name': 'bash', 'arguments': json.dumps({'command': command, 'description': 'Print synthetic test marker'})}}
         if tool_request:
             reply['choices'][0]['message'] = {'role': 'assistant', 'content': None, 'tool_calls': [call]}
             reply['choices'][0]['finish_reason'] = 'tool_calls'
@@ -262,6 +265,33 @@ with Session(engine) as session:
                     conversation = repository.create_conversation(db, ws_id, user_id, 'expert', 'gateway task'); db.commit()
                     if permission_response != 'auth-version':
                         conversation, run, history = service.prepare_run(db, workspace, user_id, conversation.id, '只输出 E2E_GATEWAY_OK，不调用任何工具。')
+                    command_observers = []
+                    command_state = {}
+                    async def interrupt_started_command():
+                        def current_container():
+                            with factory() as reader:
+                                return docker_service.runtime_service.get_runtime(reader, ws_id, user_id).container_id
+                        container_id = await asyncio.to_thread(current_container)
+                        deadline = time.monotonic() + 10
+                        while True:
+                            probe = await asyncio.to_thread(docker, 'exec', container_id, 'cat', '/tmp/skycloud-command-pids', check=False)
+                            if probe.returncode == 0:
+                                pids = probe.stdout.split()
+                                assert len(pids) == 2 and all(pid.isdecimal() for pid in pids)
+                                command_state.update(container=container_id, pids=pids, started=time.monotonic())
+                                break
+                            assert time.monotonic() < deadline, 'granted native command never started'
+                            await asyncio.sleep(.01)
+                        if missing_candidate == 'command-lease-loss':
+                            keys = list(infrastructure['redis'].scan_iter('assistant:expert:runtime:*'))
+                            assert len(keys) == 1
+                            replaced_lease_keys.extend(keys)
+                            infrastructure['redis'].set(keys[0], 'successor-worker', ex=60)
+                        else:
+                            def cancel_run():
+                                with factory() as writer:
+                                    service.request_cancel(writer, writer.get(Workspace, ws_id), user_id, run.id)
+                            await asyncio.to_thread(cancel_run)
                     async def collect():
                         if permission_response == 'auth-version':
                             from app.features.assistant import router as assistant_router
@@ -335,11 +365,33 @@ with Session(engine) as session:
                                         else:
                                             service.respond_permission(responder, responder.get(Workspace, ws_id), user_id, run.id, event.payload['permission_id'], 'once' if permission_response == 'unconfirmed' else permission_response)
                                 await asyncio.to_thread(respond_from_worker)
+                                if missing_candidate in ('command-lease-loss','command-cancel'):
+                                    command_observers.append(asyncio.create_task(interrupt_started_command()))
+                        if command_observers:
+                            await asyncio.gather(*command_observers)
                         return observed
                     events = asyncio.run(asyncio.wait_for(collect(), 120))
                     if permission_response == 'auth-version':
                         return
                     db.refresh(run)
+                    if missing_candidate in ('command-lease-loss','command-cancel'):
+                        assert command_state, 'command cancellation boundary was not exercised'
+                        assert run.status in ('failed','cancelled')
+                        assert not any(event.type == 'done' for event in events)
+                        assert lease_abort_acks and all(lease_abort_acks)
+                        for pid in command_state['pids']:
+                            result = docker('exec', command_state['container'], 'cat', f'/proc/{pid}/stat', check=False)
+                            if result.returncode == 0:
+                                assert result.stdout.rsplit(')', 1)[1].split()[0] == 'Z', 'granted command process still executing after acknowledged abort'
+                        time.sleep(max(0, command_state['started'] + 4.5 - time.monotonic()))
+                        assert docker('exec', command_state['container'], 'test', '-e', '/tmp/skycloud-command-late', check=False).returncode == 1
+                        assert len(requests) == 1, 'aborted command triggered a later model call'
+                        runtime = docker_service.runtime_service.get_runtime(db, ws_id, user_id)
+                        if missing_candidate == 'command-lease-loss':
+                            assert infrastructure['redis'].get(replaced_lease_keys[0]) == 'successor-worker'
+                        else:
+                            assert not infrastructure['redis'].exists(f'assistant:expert:runtime:{runtime.id}')
+                        return
                     if missing_candidate == 'lease-loss':
                         assert run.status in ('failed', 'cancelled')
                         assert not any(event.type == 'done' for event in events)
