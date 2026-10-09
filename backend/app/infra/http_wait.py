@@ -33,7 +33,7 @@ async def guarded_wait(operation, *, check, seconds, status, detail, interval=1.
                     try:
                         await on_abort()
                     except (Exception, asyncio.CancelledError) as exc:
-                        logger.error("Model admission cleanup failed (error_type={})", type(exc).__name__)
+                        logger.error("HTTP admission cleanup failed (error_type={})", type(exc).__name__)
             finally:
                 await asyncio.gather(pending, return_exceptions=True)
         released = asyncio.create_task(cleanup())

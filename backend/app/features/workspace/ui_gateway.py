@@ -10,6 +10,8 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import RedirectResponse, HTMLResponse
 from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
+from app.infra.http_wait import guarded_wait
 
 from app.infra.extensions import get_session_factory, SessionLocal
 from app.features.workspace import ui_tickets
@@ -20,6 +22,9 @@ from runtime_controller.socket_relay import direct_connect, pump, terminal_path,
 router = APIRouter(prefix='/runtime-ui', include_in_schema=False)
 MAX_REQUEST = 256 * 1024
 MAX_RESPONSE = 64 * 1024 * 1024
+MAX_BODY_SECONDS = 30
+MAX_HEADER_SECONDS = 90
+HTTP_RECHECK_SECONDS = 1.0
 RECHECK_SECONDS = 15
 socket_slots = SocketSlots()
 
@@ -96,19 +101,19 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
         raise HTTPException(403, 'Unsupported runtime UI path')
     async def bounded_body():
         body = bytearray()
-        async for chunk in request.stream():
-            if len(body) + len(chunk) > MAX_REQUEST:
-                raise HTTPException(413, 'Runtime UI request too large')
-            body.extend(chunk)
+        try:
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > MAX_REQUEST:
+                    raise HTTPException(413, 'Runtime UI request too large')
+                body.extend(chunk)
+        except ClientDisconnect as exc:
+            raise HTTPException(499, 'Runtime UI client disconnected') from exc
         return bytes(body)
-    started = time.monotonic()
-    try:
-        body = await asyncio.wait_for(bounded_body(),
-            timeout=max(0.001, min(30, payload['expires_at'] - time.time())))
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(408, 'Runtime UI request timed out') from exc
-    if request.method not in {'GET', 'HEAD'} or time.monotonic() - started >= RECHECK_SECONDS:
-        payload = await run_in_threadpool(reauthenticate, _credential(request), _host(request), session_factory)
+    async def verify():
+        await run_in_threadpool(reauthenticate, _credential(request), _host(request), session_factory)
+    body = await guarded_wait(bounded_body(), check=verify,
+        seconds=max(0.001, min(MAX_BODY_SECONDS, payload['expires_at'] - time.time())),
+        status=408, detail='Runtime UI request timed out', interval=HTTP_RECHECK_SECONDS)
     url = controller_url() + '/runtimes/' + quote(payload['container_id'], safe='') + '/ui/' + quote(path, safe='/')
     headers = {key: request.headers[key] for key in ('content-type', 'accept') if key in request.headers}
     if request.headers.get('x-opencode-ticket') == '1':
@@ -117,9 +122,18 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
     client = httpx.AsyncClient(timeout=httpx.Timeout(90, connect=5), trust_env=False, follow_redirects=False)
     lease = UpstreamLease(client)
     try:
-        upstream = await client.send(client.build_request(request.method, url, headers=headers,
-                    content=body, params=list(request.query_params.multi_items())), stream=True)
-        lease.upstream = upstream
+        async def open_response():
+            upstream = await client.send(client.build_request(request.method, url, headers=headers,
+                        content=body, params=list(request.query_params.multi_items())), stream=True)
+            lease.upstream = upstream
+            return upstream
+        async def verify_headers():
+            if await request.is_disconnected():
+                raise HTTPException(499, 'Runtime UI client disconnected')
+            await verify()
+        upstream = await guarded_wait(open_response(), check=verify_headers,
+            seconds=max(0.001, min(MAX_HEADER_SECONDS, payload['expires_at'] - time.time())),
+            status=504, detail='Runtime UI upstream timed out', interval=HTTP_RECHECK_SECONDS, on_abort=lease.close)
     except BaseException as exc:
         await lease.close()
         if isinstance(exc, httpx.HTTPError):

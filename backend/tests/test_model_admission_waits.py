@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 from fastapi import HTTPException
-from app.features.runtime_llm.waits import guarded_wait
+from app.infra.http_wait import guarded_wait
 
 
 @pytest.mark.parametrize('cause',['revoke','timeout','cancel','late-response','abort-fault'])

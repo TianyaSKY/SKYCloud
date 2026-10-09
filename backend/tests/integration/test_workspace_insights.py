@@ -1887,3 +1887,62 @@ async def test_model_native_client_disconnect_releases_wait(postgres,monkeypatch
     assert not errors
     assert len(charges)==(stage!='body') and len(clients)==(stage!='body')
     assert all(client.is_closed for client in clients)
+
+
+@pytest.mark.parametrize('stage,end',[('body','revoke'),('headers','revoke'),('body','timeout'),('headers','timeout'),('headers','completed-revoked')])
+async def test_ui_admission_current_permission_and_timeout(postgres,infrastructure,monkeypatch,stage,end):
+    from urllib.parse import urlsplit,parse_qs
+    import httpx
+    from fastapi import FastAPI
+    from app.features.workspace import ui_gateway,ui_tickets
+    from app.infra.extensions import get_session_factory
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+        db.execute(text("INSERT INTO opencode_runtimes(id,workspace_id,user_id,status,container_id) VALUES (1,1,1,'running',:id)"),{'id':'a'*64})
+    factory=sessionmaker(bind=postgres)
+    monkeypatch.setattr(ui_tickets,'redis_client',infrastructure['redis'])
+    monkeypatch.setenv('APP_ORIGIN','http://app.skycloud.localhost')
+    monkeypatch.setenv('RUNTIME_UI_ORIGIN_TEMPLATE','http://r{runtime_id}.skycloud.localhost:8081')
+    with factory() as db:
+        issued=ui_tickets.issue(db,1,1)
+        parsed=urlsplit(issued['launch_url'])
+        raw,_=ui_tickets.redeem(db,parse_qs(parsed.query)['ticket'][0],parsed.netloc)
+    entered,closed=asyncio.Event(),asyncio.Event()
+    clients,responses=[],[]
+    def revoke():
+        with postgres.begin() as db:db.execute(text("UPDATE workspace_members SET role='viewer' WHERE user_id=1"))
+    class Upload(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            try:
+                yield b'partial';entered.set();await asyncio.Event().wait();yield b'private-late'
+            finally:closed.set()
+    real_client=httpx.AsyncClient
+    async def provider(request):
+        try:
+            entered.set()
+            if end!='completed-revoked':await asyncio.Event().wait()
+            revoke()
+            response=httpx.Response(200,stream=httpx.ByteStream(b'private-late'))
+            assert not response.is_closed
+            responses.append(response);return response
+        finally:closed.set()
+    def upstream(**kwargs):
+        client=real_client(transport=httpx.MockTransport(provider),**kwargs);clients.append(client);return client
+    monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',upstream)
+    if end=='timeout':monkeypatch.setattr(ui_gateway,'MAX_BODY_SECONDS' if stage=='body' else 'MAX_HEADER_SECONDS',0.05)
+    app=FastAPI();app.include_router(ui_gateway.router)
+    app.dependency_overrides[get_session_factory]=lambda:factory
+    origin=f'{parsed.scheme}://{parsed.netloc}'
+    async with real_client(transport=httpx.ASGITransport(app),base_url=origin) as client:
+        pending=asyncio.create_task(client.post('/runtime-ui/event',headers={'Cookie':ui_tickets.COOKIE+'='+raw,'Origin':origin},content=Upload() if stage=='body' else b'question'))
+        await asyncio.wait_for(entered.wait(),3)
+        if end=='revoke':revoke()
+        response=await asyncio.wait_for(pending,5)
+    expected=(408 if stage=='body' else 504) if end=='timeout' else 403
+    assert response.status_code==expected and closed.is_set()
+    assert raw not in response.text and 'private-late' not in response.text
+    assert len(clients)==(stage=='headers') and all(client.is_closed for client in clients)
+    assert all(response.is_closed for response in responses)

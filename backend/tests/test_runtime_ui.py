@@ -231,8 +231,10 @@ def test_live_stream_ends_on_revocation_or_session_expiry(ui, test_user, test_wo
         store.entries[key] = json.dumps(payload)
     class SlowStream(httpx.AsyncByteStream):
         closed = False
+        delivered = False
         async def __aiter__(self):
             yield b'data: first\n\n'
+            self.delivered = True
             await asyncio.sleep(0.15)
             yield b'data: forbidden-late\n\n'
         async def aclose(self):
@@ -242,7 +244,7 @@ def test_live_stream_ends_on_revocation_or_session_expiry(ui, test_user, test_wo
     def transport(request):
         return httpx.Response(200, stream=stream, headers={'Content-Type': 'text/event-stream'})
     def recheck(raw, host, session_factory=None):
-        if end == 'revoke':
+        if end == 'revoke' and stream.delivered:
             raise HTTPException(401, 'revoked')
         return {}
     with patch('app.features.workspace.ui_gateway.httpx.AsyncClient', side_effect=lambda **kw:
