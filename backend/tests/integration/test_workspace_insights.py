@@ -1700,3 +1700,63 @@ async def test_model_stream_current_runtime_revocation(postgres,monkeypatch,chan
     assert ('allowed' in response.text) is streaming
     assert 'private-late' not in response.text and raw not in response.text
     assert closed.is_set() and upstreams[0].is_closed
+
+
+@pytest.mark.parametrize('stage,end',[('body','revoke'),('headers','revoke'),('body','timeout'),('headers','timeout'),('headers','completed-revoked')])
+async def test_model_admission_wait_current_permission_and_timeout(postgres,monkeypatch,stage,end):
+    import httpx
+    from fastapi import FastAPI
+    from app.features.runtime_llm import router,tokens
+    from app.infra.extensions import get_db,get_session_factory
+    from app.models.opencode_runtime import OpenCodeRuntime
+    from app.infra.llm.config import get_chat_model_config
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+    factory=sessionmaker(bind=postgres)
+    with factory() as db:
+        runtime=OpenCodeRuntime(workspace_id=1,user_id=1,status='running')
+        db.add(runtime);db.commit();raw=tokens.issue_token(db,runtime)
+    model=get_chat_model_config()['model']
+    entered,closed=asyncio.Event(),asyncio.Event()
+    charges,clients,responses=[],[],[]
+    def revoke():
+        with postgres.begin() as db:db.execute(text("UPDATE workspace_members SET role='viewer' WHERE user_id=1"))
+    body=json.dumps({'model':model,'messages':[{'role':'user','content':'question'}],'stream':True}).encode()
+    class Upload(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            try:
+                yield body[:5];entered.set();await asyncio.Event().wait();yield body[5:]
+            finally:closed.set()
+    actual_client=httpx.AsyncClient
+    async def provider(request):
+        try:
+            entered.set()
+            if end!='completed-revoked':await asyncio.Event().wait()
+            revoke()
+            response=httpx.Response(200,stream=httpx.ByteStream(b'data: private-late\n\n'))
+            assert not response.is_closed
+            responses.append(response);return response
+        finally:closed.set()
+    def upstream():
+        client=actual_client(transport=httpx.MockTransport(provider));clients.append(client);return client
+    monkeypatch.setattr(router,'upstream_client',upstream)
+    monkeypatch.setattr(router.quota,'reserve',lambda *args:charges.append(True))
+    monkeypatch.setattr(router,'get_chat_model_config',lambda:{'api':'http://synthetic/v1','key':'synthetic-server-key','model':model})
+    if end=='timeout':monkeypatch.setattr(router,'MAX_BODY_SECONDS' if stage=='body' else 'MAX_HEADER_SECONDS',0.05)
+    app=FastAPI();app.include_router(router.router)
+    app.dependency_overrides[get_db]=lambda:None
+    app.dependency_overrides[get_session_factory]=lambda:factory
+    async with actual_client(transport=httpx.ASGITransport(app),base_url='http://test') as client:
+        pending=asyncio.create_task(client.post('/v1/chat/completions',headers={'Authorization':'Bearer '+raw},content=Upload() if stage=='body' else body))
+        await asyncio.wait_for(entered.wait(),3)
+        if end=='revoke':revoke()
+        response=await asyncio.wait_for(pending,5)
+    expected=(408 if stage=='body' else 504) if end=='timeout' else 401
+    assert response.status_code==expected
+    assert raw not in response.text and 'private-late' not in response.text and closed.is_set()
+    assert len(charges)==(stage=='headers') and len(clients)==(stage=='headers')
+    assert all(client.is_closed for client in clients)
+    assert all(response.is_closed for response in responses)

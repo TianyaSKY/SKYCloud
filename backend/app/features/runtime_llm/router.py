@@ -13,11 +13,14 @@ from app.features.runtime_llm import quota, tokens
 from app.infra.extensions import get_session_factory
 from app.infra.llm.config import get_chat_model_config
 from app.infra.http_stream import UpstreamLease, UpstreamResponse
+from app.features.runtime_llm.waits import guarded_wait
 
 router = APIRouter()
 MAX_BODY_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_STREAM_SECONDS = 300
+MAX_BODY_SECONDS = 30
+MAX_HEADER_SECONDS = 60
 ALLOWED_FIELDS = {
     "model", "messages", "stream", "stream_options", "max_tokens", "max_completion_tokens",
     "temperature", "top_p", "stop", "tools", "tool_choice", "parallel_tool_calls",
@@ -117,11 +120,17 @@ def upstream_client() -> httpx.AsyncClient:
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request, credential: dict = Depends(current_credential),
                            session_factory=Depends(get_session_factory)):
-    chunks = bytearray()
-    async for part in request.stream():
-        if len(chunks) + len(part) > MAX_BODY_BYTES:
-            raise HTTPException(status_code=413, detail="Model request too large")
-        chunks.extend(part)
+    async def verify():
+        await run_in_threadpool(_validate_current_credential, request, session_factory, touch=False)
+    async def read_body():
+        chunks = bytearray()
+        async for part in request.stream():
+            if len(chunks) + len(part) > MAX_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="Model request too large")
+            chunks.extend(part)
+        return chunks
+    chunks = await guarded_wait(read_body(), check=verify, seconds=MAX_BODY_SECONDS,
+        status=408, detail='Model request timed out', interval=RECHECK_SECONDS)
     data = normalize_body(bytes(chunks), credential)
     output_tokens = data.get("max_completion_tokens", data.get("max_tokens"))
     # Charge framing/message metadata as well as text; no reservation refund
@@ -139,8 +148,14 @@ async def chat_completions(request: Request, credential: dict = Depends(current_
             "POST", config["api"].rstrip("/") + "/chat/completions", json=data,
             headers={"Authorization": f"Bearer {config['key']}", "Content-Type": "application/json"},
         )
-        response = await client.send(upstream_request, stream=True)
-        lease.upstream = response
+        async def open_response():
+            opened = await client.send(upstream_request, stream=True)
+            # Capture ownership even if revocation wins before the waiter can
+            # accept a completed response with headers.
+            lease.upstream = opened
+            return opened
+        response = await guarded_wait(open_response(), check=verify, seconds=MAX_HEADER_SECONDS,
+            status=504, detail='Model provider timed out', interval=RECHECK_SECONDS, on_abort=lease.close)
         if response.status_code >= 300:
             raise HTTPException(status_code=502, detail="Model provider rejected request")
         if not data.get("stream", False):
