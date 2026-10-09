@@ -15,6 +15,7 @@ import json
 from typing import Any, Callable, Optional
 
 from app.infra.extensions import redis_client
+from app.infra.owned_work import run_owned
 
 from loguru import logger
 
@@ -90,7 +91,7 @@ def cacheable(
         async def async_wrapper(*args, **kwargs):
             cache_key = _build_cache_key(prefix, args, kwargs, key)
             try:
-                cached = await asyncio.to_thread(redis_client.get, cache_key)
+                cached = await run_owned(redis_client.get, cache_key)
                 if cached is not None:
                     return json.loads(cached)
             except Exception as e:
@@ -100,7 +101,7 @@ def cacheable(
 
             if result is not None or cache_none:
                 try:
-                    await asyncio.to_thread(
+                    await run_owned(
                         redis_client.setex,
                         cache_key, expire,
                         json.dumps(result, ensure_ascii=False, default=str),
@@ -157,10 +158,10 @@ def cache_evict(
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
             if before_invocation:
-                await asyncio.to_thread(_do_evict, args, kwargs)
+                await run_owned(_do_evict, args, kwargs)
             result = await func(*args, **kwargs)
             if not before_invocation:
-                await asyncio.to_thread(_do_evict, args, kwargs)
+                await run_owned(_do_evict, args, kwargs, cancel_queued=False)
             return result
 
         return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
@@ -190,7 +191,7 @@ def cache_put(
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
             result = await func(*args, **kwargs)
-            await asyncio.to_thread(_put_result, prefix, args, kwargs, key, result, expire, cache_none)
+            await run_owned(_put_result, prefix, args, kwargs, key, result, expire, cache_none, cancel_queued=False)
             return result
 
         return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper

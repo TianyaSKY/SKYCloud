@@ -90,3 +90,54 @@ async def test_actual_postgres_audit_rejection_preserves_tool_and_recovers(postg
     finally:
         reset_mcp_request_active(active)
         reset_mcp_context(context)
+
+
+@pytest.mark.parametrize('operation', ['read', 'put', 'evict'])
+async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, monkeypatch, operation):
+    import asyncio
+    import threading
+    import json
+    admin = infrastructure['redis']
+    key = 'owned-cache:actual'
+    admin.set(key, json.dumps({'previous': True}))
+    entered = threading.Event()
+    expected = 'GET' if operation == 'read' else 'SETEX' if operation == 'put' else 'DEL'
+    class ObservedRedis(Redis):
+        def execute_command(self, *args, **kwargs):
+            if str(args[0]).upper() == expected:
+                entered.set()
+            return super().execute_command(*args, **kwargs)
+    client = ObservedRedis(**admin.connection_pool.connection_kwargs)
+    monkeypatch.setattr(cache, 'redis_client', client)
+    business = []
+    decorator = cache.cacheable(prefix=key) if operation == 'read' else cache.cache_put(prefix=key) if operation == 'put' else cache.cache_evict(prefix=key)
+    @decorator
+    async def work():
+        business.append('accepted')
+        return {'updated': True}
+    # Pause only the owned fixture Redis server, then release it through its
+    # real administrative connection after repeated caller cancellation.
+    admin.execute_command('CLIENT', 'PAUSE', 3000, 'ALL')
+    pending = asyncio.create_task(work())
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        pending.cancel('caller-stop')
+        await asyncio.sleep(.01)
+        pending.cancel('repeat-stop')
+        await asyncio.sleep(.01)
+        assert not pending.done()
+    finally:
+        admin.execute_command('CLIENT', 'UNPAUSE')
+        try:
+            with pytest.raises(asyncio.CancelledError) as error:
+                await asyncio.wait_for(pending, 2)
+        finally:
+            client.close()
+    assert str(error.value) == 'caller-stop'
+    actual = admin.get(key)
+    if operation == 'read':
+        assert business == [] and json.loads(actual) == {'previous': True}
+    elif operation == 'put':
+        assert business == ['accepted'] and json.loads(actual) == {'updated': True}
+    else:
+        assert business == ['accepted'] and actual is None
