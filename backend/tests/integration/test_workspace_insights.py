@@ -1186,8 +1186,8 @@ async def test_legacy_chat_http_stops_after_committed_member_removal(postgres, m
     assert closed.is_set()
 
 
-@pytest.mark.parametrize('leased', [False, True])
-async def test_prepared_response_header_failure_after_member_removal(postgres, leased):
+@pytest.mark.parametrize('leased,cleanup', [(False,None),(True,None),(False,'self-cancel'),(True,'self-cancel'),(False,'repeat-cancel'),(True,'repeat-cancel')])
+async def test_prepared_response_header_failure_after_member_removal(postgres, leased, cleanup):
     from types import SimpleNamespace
     from starlette.requests import ClientDisconnect
     from app.features.assistant import repository, service
@@ -1214,10 +1214,36 @@ async def test_prepared_response_header_failure_after_member_removal(postgres, l
         yield b'unreachable'
     async def receive(): await asyncio.Event().wait()
     async def send(message): raise OSError('header send failed')
-    response = PreparedStreamResponse(body(), session_factory=factory, run_scope=scope)
-    with pytest.raises(ClientDisconnect):
-        await response({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send)
-    assert not entered
+    import threading
+    closing,release,closed=(asyncio.Event() for _ in range(3))
+    loop_thread=threading.get_ident()
+    sessions=[]
+    iterator=body()
+    class Body:
+        def __aiter__(self):return self
+        async def __anext__(self):return await anext(iterator)
+        async def aclose(self):
+            closing.set()
+            if cleanup=='repeat-cancel':await release.wait()
+            await iterator.aclose();closed.set()
+            if cleanup=='self-cancel':raise asyncio.CancelledError('private-close-credential')
+    def owned_factory():
+        assert closed.is_set() and threading.get_ident()!=loop_thread
+        session=factory();sessions.append(session);return session
+    response = PreparedStreamResponse(Body(), session_factory=owned_factory, run_scope=scope)
+    pending=asyncio.create_task(response({'type':'http','asgi':{'spec_version':'2.4'}},receive,send))
+    try:
+        await asyncio.wait_for(closing.wait(),2)
+        if cleanup=='repeat-cancel':
+            pending.cancel();await asyncio.sleep(0)
+            pending.cancel();await asyncio.sleep(0.01)
+            assert not pending.done() and not sessions
+            with postgres.connect() as db:
+                assert db.scalar(text('SELECT status FROM assistant_runs'))=='running'
+    finally:
+        release.set()
+        with pytest.raises(ClientDisconnect):await asyncio.wait_for(pending,3)
+    assert not entered and closed.is_set() and len(sessions)==1
     with postgres.connect() as db:
         assert db.execute(text('SELECT status,cancel_requested FROM assistant_runs')).one() == (
             'running' if leased else 'cancelled', not leased)

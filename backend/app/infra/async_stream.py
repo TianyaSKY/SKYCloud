@@ -15,9 +15,14 @@ async def close_reader(pending, iterator):
             await iterator.aclose()
         except (Exception, asyncio.CancelledError) as exc:
             logger.error("Stream iterator close failed (error_type={})", type(exc).__name__)
+    return await drain_cleanup(release())
+
+
+async def drain_cleanup(operation):
+    """Wait for owned teardown without cancelling it when its caller is cancelled."""
     cancelled = False
     with anyio.CancelScope(shield=True):
-        released = asyncio.create_task(release())
+        released = asyncio.create_task(operation)
         while not released.done():
             try:
                 await asyncio.shield(released)

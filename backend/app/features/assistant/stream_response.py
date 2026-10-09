@@ -1,9 +1,12 @@
 """Close prepared runs even when ASGI fails before entering their iterator."""
+import asyncio
+import sys
 import anyio
 from contextlib import contextmanager
 from loguru import logger
 from starlette.responses import StreamingResponse
 
+from app.infra.async_stream import close_reader, drain_cleanup
 from app.features.assistant import repository
 from app.features.assistant.stream_persistence import StreamWorker
 
@@ -63,13 +66,11 @@ class PreparedStreamResponse(StreamingResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            # Starlette's disconnect task cancels its AnyIO scope. Shield the
-            # iterator teardown and SQL compensation from that cancellation.
-            with anyio.CancelScope(shield=True):
-                try:
-                    await self.body_iterator.aclose()
-                except Exception as exc:
-                    logger.error("Assistant response iterator close failed (error_type={})", type(exc).__name__)
-                finally:
-                    async with StreamWorker() as worker:
-                        await worker.call(cleanup_unclaimed_run, self.session_factory, self.run_scope)
+            original = sys.exception()
+            async def release():
+                await close_reader(None, self.body_iterator)
+                async with StreamWorker() as worker:
+                    await worker.call(cleanup_unclaimed_run, self.session_factory, self.run_scope)
+            cancelled = await drain_cleanup(release())
+            if cancelled and original is None:
+                raise asyncio.CancelledError()

@@ -232,3 +232,48 @@ async def test_preparation_close_fault_preserves_result_and_original_error(monke
         assert await stream_response.prepare_response_run(prepare, Owned) == 'prepared'
     assert calls == ['close', 'invalidate']
     assert logged and 'private-' not in str(logged)
+
+
+@pytest.mark.parametrize('delivery',['headers','cancel','normal'])
+@pytest.mark.parametrize('cleanup',['self-cancel','repeat-cancel'])
+async def test_response_teardown_cancellation_preserves_delivery_and_compensates(monkeypatch,delivery,cleanup):
+    closing,release=asyncio.Event(),asyncio.Event()
+    calls,logs=[],[]
+    loop_thread=threading.get_ident()
+    class Body:
+        def __aiter__(self):return self
+        async def __anext__(self):raise StopAsyncIteration
+        async def aclose(self):
+            closing.set()
+            if cleanup=='repeat-cancel':await release.wait()
+            calls.append('close')
+            if cleanup=='self-cancel':raise asyncio.CancelledError('private-provider-close')
+    def compensate(factory,scope):
+        assert threading.get_ident()!=loop_thread and calls==['close']
+        assert scope==(1,2,3,4)
+        calls.append('compensate')
+    monkeypatch.setattr(stream_response,'cleanup_unclaimed_run',compensate)
+    monkeypatch.setattr(stream_response.logger,'error',lambda message,*args:logs.append(message.format(*args)))
+    response=stream_response.PreparedStreamResponse(Body(),session_factory=None,run_scope=(1,2,3,4))
+    async def receive():await asyncio.Event().wait()
+    async def send(message):
+        if delivery=='headers':raise OSError('header delivery failed')
+        if delivery=='cancel':raise asyncio.CancelledError('delivery-cancel')
+    pending=asyncio.create_task(response({'type':'http','asgi':{'spec_version':'2.4'}},receive,send))
+    try:
+        await asyncio.wait_for(closing.wait(),1)
+        if cleanup=='repeat-cancel':
+            pending.cancel();await asyncio.sleep(0)
+            pending.cancel();await asyncio.sleep(0.01)
+            assert not pending.done(),'iterator teardown was interrupted'
+    finally:
+        release.set()
+        if delivery=='headers':
+            with pytest.raises(ClientDisconnect):await asyncio.wait_for(pending,1)
+        elif delivery=='cancel' or cleanup=='repeat-cancel':
+            with pytest.raises(asyncio.CancelledError) as error:await asyncio.wait_for(pending,1)
+            assert 'private-provider-close' not in str(error.value)
+        else:await asyncio.wait_for(pending,1)
+    assert calls==['close','compensate']
+    assert ('CancelledError' in str(logs)) is (cleanup=='self-cancel')
+    assert 'private-provider-close' not in str(logs)
