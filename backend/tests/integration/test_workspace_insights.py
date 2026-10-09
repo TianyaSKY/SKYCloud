@@ -2101,3 +2101,131 @@ async def test_http_completed_header_teardown_cancel_closes_native_upstream(post
         assert await asyncio.to_thread(upstream_closed.wait,3)
     assert len(clients)==len(responses)==1
     assert clients[0].is_closed and responses[0].is_closed and forwarded==[]
+
+
+@pytest.mark.parametrize('stage,end',[('body','disconnect'),('headers','disconnect'),('response','disconnect'),('response','membership-ready'),('response','membership'),('response','version'),('response','family'),('response','stop'),('response','expiry')])
+async def test_ui_native_chain_current_identity_and_disconnect(postgres,infrastructure,monkeypatch,stage,end):
+    """Canonical SQL/Redis credentials over native UI, Controller and provider sockets."""
+    import threading
+    import time
+    import jwt
+    import httpx
+    from urllib.parse import urlsplit,parse_qs
+    from fastapi import FastAPI
+    from app.features.workspace import ui_gateway,ui_tickets
+    from app.features.auth import refresh_sessions
+    from app.features.auth.service import generate_token
+    from app.infra.extensions import get_session_factory,SECRET_KEY
+    from runtime_controller import app as controller
+    from runtime_controller.policy import Settings
+    from tests.integration.test_expert_gateway import serve
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+        db.execute(text("INSERT INTO opencode_runtimes(id,workspace_id,user_id,status,container_id) VALUES (1,1,1,'running',:id)"),{'id':'a'*64})
+    factory=sessionmaker(bind=postgres)
+    for module in (ui_tickets,refresh_sessions):monkeypatch.setattr(module,'redis_client',infrastructure['redis'])
+    monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN','T'*48)
+    monkeypatch.setenv('APP_ORIGIN','http://app.skycloud.localhost')
+    monkeypatch.setenv('RUNTIME_UI_ORIGIN_TEMPLATE','http://r{runtime_id}.skycloud.localhost:8081')
+    parent=None
+    with factory() as db:
+        if end=='family':
+            _,access=refresh_sessions.create(db,jwt.decode(generate_token(1,0),SECRET_KEY,algorithms=['HS256']))
+            parent=jwt.decode(access['token'],SECRET_KEY,algorithms=['HS256'])['sid']
+        issued=ui_tickets.issue(db,1,1,parent_session=parent);parsed=urlsplit(issued['launch_url'])
+        raw,_=ui_tickets.redeem(db,parse_qs(parsed.query)['ticket'][0],parsed.netloc)
+    if end=='expiry':
+        key=ui_tickets._key('session',raw)
+        payload=json.loads(infrastructure['redis'].get(key));payload['expires_at']=time.time()+3
+        infrastructure['redis'].set(key,json.dumps(payload),ex=60)
+    late_ready=threading.Event()
+    received,provider_ready,provider_closed,finished=(threading.Event() for _ in range(4))
+    clients,responses,errors,forwarded=[],[],[],[]
+    async def provider(scope,receive,send):
+        try:
+            while True:
+                message=await receive()
+                if not message.get('more_body'):break
+            if stage=='response':
+                await send({'type':'http.response.start','status':200,'headers':[(b'content-type',b'text/event-stream')]})
+                await send({'type':'http.response.body','body':b'data: allowed\n\n','more_body':True})
+            provider_ready.set()
+            if end=='membership-ready':
+                while not late_ready.is_set():await asyncio.sleep(.005)
+                await send({'type':'http.response.body','body':b'data: private-late\n\n','more_body':True})
+            while (await receive())['type']!='http.disconnect':pass
+        finally:provider_closed.set()
+    app=FastAPI();app.include_router(ui_gateway.router)
+    app.dependency_overrides[get_session_factory]=lambda:factory
+    async def observed(scope,receive,send):
+        async def read():
+            message=await receive()
+            if message['type']=='http.request':received.set()
+            return message
+        async def sent(message):
+            if message['type']=='http.response.body':forwarded.append(message.get('body',b''))
+            await send(message)
+        try:await app(scope,read,sent)
+        except BaseException as exc:errors.append(type(exc).__name__);raise
+        finally:finished.set()
+    real_client=httpx.AsyncClient
+    def upstream(**kwargs):
+        client=real_client(**kwargs);clients.append(client)
+        actual_send=client.send
+        async def opened(*args,**kw):
+            response=await actual_send(*args,**kw)
+            assert not response.is_closed
+            responses.append(response);return response
+        client.send=opened
+        return client
+    monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',upstream)
+    # Failure-only bounds allow isolated servers to shut down even if the
+    # disconnect assertion fails; the production one-second checks remain.
+    monkeypatch.setattr(ui_gateway,'MAX_HEADER_SECONDS',5)
+    body=b'question'
+    async def exercise(controller_port,gateway_port):
+        monkeypatch.setattr(ui_gateway,'controller_url',lambda:f'http://127.0.0.1:{controller_port}')
+        reader,writer=await asyncio.open_connection('127.0.0.1',gateway_port)
+        try:
+            headers=(f'POST /runtime-ui/event HTTP/1.1\r\nHost: {parsed.netloc}\r\nOrigin: {parsed.scheme}://{parsed.netloc}\r\nCookie: {ui_tickets.COOKIE}={raw}\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n').encode()
+            writer.write(headers+(body[:3] if stage=='body' else body));await writer.drain()
+            assert await asyncio.to_thread((received if stage=='body' else provider_ready).wait,3)
+            if stage=='response':
+                # Actual downstream TCP bytes establish that delivery started,
+                # before closing the caller while the native provider is quiet.
+                delivered=await asyncio.wait_for(reader.readuntil(b'data: allowed\n\n'),3)
+                assert b'200 OK' in delivered
+                if end!='disconnect':
+                    if end=='family':refresh_sessions.revoke_access('Bearer '+access['token'])
+                    elif end!='expiry':
+                        statements={'membership-ready':"UPDATE workspace_members SET role='viewer' WHERE user_id=1",
+                                    'membership':"UPDATE workspace_members SET role='viewer' WHERE user_id=1",
+                                    'version':"UPDATE users SET auth_version=auth_version+1 WHERE id=1",
+                                    'stop':"UPDATE opencode_runtimes SET status='stopped' WHERE id=1"}
+                        with postgres.begin() as db:db.execute(text(statements[end]))
+                    late_ready.set()
+                    remaining=await asyncio.wait_for(reader.read(),5)
+                    assert b'private-late' not in remaining and raw.encode() not in remaining
+        finally:
+            writer.close();await writer.wait_closed()
+        assert await asyncio.to_thread(finished.wait,2.5),'UI gateway retained disconnected caller'
+        if stage!='body':assert await asyncio.to_thread(provider_closed.wait,2.5)
+    monkeypatch.setattr(controller,'MAX_HEADER_SECONDS',5)
+    monkeypatch.setattr(controller,'MAX_EVENT_SECONDS',5)
+    with serve(provider) as provider_port:
+        class Target:
+            def target(self,ref):
+                assert ref=='a'*64
+                return f'http://127.0.0.1:{provider_port}',('server','disposable')
+        settings=Settings('T'*48,'S'*48,'test/runtime@sha256:'+'a'*64,'test','1g',100000,'test','/unused')
+        with serve(controller.create_app(settings,Target())) as controller_port,serve(observed) as gateway_port:
+            await exercise(controller_port,gateway_port)
+    assert not errors
+    assert len(clients)==2*(stage!='body') and len(responses)==2*(stage=='response')
+    assert all(client.is_closed for client in clients) and all(response.is_closed for response in responses)
+    if stage=='response':
+        assert b'data: allowed\n\n' in b''.join(forwarded)
+        assert b'private-late' not in b''.join(forwarded)
