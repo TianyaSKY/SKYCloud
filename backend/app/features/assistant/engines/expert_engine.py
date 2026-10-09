@@ -171,16 +171,23 @@ class ExpertEngine:
         assert_can_write(session, workspace_id, user_id)
         return run
 
+    def _active_owned_run(self, session, workspace_id: int, user_id: int):
+        self._owned_run(session, workspace_id, user_id)
+        run = repository.lock_run(session, self.run_id)
+        if run is None or run.status in repository.TERMINAL_RUN_STATUSES or run.cancel_requested:
+            raise ConflictError("专家任务已取消或结束")
+        return run
+
     def _load_context(self, workspace_id: int, user_id: int) -> ExpertContext:
         with self.runtime_session_factory() as session:
-            run = self._owned_run(session, workspace_id, user_id)
+            run = self._active_owned_run(session, workspace_id, user_id)
             conversation = session.get(AssistantConversation, run.conversation_id)
             return ExpertContext(conversation.title, conversation.opencode_session_id,
                                  conversation.source_conversation_id)
 
     def _save_provider_session(self, workspace_id: int, user_id: int, runtime_id: int, session_id: str):
         with self.runtime_session_factory() as session:
-            run = self._owned_run(session, workspace_id, user_id)
+            run = self._active_owned_run(session, workspace_id, user_id)
             conversation = session.get(AssistantConversation, run.conversation_id)
             conversation.opencode_session_id = session_id
             conversation.opencode_runtime_id = runtime_id
@@ -189,10 +196,7 @@ class ExpertEngine:
 
     def _save_runtime_lease(self, workspace_id: int, user_id: int, token: str, runtime_id: int, container_id: str):
         with self.runtime_session_factory() as session:
-            self._owned_run(session, workspace_id, user_id)
-            run = repository.lock_run(session, self.run_id)
-            if run is None or run.status in repository.TERMINAL_RUN_STATUSES or run.cancel_requested:
-                raise ConflictError('Expert task has ended before runtime admission')
+            run = self._active_owned_run(session, workspace_id, user_id)
             run.runtime_lease_token = token
             run.runtime_lease_runtime_id = runtime_id
             run.runtime_lease_container_id = container_id
@@ -310,7 +314,7 @@ class ExpertEngine:
             base_url = connection.base_url
             password = server_password(connection.runtime_id, user_id, workspace_id)
             agent = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
-            context = await run_in_threadpool(self._load_context, workspace_id, user_id)
+            context = await run_owned(self._load_context, workspace_id, user_id)
             session_id = context.opencode_session_id
             emitted_text = ""
             emitted_title: str | None = None
@@ -342,7 +346,7 @@ class ExpertEngine:
                 created_session = not session_id or session_missing
                 if created_session:
                     session_id = await client.create_session(context.title)
-                await run_in_threadpool(
+                await run_owned(
                     self._save_provider_session, workspace_id, user_id, connection.runtime_id, str(session_id)
                 )
 

@@ -178,3 +178,32 @@ def test_expert_lease_checkpoint_refuses_ended_or_cancelled_run(seeded, state):
         engine._save_runtime_lease(identity[1], identity[0], 'c'*32, identity[2], 'a'*64)
     with factory() as db:
         assert db.get(AssistantRun, identity[-1]).runtime_lease_token is None
+
+
+@pytest.mark.parametrize('state', ['completed', 'failed', 'cancelled', 'cancel-requested'])
+@pytest.mark.parametrize('operation', ['load-context', 'save-session'])
+def test_paused_expert_cannot_resume_provider_work_after_run_ends(seeded, state, operation):
+    from app.features.assistant.engines.expert_engine import ExpertEngine
+    from app.models.assistant import AssistantConversation
+    factory, identity = seeded
+    with factory() as db:
+        engine = ExpertEngine(session=db, conversation=db.get(AssistantConversation, identity[3]),
+                              run=db.get(AssistantRun, identity[-1]))
+    # The engine predates the committed state change; its next SQL operation
+    # must validate the current row rather than trusting construction state.
+    with factory() as db:
+        run = db.get(AssistantRun, identity[-1])
+        if state == 'cancel-requested':
+            run.cancel_requested = True
+        else:
+            run.status = state
+        db.commit()
+    with pytest.raises(ConflictError):
+        if operation == 'load-context':
+            engine._load_context(identity[1], identity[0])
+        else:
+            engine._save_provider_session(identity[1], identity[0], identity[2], 'late-session')
+    with factory() as db:
+        conversation = db.get(AssistantConversation, identity[3])
+        assert conversation.opencode_session_id is None
+        assert db.get(AssistantRun, identity[-1]).opencode_session_id == 'captured-session'
