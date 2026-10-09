@@ -3,6 +3,7 @@
 import json
 import time
 import asyncio
+import sys
 from contextlib import aclosing
 
 import httpx
@@ -14,7 +15,7 @@ from app.features.runtime_llm import quota, tokens
 from app.infra.extensions import get_session_factory
 from app.infra.llm.config import get_chat_model_config
 from app.infra.http_stream import UpstreamLease, UpstreamResponse
-from app.features.runtime_llm.waits import guarded_wait
+from app.features.runtime_llm.waits import guarded_wait, close_reader
 
 router = APIRouter()
 MAX_BODY_BYTES = 256 * 1024
@@ -63,10 +64,10 @@ async def authorized_bytes(response, request, session_factory):
                 raise HTTPException(502, 'Model response timed out')
             yield part
     finally:
-        if pending is not None:
-            pending.cancel()
-            await asyncio.gather(pending, return_exceptions=True)
-        await iterator.aclose()
+        original = sys.exception()
+        cancelled = await close_reader(pending, iterator)
+        if cancelled and original is None:
+            raise asyncio.CancelledError()
 
 
 def current_credential(request: Request, session_factory=Depends(get_session_factory)) -> dict:
