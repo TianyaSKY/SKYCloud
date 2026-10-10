@@ -9,11 +9,11 @@ from urllib.parse import quote, urlencode
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import RedirectResponse, HTMLResponse
-from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from app.infra.http_wait import guarded_wait
 from app.infra.http_decode import ACCEPT_ENCODING, content_encoding, decoded_bytes
 from app.infra.async_stream import close_reader, drain_cleanup
+from app.infra.owned_work import run_owned
 
 from app.infra.extensions import get_session_factory, SessionLocal
 from app.features.workspace import ui_tickets
@@ -56,8 +56,8 @@ def reauthenticate(raw, host, session_factory=None):
 
 
 @router.get('/__skycloud/launch')
-def launch(request: Request, ticket: str, session_factory=Depends(get_session_factory)):
-    raw, payload = redeem_owned(session_factory, ticket, _host(request))
+async def launch(request: Request, ticket: str, session_factory=Depends(get_session_factory)):
+    raw, payload = await run_owned(redeem_owned, session_factory, ticket, _host(request))
     response = RedirectResponse('/', status_code=303, headers={
         'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
     response.set_cookie(ui_tickets.cookie_name(payload['origin']), raw,
@@ -67,8 +67,8 @@ def launch(request: Request, ticket: str, session_factory=Depends(get_session_fa
 
 
 @router.get('/__skycloud/renew')
-def renew(request: Request, ticket: str, session_factory=Depends(get_session_factory)):
-    raw, payload = redeem_owned(session_factory, ticket, _host(request))
+async def renew(request: Request, ticket: str, session_factory=Depends(get_session_factory)):
+    raw, payload = await run_owned(redeem_owned, session_factory, ticket, _host(request))
     nonce = secrets.token_urlsafe(32)
     parent = os.getenv('APP_ORIGIN', 'http://app.skycloud.localhost').rstrip('/')
     # The acknowledgement contains only the already consumed ticket, never
@@ -89,7 +89,7 @@ def renew(request: Request, ticket: str, session_factory=Depends(get_session_fac
 
 @router.api_route('/{path:path}', methods=['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'])
 async def relay(path: str, request: Request, session_factory=Depends(get_session_factory)):
-    payload = await run_in_threadpool(authenticate_owned, session_factory, _credential(request), _host(request))
+    payload = await run_owned(authenticate_owned, session_factory, _credential(request), _host(request))
     if request.cookies.get(ui_tickets.cookie_name(payload['origin'])) != _credential(request):
         raise HTTPException(401, 'Runtime UI cookie scope mismatch')
     # Same-site sibling runtimes must not be able to mutate another runtime.
@@ -112,7 +112,7 @@ async def relay(path: str, request: Request, session_factory=Depends(get_session
             raise HTTPException(499, 'Runtime UI client disconnected') from exc
         return bytes(body)
     async def verify():
-        await run_in_threadpool(reauthenticate, _credential(request), _host(request), session_factory)
+        await run_owned(reauthenticate, _credential(request), _host(request), session_factory)
     body = await guarded_wait(bounded_body(), check=verify,
         seconds=max(0.001, min(MAX_BODY_SECONDS, payload['expires_at'] - time.time())),
         status=408, detail='Runtime UI request timed out', interval=HTTP_RECHECK_SECONDS)
@@ -194,7 +194,7 @@ async def terminal(path: str, websocket: WebSocket, session_factory=Depends(get_
     acquired = False
     owner = None
     try:
-        payload = await run_in_threadpool(reauthenticate, _credential(websocket), _host(websocket), session_factory)
+        payload = await run_owned(reauthenticate, _credential(websocket), _host(websocket), session_factory)
         if (websocket.cookies.get(ui_tickets.cookie_name(payload['origin'])) != _credential(websocket)
                 or websocket.headers.get('origin') != payload['origin'] or not terminal_path(path)
                 or len(websocket.scope.get('query_string', b'')) > 4096
@@ -212,7 +212,7 @@ async def terminal(path: str, websocket: WebSocket, session_factory=Depends(get_
         if query:
             url += '?' + query
         async def guard():
-            await run_in_threadpool(reauthenticate, _credential(websocket), _host(websocket), session_factory)
+            await run_owned(reauthenticate, _credential(websocket), _host(websocket), session_factory)
         async with direct_connect(url, auth_headers()) as upstream:
             await websocket.accept()
             await pump(websocket, upstream, seconds=payload['expires_at'] - time.time(),
