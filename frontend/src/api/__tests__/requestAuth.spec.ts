@@ -13,6 +13,17 @@ const refreshed = vi.mocked(refreshBrowserSession)
 beforeEach(()=>{vi.clearAllMocks();setActivePinia(createPinia())})
 
 describe('access header and refresh retry',()=>{
+  it('preserves login and avoids refresh or redirect when authentication returns 503',async()=>{
+    const auth=useAuthStore();auth.setAuth('valid',{id:7})
+    request.defaults.adapter=async config=>{throw new AxiosError('unavailable','ERR_BAD_RESPONSE',config,undefined,
+      {status:503,statusText:'Service Unavailable',headers:{},config,
+        data:{success:false,error:{code:'SERVICE_UNAVAILABLE',message:'Internal server error'}}})}
+    await expect(request.get('/protected')).rejects.toMatchObject({status:503,code:'SERVICE_UNAVAILABLE'})
+    expect(auth.token).toBe('valid')
+    expect(auth.user?.id).toBe(7)
+    expect(refreshed).not.toHaveBeenCalled()
+    expect(router.push).not.toHaveBeenCalled()
+  })
   it('coalesces concurrent expiration, injects the fresh token and retries each request once',async()=>{
     const auth = useAuthStore();auth.setAuth('expired',{id:7,username:'u',role:'common'})
     refreshed.mockResolvedValue({token:'fresh',user_id:7,role:'common',expires_in:900,

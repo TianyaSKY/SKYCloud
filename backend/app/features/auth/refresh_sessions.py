@@ -198,5 +198,9 @@ def access_active(payload):
     try:
         family = load_family(payload['sid'])
         return family['user_id'] == int(payload['sub']) and family['auth_version'] == payload['ver']
-    except (HTTPException, KeyError, TypeError, ValueError):
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
+        return False
+    except (KeyError, TypeError, ValueError):
         return False

@@ -43,7 +43,11 @@ async def get_current_user(
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
         user_id = payload.get("sub")
-        if not user_id:
+        try:
+            valid_user_id = isinstance(user_id, str) and int(user_id) > 0
+        except ValueError:
+            valid_user_id = False
+        if not valid_user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token!"
             )
@@ -70,7 +74,7 @@ async def get_current_user(
         raise
     except Exception as exc:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token is invalid!"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Authentication service unavailable"
         ) from exc
 
 

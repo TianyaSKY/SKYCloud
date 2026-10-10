@@ -72,3 +72,68 @@ def test_rotations_keep_absolute_expiry_hash_only_storage_and_new_connection_rev
         with pytest.raises(HTTPException) as exc:
             refresh.refresh(fresh, raw)
     assert exc.value.status_code == 401
+
+
+@pytest.mark.parametrize('store', ['redis', 'postgres'])
+async def test_auth_store_failure_returns_503_and_preserves_live_login(live, postgres, monkeypatch, store):
+    from contextlib import contextmanager
+    import httpx
+    from redis import Redis
+    from sqlalchemy import text
+    from fastapi import Depends, FastAPI
+    from app.api.dependencies import get_current_user
+    from app.exceptions import register_exception_handlers
+    from app.infra.extensions import get_db, get_session_factory
+    factory, raw, response = live
+    admin = refresh.redis_client
+    restricted, lock, transaction = None, None, None
+    @contextmanager
+    def owned():
+        with factory() as db:
+            if store == 'postgres':
+                db.execute(text("SET LOCAL statement_timeout='100ms'"))
+            yield db
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.dependency_overrides[get_db] = lambda: None
+    app.dependency_overrides[get_session_factory] = lambda: owned
+    @app.get('/protected')
+    async def protected(user=Depends(get_current_user)):
+        return {'id': user.id}
+    try:
+        if store == 'redis':
+            admin.acl_setuser('auth-read-denied', enabled=True, reset=True,
+                             passwords=['+disposable-test-password'], commands=['+ping'], keys=['web-auth:*'])
+            options = dict(admin.connection_pool.connection_kwargs)
+            options.update(username='auth-read-denied', password='disposable-test-password')
+            restricted = Redis(**options)
+            assert restricted.ping()
+            monkeypatch.setattr(refresh, 'redis_client', restricted)
+        else:
+            lock = postgres.connect()
+            transaction = lock.begin()
+            lock.execute(text('LOCK TABLE users IN ACCESS EXCLUSIVE MODE'))
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            headers = {'Authorization': 'Bearer ' + response['token']}
+            failed = await client.get('/protected', headers=headers)
+            assert failed.status_code == 503
+            assert failed.json()['error'] == {'code': 'SERVICE_UNAVAILABLE', 'message': 'Internal server error'}
+            if transaction is not None:
+                transaction.rollback()
+            monkeypatch.setattr(refresh, 'redis_client', admin)
+            recovered = await client.get('/protected', headers=headers)
+            assert recovered.status_code == 200, recovered.text
+        claims = jwt.decode(response['token'], SECRET_KEY, algorithms=['HS256'])
+        assert refresh.access_active(claims)
+        with factory() as db:
+            _, renewed, _ = refresh.refresh(db, raw)
+        assert jwt.decode(renewed['token'], SECRET_KEY, algorithms=['HS256'])['sid'] == claims['sid']
+    finally:
+        monkeypatch.setattr(refresh, 'redis_client', admin)
+        if restricted is not None:
+            restricted.close()
+            admin.acl_deluser('auth-read-denied')
+        if transaction is not None and transaction.is_active:
+            transaction.rollback()
+        if lock is not None:
+            lock.close()
