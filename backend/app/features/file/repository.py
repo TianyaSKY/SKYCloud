@@ -39,8 +39,9 @@ def find_folder(session: Session, folder_id: int) -> Folder | None:
     return session.get(Folder, folder_id)
 
 
-def find_reusable_file(session: Session, content_hash: str, file_size: int) -> File | None:
-    return session.query(File).filter_by(content_hash=content_hash, file_size=file_size).order_by(File.id.asc()).first()
+def find_reusable_file(session: Session, content_hash: str, file_size: int, workspace_id: int) -> File | None:
+    return session.query(File).filter_by(content_hash=content_hash, file_size=file_size,
+                                        workspace_id=workspace_id).order_by(File.id.asc()).first()
 
 
 def insert_file(session: Session, file: File) -> None:

@@ -9,7 +9,7 @@ from typing import Any, Callable, cast
 
 from loguru import logger
 from sqlalchemy.orm import Session
-from app.exceptions import BusinessRuleError, ConflictError, DomainError, PayloadTooLargeError, ServiceOperationError
+from app.exceptions import BusinessRuleError, ConflictError, DomainError, PayloadTooLargeError, PermissionDeniedError, ServiceOperationError
 from app.features.file import repository, upload_authorization
 from app.features.file.upload_recovery import compensate_failed_uploads
 from app.infra.file_task_outbox import stage_file_tasks
@@ -196,8 +196,8 @@ class FileUploadService:
         return new_files
 
 
-    def reusable_source(self, session: Session, content_hash: str, file_size: int) -> File | None:
-        source_file = repository.find_reusable_file(session, content_hash, file_size)
+    def reusable_source(self, session: Session, content_hash: str, file_size: int, workspace_id: int) -> File | None:
+        source_file = repository.find_reusable_file(session, content_hash, file_size, workspace_id)
         if not source_file:
             return None
         storage = self.storage_factory()
@@ -218,6 +218,8 @@ class FileUploadService:
             content_hash: str,
     ) -> File:
         """秒传：复用已有物理文件路径；仅 success 状态才继承 description/vector。"""
+        if source_file.workspace_id != workspace_id:
+            raise PermissionDeniedError('Reusable file belongs to another workspace')
         source_id = source_file.id
         object_name = cast(str, source_file.file_path)
         file_size = int(source_file.file_size or 0)
@@ -229,6 +231,8 @@ class FileUploadService:
             assert_can_write_locked(session, workspace_id, uploader_id)
             lock_object_path(session, object_name)
             source_file = repository.find_live_file(session, source_id)
+            if source_file is not None and source_file.workspace_id != workspace_id:
+                raise PermissionDeniedError('Reusable file belongs to another workspace')
             if source_file is None or source_file.file_path != object_name or not self.storage_factory().file_exists(object_name):
                 raise ConflictError("Reusable file no longer available; retry upload")
             resolved_mime = mime_type or cast(str | None, source_file.mime_type)
@@ -281,7 +285,7 @@ class FileUploadService:
         if not content_hash:
             raise BusinessRuleError("content_hash is required")
 
-        source_file = self.reusable_source(session, content_hash, total_size)
+        source_file = self.reusable_source(session, content_hash, total_size, workspace_id)
         if not source_file:
             return {"instant_upload": False, "exists": False}
 

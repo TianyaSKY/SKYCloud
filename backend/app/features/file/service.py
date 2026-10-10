@@ -104,8 +104,8 @@ def _calculate_file_hash(path: str) -> str:
     return digest.hexdigest()
 
 
-def _get_reusable_source_file(session: Session, content_hash: str, file_size: int) -> File | None:
-    return _upload_service().reusable_source(session, content_hash, file_size)
+def _get_reusable_source_file(session: Session, content_hash: str, file_size: int, workspace_id: int) -> File | None:
+    return _upload_service().reusable_source(session, content_hash, file_size, workspace_id)
 
 
 def _persist_file_record(

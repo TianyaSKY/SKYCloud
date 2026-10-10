@@ -37,7 +37,7 @@ class MultipartFileOperations:
     """Shared file admission/publication contracts, independent of HTTP routes."""
     resolve_parent: Callable[[Session, int, int | None], int | None]
     normalize_hash: Callable[[str | None], str | None]
-    reusable_source: Callable[[Session, str, int], File | None]
+    reusable_source: Callable[[Session, str, int, int], File | None]
     clone_source: Callable[..., File]
     object_name: Callable[[str], str]
     hash_file: Callable[[str], str]
@@ -90,7 +90,7 @@ class MultipartUploadService:
         content_hash = self.files.normalize_hash(data.get("content_hash"))
 
         if content_hash:
-            source_file = self.files.reusable_source(session, content_hash, total_size)
+            source_file = self.files.reusable_source(session, content_hash, total_size, workspace_id)
             if source_file:
                 new_file = self.files.clone_source(session,
                     source_file,

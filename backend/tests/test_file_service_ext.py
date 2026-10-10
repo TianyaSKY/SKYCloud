@@ -233,7 +233,7 @@ class TestInternalUtils:
         assert len(h) == 64  # SHA-256 hex
 
     def test_get_reusable_source_file_not_found(self, session, test_workspace):
-        result = _get_reusable_source_file(session, "a" * 64, 100)
+        result = _get_reusable_source_file(session, "a" * 64, 100, test_workspace.id)
         assert result is None
 
     def test_invalidate_processing_cache_empty(self):

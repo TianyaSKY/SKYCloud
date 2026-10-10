@@ -685,7 +685,7 @@ class TestPreflightUpload:
 
     def test_get_reusable_source_file_no_match(self, session):
         """无匹配返回 None。"""
-        result = _get_reusable_source_file(session, "c" * 64, 999)
+        result = _get_reusable_source_file(session, "c" * 64, 999, 1)
         assert result is None
 
     def test_get_reusable_source_file_disk_missing(self, session, test_workspace):
@@ -694,7 +694,7 @@ class TestPreflightUpload:
                  content_hash="d" * 64, workspace_id=test_workspace.id)
         session.add(f)
         session.commit()
-        result = _get_reusable_source_file(session, "d" * 64, 50)
+        result = _get_reusable_source_file(session, "d" * 64, 50, test_workspace.id)
         assert result is None
 
 

@@ -145,6 +145,26 @@ def test_stale_instant_source_cannot_recreate_missing_object_metadata(object_con
         assert connection.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
 
 
+@pytest.mark.parametrize('phase', ['initial', 'fresh'])
+def test_instant_clone_refuses_foreign_source_and_committed_scope_change(object_context, phase):
+    from app.exceptions import PermissionDeniedError
+    db, storage, factory = object_context
+    with db.begin() as connection:
+        connection.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (2,'foreign',1)"))
+    with factory() as session:
+        source = session.get(File, 1) if phase == 'fresh' else None
+        with db.begin() as connection:
+            connection.execute(text('UPDATE files SET workspace_id=2 WHERE id=1'))
+        source = source if source is not None else session.get(File, 1)
+        with pytest.raises(PermissionDeniedError):
+            service._clone_existing_file(session, source, filename='forbidden', workspace_id=1, uploader_id=1,
+                parent_id=None, mime_type=None, content_hash=source.content_hash)
+    with db.connect() as connection:
+        assert connection.execute(text('SELECT id,workspace_id FROM files')).all() == [(1, 2)]
+        assert connection.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
+    assert storage.file_exists('shared')
+
+
 def test_cleaner_waits_for_clone_commit_and_retains_its_shared_object(object_context,monkeypatch):
     from app.models.file_object_deletion import FileObjectDeletion
     db,storage,factory = object_context

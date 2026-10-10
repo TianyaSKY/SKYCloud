@@ -151,6 +151,39 @@ def test_worker_reconciles_real_orphan_object_and_retains_committed_object(uploa
     assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == 1
 
 
+@pytest.mark.parametrize('endpoint', ['preflight', 'multipart/init'])
+@pytest.mark.parametrize('local_source', [False, True])
+def test_instant_upload_never_reuses_foreign_workspace_record(upload_api, postgres, minio_storage, endpoint, local_source):
+    client, headers, _ = upload_api
+    content = b'guessed-private-content'
+    content_hash = hashlib.sha256(content).hexdigest()
+    minio_storage.upload_data(content, 'foreign-private-object')
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (2,'foreign-private',2)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (2,2,'admin')"))
+        db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,description,content_hash,workspace_id,uploader_id) VALUES (500,'private-name','foreign-private-object',:size,'success','private-derived-note',:hash,2,2)"), {'size': len(content), 'hash': content_hash})
+        if local_source:
+            db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,description,content_hash,workspace_id,uploader_id) VALUES (501,'allowed-name','allowed-object',:size,'success','allowed-derived-note',:hash,1,1)"), {'size': len(content), 'hash': content_hash})
+    if local_source:
+        minio_storage.upload_data(content, 'allowed-object')
+    response = client.post('/api/files/' + endpoint, headers=headers, json={
+        'filename': 'claimed.txt', 'total_size': len(content), 'chunk_size': len(content),
+        'content_hash': content_hash})
+    assert response.status_code == 200, response.text
+    payload = response.json()['data']
+    assert payload['instant_upload'] is local_source
+    assert 'private-derived-note' not in response.text and 'private-name' not in response.text
+    with postgres.connect() as db:
+        created = db.execute(text("SELECT file_path,description FROM files WHERE name='claimed.txt'")).all()
+        assert created == ([('allowed-object', 'allowed-derived-note')] if local_source else [])
+        assert db.scalar(text('SELECT count(*) FROM files WHERE workspace_id=2')) == 1
+    if local_source:
+        assert client.get(f"/api/files/{payload['file']['id']}/download", headers=headers).content == content
+    elif endpoint == 'multipart/init':
+        assert payload['upload_id'] and payload['uploaded_chunks'] == []
+        assert client.delete('/api/files/multipart/' + payload['upload_id'], headers=headers).status_code == 204
+
+
 @pytest.mark.parametrize('body,status', [(b'ab', 400), (b'abcd', 413)])
 def test_chunk_cleanup_failure_preserves_public_validation_and_retry(upload_api, postgres, minio_storage, monkeypatch, body, status):
     from app.infra import upload_cleanup
