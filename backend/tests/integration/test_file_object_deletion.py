@@ -146,7 +146,13 @@ def test_stale_instant_source_cannot_recreate_missing_object_metadata(object_con
 
 
 def test_cleaner_waits_for_clone_commit_and_retains_its_shared_object(object_context,monkeypatch):
+    from app.models.file_object_deletion import FileObjectDeletion
     db,storage,factory = object_context
+    # Stage cleanup before the clone starts. File deletion also updates durable
+    # workspace cache revisions and now serializes behind the clone's owner lock.
+    with factory() as session:
+        session.add(FileObjectDeletion(object_name='shared'))
+        session.commit()
     checked,release = Event(),Event()
     original_exists = storage.file_exists
     def pause_clone_check(name):
@@ -164,7 +170,6 @@ def test_cleaner_waits_for_clone_commit_and_retains_its_shared_object(object_con
         clone_task = pool.submit(clone)
         try:
             assert checked.wait(5)
-            delete_source(object_context)
             cleaner = pool.submit(clean,object_context)
             deadline = time.monotonic()+5
             waiting = False
@@ -179,6 +184,8 @@ def test_cleaner_waits_for_clone_commit_and_retains_its_shared_object(object_con
             release.set()
         new_id = clone_task.result(timeout=10)
         assert cleaner.result(timeout=10) == 1
+    delete_source(object_context)
+    assert clean(object_context) == 1
     assert original_exists('shared')
     with db.connect() as connection:
         assert connection.execute(text('SELECT id,file_path FROM files')).all() == [(new_id,'shared')]
@@ -190,7 +197,7 @@ def test_recursive_foreign_child_refuses_deletion_without_losing_real_object(obj
     db,storage,factory = object_context
     with db.begin() as connection:
         connection.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (2,'foreign',1)"))
-        connection.execute(text("INSERT INTO folder(id,name,workspace_id,parent_id) VALUES (1,'target',1,NULL)"))
+        connection.execute(text("INSERT INTO folder(id,name,workspace_id,parent_id) VALUES (9,'/',1,NULL),(1,'target',1,9)"))
         connection.execute(text("UPDATE files SET parent_id=1"))
         connection.execute(text("INSERT INTO files(name,file_path,file_size,status,workspace_id,uploader_id,parent_id) VALUES ('foreign','shared',3,'success',2,1,1)"))
     with factory() as session:
@@ -207,7 +214,7 @@ def test_recursive_root_lock_blocks_new_foreign_child_during_enumeration(object_
     db,_,factory = object_context
     with db.begin() as connection:
         connection.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (2,'foreign',1)"))
-        connection.execute(text("INSERT INTO folder(id,name,workspace_id,parent_id) VALUES (1,'target',1,NULL)"))
+        connection.execute(text("INSERT INTO folder(id,name,workspace_id,parent_id) VALUES (9,'/',1,NULL),(1,'target',1,9)"))
         connection.execute(text("UPDATE files SET parent_id=1"))
     entered,release = Event(),Event()
     original = folders._delete_folder_recursive

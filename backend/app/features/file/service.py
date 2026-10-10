@@ -64,7 +64,6 @@ MAX_TOTAL_CHUNKS = 10000
 MULTIPART_ROOT = os.path.join(UPLOAD_FOLDER, ".multipart")
 
 
-
 DEFAULT_CHUNK_SIZE = positive_limit("UPLOAD_CHUNK_SIZE", DEFAULT_CHUNK_SIZE)
 MAX_CHUNK_SIZE = positive_limit("UPLOAD_MAX_CHUNK_SIZE", MAX_CHUNK_SIZE)
 MAX_UPLOAD_SIZE = positive_limit("UPLOAD_MAX_FILE_SIZE", MAX_UPLOAD_SIZE)
@@ -106,13 +105,7 @@ def _calculate_file_hash(path: str) -> str:
 
 
 def _get_reusable_source_file(session: Session, content_hash: str, file_size: int) -> File | None:
-    source_file = repository.find_reusable_file(session, content_hash, file_size)
-    if not source_file:
-        return None
-    storage = get_storage_client()
-    if not storage.file_exists(cast(str, source_file.file_path)):
-        return None
-    return source_file
+    return _upload_service().reusable_source(session, content_hash, file_size)
 
 
 def _persist_file_record(
@@ -169,96 +162,15 @@ def _log_file_created(file_obj: File) -> None:
     )
 
 
-def _clone_existing_file(
-        session: Session,
-        source_file: File,
-        *,
-        filename: str,
-        workspace_id: int,
-        uploader_id: int,
-        parent_id: int | None,
-        mime_type: str | None,
-        content_hash: str,
-) -> File:
-    """秒传：复用已有物理文件路径；仅 success 状态才继承 description/vector。"""
-    source_id = source_file.id
-    object_name = cast(str, source_file.file_path)
-    file_size = int(source_file.file_size or 0)
-
-    reservation = upload_authorization.reserve(session, workspace_id, uploader_id, file_size, kind="instant")
-    reservation_id = reservation.id
-    try:
-        # Identity locks precede the shared-object lock, matching cancellation.
-        assert_can_write_locked(session, workspace_id, uploader_id)
-        lock_object_path(session, object_name)
-        source_file = repository.find_live_file(session, source_id)
-        if source_file is None or source_file.file_path != object_name or not get_storage_client().file_exists(object_name):
-            raise ConflictError("Reusable file no longer available; retry upload")
-        resolved_mime = mime_type or cast(str | None, source_file.mime_type)
-        status = cast(str | None, source_file.status) or "pending"
-        description = cast(str | None, source_file.description) if status == "success" else None
-        vector_info = source_file.vector_info if status == "success" else None
-        upload_authorization.consume(session, workspace_id, uploader_id, reservation_id, int(source_file.file_size or 0))
-        new_file = _persist_file_record(session, 
-            name=filename,
-            file_path=cast(str, source_file.file_path),
-            file_size=cast(int | None, source_file.file_size) or 0,
-            mime_type=resolved_mime,
-            workspace_id=workspace_id,
-            uploader_id=uploader_id,
-            parent_id=parent_id,
-            content_hash=content_hash,
-            status=status,
-            description=description,
-            vector_info=vector_info,
-        )
-    except Exception as e:
-        compensate_failed_uploads(session, workspace_id, uploader_id,
-                                  [(reservation_id, object_name)], None)
-        if isinstance(e, DomainError):
-            raise
-        logger.error("Failed to create instant upload record (error_type={})", type(e).__name__)
-        raise ServiceOperationError("Failed to save file metadata")
-
-    _log_file_created(new_file)
-    if status != "success":
-        _invalidate_processing_cache([cast(int, new_file.id)], workspace_id)
-    else:
-        _clear_search_cache(workspace_id)
-    return new_file
+def _clone_existing_file(session: Session, source_file: File, *, filename: str, workspace_id: int,
+                         uploader_id: int, parent_id: int | None, mime_type: str | None, content_hash: str) -> File:
+    return _upload_service().clone_source(session, source_file, filename=filename, workspace_id=workspace_id,
+                                          uploader_id=uploader_id, parent_id=parent_id,
+                                          mime_type=mime_type, content_hash=content_hash)
 
 
 def preflight_file_upload(session: Session, workspace_id: int, uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
-    """上传预检：hash 命中则直接克隆记录，跳过分片传输。"""
-    filename = (data.get("filename") or "").strip()
-    if not filename:
-        raise BusinessRuleError("filename is required")
-
-    total_size = int(data.get("total_size") or 0)
-    if total_size <= 0:
-        raise BusinessRuleError("total_size must be positive")
-
-    if total_size > MAX_UPLOAD_SIZE:
-        raise PayloadTooLargeError("File too large")
-    content_hash = _normalize_content_hash(data.get("content_hash"))
-    if not content_hash:
-        raise BusinessRuleError("content_hash is required")
-
-    source_file = _get_reusable_source_file(session, content_hash, total_size)
-    if not source_file:
-        return {"instant_upload": False, "exists": False}
-
-    parent_id = _resolve_upload_parent_id(session, workspace_id, data.get("parent_id"))
-    new_file = _clone_existing_file(session,
-        source_file,
-        filename=filename,
-        workspace_id=workspace_id,
-        uploader_id=uploader_id,
-        parent_id=parent_id,
-        mime_type=data.get("mime_type"),
-        content_hash=content_hash,
-    )
-    return {"instant_upload": True, "exists": True, "file": new_file.to_dict()}
+    return _upload_service().preflight_file_upload(session, workspace_id, uploader_id, data)
 
 
 def _invalidate_processing_cache(file_ids: list[int], workspace_id: int | None) -> None:
@@ -324,8 +236,6 @@ def _write_multipart_meta(meta_path: str, meta: dict[str, Any]) -> None:
     multipart_storage.write_metadata(meta_path, meta)
 
 
-
-
 def _upload_service() -> FileUploadService:
     return FileUploadService(
         UploadSettings(UPLOAD_FOLDER, MAX_UPLOAD_SIZE),
@@ -333,7 +243,8 @@ def _upload_service() -> FileUploadService:
             object_name=_generate_unique_filename, mime_type=_resolve_mime_type,
             hash_file=_calculate_file_hash, persist_record=_persist_file_record,
             created=_log_file_created, journal_batch=change_log_service.log_events_batch,
-            invalidate=_invalidate_processing_cache,
+            invalidate=_invalidate_processing_cache, normalize_hash=_normalize_content_hash,
+            resolve_parent=_resolve_upload_parent_id, clear_search=_clear_search_cache,
         ),
         storage_factory=get_storage_client, staging_factory=StagedUpload,
         write_upload=save_bounded,

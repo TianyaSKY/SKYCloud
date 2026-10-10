@@ -110,7 +110,7 @@ def delete_folder(session: Session, id):
     deleted_events: list[dict] = []
     try:
         repository.lock_tree(session, workspace_id)
-        folder = repository.get_folder(session, id)
+        folder = repository.lock_folder(session, id)
         if folder is None:
             raise ResourceNotFoundError("Folder not found")
         if folder.workspace_id != workspace_id:

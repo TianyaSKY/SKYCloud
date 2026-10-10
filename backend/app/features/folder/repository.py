@@ -22,6 +22,11 @@ def get_folder(session, folder_id: int):
     return session.get(Folder, folder_id, populate_existing=True)
 
 
+def lock_folder(session, folder_id: int):
+    return session.scalar(select(Folder).where(Folder.id == folder_id).with_for_update()
+                          .execution_options(populate_existing=True, autoflush=False))
+
+
 def root_id(session, workspace_id: int):
     # Deterministic selection also permits recovery of historical extra roots.
     return session.scalar(select(Folder.id).where(Folder.workspace_id == workspace_id,
