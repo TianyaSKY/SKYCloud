@@ -263,11 +263,13 @@ def test_workspace_concurrency_applies_across_users(session, test_workspace, tes
 @pytest.mark.parametrize('delete_failure', [False, True])
 def test_batch_preparation_failure_compensates_previous_uploads(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage, failure_point, delete_failure):
     from app.exceptions import ServiceOperationError
+    from app.features.file import upload_service
     uid, wid = test_user.id, test_workspace.id
     monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path))
     monkeypatch.setattr(quota, 'USER_CAPACITY', 10)
     attribute = {'filename':'_generate_unique_filename', 'staging':'StagedUpload', 'record':'File'}[failure_point]
-    original = getattr(service, attribute)
+    boundary = upload_service if failure_point == 'record' else service
+    original = getattr(boundary, attribute)
     calls = 0
     def prepare(*args, **kwargs):
         nonlocal calls
@@ -275,7 +277,7 @@ def test_batch_preparation_failure_compensates_previous_uploads(session, test_wo
         if calls == 2:
             raise OSError('private-preparation-fault')
         return original(*args, **kwargs)
-    monkeypatch.setattr(service, attribute, prepare)
+    monkeypatch.setattr(boundary, attribute, prepare)
     delete = mock_object_storage.delete_file
     if delete_failure:
         monkeypatch.setattr(mock_object_storage, 'delete_file', MagicMock(side_effect=OSError('private-storage-fault')))

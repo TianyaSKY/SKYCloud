@@ -40,6 +40,7 @@ from app.features.folder import change_log as change_log_service
 from app.features.workspace.permissions import assert_member, assert_can_write_locked
 from app.features.file import upload_authorization
 from app.features.file import upload_quota, repository
+from app.features.file.upload_service import FileUploadService, UploadSettings, FilePublicationOperations
 from app.features.file.multipart_service import (
     MultipartUploadService, MultipartSettings, MultipartFileOperations, validate_upload_id,
 )
@@ -325,61 +326,25 @@ def _write_multipart_meta(meta_path: str, meta: dict[str, Any]) -> None:
 
 
 
+def _upload_service() -> FileUploadService:
+    return FileUploadService(
+        UploadSettings(UPLOAD_FOLDER, MAX_UPLOAD_SIZE),
+        FilePublicationOperations(
+            object_name=_generate_unique_filename, mime_type=_resolve_mime_type,
+            hash_file=_calculate_file_hash, persist_record=_persist_file_record,
+            created=_log_file_created, journal_batch=change_log_service.log_events_batch,
+            invalidate=_invalidate_processing_cache,
+        ),
+        storage_factory=get_storage_client, staging_factory=StagedUpload,
+        write_upload=save_bounded,
+    )
+
+
 def create_file(session: Session, file_obj: Any, data: dict[str, Any], *,
                 before_commit: Callable[[File], None] | None = None,
                 authorize_upload: Callable[[], None] | None = None) -> File:
-    storage = get_storage_client()
-    # 分片临时目录仍用本地
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-    original_filename = file_obj.filename or "unknown"
-    unique_filename = _generate_unique_filename(original_filename)
-    staging = StagedUpload(UPLOAD_FOLDER, original_filename)
-    local_tmp_path = staging.path
-
-    reservation_id = None
-    try:
-        save_bounded(file_obj, local_tmp_path, data.get("max_bytes", MAX_UPLOAD_SIZE))
-        file_size = os.path.getsize(local_tmp_path)
-        mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
-        content_hash = _calculate_file_hash(local_tmp_path)
-        if authorize_upload is not None:
-            authorize_upload()
-        reservation_id = upload_authorization.reserve(session, data["workspace_id"], data["uploader_id"], file_size,
-            reservation_id=staging.directory.name, details={"object_name": unique_filename, "stage_id": staging.directory.name}).id
-        # 上传到 MinIO 对象存储
-        storage.upload_file(local_tmp_path, unique_filename)
-
-        if authorize_upload is not None:
-            authorize_upload()
-        upload_authorization.consume(session, data["workspace_id"], data["uploader_id"], reservation_id, file_size)
-        new_file = _persist_file_record(session, 
-            name=original_filename,
-            file_path=unique_filename,
-            file_size=file_size,
-            mime_type=mime_type,
-            workspace_id=data.get("workspace_id"),
-            uploader_id=data.get("uploader_id"),
-            parent_id=data.get("parent_id"),
-            content_hash=content_hash,
-            before_commit=before_commit,
-        )
-    except Exception as e:
-        compensate_failed_uploads(session, data["workspace_id"], data["uploader_id"],
-                                  [(reservation_id, unique_filename)], storage)
-        logger.error("Failed to save uploaded file metadata (error_type={})", type(e).__name__)
-        if isinstance(e, DomainError):
-            raise
-        raise ServiceOperationError("Failed to save file metadata")
-    finally:
-        # 清理本地临时文件
-        close_staging_safely(staging)
-
-    _log_file_created(new_file)
-    _invalidate_processing_cache(
-        [cast(int, new_file.id)], cast(int | None, new_file.workspace_id)
-    )
-    return new_file
+    return _upload_service().create_file(session, file_obj, data,
+                                        before_commit=before_commit, authorize_upload=authorize_upload)
 
 
 def create_uploaded_file(
@@ -396,93 +361,8 @@ def create_uploaded_file(
     return create_file(session, upload, {"workspace_id": workspace_id, "uploader_id": uploader_id, "parent_id": parent_id})
 
 
-def batch_create_files(
-        session: Session,
-        file_objs: list[Any], data: dict[str, Any]
-) -> list[File]:
-    valid_files = [file_obj for file_obj in file_objs if file_obj and file_obj.filename]
-    if not valid_files:
-        return []
-
-    storage = get_storage_client()
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-    new_files = []
-    object_keys: list[str] = []
-    reservations = []
-    workspace_id = data.get("workspace_id")
-    uploader_id = data.get("uploader_id")
-
-    for file_obj in valid_files:
-        staging = None
-        try:
-            original_filename = file_obj.filename
-            unique_filename = _generate_unique_filename(original_filename)
-            staging = StagedUpload(UPLOAD_FOLDER, original_filename)
-            local_tmp_path = staging.path
-            save_bounded(file_obj, local_tmp_path, MAX_UPLOAD_SIZE)
-            file_size = os.path.getsize(local_tmp_path)
-            mime_type = _resolve_mime_type(local_tmp_path, getattr(file_obj, "mimetype", None))
-            content_hash = _calculate_file_hash(local_tmp_path)
-
-            reservation = upload_authorization.reserve(session, workspace_id, uploader_id, file_size,
-                reservation_id=staging.directory.name, details={"object_name": unique_filename, "stage_id": staging.directory.name})
-            reservations.append(reservation.id)
-            object_keys.append(unique_filename)
-            storage.upload_file(local_tmp_path, unique_filename)
-            new_file = File(
-                name=original_filename,
-                file_path=unique_filename,
-                file_size=file_size,
-                mime_type=mime_type,
-                content_hash=content_hash,
-                workspace_id=workspace_id,
-                uploader_id=uploader_id,
-                parent_id=data.get("parent_id"),
-            )
-            new_files.append(new_file)
-        except Exception as exc:
-            compensate_failed_uploads(session, workspace_id, uploader_id,
-                                      zip(reservations, object_keys), storage)
-            if isinstance(exc, DomainError):
-                raise
-            raise ServiceOperationError("Failed to upload file") from exc
-        finally:
-            if staging is not None:
-                close_staging_safely(staging)
-
-    try:
-        for reservation_id, file_obj in zip(reservations, new_files):
-            upload_authorization.consume(session, workspace_id, uploader_id, reservation_id, file_obj.file_size)
-        repository.insert_files(session, new_files)
-        stage_file_tasks(session, [file.id for file in new_files])
-        session.commit()
-    except Exception as exc:
-        compensate_failed_uploads(session, workspace_id, uploader_id,
-                                  zip(reservations, object_keys), storage)
-        if isinstance(exc, DomainError):
-            raise
-        raise ServiceOperationError("Failed to save uploaded file metadata") from exc
-
-    if uploader_id:
-        change_log_service.log_events_batch(
-            workspace_id,
-            [
-                {
-                    "entity_type": "file",
-                    "entity_id": cast(int, file_obj.id),
-                    "action": "create",
-                    "old_parent_id": None,
-                    "new_parent_id": cast(int | None, file_obj.parent_id),
-                    "old_name": None,
-                    "new_name": cast(str | None, file_obj.name),
-                }
-                for file_obj in new_files
-            ],
-        )
-
-    _invalidate_processing_cache([cast(int, f.id) for f in new_files], workspace_id)
-    return new_files
+def batch_create_files(session: Session, file_objs: list[Any], data: dict[str, Any]) -> list[File]:
+    return _upload_service().batch_create_files(session, file_objs, data)
 
 
 def create_uploaded_files(
