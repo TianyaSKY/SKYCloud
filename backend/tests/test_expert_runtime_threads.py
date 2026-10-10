@@ -127,3 +127,118 @@ async def test_expert_control_transactions_use_worker_sessions_and_preserve_term
     assert len(sessions) == 8 and closed == sessions
     stream_session.get.assert_not_called()
     stream_session.commit.assert_not_called()
+
+
+@pytest.mark.parametrize('stage', ['admission', 'prepare'])
+@pytest.mark.parametrize('fault', [False, True])
+async def test_cancelled_runtime_setup_drains_worker_session(monkeypatch, stage, fault):
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    closed = []
+    runtime = SimpleNamespace(id=9,status='running',container_id='abc')
+    workspace = SimpleNamespace(id=2)
+    @contextmanager
+    def factory():
+        try:
+            yield SimpleNamespace(get=lambda *args: workspace,commit=lambda: None)
+        finally:
+            closed.append('closed')
+    def hold(*args, **kwargs):
+        entered.set()
+        try:
+            assert release.wait(3)
+            if fault:
+                raise RuntimeError('private-worker-error')
+            return runtime
+        finally:
+            finished.set()
+    engine = module.ExpertEngine(session=Mock(),conversation=SimpleNamespace(id=3),run=SimpleNamespace(id=4))
+    engine.runtime_session_factory = factory
+    monkeypatch.setattr(module,'assert_can_write',lambda *args: None)
+    monkeypatch.setattr(module.runtime_service,'get_or_create_runtime',hold if stage=='admission' else lambda *args:runtime)
+    monkeypatch.setattr(module.runtime_service,'get_runtime',lambda *args:runtime)
+    monkeypatch.setattr(module.docker_service,'runtime_uses_configured_image',lambda *args:True)
+    monkeypatch.setattr(module.docker_service,'setup_mcp',hold if stage=='prepare' else lambda *args,**kwargs:None)
+    monkeypatch.setattr(module.docker_service,'get_runtime_base_url',lambda *args:'http://runtime')
+    events = engine._ensure_runtime(2,1)
+    if stage == 'prepare':
+        await anext(events)
+    previous = len(closed)
+    pending = asyncio.create_task(anext(events))
+    try:
+        assert await asyncio.to_thread(entered.wait,1)
+        pending.cancel('caller-stop'); await asyncio.sleep(.01)
+        pending.cancel('repeat-stop'); await asyncio.sleep(.01)
+        assert not pending.done() and len(closed)==previous and not finished.is_set()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as error:
+            await asyncio.wait_for(pending,1)
+        assert await asyncio.to_thread(finished.wait,1)
+        await events.aclose()
+    assert str(error.value)=='caller-stop' and len(closed)==previous+1
+
+
+@pytest.mark.parametrize('stage', ['persist', 'state', 'dispatch'])
+@pytest.mark.parametrize('fault', [False, True])
+async def test_cancelled_permission_worker_finishes_before_client_and_lease_close(monkeypatch, stage, fault):
+    from app.features.assistant.service import RunController
+    from app.features.assistant.event_protocol import AssistantEvent
+    from contextlib import asynccontextmanager
+    entered, release = threading.Event(), threading.Event()
+    order = []
+    def hold(*args):
+        entered.set()
+        try:
+            assert release.wait(3)
+            if fault:
+                raise RuntimeError('private-worker-error')
+            return ('once',False)
+        finally:
+            order.append('worker-finished')
+    engine = module.ExpertEngine(session=Mock(),conversation=SimpleNamespace(id=3),run=SimpleNamespace(id=4))
+    async def ready(*args):
+        yield module.RuntimeConnection(9,'http://runtime','abc'),AssistantEvent('status',{})
+    @asynccontextmanager
+    async def lease(*args,**kwargs):
+        try:
+            yield 'token'
+        finally:
+            order.append('lease-close')
+    class Client:
+        def __init__(self,*args,**kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): order.append('client-close')
+        async def health(self): return {'healthy':True}
+        async def get_mcp_status(self): return {}
+        async def get_session(self,*args): return {'id':'session'}
+        async def get_messages(self,*args): return []
+        async def prompt_async(self,*args,**kwargs): pass
+        async def abort_session(self,*args): order.append('abort');return True
+        async def stream_events(self):
+            yield 'connected'
+            yield 'permission'
+    monkeypatch.setattr(engine,'_ensure_runtime',ready)
+    monkeypatch.setattr(module,'_runtime_lease',lease)
+    monkeypatch.setattr(module,'OpenCodeClient',Client)
+    monkeypatch.setattr(module,'map_opencode_event',lambda event,*args:[AssistantEvent('permission_required',{'permission_id':'p'})] if event=='permission' else [])
+    monkeypatch.setenv('ASSISTANT_PERMISSION_UI_ENABLED','1')
+    monkeypatch.setattr(engine,'_load_context',lambda *args:module.ExpertContext('title','session',None))
+    monkeypatch.setattr(engine,'_save_provider_session',lambda *args:None)
+    monkeypatch.setattr(engine,'_persist_permission',hold if stage=='persist' else lambda *args:None)
+    monkeypatch.setattr(engine,'_permission_state',hold if stage=='state' else lambda *args:('once',False))
+    monkeypatch.setattr(engine,'_dispatch_permission',hold if stage=='dispatch' else lambda *args:None)
+    async def consume():
+        async for _ in engine.stream(run_id=4,user_id=1,workspace_id=2,query='query',history=[],controller=RunController()): pass
+    pending = asyncio.create_task(consume())
+    try:
+        assert await asyncio.to_thread(entered.wait,2)
+        pending.cancel('caller-stop'); await asyncio.sleep(.01)
+        pending.cancel('repeat-stop'); await asyncio.sleep(.01)
+        assert not pending.done() and not order
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as error:
+            await asyncio.wait_for(pending,2)
+    assert str(error.value)=='caller-stop'
+    assert order.index('worker-finished') < order.index('client-close')
+    assert order.index('worker-finished') < order.index('lease-close')

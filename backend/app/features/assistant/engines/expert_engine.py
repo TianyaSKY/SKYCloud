@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import sessionmaker
-from starlette.concurrency import run_in_threadpool
 
 from app.exceptions import ConflictError, ServiceOperationError
 from app.features.assistant import repository
@@ -276,14 +275,14 @@ class ExpertEngine:
             )
 
     async def _ensure_runtime(self, workspace_id: int, user_id: int):
-        needs_start = await run_in_threadpool(self._runtime_needs_start, workspace_id, user_id)
+        needs_start = await run_owned(self._runtime_needs_start, workspace_id, user_id)
         yield None, AssistantEvent(
             "status", {
                 "content": "正在准备专家工作区" if needs_start else "正在连接专家工作区",
                 "runtime_status": "starting" if needs_start else "running",
             }
         )
-        connection = await run_in_threadpool(self._prepare_runtime, workspace_id, user_id, needs_start)
+        connection = await run_owned(self._prepare_runtime, workspace_id, user_id, needs_start)
         yield connection, AssistantEvent(
             "status", {"content": "正在检查 OpenCode 服务", "runtime_status": "running"}
         )
@@ -417,7 +416,7 @@ class ExpertEngine:
                                     )
                                     continue
                                 permission_future = controller.wait_for_permission(permission_id)
-                                await run_in_threadpool(
+                                await run_owned(
                                     self._persist_permission, workspace_id, user_id, mapped.payload
                                 )
                                 yield mapped
@@ -432,7 +431,7 @@ class ExpertEngine:
                                         if cancel_task in done_tasks:
                                             yield AssistantEvent("cancelled", {"status": "cancelled"})
                                             return
-                                        persisted_response, cancelled = await run_in_threadpool(
+                                        persisted_response, cancelled = await run_owned(
                                             self._permission_state, workspace_id, user_id, permission_id
                                         )
                                         if cancelled:
@@ -456,7 +455,7 @@ class ExpertEngine:
                                     cancel_task.cancel()
                                     await asyncio.gather(cancel_task, return_exceptions=True)
                                 try:
-                                    await run_in_threadpool(self._dispatch_permission,workspace_id,user_id,
+                                    await run_owned(self._dispatch_permission,workspace_id,user_id,
                                         connection,str(session_id),permission_id,response)
                                 except BaseException:
                                     try:
