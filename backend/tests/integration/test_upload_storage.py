@@ -4,6 +4,8 @@ Redis caching and RabbitMQ notifications retain the parent unit fixtures; these
 checks specifically cover upload bytes, SQL ownership/quotas and object storage.
 """
 import hashlib
+import asyncio
+import threading
 import os
 import subprocess
 import sys
@@ -13,6 +15,7 @@ from urllib.request import urlopen
 import uuid
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
@@ -25,6 +28,7 @@ from app.features.auth.service import generate_token
 from app.features.file import service, upload_quota
 from app.infra.extensions import get_db, get_session_factory
 from app.infra.storage import MinIOStorageClient
+from app.infra.upload_adapter import FastAPIUploadAdapter
 from app.models.upload_reservation import UploadReservation
 
 pytestmark = pytest.mark.skipif(os.getenv('RUN_UPLOAD_STORAGE_TESTS') != '1', reason='Opt-in isolated PostgreSQL/MinIO upload integration')
@@ -145,6 +149,69 @@ def test_worker_reconciles_real_orphan_object_and_retains_committed_object(uploa
     assert not minio_storage.file_exists('crash-orphan')
     assert client.get(f"/api/files/{response.json()['data']['id']}/download", headers=headers).content == b'keep'
     assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == 1
+
+
+@pytest.mark.parametrize('kind', ['single', 'batch', 'chunk', 'avatar'])
+async def test_cancelled_request_preserves_real_upload_publication(upload_api, postgres, minio_storage, monkeypatch, kind):
+    client, headers, root = upload_api
+    entered, release = threading.Event(), threading.Event()
+    streams, consumed = [], []
+    original_save = FastAPIUploadAdapter.save
+
+    def held_save(adapter, destination, *args, **kwargs):
+        streams.append(adapter._upload_file.file)
+        entered.set()
+        assert release.wait(5)
+        original_save(adapter, destination, *args, **kwargs)
+        consumed.append(Path(destination).read_bytes())
+
+    monkeypatch.setattr(FastAPIUploadAdapter, 'save', held_save)
+    path, field = {
+        'single': ('/api/files', 'file'),
+        'batch': ('/api/files/batch', 'files'),
+        'chunk': ('/api/files/multipart/chunk', 'chunk'),
+        'avatar': ('/api/files/upload/avatar/1', 'avatar'),
+    }[kind]
+    bodies = [b'owned-upload-0', b'owned-upload-1'] if kind == 'batch' else [b'owned-upload-0']
+    data = {}
+    if kind == 'chunk':
+        response = client.post('/api/files/multipart/init', headers=headers, json={
+            'filename': 'owned.txt', 'total_size': len(bodies[0]), 'chunk_size': len(bodies[0]),
+            'content_hash': hashlib.sha256(bodies[0]).hexdigest()})
+        assert response.status_code == 200, response.text
+        upload_id = response.json()['data']['upload_id']
+        data = {'upload_id': upload_id, 'chunk_index': '0'}
+    files = [(field, (f'owned-{index}.txt', body, 'text/plain')) for index, body in enumerate(bodies)]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app), base_url='http://test') as requester:
+        pending = asyncio.create_task(requester.post(path, headers=headers, files=files, data=data))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            pending.cancel('request-disconnected')
+            await asyncio.sleep(.01)
+            pending.cancel('repeat-disconnect')
+            await asyncio.sleep(.01)
+            assert not pending.done() and not consumed
+            assert all(not stream.closed for stream in streams)
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError) as error:
+                await asyncio.wait_for(pending, 5)
+    assert str(error.value) == 'request-disconnected'
+    assert consumed == bodies and all(stream.closed for stream in streams)
+    if kind == 'chunk':
+        response = client.post('/api/files/multipart/complete', headers=headers, json={'upload_id': upload_id})
+        assert response.status_code == 201, response.text
+    with postgres.connect() as conn:
+        file_ids = list(conn.scalars(text('SELECT id FROM files ORDER BY id')))
+        assert len(file_ids) == len(bodies)
+        assert conn.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
+        assert conn.scalar(text('SELECT count(*) FROM file_task_outbox')) == len(bodies)
+        if kind == 'avatar':
+            assert conn.scalar(text('SELECT avatar FROM users WHERE id=1')).startswith('/api/share/')
+    for file_id, body in zip(file_ids, bodies):
+        assert client.get(f'/api/files/{file_id}/download', headers=headers).content == body
+    assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == len(bodies)
+    assert not (root / 'uploads' / '.staging').exists()
 
 
 def test_real_database_commit_failure_removes_uploaded_object(upload_api, postgres, minio_storage):

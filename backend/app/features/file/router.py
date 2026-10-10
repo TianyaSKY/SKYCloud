@@ -19,7 +19,7 @@ from fastapi import (
 from fastapi import UploadFile
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
-from starlette.concurrency import run_in_threadpool
+from app.infra.owned_work import run_owned
 
 from app.api.contracts import SuccessResponse, success_payload
 from app.api.dependencies import get_current_user, get_current_workspace, require_workspace_role
@@ -46,7 +46,7 @@ router = APIRouter(tags=["file"])
 
 
 @router.post("/files", response_model=SuccessResponse[FileResponse], status_code=status.HTTP_201_CREATED)
-def create_file(
+async def create_file(
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
         file: UploadFile = FastAPIFile(...),
@@ -54,16 +54,19 @@ def create_file(
         session_factory=Depends(get_session_factory),
 ):
     """单文件上传；未指定 parent_id 时落到工作空间根目录。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
-        new_file = file_service.create_uploaded_file(
-            session, workspace.id, current_user.id, FastAPIUploadAdapter(file), parent_id
-        )
-        return success_payload(new_file.to_dict())
+    def upload():
+        with session_factory() as session:
+            assert_can_write_locked(session, workspace.id, current_user.id)
+            new_file = file_service.create_uploaded_file(
+                session, workspace.id, current_user.id, FastAPIUploadAdapter(file), parent_id
+            )
+            return success_payload(new_file.to_dict())
+
+    return await run_owned(upload)
 
 
 @router.post("/files/batch", response_model=SuccessResponse[list[FileResponse]], status_code=status.HTTP_201_CREATED)
-def batch_upload_files(
+async def batch_upload_files(
         current_user=Depends(get_current_user),
         workspace: Workspace = Depends(require_workspace_role("editor")),
         files: list[UploadFile] | None = FastAPIFile(default=None),
@@ -71,13 +74,16 @@ def batch_upload_files(
         session_factory=Depends(get_session_factory),
 ):
     """批量上传；未指定 parent_id 时落到工作空间根目录。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
-        adapters = [FastAPIUploadAdapter(file) for file in (files or []) if file]
-        new_files = file_service.create_uploaded_files(
-            session, workspace.id, current_user.id, adapters, parent_id
-        )
-        return success_payload([f.to_dict() for f in new_files])
+    def upload():
+        with session_factory() as session:
+            assert_can_write_locked(session, workspace.id, current_user.id)
+            adapters = [FastAPIUploadAdapter(file) for file in (files or []) if file]
+            new_files = file_service.create_uploaded_files(
+                session, workspace.id, current_user.id, adapters, parent_id
+            )
+            return success_payload([f.to_dict() for f in new_files])
+
+    return await run_owned(upload)
 
 
 @router.post("/files/preflight", response_model=SuccessResponse[PreflightResponse])
@@ -111,7 +117,7 @@ def init_multipart_upload(
 
 
 @router.post("/files/multipart/chunk", response_model=SuccessResponse[MultipartChunkResponse])
-def upload_multipart_chunk(
+async def upload_multipart_chunk(
         upload_id: str = Form(...),
         chunk_index: int = Form(...),
         chunk: UploadFile = FastAPIFile(...),
@@ -120,21 +126,24 @@ def upload_multipart_chunk(
         session_factory=Depends(get_session_factory),
 ):
     """写入单个分片。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
-        if not chunk.filename:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="No chunk provided"
-            )
+    def upload():
+        with session_factory() as session:
+            assert_can_write_locked(session, workspace.id, current_user.id)
+            if not chunk.filename:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail="No chunk provided"
+                )
 
-        return success_payload(file_service.save_multipart_chunk(
-            session,
-            current_user.id,
-            workspace.id,
-            upload_id,
-            chunk_index,
-            FastAPIUploadAdapter(chunk),
-        ))
+            return success_payload(file_service.save_multipart_chunk(
+                session,
+                current_user.id,
+                workspace.id,
+                upload_id,
+                chunk_index,
+                FastAPIUploadAdapter(chunk),
+            ))
+
+    return await run_owned(upload)
 
 
 @router.post("/files/multipart/complete", response_model=SuccessResponse[FileResponse], status_code=status.HTTP_201_CREATED)
@@ -316,7 +325,7 @@ async def upload_avatar(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="No avatar data"
             )
 
-    result = await run_in_threadpool(
+    result = await run_owned(
         upload_avatar_owned, session_factory, current_user.id, id,
         upload=avatar, encoded=avatar_text
     )
