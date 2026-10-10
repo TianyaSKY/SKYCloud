@@ -6,7 +6,6 @@
 
 from app.infra.owned_work import run_owned
 import hashlib
-import math
 import mimetypes
 import os
 import re
@@ -41,6 +40,9 @@ from app.features.folder import change_log as change_log_service
 from app.features.workspace.permissions import assert_member, assert_can_write_locked
 from app.features.file import upload_authorization
 from app.features.file import upload_quota, repository
+from app.features.file.multipart_service import (
+    MultipartUploadService, MultipartSettings, MultipartFileOperations, validate_upload_id,
+)
 from app.features.file.upload_recovery import compensate_failed_uploads, _release_failed_upload
 from app.features.file.repository import escape_like as _escape_like
 from app.features.file.search_service import (
@@ -58,7 +60,6 @@ DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024
 MAX_CHUNK_SIZE = 64 * 1024 * 1024
 MAX_UPLOAD_SIZE = FILE_LIMIT
 MAX_TOTAL_CHUNKS = 10000
-UPLOAD_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 MULTIPART_ROOT = os.path.join(UPLOAD_FOLDER, ".multipart")
 
 
@@ -294,10 +295,7 @@ def _multipart_meta_path(upload_dir: str) -> str:
 
 
 def _safe_upload_id(upload_id: str) -> str:
-    candidate = (upload_id or "").strip()
-    if not candidate or not UPLOAD_ID_PATTERN.fullmatch(candidate):
-        raise BusinessRuleError("Invalid upload_id")
-    return candidate
+    return validate_upload_id(upload_id)
 
 
 def _list_uploaded_chunks(chunks_dir: str) -> list[int]:
@@ -500,239 +498,40 @@ def create_uploaded_files(
     )
 
 
+def _multipart_service() -> MultipartUploadService:
+    return MultipartUploadService(
+        MultipartSettings(UPLOAD_FOLDER, MULTIPART_ROOT, DEFAULT_CHUNK_SIZE,
+                          MAX_CHUNK_SIZE, MAX_UPLOAD_SIZE, MAX_TOTAL_CHUNKS),
+        MultipartFileOperations(
+            resolve_parent=_resolve_upload_parent_id, normalize_hash=_normalize_content_hash,
+            reusable_source=_get_reusable_source_file, clone_source=_clone_existing_file,
+            object_name=_generate_unique_filename, hash_file=_calculate_file_hash,
+            mime_type=_resolve_mime_type, created=_log_file_created,
+            invalidate=_invalidate_processing_cache,
+        ),
+        storage_factory=get_storage_client, write_metadata=_write_multipart_meta,
+    )
+
+
 def init_multipart_upload(session: Session, workspace_id: int, uploader_id: int, data: dict[str, Any]) -> dict[str, Any]:
-    filename = (data.get("filename") or "").strip()
-    if not filename:
-        raise BusinessRuleError("filename is required")
-
-    total_size = int(data.get("total_size") or 0)
-    if total_size <= 0:
-        raise BusinessRuleError("total_size must be positive")
-    if 0 < MAX_UPLOAD_SIZE < total_size:
-        raise PayloadTooLargeError("File too large")
-
-    chunk_size = int(data.get("chunk_size") or DEFAULT_CHUNK_SIZE)
-    if chunk_size <= 0:
-        raise BusinessRuleError("chunk_size must be positive")
-    if chunk_size > MAX_CHUNK_SIZE:
-        raise BusinessRuleError("chunk_size exceeds server limit")
-
-    total_chunks = math.ceil(total_size / chunk_size)
-    if total_chunks <= 0 or total_chunks > MAX_TOTAL_CHUNKS:
-        raise BusinessRuleError("total_chunks exceeds server limit")
-
-    parent_id = _resolve_upload_parent_id(session, workspace_id, data.get("parent_id"))
-    mime_type = data.get("mime_type")
-    content_hash = _normalize_content_hash(data.get("content_hash"))
-
-    if content_hash:
-        source_file = _get_reusable_source_file(session, content_hash, total_size)
-        if source_file:
-            new_file = _clone_existing_file(session, 
-                source_file,
-                filename=filename,
-                workspace_id=workspace_id,
-                uploader_id=uploader_id,
-                parent_id=parent_id,
-                mime_type=mime_type,
-                content_hash=content_hash,
-            )
-            return {
-                "upload_id": None,
-                "chunk_size": chunk_size,
-                "total_chunks": total_chunks,
-                "uploaded_chunks": [],
-                "instant_upload": True,
-                "file": new_file.to_dict(),
-            }
-
-    upload_id = data.get("upload_id") or uuid.uuid4().hex
-    upload_id = _safe_upload_id(upload_id)
-
-    upload_dir = _multipart_upload_dir(workspace_id, upload_id)
-    chunks_dir = _multipart_chunks_dir(upload_dir)
-    meta_path = _multipart_meta_path(upload_dir)
-
-    existing = upload_quota.find_reservation(session, upload_id)
-    metadata = {
-        "upload_id": upload_id, "workspace_id": workspace_id, "uploader_id": uploader_id,
-        "filename": filename, "total_size": total_size, "chunk_size": chunk_size,
-        "total_chunks": total_chunks, "parent_id": parent_id, "mime_type": mime_type,
-        "content_hash": content_hash,
-        "object_name": existing.details.get("object_name") if existing else _generate_unique_filename(filename),
-        "stage_id": existing.details.get("stage_id") if existing else uuid.uuid4().hex,
-    }
-    if existing is not None:
-        reservation = upload_quota.owned(session, workspace_id, uploader_id, upload_id)
-        if reservation.kind != "multipart" or reservation.details != metadata:
-            raise ConflictError("upload_id already exists with different file metadata")
-        meta = reservation.details
-        session.commit()
-    else:
-        reservation = upload_authorization.reserve(session, workspace_id, uploader_id, total_size,
-                                          kind="multipart", reservation_id=upload_id, details=metadata)
-        meta = metadata
-        try:
-            os.makedirs(chunks_dir, exist_ok=True)
-            _write_multipart_meta(meta_path, meta)
-        except Exception:
-            compensate_failed_uploads(session, workspace_id, uploader_id,
-                                      [(upload_id, metadata["object_name"])], None)
-            shutil.rmtree(upload_dir, ignore_errors=True)
-            raise ServiceOperationError("Failed to initialize upload")
-
-    return {
-        "upload_id": upload_id,
-        "chunk_size": int(meta["chunk_size"]),
-        "total_chunks": int(meta["total_chunks"]),
-        "uploaded_chunks": _list_uploaded_chunks(chunks_dir),
-        "instant_upload": False,
-    }
+    return _multipart_service().init_multipart_upload(session, workspace_id, uploader_id, data)
 
 
 def get_multipart_upload_status(session: Session, workspace_id: int, uploader_id: int, upload_id: str) -> dict[str, Any]:
-    meta = upload_quota.owned(session, workspace_id, uploader_id, upload_id).details
-    session.commit()
-    upload_dir = _multipart_upload_dir(workspace_id, _safe_upload_id(upload_id))
-    chunks_dir = _multipart_chunks_dir(upload_dir)
-    return {
-        "upload_id": meta["upload_id"],
-        "chunk_size": int(meta["chunk_size"]),
-        "total_chunks": int(meta["total_chunks"]),
-        "uploaded_chunks": _list_uploaded_chunks(chunks_dir),
-    }
+    return _multipart_service().get_multipart_upload_status(session, workspace_id, uploader_id, upload_id)
 
 
-def save_multipart_chunk(
-        session: Session,
-        uploader_id: int,
-        workspace_id: int,
-        upload_id: str,
-        chunk_index: int,
-        chunk_obj: Any,
-) -> dict[str, Any]:
-    safe_upload_id = _safe_upload_id(upload_id)
-    meta = upload_quota.owned(session, workspace_id, uploader_id, safe_upload_id).details
-
-    try:
-        idx = int(chunk_index)
-    except (TypeError, ValueError):
-        raise BusinessRuleError("Invalid chunk_index")
-
-    total_chunks = int(meta["total_chunks"])
-    chunk_size = int(meta["chunk_size"])
-    total_size = int(meta["total_size"])
-
-    if idx < 0 or idx >= total_chunks:
-        raise BusinessRuleError("chunk_index out of range")
-
-    upload_dir = _multipart_upload_dir(workspace_id, safe_upload_id)
-    chunks_dir = _multipart_chunks_dir(upload_dir)
-    expected_size = chunk_size
-    if idx == total_chunks - 1:
-        expected_size = total_size - (idx * chunk_size)
-        if expected_size <= 0:
-            expected_size = chunk_size
-
-    multipart_storage.save_chunk(chunks_dir, idx, chunk_obj, expected_size, MAX_CHUNK_SIZE)
-    session.commit()
-
-    return {
-        "upload_id": safe_upload_id,
-        "chunk_index": idx,
-        "uploaded_chunks": _list_uploaded_chunks(chunks_dir),
-    }
+def save_multipart_chunk(session: Session, uploader_id: int, workspace_id: int,
+                         upload_id: str, chunk_index: int, chunk_obj: Any) -> dict[str, Any]:
+    return _multipart_service().save_multipart_chunk(session, uploader_id, workspace_id, upload_id, chunk_index, chunk_obj)
 
 
 def complete_multipart_upload(session: Session, workspace_id: int, uploader_id: int, upload_id: str) -> File:
-    safe_upload_id = _safe_upload_id(upload_id)
-    meta = upload_quota.owned(session, workspace_id, uploader_id, safe_upload_id).details
-    if not meta.get("object_name") or not meta.get("stage_id"):
-        raise ConflictError("Upload session must be reinitialized after upgrade")
-
-    total_chunks = int(meta["total_chunks"])
-    total_size = int(meta["total_size"])
-    if total_size <= 0 or total_size > MAX_UPLOAD_SIZE:
-        raise PayloadTooLargeError("File too large")
-    filename = meta["filename"]
-    parent_id = _resolve_upload_parent_id(session, workspace_id, meta.get("parent_id"))
-    mime_type = meta.get("mime_type")
-    content_hash = _normalize_content_hash(meta.get("content_hash"))
-
-    upload_dir = _multipart_upload_dir(workspace_id, safe_upload_id)
-    chunks_dir = _multipart_chunks_dir(upload_dir)
-
-    uploaded_chunks = set(_list_uploaded_chunks(chunks_dir))
-    missing = [idx for idx in range(total_chunks) if idx not in uploaded_chunks]
-    if missing:
-        preview = ",".join(str(i) for i in missing[:10])
-        raise BusinessRuleError(f"Missing chunks: {preview}")
-
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    unique_filename = meta["object_name"]
-    staging = StagedUpload(UPLOAD_FOLDER, filename, stage_id=meta["stage_id"])
-    final_path = staging.path
-    try:
-        multipart_storage.assemble(chunks_dir, final_path, total_chunks=total_chunks,
-                                   chunk_size=int(meta["chunk_size"]), total_size=total_size)
-    except DomainError:
-        close_staging_safely(staging)
-        raise
-    except Exception as e:
-        close_staging_safely(staging)
-        logger.error("Failed to merge chunks (error_type={})", type(e).__name__)
-        raise ServiceOperationError("Failed to merge chunks")
-    except BaseException:
-        close_staging_safely(staging)
-        raise
-
-    storage = None
-    try:
-        # 上传合并后的文件到 MinIO
-        actual_hash = _calculate_file_hash(final_path)
-        if content_hash and actual_hash != content_hash:
-            raise BusinessRuleError("Uploaded content does not match its hash")
-        storage = get_storage_client()
-        storage.upload_file(final_path, unique_filename)
-
-        resolved_mime = _resolve_mime_type(final_path, mime_type)
-        new_file = File(
-            name=filename,
-            file_path=unique_filename,
-            file_size=total_size,
-            mime_type=resolved_mime,
-            content_hash=actual_hash,
-            workspace_id=workspace_id,
-            uploader_id=uploader_id,
-            parent_id=parent_id,
-        )
-        upload_authorization.consume(session, workspace_id, uploader_id, safe_upload_id, total_size)
-        repository.insert_file(session, new_file)
-        stage_file_tasks(session, [new_file.id])
-        session.commit()
-    except Exception as e:
-        compensate_failed_uploads(session, workspace_id, uploader_id,
-                                  [(safe_upload_id, unique_filename)], storage)
-        logger.error("Failed to persist merged file (error_type={})", type(e).__name__)
-        if isinstance(e, DomainError):
-            raise
-        raise ServiceOperationError("Failed to save file metadata")
-    finally:
-        # 清理本地合并文件与分片目录
-        close_staging_safely(staging)
-        shutil.rmtree(upload_dir, ignore_errors=True)
-
-    _log_file_created(new_file)
-
-    _invalidate_processing_cache([cast(int, new_file.id)], workspace_id)
-    return new_file
+    return _multipart_service().complete_multipart_upload(session, workspace_id, uploader_id, upload_id)
 
 
 def abort_multipart_upload(session: Session, workspace_id: int, uploader_id: int, upload_id: str) -> None:
-    safe_upload_id = _safe_upload_id(upload_id)
-    upload_quota.cancel(session, workspace_id, uploader_id, safe_upload_id)
-    upload_dir = _multipart_upload_dir(workspace_id, safe_upload_id)
-    shutil.rmtree(upload_dir, ignore_errors=True)
+    _multipart_service().abort_multipart_upload(session, workspace_id, uploader_id, upload_id)
 
 
 def get_file(session: Session, id: int) -> File:
