@@ -105,7 +105,7 @@ async def test_gateway_compression_admission_and_owned_release(monkeypatch,kind,
     else:
         monkeypatch.setattr(model,'upstream_client',client)
         monkeypatch.setattr(model,'_validate_current_credential',lambda *args,**kwargs:{'model':'allowed'})
-        monkeypatch.setattr(model,'current_credential',lambda *args:None)
+        monkeypatch.setattr(model,'current_credential',check)
         monkeypatch.setattr(model,'verify_connected',check)
         monkeypatch.setattr(model.quota,'reserve',lambda *args:None)
         monkeypatch.setattr(model,'get_chat_model_config',lambda:{'key':'private-key','api':'http://provider.test'})

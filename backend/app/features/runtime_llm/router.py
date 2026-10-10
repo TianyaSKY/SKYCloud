@@ -7,7 +7,6 @@ from contextlib import aclosing
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 
 from app.features.runtime_llm import quota, tokens
@@ -17,6 +16,7 @@ from app.infra.http_stream import UpstreamLease, UpstreamResponse
 from app.infra.http_wait import guarded_wait
 from app.infra.http_decode import ACCEPT_ENCODING, content_encoding, decoded_bytes
 from app.infra.async_stream import close_reader
+from app.infra.owned_work import run_owned
 
 router = APIRouter()
 MAX_BODY_BYTES = 256 * 1024
@@ -37,7 +37,7 @@ async def verify_connected(request, session_factory):
     # during body ingestion could discard an unread upload chunk.
     if await request.is_disconnected():
         raise HTTPException(499, 'Model client disconnected')
-    await run_in_threadpool(_validate_current_credential, request, session_factory, touch=False)
+    await run_owned(_validate_current_credential, request, session_factory, touch=False)
 
 
 async def authorized_bytes(response, request, session_factory):
@@ -74,8 +74,8 @@ async def authorized_bytes(response, request, session_factory):
             raise asyncio.CancelledError()
 
 
-def current_credential(request: Request, session_factory=Depends(get_session_factory)) -> dict:
-    return _validate_current_credential(request, session_factory)
+async def current_credential(request: Request, session_factory=Depends(get_session_factory)) -> dict:
+    return await run_owned(_validate_current_credential, request, session_factory)
 
 
 def _validate_current_credential(request, session_factory, *, touch=True):
@@ -135,7 +135,7 @@ def upstream_client() -> httpx.AsyncClient:
 async def chat_completions(request: Request, credential: dict = Depends(current_credential),
                            session_factory=Depends(get_session_factory)):
     async def verify():
-        await run_in_threadpool(_validate_current_credential, request, session_factory, touch=False)
+        await run_owned(_validate_current_credential, request, session_factory, touch=False)
     async def read_body():
         chunks = bytearray()
         try:
@@ -152,8 +152,8 @@ async def chat_completions(request: Request, credential: dict = Depends(current_
     output_tokens = data.get("max_completion_tokens", data.get("max_tokens"))
     # Charge framing/message metadata as well as text; no reservation refund
     # on upstream failure or disconnect, which would permit quota bypass.
-    await run_in_threadpool(quota.reserve, credential, len(chunks) + 1024, output_tokens)
-    await run_in_threadpool(current_credential, request, session_factory)
+    await run_owned(quota.reserve, credential, len(chunks) + 1024, output_tokens)
+    await current_credential(request, session_factory)
     config = get_chat_model_config()
     if not config["key"] or any(char in config["key"] for char in "\r\n"):
         raise HTTPException(status_code=503, detail="Model provider unavailable")
