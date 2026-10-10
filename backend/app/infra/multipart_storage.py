@@ -12,6 +12,7 @@ from typing import Any
 from app.exceptions import BusinessRuleError
 from app.infra.upload_adapter import save_bounded
 from app.infra.upload_limits import copy_bounded
+from app.infra.upload_cleanup import remove_partial_safely
 
 
 def upload_directory(root: str, workspace_id: int, upload_id: str) -> str:
@@ -40,10 +41,7 @@ def _atomic_destination(destination: str):
         yield temporary
         os.replace(temporary, destination)
     finally:
-        try:
-            os.remove(temporary)
-        except FileNotFoundError:
-            pass
+        remove_partial_safely(temporary)
 
 
 def read_metadata(path: str) -> dict[str, Any]:

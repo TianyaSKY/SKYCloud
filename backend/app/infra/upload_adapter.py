@@ -10,6 +10,7 @@ import os
 
 from app.exceptions import BusinessRuleError, PayloadTooLargeError
 from app.infra.upload_limits import FILE_LIMIT, copy_bounded
+from app.infra.upload_cleanup import remove_partial_safely
 import uuid
 
 from fastapi import UploadFile
@@ -31,8 +32,7 @@ class FastAPIUploadAdapter:
             with open(destination, "wb") as target:
                 copy_bounded(self._upload_file.file, target, max_bytes)
         except BaseException:
-            if os.path.exists(destination):
-                os.remove(destination)
+            remove_partial_safely(destination)
             raise
 
 
@@ -100,12 +100,11 @@ def save_bounded(upload, destination: str, max_bytes: int) -> None:
             with open(destination, "wb") as target:
                 copy_bounded(upload.stream, target, max_bytes)
         except BaseException:
-            if os.path.exists(destination):
-                os.remove(destination)
+            remove_partial_safely(destination)
             raise
     else:
         # Legacy synchronous callers provide their own disk-backed upload.
         upload.save(destination)
         if os.path.getsize(destination) > max_bytes:
-            os.remove(destination)
+            remove_partial_safely(destination)
             raise PayloadTooLargeError("File too large")

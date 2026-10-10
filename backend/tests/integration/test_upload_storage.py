@@ -151,6 +151,48 @@ def test_worker_reconciles_real_orphan_object_and_retains_committed_object(uploa
     assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == 1
 
 
+@pytest.mark.parametrize('body,status', [(b'ab', 400), (b'abcd', 413)])
+def test_chunk_cleanup_failure_preserves_public_validation_and_retry(upload_api, postgres, minio_storage, monkeypatch, body, status):
+    from app.infra import upload_cleanup
+    from loguru import logger
+    client, headers, root = upload_api
+    response = client.post('/api/files/multipart/init', headers=headers, json={
+        'filename': 'cleanup.txt', 'total_size': 3, 'chunk_size': 3})
+    assert response.status_code == 200, response.text
+    upload_id = response.json()['data']['upload_id']
+    data = {'upload_id': upload_id, 'chunk_index': 0}
+    path = '/api/files/multipart/chunk'
+    assert client.post(path, headers=headers, data=data, files={'chunk': ('part', b'abc')}).status_code == 200
+    original_remove = upload_cleanup.os.remove
+    logs = []
+    sink = logger.add(lambda message: logs.append(str(message)))
+    def reject_temporary(path):
+        if str(path).endswith('.tmp'):
+            raise PermissionError('private-cleanup-path-and-credential')
+        return original_remove(path)
+    try:
+        monkeypatch.setattr(upload_cleanup.os, 'remove', reject_temporary)
+        failed = client.post(path, headers=headers, data=data, files={'chunk': ('part', body)})
+    finally:
+        monkeypatch.setattr(upload_cleanup.os, 'remove', original_remove)
+        logger.remove(sink)
+    assert failed.status_code == status, failed.text
+    assert failed.json()['error']['code'] == ('BUSINESS_RULE_VIOLATION' if status == 400 else 'PAYLOAD_TOO_LARGE')
+    assert 'private-cleanup' not in failed.text + ''.join(logs)
+    assert 'PermissionError' in ''.join(logs)
+    chunks = root / 'parts' / '1' / upload_id / 'chunks'
+    assert (chunks / '0.part').read_bytes() == b'abc'
+    assert list(chunks.glob('*.tmp'))
+    assert client.post(path, headers=headers, data=data, files={'chunk': ('part', b'xyz')}).status_code == 200
+    complete = client.post('/api/files/multipart/complete', headers=headers, json={'upload_id': upload_id})
+    assert complete.status_code == 201, complete.text
+    assert client.get(f"/api/files/{complete.json()['data']['id']}/download", headers=headers).content == b'xyz'
+    assert not chunks.exists()
+    with postgres.connect() as db:
+        assert db.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
+    assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == 1
+
+
 @pytest.mark.parametrize('kind', ['single', 'batch', 'chunk', 'avatar'])
 async def test_cancelled_request_preserves_real_upload_publication(upload_api, postgres, minio_storage, monkeypatch, kind):
     client, headers, root = upload_api
