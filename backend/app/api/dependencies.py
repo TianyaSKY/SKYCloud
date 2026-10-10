@@ -7,7 +7,7 @@ MCP 专用 JWT 额外校验库内是否仍有效（吊销后立即拒绝）。
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from starlette.concurrency import run_in_threadpool
+from app.infra.owned_work import run_owned
 from sqlalchemy.orm import Session
 
 from app.infra.extensions import SECRET_KEY, get_db, get_session_factory
@@ -55,7 +55,7 @@ async def get_current_user(
         # Direct legacy service tests may explicitly supply a borrowed Session.
         # ASGI dependency resolution always supplies the real factory instead.
         factory = (lambda: nullcontext(session)) if isinstance(session_factory, DependsParameter) else session_factory
-        current_user = await run_in_threadpool(resolve_http_user, factory, payload, token)
+        current_user = await run_owned(resolve_http_user, factory, payload, token)
 
         return current_user
     except jwt.ExpiredSignatureError as exc:

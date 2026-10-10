@@ -1,11 +1,13 @@
 """Unified Assistant HTTP API."""
 
 import os
+import asyncio
 from contextlib import aclosing
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from starlette.concurrency import run_in_threadpool
+from app.infra.owned_work import run_owned
+from app.infra.async_stream import drain_cleanup
 
 from app.api.dependencies import get_current_user, get_current_workspace
 from app.features.assistant import service
@@ -243,8 +245,21 @@ async def cancel_assistant_run(
             # Keep commit-expired ORM serialization in the same blocking unit.
             return service.request_cancel(session, workspace, current_user.id, run_id).to_dict()
 
-    result = await run_in_threadpool(persist_cancel)
-    await service.run_registry.request_cancel(run_id)
+    async def cancel():
+        result = await run_owned(persist_cancel, cancel_queued=False)
+        await service.run_registry.request_cancel(run_id)
+        return result
+
+    # Once accepted, persistence and the local producer signal share one
+    # lifetime. Losing the HTTP response must not skip the producer signal.
+    pending = asyncio.create_task(cancel())
+    try:
+        result = await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        async def drain():
+            await asyncio.gather(pending, return_exceptions=True)
+        await drain_cleanup(drain())
+        raise
     return success_payload(result)
 
 

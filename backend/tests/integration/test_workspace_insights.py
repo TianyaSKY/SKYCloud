@@ -17,6 +17,86 @@ pytestmark = pytest.mark.skipif(os.getenv("RUN_WORKSPACE_INSIGHTS_TESTS") != "1"
                                reason="Opt-in isolated PostgreSQL workspace insights")
 
 
+@pytest.mark.parametrize('mode', ['fast', 'expert'])
+@pytest.mark.parametrize('reject_commit', [False, True])
+async def test_disconnected_cancel_drains_native_sql_lock_and_signals_only_committed_run(postgres, reject_commit, mode):
+    import threading
+    import time
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    import httpx
+    from fastapi import FastAPI
+    from app.api.dependencies import get_current_user, get_current_workspace
+    from app.features.assistant import router, service
+    from app.infra.extensions import get_session_factory
+    from app.models.workspace import Workspace
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'cancel-owner','x','common')"))
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'cancel-space',1)"))
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
+    factory = sessionmaker(bind=postgres)
+    with factory() as db:
+        workspace = db.get(Workspace, 1)
+        conversation = service.create_conversation(db, workspace, 1, mode, 'cancel')
+        _, run, _ = service.prepare_run(db, workspace, 1, conversation.id, 'cancel query')
+        run_id = run.id
+    if reject_commit:
+        with postgres.begin() as db:
+            db.execute(text('ALTER TABLE assistant_runs ADD CONSTRAINT reject_cancel CHECK (cancel_requested=false)'))
+    entered, closed = threading.Event(), threading.Event()
+    worker_pids = []
+    @contextmanager
+    def owned_factory():
+        with factory() as db:
+            worker_pids.append(db.scalar(text('SELECT pg_backend_pid()')))
+            entered.set()
+            try:
+                yield db
+            finally:
+                closed.set()
+    app = FastAPI()
+    app.include_router(router.router)
+    # Only HTTP identity snapshots are supplied; authorization, cancellation
+    # writes, commit rejection and registry signaling use production code.
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_current_workspace] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_session_factory] = lambda: owned_factory
+    controller = service.run_registry.register(run_id)
+    lock = postgres.connect()
+    transaction = lock.begin()
+    lock.execute(text('LOCK TABLE assistant_runs IN ACCESS EXCLUSIVE MODE'))
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+            pending = asyncio.create_task(client.post(f'/assistant/runs/{run_id}/cancel'))
+            try:
+                assert await asyncio.to_thread(entered.wait, 2)
+                deadline = time.monotonic() + 2
+                while True:
+                    with postgres.connect() as observer:
+                        waiting = observer.scalar(text("SELECT wait_event_type='Lock' FROM pg_stat_activity WHERE pid=:pid"), {'pid': worker_pids[0]})
+                    if waiting:
+                        break
+                    assert time.monotonic() < deadline, 'Cancellation worker did not reach the held SQL lock'
+                    await asyncio.sleep(.01)
+                pending.cancel('client-disconnected'); await asyncio.sleep(.01)
+                pending.cancel('repeat-disconnect'); await asyncio.sleep(.01)
+                assert not pending.done() and not closed.is_set() and not controller.cancel_event.is_set()
+            finally:
+                transaction.rollback()
+                with pytest.raises(asyncio.CancelledError) as error:
+                    await asyncio.wait_for(pending, 5)
+            assert str(error.value) == 'client-disconnected'
+        assert closed.is_set() and controller.cancel_event.is_set() == (not reject_commit)
+        with postgres.connect() as observer:
+            assert observer.scalar(text('SELECT cancel_requested FROM assistant_runs WHERE id=:id'), {'id': run_id}) == (not reject_commit)
+    finally:
+        if transaction.is_active:
+            transaction.rollback()
+        lock.close()
+        service.run_registry.unregister(run_id)
+
+
 @pytest.mark.parametrize("tool", [server.get_storage_overview, server.get_folder_tree])
 def test_scoped_read_then_independent_membership_removal(postgres, monkeypatch, tool):
     upgrade(postgres)

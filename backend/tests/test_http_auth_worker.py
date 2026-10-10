@@ -11,6 +11,44 @@ from app.mcp import token_service
 from app.infra.extensions import SECRET_KEY
 
 
+@pytest.mark.parametrize('kind', ['web', 'mcp'])
+@pytest.mark.parametrize('fault', [False, True])
+async def test_cancelled_http_auth_drains_started_session(monkeypatch, kind, fault):
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    closed = []
+    class Owned:
+        def __enter__(self): return self
+        def __exit__(self, *args): closed.append(True)
+    def valid(*args):
+        entered.set()
+        try:
+            assert release.wait(5)
+            if fault:
+                raise RuntimeError('private-auth-error')
+            return True
+        finally:
+            finished.set()
+    monkeypatch.setattr(sessions, 'valid_session', valid)
+    monkeypatch.setattr(token_service, 'get_active_mcp_token', valid)
+    monkeypatch.setattr(authentication.account_repository, 'current_role', lambda *args: 'common')
+    monkeypatch.setattr(authentication.user_service, '_get_user_data', lambda *args: {'id': 1, 'role': 'common'})
+    payload = {'sub': '1', 'ver': 0}
+    if kind == 'mcp': payload['type'] = 'mcp'
+    credentials = HTTPAuthorizationCredentials(scheme='Bearer', credentials=jwt.encode(payload, SECRET_KEY, algorithm='HS256'))
+    pending = asyncio.create_task(dependencies.get_current_user(credentials, Mock(), session_factory=Owned))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        pending.cancel('caller-stop'); await asyncio.sleep(.01)
+        pending.cancel('repeat-stop'); await asyncio.sleep(.01)
+        assert not pending.done() and not closed and not finished.is_set()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as error:
+            await asyncio.wait_for(pending, 2)
+        assert await asyncio.to_thread(finished.wait, 2)
+    assert str(error.value) == 'caller-stop' and closed == [True]
+
+
 @pytest.mark.parametrize('kind',['web','mcp'])
 async def test_authentication_worker_ownership_and_fresh_role(monkeypatch, kind):
     loop_thread=threading.get_ident()
