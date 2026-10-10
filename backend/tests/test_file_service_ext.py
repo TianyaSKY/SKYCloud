@@ -129,44 +129,65 @@ class TestCleanupExpiredUploads:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def root_cache_session():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from app.models.cache_revision import SqlCacheRevision
+    engine = create_engine('sqlite://')
+    File.__table__.create(engine)
+    SqlCacheRevision.__table__.create(engine)
+    try:
+        with Session(engine) as session:
+            yield session
+    finally:
+        engine.dispose()
+
+
 class TestGetRootFileId:
-    def test_redis_outage_falls_back_to_database(self, session, test_workspace):
+    def test_redis_outage_falls_back_to_database(self, root_cache_session, test_workspace):
+        session = root_cache_session
         redis = MagicMock()
         redis.get.side_effect = ConnectionError("Redis unavailable")
-        redis.set.side_effect = ConnectionError("Redis unavailable")
+        redis.setex.side_effect = ConnectionError("Redis unavailable")
         file = File(name="root.txt", file_path="root.txt", workspace_id=test_workspace.id)
         session.add(file)
-        session.flush()
-        with patch("app.features.file.service.redis_client", redis):
+        session.commit()
+        with patch("app.infra.cache.redis_client", redis):
             assert get_root_file_id(session, test_workspace.id) == file.id
+        redis.get.assert_called_once()
+        redis.setex.assert_called_once()
 
-    def test_cached(self, session, test_workspace):
+    def test_cached(self, root_cache_session, test_workspace):
+        session = root_cache_session
         mock_redis = MagicMock()
         mock_redis.get.return_value = "42"
-        with patch("app.features.file.service.redis_client", mock_redis):
+        with patch("app.infra.cache.redis_client", mock_redis):
             result = get_root_file_id(session, test_workspace.id)
         assert result == 42
 
-    def test_from_db(self, session, test_workspace, test_user):
+    def test_from_db(self, root_cache_session, test_workspace):
+        session = root_cache_session
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
         f = File(name="root.txt", file_path="root.txt", file_size=10,
                  workspace_id=test_workspace.id, parent_id=None)
         session.add(f)
-        session.flush()
+        session.commit()
 
-        with patch("app.features.file.service.redis_client", mock_redis):
+        with patch("app.infra.cache.redis_client", mock_redis):
             result = get_root_file_id(session, test_workspace.id)
         assert result == f.id
-        mock_redis.set.assert_called()
+        mock_redis.setex.assert_called_once()
 
-    def test_not_found(self, session, test_workspace):
+    def test_not_found(self, root_cache_session, test_workspace):
+        session = root_cache_session
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
         # 确保没有 parent_id=None 的文件
         session.query(File).filter_by(workspace_id=test_workspace.id, parent_id=None).delete()
-        session.flush()
-        with patch("app.features.file.service.redis_client", mock_redis):
+        session.commit()
+        with patch("app.infra.cache.redis_client", mock_redis):
             result = get_root_file_id(session, test_workspace.id)
         assert result is None
 

@@ -274,7 +274,6 @@ def mock_redis():
     with patch("app.features.auth.refresh_sessions.redis_client", refresh_store), \
          patch("app.infra.extensions.redis_client", mock), \
          patch("app.infra.cache.redis_client", mock), \
-         patch("app.features.file.service.redis_client", mock), \
          patch("app.features.folder.service.redis_client", mock):
         yield mock
 

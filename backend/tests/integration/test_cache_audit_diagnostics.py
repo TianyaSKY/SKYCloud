@@ -440,6 +440,46 @@ def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructu
         assert read(db) == (expected if finish == "commit" else expected_original)
 
 
+@pytest.mark.parametrize('phase', ['pending-rollback', 'flushed-rollback', 'commit'])
+def test_root_file_id_cache_tracks_committed_tree_and_bypasses_writes(postgres, infrastructure, monkeypatch, phase):
+    from app.features.file import service as files
+    from app.models.folder import Folder
+    from app.models.file import File
+    upgrade(postgres)
+    factory = sessionmaker(bind=postgres)
+    admin = infrastructure['redis']
+    monkeypatch.setattr(cache, 'redis_client', admin)
+    with factory() as db:
+        user = User(username='root-file-cache-owner', password_hash='unused', role='common')
+        db.add(user); db.flush()
+        workspace = Workspace(name='root-file-cache', owner_id=user.id)
+        db.add(workspace); db.flush()
+        root = Folder(name='/', workspace_id=workspace.id)
+        original = File(name='original', file_path='original-object', workspace_id=workspace.id)
+        db.add_all([root, original]); db.commit()
+        wid, root_id, original_id = workspace.id, root.id, original.id
+    with factory() as db:
+        assert files.get_root_file_id(db, wid) == original_id
+    before = {key: admin.get(key) for key in admin.scan_iter()}
+    assert before
+    with factory() as db:
+        db.get(File, original_id).parent_id = root_id
+        if phase != 'pending-rollback':
+            db.flush()
+        if phase == 'commit':
+            db.commit()
+        else:
+            assert files.get_root_file_id(db, wid) is None
+            db.rollback()
+    assert {key: admin.get(key) for key in admin.scan_iter()} == before
+    with factory() as db:
+        assert files.get_root_file_id(db, wid) == (None if phase == 'commit' else original_id)
+    # Obsolete unversioned cache entries must not override a fresh SQL read.
+    admin.set(f'workspace:root:file:{wid}', 999999)
+    with factory() as db:
+        assert files.get_root_file_id(db, wid) == (None if phase == 'commit' else original_id)
+
+
 def test_generic_cache_revisions_are_scoped_atomic_and_survive_owner_deletion(postgres):
     from sqlalchemy import text
     from app.models.folder import Folder

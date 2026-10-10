@@ -26,8 +26,9 @@ from app.exceptions import (
 )
 from sqlalchemy.orm import Session
 
-from app.infra.extensions import UPLOAD_FOLDER, redis_client
-from app.infra.cache import evict_cache_pattern, invalidate_cache_generation
+from app.infra.extensions import UPLOAD_FOLDER
+from app.infra.cache import (evict_cache_pattern, invalidate_cache_generation,
+                             cacheable, sql_cache_allowed, sql_cache_revision)
 from app.infra.file_task_outbox import stage_file_tasks
 from app.infra.file_object_deletion import stage_object_deletion_fallback, lock_object_path
 from app.infra.storage import get_storage_client
@@ -54,6 +55,7 @@ from app.features.file.search_service import (
 from loguru import logger
 
 CACHE_EXPIRATION = 3600
+ROOT_FILE_CACHE_PREFIX = "workspace:root:file:v2"
 
 COPY_BUFFER_SIZE = 1024 * 1024
 
@@ -459,23 +461,15 @@ def _clear_search_cache(workspace_id: int | None) -> None:
         evict_cache_pattern(f"{SEARCH_CACHE_PREFIX}:{workspace_id}")
 
 
+@cacheable(
+    prefix=ROOT_FILE_CACHE_PREFIX,
+    expire=CACHE_EXPIRATION,
+    cache_allowed=sql_cache_allowed,
+    key=lambda session, workspace_id, **_: f"{workspace_id}:sql:{sql_cache_revision(session, f'workspace:tree:{workspace_id}')}",
+)
 def get_root_file_id(session: Session, workspace_id: int) -> int | None:
-    cache_key = f"workspace:root:file:{workspace_id}"
-    try:
-        cached_id = redis_client.get(cache_key)
-        if cached_id:
-            return int(cached_id)
-    except Exception:
-        logger.warning("Root-file cache unavailable for workspace {}", workspace_id)
-
     root_file = repository.find_root_file(session, workspace_id)
-    if root_file:
-        try:
-            redis_client.set(cache_key, root_file.id, ex=CACHE_EXPIRATION)
-        except Exception:
-            logger.warning("Root-file cache write failed for workspace {}", workspace_id)
-        return root_file.id
-    return None
+    return root_file.id if root_file else None
 
 
 def upload_avatar(session: Session, img_file: Any, user_id: int, *, actor_id: int | None = None) -> dict[str, Any]:
