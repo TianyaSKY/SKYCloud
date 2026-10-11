@@ -8,7 +8,7 @@ from sqlalchemy import case, update, exists, select
 from sqlalchemy.orm import Session
 from app.models.mcp_runtime_token import McpRuntimeToken
 
-from app.exceptions import BusinessRuleError
+from app.exceptions import BusinessRuleError, ConflictError
 from app.features.workspace import (runtime_service, runtime_config, runtime_config_client,
                                     runtime_operation_repository as operations)
 from app.features.workspace.runtime_execution import serialized
@@ -368,11 +368,24 @@ def start(session: Session, workspace: Workspace, user_id: int, *, expected_gene
                     container = _client().prepare(workspace_id,user_id,runtime_id,generation)
                 except ControllerGenerationMissing as error:
                     return _replace_missing(session,workspace,user_id,generation,error.container_id,_replacement_attempt)
-                operations.record_candidate(session,generation,container.id)
-                session.commit()  # Preserve candidate even if publication fails.
-            runtime = operations.switch_candidate(session,generation)
-            container_id = runtime.container_id
-            session.commit()  # Old cleanup and new identity publish atomically.
+                try:
+                    operations.record_candidate(session,generation,container.id)
+                    session.commit()  # Preserve candidate even if publication fails.
+                    runtime = operations.switch_candidate(session,generation)
+                    container_id = runtime.container_id
+                    session.commit()  # Old cleanup and new identity publish atomically.
+                except ConflictError:
+                    session.rollback()
+                    # The admitted generation is gone (revoked edit permission or a
+                    # superseding operation). Remove its resource now instead of waiting
+                    # for reconciliation, then report the caller's current permission.
+                    _retire_generation(workspace_id,user_id,runtime_id,generation)
+                    operations._runtime_with_write_access(session,workspace_id,user_id)
+                    raise
+            else:
+                runtime = operations.switch_candidate(session,generation)
+                container_id = runtime.container_id
+                session.commit()  # Old cleanup and new identity publish atomically.
             try:
                 container = _client().containers.get(container_id)
             except ContainerNotFound:
@@ -404,6 +417,17 @@ def start(session: Session, workspace: Workspace, user_id: int, *, expected_gene
                 session.commit()
         logger.error('Runtime start failed: workspace_id={}, user_id={}, error_type={}',workspace_id,user_id,type(exc).__name__)
     return workspace
+
+
+def _retire_generation(workspace_id: int, user_id: int, runtime_id: int, generation: str) -> None:
+    """Best-effort retirement of a prepared generation the database no longer admits.
+
+    Failure is deferred to the Worker, which retries cancelled operations.
+    """
+    try:
+        _client().retire_generation(workspace_id,user_id,runtime_id,generation)
+    except Exception as exc:
+        logger.error('Runtime generation retirement deferred: error_type={}', type(exc).__name__)
 
 
 def _replace_missing(session, workspace, user_id, generation, container_id, attempt):
@@ -447,7 +471,15 @@ def stop(
     if not runtime:
         return workspace
     runtime = operations._runtime_with_write_access(session,int(workspace.id),user_id)
-    operations.cancel_runtime(session,int(runtime.id))
+    if runtime is None:
+        return workspace
+    if operations.cancel_runtime(session,int(runtime.id)):
+        # Commit the cancellation before the stop RPC: recovery must never resume a
+        # generation the user asked to stop, even if this process dies afterwards.
+        session.commit()
+        runtime = operations._runtime_with_write_access(session,int(workspace.id),user_id)
+        if runtime is None:
+            return workspace
     try:
         if runtime.container_id:
             _client().containers.get(runtime.container_id).stop(timeout=10)

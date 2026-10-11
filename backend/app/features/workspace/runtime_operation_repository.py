@@ -88,11 +88,13 @@ def switch_candidate(session, generation):
 
 
 def cancel_runtime(session, runtime_id):
+    """Cancel active operations; returns how many the caller must commit durably."""
     operations = session.scalars(select(RuntimeOperation).where(RuntimeOperation.runtime_id == runtime_id,
         RuntimeOperation.state.in_(['preparing','switched'])).with_for_update().execution_options(populate_existing=True)).all()
     for operation in operations:
         operation.state = 'cancelled'
     session.flush()
+    return len(operations)
 
 
 def current_runtime(session, workspace_id, user_id, runtime_id, container_id, generation=None):
@@ -112,7 +114,8 @@ def current_runtime(session, workspace_id, user_id, runtime_id, container_id, ge
 def complete(session, generation):
     identity = session.execute(select(RuntimeOperation.workspace_id, RuntimeOperation.user_id,
         RuntimeOperation.runtime_id, RuntimeOperation.candidate_container_id).where(RuntimeOperation.generation == generation)).one()
-    runtime = current_runtime(session, *identity, generation=generation)
+    runtime = current_runtime(session, identity[0], identity[1], identity[2], identity[3],
+                             generation=generation)
     operation = _locked(session, RuntimeOperation, RuntimeOperation.generation == generation)
     runtime.status = 'running'
     operation.state = 'complete'

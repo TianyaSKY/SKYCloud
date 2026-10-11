@@ -218,3 +218,66 @@ def test_missing_candidate_cannot_replace_another_identity(session,test_workspac
     repository.record_candidate(session,old.generation,'b'*64); session.commit()
     with pytest.raises(ConflictError): repository.replace_missing(session,old.generation,'c'*64)
     assert old.state=='preparing' and session.query(RuntimeOperation).count()==1
+
+
+def test_stop_commits_cancellation_before_rpc_so_crash_cannot_resume(session,test_workspace,test_user,monkeypatch):
+    """A stop lost after the RPC must not leave the generation recoverable."""
+    from app.features.workspace import docker_service
+    from app.infra.runtime_operations import recover_runtime_operations
+    events = []
+    containers = {'a'*64: None}
+    class Container:
+        def __init__(self,identity): self.id = identity
+        def stop(self,timeout=None): events.append(('stop',timeout))
+        def start(self): events.append(('start',self.id))
+    containers['a'*64] = Container('a'*64)
+    class Controller:
+        containers = SimpleNamespace(get=lambda identity: containers[identity])
+        def retire_generation(self,*args): events.append(('retire',args))
+    monkeypatch.setattr(docker_service,'_client',Controller)
+
+    runtime=OpenCodeRuntime(workspace_id=test_workspace.id,user_id=test_user.id,container_id='a'*64,status='running')
+    session.add(runtime); session.flush()
+    operation=repository.admit(session,test_workspace.id,test_user.id); session.commit()
+    generation=operation.generation
+
+    def crash(*args,**kwargs): raise RuntimeError('process lost after the stop RPC')
+    monkeypatch.setattr(docker_service.runtime_token_service,'revoke_runtime_tokens',crash)
+    with pytest.raises(RuntimeError):
+        docker_service.stop(session,test_workspace,test_user.id)
+    assert ('stop',10) in events
+    session.rollback()
+
+    factory=lambda:Session(bind=session.get_bind(),join_transaction_mode='create_savepoint')
+    with factory() as observer:
+        assert observer.get(RuntimeOperation,generation).state=='cancelled'
+    assert recover_runtime_operations(session_factory=factory)==0
+    with factory() as observer:
+        assert observer.get(RuntimeOperation,generation).state=='cancelled'
+    assert not [event for event in events if event[0]=='start']
+
+
+def test_start_conflict_after_prepare_retires_candidate_instead_of_leaving_it(session,test_workspace,test_user,monkeypatch):
+    """A generation cancelled mid-prepare must be retired by the caller, not orphaned."""
+    from app.features.workspace import docker_service
+    events = []
+    prepared = SimpleNamespace(id='b'*64)
+
+    class Controller:
+        def prepare(self,workspace_id,user_id,runtime_id,generation):
+            events.append(('prepare',generation))
+            # Another actor cancels the admitted operation while prepare is in flight.
+            with Session(bind=session.get_bind(),join_transaction_mode='create_savepoint') as other:
+                other.query(RuntimeOperation).filter(RuntimeOperation.runtime_id==runtime_id,
+                                                     RuntimeOperation.state=='preparing').one().state='cancelled'
+                other.commit()
+            return prepared
+        def retire_generation(self,*args): events.append(('retire',args))
+    monkeypatch.setattr(docker_service,'_client',Controller)
+    monkeypatch.setattr(docker_service,'_sync_mcp_via_runtime_api',lambda *args,**kwargs:None)
+
+    with pytest.raises(ConflictError):
+        docker_service.start(session,test_workspace,test_user.id)
+    assert [event[0] for event in events]==['prepare','retire']
+    assert events[1][1][3]==events[0][1]
+    assert events[1][1][:1]==(test_workspace.id,)
