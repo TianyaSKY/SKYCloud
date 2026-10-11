@@ -1,7 +1,7 @@
 {
   "date": "2026-10-11",
   "scope": "SKYCloud 整改最终验收清单：原分析问题、工程建议与当前整改项一一对应，含实现、证据、剩余任务与完成标准",
-  "current_head": "6a729586c87671838a62e23ddd452acb55879604",
+  "current_head": "1cce6895b1b476370776b0ed0d47da8cc2a905b8",
   "workstreams": [
     {
       "id": "1-acceptance-checklist",
@@ -658,17 +658,46 @@
     ],
     "typecheck": {
       "status": "complete",
-      "command": "cd /home/tianya/Project/SKYCloud && /home/tianya/venvs/skycloud311/bin/python -m mypy --config-file backend/mypy.ini",
-      "result": "Success: no issues found in 211 source files（范围未排除任何生产源码；212 减去删除的死代码模块 remote_embed.py）",
-      "baseline": "6a72958：372 errors / 81 files / 212 source files",
-      "suppressed_error_codes": [],
-      "excluded_application_modules": [],
+      "command": "cd backend && /home/tianya/venvs/skycloud311/bin/python -m mypy --config-file mypy.ini",
+      "result": "Success: no issues found in 211 source files",
+      "baseline": "6a72958: 372 errors / 81 files / 212 source files",
+      "scope": "backend/app + backend/entry + backend/runtime_controller; no application module excluded, no error code suppressed",
       "third_party_boundaries": [
-        "mypy.ini 仅对无类型声明的 fitz(PyMuPDF) 与 pgvector.sqlalchemy 声明 ignore_missing_imports",
-        "已改为真实声明的依赖：types-docker、types-pika、pandas-stubs（经 uv 0.12.1 重新生成 requirements-quality.lock）",
-        "Redis 客户端以 SyncRedisClient/RedisPipeline Protocol 记录同步契约（redis-py 把同步/异步返回标注为 Awaitable[X] | X）"
-      ]
-    }
+        "mypy.ini declares ignore_missing_imports only for fitz (PyMuPDF) and pgvector.sqlalchemy, which ship no declarations",
+        "types-docker, types-pika and pandas-stubs are real dependencies of the quality lock (regenerated with the pinned uv 0.12.1)",
+        "redis-py's shared sync/async mixin is recorded as a SyncRedisClient/RedisPipeline Protocol with a single documented cast"
+      ],
+      "ci_gate": "backend CI step now installs the quality lock that carries those stubs; the mypy command is the same one verified here (gate wiring listed as remaining until the hosted run)."
+    },
+    "verification": {
+      "unit_suite": "2320 passed / 475 skipped (backend, --ignore=tests/real) after every change in this session",
+      "compile_and_lint": "compileall + ruff (CI config) clean over app/entry/runtime_controller",
+      "frontend": "npm ci, audit (0 vulnerabilities), eslint, vue-tsc, 32 files / 267 tests, production build — all pass",
+      "integration": "360 passed (real PostgreSQL/pgvector, Redis, RabbitMQ, MinIO, Controller, Docker, built OpenCode runtime image) — CI integration step-1 equivalent plus assistant-lease/permission-dispatch/worker-outcome suites",
+      "integration_extra": "84 passed for object-deletion + upload-storage after bounding MinIO I/O; 2 real-PostgreSQL runtime-lifecycle cases; 2 browser-fixture startup cases",
+      "browser": "Chromium: login, refresh-cookie restore, native file-chooser upload, byte-exact UI download, running-runtime display, OpenCode iframe via the runtime-origin gateway, fail-closed cookie loss — validation/browser-linux-20261011.json",
+      "dependencies": "hashed lock install from scratch succeeds for requirements-test.lock + requirements-quality.lock",
+      "compose": "docker compose config validates production and development override with a generated env file",
+      "images": "controller, runtime (OpenCode) and minio images build from the checked-in build scripts; backend/frontend images pending the running build",
+      "ci_lint": "actionlint v1.7.12 (CI's pinned version and checksum) validates .github/workflows/ci.yml",
+      "schema_equivalence": "28/28 tables byte-identical before/after the ORM typing migration"
+    },
+    "discovered_and_fixed": [
+      "Runtime stop lost its commit after the Controller RPC, letting the worker restart a runtime the user stopped (fixed + tests, both failing before the fix).",
+      "start() left a prepared container orphaned and reported a generic conflict when edit permission was revoked mid-prepare (fixed + real-PostgreSQL trigger test).",
+      "assistant repository committed the caller-owned Session (fixed; lease row-lock window unchanged).",
+      "OpenCode sandbox/generation suites failed on the Redis stand-in image because the generation policy rejects images with implicit volumes; CI now runs them where the built runtime image is exported.",
+      "test_workspace_insights pinned cache keys that a later durable-revision change replaced, and one warm-cache premise was impossible once authorization took row locks.",
+      "Opt-in harnesses assumed /private/tmp and Docker Desktop's host.docker.internal, so the deep suites could not run on the platform CI uses.",
+      "Dead code removed: app/infra/llm/remote_embed.py (no production caller; torch not deployed) and its tests.",
+      "MinIO client had no connect/read timeout or retry bound."
+    ],
+    "remaining_work": [
+      "Workstreams 4/5/6 residual gaps: file/service.py and docker_service.py still fuse persistence with external I/O; MCP read_file_content opens MinIO I/O next to its Session; chat repository owns its Session; folder service vs organizer tools duplicate CRUD with drifted cache eviction; routers call object storage directly, so uncaught S3Error still surfaces as a generic 500.",
+      "Workstream 8 residuals: expert permission grant/recovery, terminal keystrokes, expiry mid-stream and native OS picker dialogs are not driven; ShareView/MySharesView and several admin views have no tests.",
+      "Workstream 9 residuals: backend/frontend image build result, indexing/organize pipeline suites (they need the synthetic provider fixture) and any environment that needs an approved external model service.",
+      "Workstream 10: push the local commits, run the hosted Linux CI jobs (including the new runtime-lifecycle suite) and configure + read back master protection — none of it authorised yet."
+    ]
   },
   "completion_rule": "每个工作流的每一条完成标准都必须有当前（本轮或上一轮可复现）证据；任何缺少直接证据的条目都保持未完待续，不得标记为完成。"
 }
