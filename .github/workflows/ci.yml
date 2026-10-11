@@ -114,9 +114,11 @@ jobs:
           fixture='redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499'
           docker pull "$fixture"
           reference=$(docker image inspect "$fixture" --format '{{.Id}}')
-          echo "SKYCLOUD_TEST_RUNTIME_IMAGE=$reference" >> "$GITHUB_ENV"
-          echo "SKYCLOUD_TEST_INFRA_IMAGE=$reference" >> "$GITHUB_ENV"
-          echo "SKYCLOUD_TEST_CONTROLLER_IMAGE=skycloud-ci-cleanup-controller" >> "$GITHUB_ENV"
+          {
+            echo "SKYCLOUD_TEST_RUNTIME_IMAGE=$reference"
+            echo "SKYCLOUD_TEST_INFRA_IMAGE=$reference"
+            echo "SKYCLOUD_TEST_CONTROLLER_IMAGE=skycloud-ci-cleanup-controller"
+          } >> "$GITHUB_ENV"
       - name: Migrations, delivery and crash recovery
         working-directory: backend
         env:
