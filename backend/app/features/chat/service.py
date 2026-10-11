@@ -4,10 +4,8 @@ import asyncio
 from contextlib import aclosing
 import json
 import os
-from collections import defaultdict
 from functools import lru_cache
 from operator import itemgetter
-from typing import TYPE_CHECKING
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
@@ -15,13 +13,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableParallel, RunnableLambda
 from langchain_openai import ChatOpenAI
 
-if TYPE_CHECKING:
-    from langchain_openai import OpenAIEmbeddings
-
 from app.infra.extensions import SessionLocal
 from app.infra.owned_work import run_owned
 from app.features.chat import repository
-from app.exceptions import PermissionDeniedError, ServiceOperationError
 from app.infra.llm.config import get_chat_model_config, get_embedding_model_config
 from app.features.chat.query_rewrite import (
     build_multi_queries,
@@ -31,6 +25,10 @@ from app.features.chat.query_rewrite import (
     RewriteKeywordDimensions,
 )
 from app.features.chat.rerank import rerank_documents
+from app.features.chat.retrieval_service import (
+    RagRetrievalService, RetrievalSettings, RetrievalOperations, VectorSearch,
+    fuse_docs_with_rrf as _fuse_docs_with_rrf,
+)
 
 from loguru import logger
 
@@ -112,154 +110,24 @@ def _db_search_by_vector(
     return docs
 
 
-def _fuse_docs_with_rrf(
-        result_sets: list[list[Document]],
-        rrf_k: int,
-        top_k: int,
-) -> list[Document]:
-    """RRF 融合多路召回；同分时按向量 distance 打破平局。"""
-    if not result_sets:
-        return []
-
-    scores: dict[str | int, float] = defaultdict(float)
-    doc_map: dict[str | int, Document] = {}
-
-    for docs in result_sets:
-        for rank, doc in enumerate(docs, start=1):
-            doc_id = doc.metadata.get("retrieval_id", doc.metadata["id"])
-            scores[doc_id] += 1.0 / (rrf_k + rank)
-            if doc_id not in doc_map:
-                doc_map[doc_id] = doc
-
-    ranked_ids = sorted(
-        scores.keys(),
-        key=lambda doc_id: (-scores[doc_id],
-                            doc_map[doc_id].metadata.get("distance", float("inf"))),
+def _retrieval_service(search: VectorSearch) -> RagRetrievalService:
+    return RagRetrievalService(
+        RetrievalSettings(RAG_VECTOR_FETCH_K, RAG_MULTI_QUERY_MAX_QUERIES, RAG_RRF_K, RAG_FUSION_TOP_K),
+        RetrievalOperations(get_embeddings_model, search, rerank_documents,
+                            build_multi_queries, build_retrieval_query, _fuse_docs_with_rrf),
     )
-    fused_docs: list[Document] = []
-    for doc_id in ranked_ids[:top_k]:
-        doc = doc_map[doc_id]
-        doc.metadata["rrf_score"] = scores[doc_id]
-        fused_docs.append(doc)
-    return fused_docs
 
 
 async def custom_db_retriever(query_text: str, workspace_id: int, *, user_id: int):
-    """单查询向量检索 + rerank；SQL 边界核验当前成员资格。"""
-    embeddings = get_embeddings_model()
-    query_vector = (await embeddings.aembed_query(query_text, user_id=user_id))[:1024]
-    docs = await run_owned(
-        _vector_search_docs,
-        query_vector,
-        query_text,
-        workspace_id,
-        RAG_VECTOR_FETCH_K,
-        user_id,
-    )
-    docs = await rerank_documents(query_text, docs)
-    logger.info(f"单查询检索结果: {len(docs)}")
-    return docs
+    """Single recall/rerank; the SQL port checks current membership."""
+    return await _retrieval_service(_vector_search_docs).single_query(query_text, workspace_id, user_id=user_id)
 
 
-async def multi_query_db_retriever(
-        question: str,
-        workspace_id: int,
-        dimensions: RewriteKeywordDimensions,
-        original_vector: list[float] | None = None,
-        *, user_id: int,
-):
-    """多查询并行召回 → RRF → Rerank。
-
-    original_vector 可与关键词改写并行预计算，避免重复 embed 原问题。
-    """
-    import time
-    t0 = time.perf_counter()
-
-    queries = build_multi_queries(
-        question,
-        dimensions,
-        max_queries=RAG_MULTI_QUERY_MAX_QUERIES,
-    )
-    if not queries and question.strip():
-        queries = [question.strip()]
-
-    embeddings = get_embeddings_model()
-
-    # ---------------------------------------------------------------------------
-    # 阶段 1: embedding
-    # ---------------------------------------------------------------------------
-    # 若已预计算原问题向量，只 embed 额外查询
-    t1 = time.perf_counter()
-    if original_vector and queries:
-        additional_queries = queries[1:]  # queries[0] 始终是原始问题
-        if additional_queries:
-            extra_vectors = await embeddings.aembed_documents(additional_queries, user_id=user_id)
-            all_vectors = [original_vector] + [v[:1024] for v in extra_vectors]
-        else:
-            all_vectors = [original_vector]
-        t2 = time.perf_counter()
-        logger.info(
-            f"[计时] 增量 embedding {len(additional_queries)} 条: {t2 - t1:.2f}s"
-            f" (原始问题已并行预计算)")
-    else:
-        all_vectors = await embeddings.aembed_documents(queries, user_id=user_id)
-        all_vectors = [v[:1024] for v in all_vectors]
-        t2 = time.perf_counter()
-        logger.info(f"[计时] 批量 embedding {len(queries)} 条: {t2 - t1:.2f}s")
-
-    if len(all_vectors) != len(queries):
-        raise ServiceOperationError("Embedding response does not match retrieval queries")
-
-    # ---------------------------------------------------------------------------
-    # 阶段 2: 并行数据库向量检索
-    # ---------------------------------------------------------------------------
-    async def _search_one(q_text: str, vec: list[float]):
-        try:
-            return await run_owned(
-                _db_search_by_vector, vec, q_text, workspace_id, RAG_VECTOR_FETCH_K, user_id
-            )
-        except Exception as exc:
-            # Keep partial recall on ordinary failures. Cancellation still
-            # propagates, and TaskGroup waits for every owned worker to drain.
-            return exc
-
-    async with asyncio.TaskGroup() as group:
-        search_tasks = [group.create_task(_search_one(qt, v)) for qt, v in zip(queries, all_vectors)]
-    raw_results = [task.result() for task in search_tasks]
-
-    for result in raw_results:
-        if isinstance(result, PermissionDeniedError):
-            raise result
-    result_sets: list[list[Document]] = []
-    for res in raw_results:
-        if isinstance(res, Exception):
-            logger.warning("Multi-query recall failed (error_type={})", type(res).__name__)
-        elif res:
-            result_sets.append(res)
-    if raw_results and all(isinstance(result, Exception) for result in raw_results):
-        raise ServiceOperationError("File retrieval unavailable")
-    t3 = time.perf_counter()
-    logger.info(f"[计时] DB 向量检索 {len(queries)} 条 (并行): {t3 - t2:.2f}s")
-
-    # ---------------------------------------------------------------------------
-    # 阶段 3: RRF 融合
-    # ---------------------------------------------------------------------------
-    fused_docs = _fuse_docs_with_rrf(
-        result_sets, rrf_k=RAG_RRF_K, top_k=RAG_FUSION_TOP_K)
-
-    # ---------------------------------------------------------------------------
-    # 阶段 4: Rerank
-    # ---------------------------------------------------------------------------
-    retrieval_query = build_retrieval_query(question, dimensions)
-    reranked_docs = await rerank_documents(retrieval_query, fused_docs)
-    t4 = time.perf_counter()
-    logger.info(f"[计时] Rerank: {t4 - t3:.2f}s")
-
-    logger.info(
-        f"多查询融合检索完成: queries={len(queries)}, fused={len(fused_docs)}, "
-        f"reranked={len(reranked_docs)}, 总耗时={t4 - t0:.2f}s"
-    )
-    return reranked_docs
+async def multi_query_db_retriever(question: str, workspace_id: int, dimensions: RewriteKeywordDimensions,
+                                 original_vector: list[float] | None = None, *, user_id: int):
+    """Parallel recall/fusion/rerank, optionally reusing the original embedding."""
+    return await _retrieval_service(_db_search_by_vector).multi_query(
+        question, workspace_id, dimensions, original_vector, user_id=user_id)
 
 
 def format_docs(docs):
