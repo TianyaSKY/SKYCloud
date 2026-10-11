@@ -12,6 +12,7 @@
 from app.infra.owned_work import run_owned
 from app.mcp.unit_of_work import worker_session
 import json
+import codecs
 import os
 from contextlib import contextmanager
 from datetime import timedelta
@@ -481,17 +482,7 @@ async def read_file_content(
                     file_size = storage.get_file_size(object_name)
                     truncated = file_size > _MAX_READ_BYTES
 
-                    # 下载到临时文件后读取文本内容
-                    import tempfile
-                    tmp_fd, tmp_path = tempfile.mkstemp()
-                    os.close(tmp_fd)
-                    try:
-                        storage.download_file(object_name, tmp_path)
-                        with open(tmp_path, "r", encoding=encoding, errors="replace") as f:
-                            content = f.read(_MAX_READ_BYTES)
-                    finally:
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
+                    raw = storage.read_file_prefix(object_name, _MAX_READ_BYTES) if file_size else b''
                 elif not is_mcp_request_active() and get_optional_mcp_context() is None:
                     # Compatibility for pre-object-storage direct unit tests. It
                     # is intentionally unavailable through the HTTP MCP boundary.
@@ -500,11 +491,15 @@ async def read_file_content(
                         return _error_json("File not found on server")
                     file_size = os.path.getsize(legacy_path)
                     truncated = file_size > _MAX_READ_BYTES
-                    with open(legacy_path, "r", encoding=encoding, errors="replace") as f:
-                        content = f.read(_MAX_READ_BYTES)
+                    with open(legacy_path, "rb") as f:
+                        raw = f.read(_MAX_READ_BYTES)
                 else:
                     return _error_json("File not found on server")
 
+                # A byte boundary may bisect a character. Retain complete
+                # characters without fabricating a replacement for that suffix.
+                decoder = codecs.getincrementaldecoder(encoding)(errors='replace')
+                content = decoder.decode(raw, final=not truncated)
                 return json.dumps(
                     {
                         "file_name": str(file_obj.name),
@@ -516,7 +511,7 @@ async def read_file_content(
                     ensure_ascii=False,
                     default=str,
                 )
-            except (DomainError, HTTPException) as e:
+            except Exception as e:
                 return _service_error_json(e)
 
     return await run_owned(_work)

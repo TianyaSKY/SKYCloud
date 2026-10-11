@@ -4,6 +4,7 @@ Redis caching and RabbitMQ notifications retain the parent unit fixtures; these
 checks specifically cover upload bytes, SQL ownership/quotas and object storage.
 """
 import hashlib
+import json
 import asyncio
 import threading
 import os
@@ -32,6 +33,58 @@ from app.infra.upload_adapter import FastAPIUploadAdapter
 from app.models.upload_reservation import UploadReservation
 
 pytestmark = pytest.mark.skipif(os.getenv('RUN_UPLOAD_STORAGE_TESTS') != '1', reason='Opt-in isolated PostgreSQL/MinIO upload integration')
+
+
+@pytest.mark.parametrize('body', [b'a' * (512 * 1024 + 100), ('中' * 200000).encode(), b''],
+                         ids=['ascii', 'utf8', 'empty'])
+async def test_mcp_text_read_uses_bounded_minio_range(upload_api, postgres, minio_storage, monkeypatch, body):
+    """Real SQL/MinIO tool worker; explicit context, without SDK transport claims."""
+    from app.mcp import server
+    from app.mcp.context import McpRequestContext, set_mcp_context, reset_mcp_context
+    minio_storage.upload_data(body, 'prefix-object', 'text/plain')
+    with postgres.begin() as conn:
+        file_id = conn.scalar(text("""INSERT INTO files
+            (name,file_path,file_size,mime_type,status,workspace_id,uploader_id,parent_id)
+            VALUES ('prefix.txt','prefix-object',:size,'text/plain','success',1,1,1) RETURNING id"""),
+                              {'size': len(body)})
+    monkeypatch.setattr(server, 'SessionLocal', sessionmaker(bind=postgres))
+    requests, reads, released = [], [], []
+    get_object = minio_storage._client.get_object
+    def ranged_object(*args, **kwargs):
+        response = get_object(*args, **kwargs)
+        requests.append((kwargs.get('length'), response.status, response.headers.get('Content-Range')))
+        read, close, release = response.read, response.close, response.release_conn
+        def bounded_read(amount):
+            result = read(amount)
+            reads.append((amount, len(result)))
+            return result
+        def close_body():
+            close()
+            released.append('close')
+        def release_body():
+            release()
+            released.append('release')
+        response.read, response.close, response.release_conn = bounded_read, close_body, release_body
+        return response
+    monkeypatch.setattr(minio_storage._client, 'get_object', ranged_object)
+    def full_download(*args):
+        pytest.fail('MCP text read must not download the complete object')
+    monkeypatch.setattr(minio_storage, 'download_file', full_download)
+    token = set_mcp_context(McpRequestContext(user_id=1, workspace_id=1, role='admin'))
+    try:
+        result = json.loads(await server.read_file_content(file_id))
+    finally:
+        reset_mcp_context(token)
+    assert result['file_size'] == len(body)
+    assert result['truncated'] == (len(body) > server._MAX_READ_BYTES)
+    assert result['content'] == body[:server._MAX_READ_BYTES].decode('utf-8', errors='ignore')
+    if body:
+        assert requests == [(server._MAX_READ_BYTES, 206,
+                             f'bytes 0-{server._MAX_READ_BYTES - 1}/{len(body)}')]
+        assert reads == [(server._MAX_READ_BYTES, server._MAX_READ_BYTES)]
+        assert released[-2:] == ['close', 'release']
+    else:
+        assert requests == reads == released == []
 
 
 @pytest.mark.parametrize('alias', ['root', 'workspace', 'upload', 'chunks'])

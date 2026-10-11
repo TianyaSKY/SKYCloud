@@ -117,6 +117,16 @@ class MinIOStorageClient:
             logger.error("MinIO 获取文件流失败 (error_type={})", type(e).__name__)
             raise
 
+    def read_file_prefix(self, object_name: str, max_bytes: int) -> bytes:
+        """Read an HTTP range into bounded memory and always release its response."""
+        if max_bytes <= 0:
+            raise ValueError('max_bytes must be positive')
+        response = self._client.get_object(self._bucket, object_name, length=max_bytes)
+        try:
+            return response.read(max_bytes)
+        finally:
+            self.close_file_stream(response)
+
     @staticmethod
     def close_file_stream(stream) -> None:
         """关闭下载流并归还 HTTP 连接，供流式响应结束后调用。"""
