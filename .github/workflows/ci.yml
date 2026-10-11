@@ -144,6 +144,7 @@ jobs:
           tests/integration/test_runtime_security.py::test_quota_cannot_be_bypassed_by_recreating_runtime
           tests/integration/test_runtime_security.py::test_internal_runtime_cannot_reach_infrastructure_by_name_or_ip
           tests/integration/test_runtime_security.py::test_production_ports_and_runtime_network_are_restricted
+          tests/integration/test_runtime_security.py::test_development_public_port_override_is_rejected
           tests/integration/test_runtime_security.py::test_runtime_network_cannot_contact_controller_rpc_listener
           tests/integration/test_runtime_security.py::test_real_redis_ui_ticket_is_atomic_and_expires
           tests/integration/test_generation_retirement.py

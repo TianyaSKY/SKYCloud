@@ -111,12 +111,16 @@ def test_internal_runtime_cannot_reach_infrastructure_by_name_or_ip(infrastructu
     assert docker("exec", infrastructure["bridge"], "redis-cli", "-h", target, "ping").stdout.strip() == "PONG"
 
 
-def test_production_ports_and_runtime_network_are_restricted(tmp_path):
+@pytest.mark.parametrize('development', [False, True], ids=['production', 'development'])
+def test_production_ports_and_runtime_network_are_restricted(tmp_path, development):
     root = Path(__file__).resolve().parents[3]
     generated_env = tmp_path / "deployment.env"
     subprocess.run(["python3", str(root / "scripts/generate-env.py"), "--output", str(generated_env)], check=True, capture_output=True)
+    compose = ["docker", "compose", "--env-file", str(generated_env), "-f", str(root / "docker-compose.yml")]
+    if development:
+        compose.extend(["-f", str(root / "docker-compose.dev.yml")])
     result = subprocess.run(
-        ["docker", "compose", "--env-file", str(generated_env), "-f", str(root / "docker-compose.yml"), "config", "--format", "json"],
+        [*compose, "config", "--format", "json"],
         env={**os.environ, "SKYCLOUD_ENV_FILE": str(generated_env),
              "OPENCODE_IMAGE": os.getenv("SKYCLOUD_TEST_RUNTIME_IMAGE", os.environ["OPENCODE_IMAGE"]),
              "MINIO_IMAGE": os.getenv("SKYCLOUD_TEST_MINIO_IMAGE", "sha256:" + "b" * 64)},
@@ -134,7 +138,15 @@ def test_production_ports_and_runtime_network_are_restricted(tmp_path):
         assert config["services"][service]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
     for name, service in config["services"].items():
         if name != "frontend":
-            assert not service.get("ports"), name
+            ports = service.get("ports", [])
+            if development:
+                assert all(port.get('host_ip') == '127.0.0.1' for port in ports), name
+            else:
+                assert not ports, name
+    if development:
+        for name in ('db', 'redis', 'rabbitmq', 'minio', 'backend-api',
+                     'backend-mcp', 'llm-gateway', 'runtime-controller'):
+            assert config['services'][name].get('ports'), name
     assert config["networks"]["runtime-network"]["internal"] is True
     assert "runtime-network" not in config["services"]["backend-api"]["networks"]
     for name, service in config["services"].items():
@@ -143,6 +155,24 @@ def test_production_ports_and_runtime_network_are_restricted(tmp_path):
     assert "env_file" not in config["services"]["runtime-controller"]
     for name in ("db", "redis", "rabbitmq", "minio"):
         assert "runtime-network" not in config["services"][name]["networks"]
+
+
+def test_development_public_port_override_is_rejected(tmp_path, monkeypatch):
+    root = Path(__file__).resolve().parents[3]
+    unsafe = tmp_path / 'unsafe-override.yml'
+    unsafe.write_text((root / 'docker-compose.dev.yml').read_text().replace('127.0.0.1:', '0.0.0.0:', 1))
+    actual_run = subprocess.run
+
+    def render_override(args, **kwargs):
+        # Only substitute this disposable Compose input; real Docker still
+        # merges and validates the configuration, without starting containers.
+        if args[:2] == ['docker', 'compose']:
+            args = [str(unsafe) if arg == str(root / 'docker-compose.dev.yml') else arg for arg in args]
+        return actual_run(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', render_override)
+    with pytest.raises(AssertionError, match='db'):
+        test_production_ports_and_runtime_network_are_restricted(tmp_path, True)
 
 
 def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
