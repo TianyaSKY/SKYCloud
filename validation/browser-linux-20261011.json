@@ -58,6 +58,17 @@
       "command": "RUN_RUNTIME_UI_TESTS=1 pytest tests/integration/test_runtime_ui_terminal.py",
       "result": "4 passed in 35.29s",
       "note": "Real PostgreSQL/Redis/Controller/OpenCode terminal relay: direct and one-use PTY tickets, UID 10001, bounded frames."
+    },
+    {
+      "command": "RUN_FULL_BROWSER=1 pytest tests/integration/test_full_browser.py (share flow)",
+      "result": "1 passed",
+      "checks": [
+        "Uploaded share-report.txt through the native file chooser (POST /api/files/preflight 200, POST /api/files 201)",
+        "Created the share from the file row dialog and read the link from 我的分享 (MyShares renders http://app.skycloud.localhost:<port>/s/<token>)",
+        "Opened the public /s/<token> page, clicked 立即下载 and captured the browser download",
+        "Saved name share-report.txt, 71 bytes, sha256 95b35d193fe0a8827891d587b74d9c75334909ba76d35d60134070120f0c4fbb matching the uploaded bytes"
+      ],
+      "note": "Before the RFC 5987 parser fix the saved name was \"*=UTF-8''share-report.txt\"; a Chinese-named local file cannot be passed through the automation file chooser, and that case is covered by the parser unit tests."
     }
   ],
   "iframe_observation": {
