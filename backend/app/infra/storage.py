@@ -9,6 +9,7 @@ import os
 import tempfile
 from typing import BinaryIO
 
+import urllib3
 from loguru import logger
 from minio import Minio
 from minio.error import S3Error
@@ -21,6 +22,10 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "skycloud")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() in ("true", "1", "yes")
+# 有界 I/O：无超时的对象存储调用会长期占用工作线程。
+MINIO_CONNECT_TIMEOUT = float(os.getenv("MINIO_CONNECT_TIMEOUT", "5"))
+MINIO_READ_TIMEOUT = float(os.getenv("MINIO_READ_TIMEOUT", "120"))
+MINIO_RETRIES = int(os.getenv("MINIO_RETRIES", "2"))
 
 
 class MinIOStorageClient:
@@ -43,6 +48,13 @@ class MinIOStorageClient:
             access_key=access_key,
             secret_key=secret_key,
             secure=secure,
+            http_client=urllib3.PoolManager(
+                timeout=urllib3.Timeout(connect=MINIO_CONNECT_TIMEOUT, read=MINIO_READ_TIMEOUT),
+                retries=urllib3.Retry(
+                    total=MINIO_RETRIES, backoff_factor=0.2,
+                    status_forcelist=[500, 502, 503, 504],
+                ),
+            ),
         )
         self._bucket = bucket
         self._ensure_bucket()
