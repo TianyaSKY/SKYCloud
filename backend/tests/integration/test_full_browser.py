@@ -102,7 +102,17 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
             yield db
     app.dependency_overrides[get_db] = database
     app.dependency_overrides[get_session_factory] = lambda: factory
-    api_socket = socket.socket(); api_socket.bind(('127.0.0.1', 0)); api_socket.listen(128)
+    bind_host = '127.0.0.1'
+    if sys.platform.startswith('linux'):
+        # Docker Desktop forwards host.docker.internal to the host loopback. The Linux
+        # engine maps it to the bridge gateway address instead, where a loopback-only
+        # API is unreachable, so publish it on the infrastructure network's gateway.
+        # Docker's host-gateway alias is the default bridge gateway (172.17.0.1 by
+        # default), so bind there rather than on the fixture network's gateway.
+        bind_host = docker('network', 'inspect', 'bridge', '--format',
+                           '{{(index .IPAM.Config 0).Gateway}}').stdout.strip()
+        assert bind_host, 'Default bridge network has no gateway address'
+    api_socket = socket.socket(); api_socket.bind((bind_host, 0)); api_socket.listen(128)
     api_port = api_socket.getsockname()[1]
     parent_port, ui_port = free_port(), free_port()
     parent = f'http://app.skycloud.localhost:{parent_port}'
@@ -117,7 +127,9 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
     frontend = infrastructure['target'] + '-frontend'
     infrastructure['cleanup'].append(frontend)
     config = tmp_path / 'default.conf.template'
-    config.write_text((root / 'frontend/nginx.conf').read_text().replace('backend-api:5000', f'host.docker.internal:{api_port}'))
+    # Substitute the literal address: nginx resolves a variable-based proxy_pass through
+    # the container resolver (bypassing /etc/hosts), so the host alias is not reliable.
+    config.write_text((root / 'frontend/nginx.conf').read_text().replace('backend-api:5000', f'{bind_host}:{api_port}'))
     metadata = FIXTURE_DIR / 'skycloud-full-browser.json'
     completion = tmp_path / 'browser-completed'
     try:
