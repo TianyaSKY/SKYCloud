@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 
+class McpPermissionError(PermissionError):
+    """Deliberate MCP authorization rejection with a public-safe message."""
+
+
 @dataclass(frozen=True)
 class McpRequestContext:
     """Verified identity and authorization scope for one MCP request."""
@@ -41,7 +45,7 @@ def get_mcp_context() -> McpRequestContext:
 
     context = _current_context.get()
     if context is None:
-        raise PermissionError("Unauthorized MCP request")
+        raise McpPermissionError("Unauthorized MCP request")
     return context
 
 

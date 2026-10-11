@@ -77,9 +77,10 @@ async def test_anyio_scope_drains_started_work_before_cancellation_delivery():
 
 async def test_audit_cancellation_does_not_replace_existing_tool_failure(monkeypatch):
     from app.mcp import audit
+    from app.exceptions import BusinessRuleError
     entered,release=threading.Event(),threading.Event()
     calls=[]
-    original=ValueError('fixed-domain-error')
+    original=BusinessRuleError('fixed-domain-error')
     def record(**kwargs):entered.set();assert release.wait(3);calls.append(kwargs['error_type'])
     monkeypatch.setattr(audit,'record_mcp_call',record)
     @audit.audited_tool('test')
@@ -91,5 +92,5 @@ async def test_audit_cancellation_does_not_replace_existing_tool_failure(monkeyp
         assert not pending.done()
     finally:
         release.set()
-        with pytest.raises(ValueError) as error:await asyncio.wait_for(pending,1)
-    assert error.value is original and calls==['ValueError']
+        with pytest.raises(BusinessRuleError) as error:await asyncio.wait_for(pending,1)
+    assert error.value is original and calls==['BusinessRuleError']

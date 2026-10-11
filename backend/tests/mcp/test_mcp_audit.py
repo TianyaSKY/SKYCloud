@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import pytest
 from unittest.mock import patch
 
 from app.mcp.audit import audited_tool
@@ -12,6 +13,23 @@ from app.mcp.context import (
     set_mcp_context,
     set_mcp_request_active,
 )
+
+
+@pytest.mark.parametrize("error_class", [RuntimeError, OSError, ValueError, PermissionError])
+def test_unexpected_tool_failure_is_safe_and_audited(error_class):
+    private = "PRIVATE_DATABASE_URL_AND_DOCUMENT"
+
+    @audited_tool("broken_tool")
+    async def tool():
+        raise error_class(private)
+
+    with patch("app.mcp.audit.record_mcp_call") as record:
+        with pytest.raises(RuntimeError, match="^Service temporarily unavailable$") as raised:
+            asyncio.run(tool())
+    assert private not in str(raised.value)
+    assert raised.value.__suppress_context__
+    assert record.call_args.kwargs["success"] is False
+    assert record.call_args.kwargs["error_type"] == error_class.__name__
 
 
 def test_audit_marks_structured_tool_errors_as_failures():

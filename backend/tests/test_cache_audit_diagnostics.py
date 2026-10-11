@@ -6,6 +6,7 @@ from loguru import logger
 from sqlalchemy.exc import StatementError
 
 from app.infra import cache
+from app.exceptions import BusinessRuleError
 from app.mcp import audit
 from app.mcp.context import (McpRequestContext, set_mcp_context, reset_mcp_context,
                             set_mcp_request_active, reset_mcp_request_active)
@@ -77,7 +78,7 @@ async def test_audit_failures_do_not_replace_tool_result(monkeypatch, diagnostic
     monkeypatch.setattr(audit, 'SessionLocal', factory)
     context = set_mcp_context(McpRequestContext(user_id=1, workspace_id=2, role='viewer'))
     active = set_mcp_request_active(True)
-    original = ValueError('original tool failure')
+    original = BusinessRuleError('original tool failure')
     @audit.audited_tool('known_tool')
     async def tool():
         if tool_fails:
@@ -85,7 +86,7 @@ async def test_audit_failures_do_not_replace_tool_result(monkeypatch, diagnostic
         return {'answer': 'preserved'}
     try:
         if tool_fails:
-            with pytest.raises(ValueError) as raised:
+            with pytest.raises(BusinessRuleError) as raised:
                 await tool()
             assert raised.value is original
         else:

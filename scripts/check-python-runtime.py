@@ -7,6 +7,7 @@ import asyncio
 import os
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / 'backend' if (root / 'backend').is_dir() else root))
@@ -27,6 +28,14 @@ from langgraph.prebuilt import create_react_agent
 from app.api.factory import create_fastapi_app
 from app.mcp.server import mcp, get_mcp_app
 from app.features.folder.organize.tools import get_all_files
+from app.mcp.audit import audited_tool
+
+
+@mcp.tool()
+@audited_tool('locked_failure_fixture')
+async def locked_failure_fixture() -> str:
+    """Synthetic failure for the real MCP transport privacy check."""
+    raise OSError('PRIVATE_STORAGE_PATH_AND_CREDENTIAL_SENTINEL')
 
 
 async def check():
@@ -54,6 +63,15 @@ async def check():
             response = await client.post('/mcp', json={'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
                                                        'params': {'name': 'get_current_user', 'arguments': {}}})
             assert response.status_code == 200 and 'Unauthorized' in response.text
+            with patch('app.mcp.audit.record_mcp_call') as record:
+                response = await client.post('/mcp', json={
+                    'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
+                    'params': {'name': 'locked_failure_fixture', 'arguments': {}}})
+            assert response.status_code == 200
+            assert 'Service temporarily unavailable' in response.text
+            assert 'PRIVATE_STORAGE_PATH_AND_CREDENTIAL_SENTINEL' not in response.text
+            assert record.call_args.kwargs['success'] is False
+            assert record.call_args.kwargs['error_type'] == 'OSError'
             response = await client.post('/mcp', json=request, headers={'Host': 'attacker.example.test'})
             assert response.status_code == 421
             response = await client.post('/mcp', json=request, headers={'Origin': 'https://attacker.example.test'})

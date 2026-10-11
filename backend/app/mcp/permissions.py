@@ -1,6 +1,6 @@
 """Authorization helpers shared by MCP tools."""
 
-from app.mcp.context import McpRequestContext, get_mcp_context
+from app.mcp.context import McpPermissionError, McpRequestContext, get_mcp_context
 
 
 def require_mcp_read_context() -> McpRequestContext:
@@ -14,7 +14,7 @@ def require_mcp_write_context() -> McpRequestContext:
 
     context = get_mcp_context()
     if context.role not in {"editor", "admin"}:
-        raise PermissionError("Workspace is read-only")
+        raise McpPermissionError("Workspace is read-only")
     return context
 
 
@@ -23,7 +23,7 @@ def require_mcp_admin_context() -> McpRequestContext:
 
     context = get_mcp_context()
     if context.role != "admin":
-        raise PermissionError("Workspace administrator permission required")
+        raise McpPermissionError("Workspace administrator permission required")
     return context
 
 

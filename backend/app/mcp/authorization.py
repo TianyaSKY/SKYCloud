@@ -5,7 +5,7 @@ The direct-call test fallback is explicitly excluded from HTTP request scope.
 from app.exceptions import PermissionDeniedError
 from app.features.file import service as file_service
 from app.features.folder import service as folder_service
-from app.mcp.context import (McpRequestContext, _current_user_id,
+from app.mcp.context import (McpPermissionError, McpRequestContext, _current_user_id,
                              get_optional_mcp_context, is_mcp_request_active)
 from app.mcp.permissions import assert_mcp_write_permission, assert_mcp_read_permission
 
@@ -36,7 +36,7 @@ def _get_tool_context() -> McpRequestContext:
                 workspace_id=user_id,
                 role="admin",
             )
-    raise PermissionError(
+    raise McpPermissionError(
         "Unauthorized: Missing or invalid Authorization header and workspace context."
     )
 
@@ -49,14 +49,14 @@ def _require_read_context() -> McpRequestContext:
 def _require_write_context() -> McpRequestContext:
     context = _get_tool_context()
     if context.role not in {"editor", "admin"}:
-        raise PermissionError("Workspace is read-only")
+        raise McpPermissionError("Workspace is read-only")
     return context
 
 
 def _require_admin_context() -> McpRequestContext:
     context = _get_tool_context()
     if context.role != "admin":
-        raise PermissionError("Workspace administrator permission required")
+        raise McpPermissionError("Workspace administrator permission required")
     return context
 
 

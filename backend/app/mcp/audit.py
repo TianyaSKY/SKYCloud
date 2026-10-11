@@ -2,6 +2,7 @@
 
 import asyncio
 from app.infra.owned_work import run_owned
+from app.exceptions import DomainError
 import json
 import time
 from functools import wraps
@@ -9,6 +10,7 @@ from typing import Any, Callable
 
 from app.infra.extensions import SessionLocal
 from app.mcp.context import (
+    McpPermissionError,
     get_optional_mcp_context,
     get_request_id,
     is_mcp_request_active,
@@ -101,6 +103,18 @@ def audited_tool(tool_name: str) -> Callable:
                     success = False
                     error_type = returned_error
                 return result
+            except Exception as exc:
+                # FastMCP includes str(exc) in protocol errors. Keep internal
+                # database/storage details out of that transport boundary.
+                raised = True
+                success = False
+                error_type = type(exc).__name__
+                if isinstance(exc, McpPermissionError) or (
+                    isinstance(exc, DomainError) and exc.status_code < 500
+                ):
+                    raise
+                logger.error("MCP tool failed: tool={} error_type={}", tool_name, error_type)
+                raise RuntimeError("Service temporarily unavailable") from None
             except BaseException as exc:
                 raised = True
                 success = False
