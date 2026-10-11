@@ -2,7 +2,7 @@
 from unittest.mock import AsyncMock
 import pytest
 from app.exceptions import PermissionDeniedError
-from app.features.chat import service, repository
+from app.features.chat import service, repository, retrieval_service
 from app.features.chat.query_rewrite import RewriteKeywordDimensions
 
 
@@ -35,7 +35,7 @@ async def test_multi_query_permission_abort_and_safe_partial_failure(monkeypatch
     monkeypatch.setattr(service, '_db_search_by_vector', search)
     monkeypatch.setattr(service, '_fuse_docs_with_rrf', lambda *args,**kwargs:['authorized-result'])
     monkeypatch.setattr(service, 'rerank_documents', rerank)
-    monkeypatch.setattr(service.logger, 'warning', lambda message,*args:logged.append(message.format(*args)))
+    monkeypatch.setattr(retrieval_service.logger, 'warning', lambda message,*args:logged.append(message.format(*args)))
     if permission_failure:
         with pytest.raises(PermissionDeniedError):
             await service.multi_query_db_retriever(private,1,dimensions(),user_id=7)
