@@ -101,6 +101,7 @@ async def test_chat_stream_failure_keeps_prompt_out_of_logs_and_sse(monkeypatch,
         monkeypatch.setattr(service,name,lambda *a,**kw:chain)
     recorder=Mock();monkeypatch.setattr(client,'record_llm_usage',recorder)
     output=''.join([event async for event in service.generate_chat_events(1,2,PRIVATE,[])])
-    assert '对话请求失败' in json.loads(output.removeprefix('data: ').strip())['content'] and PRIVATE not in output
+    event = json.loads(output.removeprefix('data: ').strip())
+    assert event['type'] == 'error' and '对话请求失败' in event['payload']['message'] and PRIVATE not in output
     recorder.assert_called_once()
     assert_safe(logs,'error_type=RuntimeError')

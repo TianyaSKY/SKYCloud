@@ -2,6 +2,9 @@
 import concurrent.futures
 from datetime import timedelta
 import os
+from pathlib import Path
+import subprocess
+import sys
 import threading
 import time
 
@@ -16,6 +19,98 @@ from app.models.user import User
 from app.models.workspace import Workspace
 
 pytestmark = pytest.mark.skipif(os.getenv('RUN_MIGRATION_TESTS') != '1', reason='Opt-in isolated PostgreSQL lease checks')
+
+
+RAG_FAILURE = r'''
+import asyncio
+import json
+import os
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.messages import AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
+from langchain_core.runnables import RunnableLambda
+from sqlalchemy.orm import Session
+from app.infra.extensions import engine
+from app.features.assistant import repository, service
+from app.features.chat import service as rag
+from app.features.chat.query_rewrite import RewriteKeywordDimensions
+from app.models.assistant import AssistantMessage
+from app.models.user import User
+from app.models.workspace import Workspace, WorkspaceMember
+
+PRIVATE = 'private-rag-provider-diagnostic'
+phase = os.environ['SKYCLOUD_RAG_FAILURE_PHASE']
+closed = []
+
+class FailingAnswer(FakeListChatModel):
+    async def _astream(self, *args, **kwargs):
+        try:
+            yield ChatGenerationChunk(message=AIMessageChunk(content='partial-answer'))
+            raise RuntimeError(PRIVATE)
+        finally:
+            closed.append('answer')
+
+class Model:
+    def with_structured_output(self, *args, **kwargs):
+        def rewrite(prompt):
+            if phase == 'rewrite':
+                raise RuntimeError(PRIVATE)
+            return RewriteKeywordDimensions(topic_terms=[], entity_terms=[], time_terms=[],
+                file_type_terms=[], action_terms=[], synonym_terms=[])
+        return RunnableLambda(rewrite)
+    def with_config(self, config):
+        return FailingAnswer(responses=['unused']).with_config(config)
+
+class Embeddings:
+    async def aembed_query(self, *args, **kwargs):
+        return [.1] * 1024
+    async def aembed_documents(self, texts, **kwargs):
+        return [[.1] * 1024 for _ in texts]
+
+rag.get_chat_model = lambda: Model()
+rag.get_embeddings_model = lambda: Embeddings()
+rag._db_search_by_vector = lambda *args: []
+
+async def main():
+    with Session(engine) as db:
+        user = User(username='rag-failure-owner', password_hash='unused', role='common')
+        db.add(user); db.flush()
+        workspace = Workspace(name='rag-failure', owner_id=user.id)
+        db.add(workspace); db.flush()
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role='admin'))
+        conversation = repository.create_conversation(db, workspace.id, user.id, 'fast', 'failure')
+        request = repository.create_message(db, conversation, 'user', 'query')
+        answer = repository.create_message(db, conversation, 'assistant', '', status='streaming')
+        run = repository.create_run(db, conversation, request, answer)
+        db.commit()
+        events = [event async for event in service.stream_prepared_run(
+            db, workspace, user.id, conversation, run, [])]
+        db.refresh(run)
+        db.refresh(answer)
+        assert run.status == 'failed', run.status
+        assert answer.status == 'failed', answer.status
+        assert events[-1].type == 'error' and not any(event.type == 'done' for event in events)
+        assert PRIVATE not in json.dumps([event.to_dict() for event in events])
+        assert PRIVATE not in json.dumps(run.to_dict())
+        assert answer.content == ('partial-answer' if phase == 'answer' else '')
+        if phase == 'answer':
+            assert closed == ['answer']
+
+asyncio.run(main())
+print('REAL_RAG_FAILURE_PERSISTED')
+'''
+
+
+@pytest.mark.parametrize('phase', ['rewrite', 'answer'])
+def test_rag_failures_persist_failed_runs_with_real_langchain(postgres, phase):
+    upgrade(postgres)
+    environment = {**os.environ, 'DATABASE_URL': postgres.url.render_as_string(hide_password=False),
+                   'SKYCLOUD_RAG_FAILURE_PHASE': phase}
+    result = subprocess.run([sys.executable, '-c', RAG_FAILURE],
+        cwd=Path(__file__).resolve().parents[2], env=environment,
+        capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert 'REAL_RAG_FAILURE_PERSISTED' in result.stdout
 
 
 def create_run(engine):

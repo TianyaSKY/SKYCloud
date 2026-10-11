@@ -452,7 +452,7 @@ async def generate_chat_events(user_id: int, workspace_id: int, query: str, hist
 
     except Exception as e:
         logger.error("Chat request failed (error_type={})", type(e).__name__)
-        yield f"data: {json.dumps({'type': 'status', 'content': '对话请求失败，请稍后重试。'})}\n\n"
+        yield f"data: {json.dumps({'type': 'error', 'payload': {'message': '对话请求失败，请稍后重试。'}})}\n\n"
     except BaseException:
         failed = True
         raise
