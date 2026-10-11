@@ -721,5 +721,39 @@
       ]
     }
   },
-  "completion_rule": "每个工作流的每一条完成标准都必须有当前（本轮或上一轮可复现）证据；任何缺少直接证据的条目都保持未完待续，不得标记为完成。"
+  "completion_rule": "每个工作流的每一条完成标准都必须有当前（本轮或上一轮可复现）证据；任何缺少直接证据的条目都保持未完待续，不得标记为完成。",
+  "unverified_environments": [
+    {
+      "environment": "Approved external model service",
+      "reason": "No authorised provider credentials exist in this workspace; every local model call used the in-fixture synthetic OpenAI-compatible HTTP provider.",
+      "affected": [
+        "expert-mode answers against a real provider",
+        "indexing description/embedding against a real provider",
+        "browser-driven expert permission grant/recovery"
+      ]
+    },
+    {
+      "environment": "Hosted GitHub Actions (ubuntu-24.04)",
+      "reason": "Push is still pending because no GitHub credential is available on this machine; the local runs reproduce the job commands on the Linux engine with the same pinned images.",
+      "affected": [
+        "all CI jobs",
+        "master branch protection read-back"
+      ]
+    },
+    {
+      "environment": "macOS / Docker Desktop",
+      "reason": "Verification ran on the Linux engine. The harness portability fix keeps the previous assumptions (/private/tmp, host.docker.internal) as the default on Docker Desktop.",
+      "affected": [
+        "none known; the macOS code paths remain the default"
+      ]
+    },
+    {
+      "environment": "Production or staging deployment",
+      "reason": "Only disposable local stacks were used; no deployment host is reachable from this workspace.",
+      "affected": [
+        "real wildcard DNS/TLS for the runtime UI origin",
+        "real object-storage, broker and database sizing"
+      ]
+    }
+  ]
 }
