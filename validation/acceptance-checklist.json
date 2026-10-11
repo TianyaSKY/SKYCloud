@@ -591,6 +591,16 @@
         "area": "8-frontend-browser",
         "change": "前端行为覆盖补齐：分享链路（API 契约/我的分享/匿名下载/文件名解析）、文件操作 hook、系统字典管理页",
         "evidence": "前端 39 文件 / 305 测试、eslint、vue-tsc、生产构建通过"
+      },
+      {
+        "area": "9-integration-deployment",
+        "change": "CI 集成作业在本地完整复现：步骤1（迁移/生命周期/运行时安全/队列/对象删除/向量/洞察等）360 passed；步骤2（上传存储+索引管线+整理管线）63+71 passed；步骤3（专家网关+租约+终端中继+刷新会话，真实 Controller/OpenCode + 合成 provider）38 passed",
+        "evidence": "/tmp/integration-final2.log、/tmp/pipeline-suites.log、/tmp/ci-step3-final.log"
+      },
+      {
+        "area": "9-integration-deployment",
+        "change": "修复 opt-in fixture 的两个缺陷：/private/tmp 可移植化时把三处写成 `FIXTURE_DIR / 'x'.write_text(...)`（21 个专家网关用例失败）；PG/RabbitMQ/worker fixture 删除容器未带 -v，每次运行泄漏一个匿名卷（多次运行后填满 92GiB 磁盘并导致 fixture 无法启动）",
+        "evidence": "修复后步骤3 38 passed，卷数量回到运行前水平；新增 tests/test_fixture_paths.py"
       }
     ],
     "open_gaps": [
@@ -690,7 +700,8 @@
       "compose": "docker compose config validates production and development override with a generated env file",
       "images": "controller, runtime (OpenCode) and minio images build from the checked-in build scripts; backend/frontend images pending the running build",
       "ci_lint": "actionlint v1.7.12 (CI's pinned version and checksum) validates .github/workflows/ci.yml",
-      "schema_equivalence": "28/28 tables byte-identical before/after the ORM typing migration"
+      "schema_equivalence": "28/28 tables byte-identical before/after the ORM typing migration",
+      "ci_equivalence": "Local reproduction of every integration-job step on the Linux engine with the pinned images: step 1 360 passed, step 2 63 + 71 passed, step 3 38 passed."
     },
     "discovered_and_fixed": [
       "Runtime stop lost its commit after the Controller RPC, letting the worker restart a runtime the user stopped (fixed + tests, both failing before the fix).",
