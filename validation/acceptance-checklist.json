@@ -673,7 +673,7 @@
       "unit_suite": "2320 passed / 475 skipped (backend, --ignore=tests/real) after every change in this session",
       "compile_and_lint": "compileall + ruff (CI config) clean over app/entry/runtime_controller",
       "frontend": "npm ci, audit (0 vulnerabilities), eslint, vue-tsc, 32 files / 267 tests, production build — all pass",
-      "integration": "360 passed (real PostgreSQL/pgvector, Redis, RabbitMQ, MinIO, Controller, Docker, built OpenCode runtime image) plus 71 passed for the upload/indexing/organize pipelines with a local synthetic provider, 84 passed for object-deletion/upload-storage, 4 passed for the runtime UI terminal relay, 2 for the runtime lifecycle recovery and 2 browser-fixture startup checks",
+      "integration": "360 passed (real PostgreSQL/pgvector, Redis, RabbitMQ, MinIO, Controller, Docker, built OpenCode runtime image); 71 passed for upload/indexing/organize pipelines with the in-fixture synthetic provider; 84 passed for object-deletion/upload-storage; 4 passed for the runtime UI terminal relay; 2 runtime-lifecycle recovery cases; 2 browser-fixture runs (1 passed each)",
       "integration_extra": "84 passed for object-deletion + upload-storage after bounding MinIO I/O; 2 real-PostgreSQL runtime-lifecycle cases; 2 browser-fixture startup cases",
       "browser": "Chromium: login, refresh-cookie restore, native file-chooser upload, byte-exact UI download, running-runtime display, OpenCode iframe via the runtime-origin gateway, fail-closed cookie loss — validation/browser-linux-20261011.json",
       "dependencies": "hashed lock install from scratch succeeds for requirements-test.lock + requirements-quality.lock",
@@ -697,7 +697,19 @@
       "Workstream 8 residuals: expert permission grant/recovery, expiry mid-stream and native OS picker dialogs are not driven; the OpenCode web UI's project picker returns an empty folder list in the sandbox, so terminal keystrokes are covered by the relay suite instead; ShareView/MySharesView and several admin views have no tests.",
       "Workstream 9 residuals: only environments that need an approved external model service remain unverified here (the indexing/organize pipelines use the in-fixture synthetic provider).",
       "Workstream 10: push the local commits, run the hosted Linux CI jobs (including the new runtime-lifecycle suite) and configure + read back master protection — none of it authorised yet."
-    ]
+    ],
+    "verified_cache_semantics": {
+      "finding": "Cache correctness after mutations/permission changes is fenced transactionally, not by best-effort deletes.",
+      "mechanisms": [
+        "Migration 0018: files trigger bumps workspaces.search_cache_revision, so every cached search key embeds a revision that changed with the write.",
+        "Migration 0019: users/sys_dict/folder/files triggers bump sql_cache_revisions rows (user:profile:<id>, sys_dict:all, workspace:tree:<ws>) in the same transaction.",
+        "Profile/list/detail cache keys embed the durable revision, so a prepared-then-revoked member cannot read a stale cached payload (verified by the real-PostgreSQL workspace-insight suites)."
+      ],
+      "residual": [
+        "The legacy literal-key evictions (folder service evict_cache of 'workspace:folders:<id>' and the organizer's clear_workspace_cache) are no-ops under the revision scheme: dead weight, not a correctness risk.",
+        "REST folder CRUD and the organizer toolset still implement duplicate-name validation twice; the real-PostgreSQL suites show identical outcomes, so this is maintainability-only."
+      ]
+    }
   },
   "completion_rule": "每个工作流的每一条完成标准都必须有当前（本轮或上一轮可复现）证据；任何缺少直接证据的条目都保持未完待续，不得标记为完成。"
 }
