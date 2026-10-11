@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from app.infra.extensions import SessionLocal
 from app.infra.owned_work import run_owned
 from app.features.chat import repository
-from app.exceptions import PermissionDeniedError
+from app.exceptions import PermissionDeniedError, ServiceOperationError
 from app.infra.llm.config import get_chat_model_config, get_embedding_model_config
 from app.features.chat.query_rewrite import (
     build_multi_queries,
@@ -207,6 +207,9 @@ async def multi_query_db_retriever(
         t2 = time.perf_counter()
         logger.info(f"[计时] 批量 embedding {len(queries)} 条: {t2 - t1:.2f}s")
 
+    if len(all_vectors) != len(queries):
+        raise ServiceOperationError("Embedding response does not match retrieval queries")
+
     # ---------------------------------------------------------------------------
     # 阶段 2: 并行数据库向量检索
     # ---------------------------------------------------------------------------
@@ -233,6 +236,8 @@ async def multi_query_db_retriever(
             logger.warning("Multi-query recall failed (error_type={})", type(res).__name__)
         elif res:
             result_sets.append(res)
+    if raw_results and all(isinstance(result, Exception) for result in raw_results):
+        raise ServiceOperationError("File retrieval unavailable")
     t3 = time.perf_counter()
     logger.info(f"[计时] DB 向量检索 {len(queries)} 条 (并行): {t3 - t2:.2f}s")
 

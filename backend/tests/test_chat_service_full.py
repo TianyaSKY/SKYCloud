@@ -62,6 +62,38 @@ class TestChatServiceModels:
 
 
 class TestChatServiceMultiQuery:
+    @pytest.mark.parametrize('vector_count', [0, 1, 3])
+    def test_incomplete_embedding_response_does_not_skip_queries(self, vector_count):
+        from app.features.chat import service
+        from app.exceptions import ServiceOperationError
+        embeddings = MagicMock()
+        embeddings.aembed_documents = AsyncMock(return_value=[[.1] * 1024] * vector_count)
+        with patch.object(service, 'get_embeddings_model', return_value=embeddings), \
+             patch.object(service, 'build_multi_queries', return_value=['one', 'two']), \
+             patch.object(service, '_db_search_by_vector', return_value=[]) as search:
+            with pytest.raises(ServiceOperationError):
+                asyncio.run(service.multi_query_db_retriever('question', 1, object(), user_id=77))
+        search.assert_not_called()
+
+    @pytest.mark.parametrize('found', [False, True])
+    def test_one_successful_recall_remains_usable_after_sibling_failure(self, found):
+        from types import SimpleNamespace
+        from app.features.chat import service
+        document = SimpleNamespace(page_content='found-file', metadata={'id': 1, 'name': 'found', 'distance': .1})
+        rows = [document] if found else []
+        embeddings = MagicMock()
+        embeddings.aembed_documents = AsyncMock(return_value=[[.1] * 1024] * 2)
+        def search(vector, query, *args):
+            if query == 'one':
+                raise RuntimeError('private-recall-failure')
+            return rows
+        with patch.object(service, 'get_embeddings_model', return_value=embeddings), \
+             patch.object(service, 'build_multi_queries', return_value=['one', 'two']), \
+             patch.object(service, '_db_search_by_vector', side_effect=search), \
+             patch.object(service, 'build_retrieval_query', return_value='question'), \
+             patch.object(service, 'rerank_documents', new_callable=AsyncMock, return_value=rows):
+            assert asyncio.run(service.multi_query_db_retriever('question', 1, object(), user_id=77)) == rows
+
     def test_multi_query_db_retriever(self):
         from app.features.chat.service import multi_query_db_retriever
         from app.features.chat.query_rewrite import RewriteKeywordDimensions

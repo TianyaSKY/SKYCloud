@@ -50,15 +50,22 @@ class FailingAnswer(FakeListChatModel):
         finally:
             closed.append('answer')
 
+class EmptyAnswer(FakeListChatModel):
+    async def _astream(self, *args, **kwargs):
+        closed.append('answer')
+        yield ChatGenerationChunk(message=AIMessageChunk(content='no-matches-answer'))
+
 class Model:
     def with_structured_output(self, *args, **kwargs):
         def rewrite(prompt):
             if phase == 'rewrite':
                 raise RuntimeError(PRIVATE)
-            return RewriteKeywordDimensions(topic_terms=[], entity_terms=[], time_terms=[],
+            return RewriteKeywordDimensions(topic_terms=['files'], entity_terms=[], time_terms=[],
                 file_type_terms=[], action_terms=[], synonym_terms=[])
         return RunnableLambda(rewrite)
     def with_config(self, config):
+        if phase in {'retrieval', 'empty'}:
+            return EmptyAnswer(responses=['unused']).with_config(config)
         return FailingAnswer(responses=['unused']).with_config(config)
 
 class Embeddings:
@@ -69,7 +76,8 @@ class Embeddings:
 
 rag.get_chat_model = lambda: Model()
 rag.get_embeddings_model = lambda: Embeddings()
-rag._db_search_by_vector = lambda *args: []
+if phase in {'rewrite', 'answer'}:
+    rag._db_search_by_vector = lambda *args: []
 
 async def main():
     with Session(engine) as db:
@@ -87,6 +95,11 @@ async def main():
             db, workspace, user.id, conversation, run, [])]
         db.refresh(run)
         db.refresh(answer)
+        if phase == 'empty':
+            assert run.status == answer.status == 'completed'
+            assert events[-1].type == 'done' and not any(event.type == 'error' for event in events)
+            assert answer.content == 'no-matches-answer' and closed == ['answer']
+            return
         assert run.status == 'failed', run.status
         assert answer.status == 'failed', answer.status
         assert events[-1].type == 'error' and not any(event.type == 'done' for event in events)
@@ -95,20 +108,26 @@ async def main():
         assert answer.content == ('partial-answer' if phase == 'answer' else '')
         if phase == 'answer':
             assert closed == ['answer']
+        if phase == 'retrieval':
+            assert closed == [], 'Answer model was called despite total retrieval failure'
 
 asyncio.run(main())
 print('REAL_RAG_FAILURE_PERSISTED')
 '''
 
 
-@pytest.mark.parametrize('phase', ['rewrite', 'answer'])
+@pytest.mark.parametrize('phase', ['rewrite', 'answer', 'retrieval', 'empty'])
 def test_rag_failures_persist_failed_runs_with_real_langchain(postgres, phase):
     upgrade(postgres)
     environment = {**os.environ, 'DATABASE_URL': postgres.url.render_as_string(hide_password=False),
-                   'SKYCLOUD_RAG_FAILURE_PHASE': phase}
-    result = subprocess.run([sys.executable, '-c', RAG_FAILURE],
-        cwd=Path(__file__).resolve().parents[2], env=environment,
-        capture_output=True, text=True, timeout=30)
+                   'SKYCLOUD_RAG_FAILURE_PHASE': phase, 'PGOPTIONS': '-c statement_timeout=300'}
+    with postgres.connect() as blocker:
+        if phase == 'retrieval':
+            from sqlalchemy import text
+            blocker.execute(text('LOCK TABLE file_chunks IN ACCESS EXCLUSIVE MODE'))
+        result = subprocess.run([sys.executable, '-c', RAG_FAILURE],
+            cwd=Path(__file__).resolve().parents[2], env=environment,
+            capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr[-2000:]
     assert 'REAL_RAG_FAILURE_PERSISTED' in result.stdout
 
