@@ -586,6 +586,11 @@
         "area": "5-errors-api-contract / 8-frontend-browser",
         "change": "分享下载文件名解析修复：Content-Disposition 使用 RFC 5987 的 filename*=UTF-8'' 形式，旧正则把 charset 前缀和结尾引号带进文件名",
         "evidence": "新增 utils/contentDisposition.ts 与 4 组单测；前端门禁 37 文件 / 286 测试、eslint、vue-tsc、生产构建通过；真实浏览器分享链路下载名 share-report.txt、sha256 与上传一致"
+      },
+      {
+        "area": "8-frontend-browser",
+        "change": "前端行为覆盖补齐：分享链路（API 契约/我的分享/匿名下载/文件名解析）、文件操作 hook、系统字典管理页",
+        "evidence": "前端 39 文件 / 305 测试、eslint、vue-tsc、生产构建通过"
       }
     ],
     "open_gaps": [
@@ -699,7 +704,7 @@
     ],
     "remaining_work": [
       "Workstreams 4/5/6 residual gaps: file/service.py and docker_service.py still fuse persistence with external I/O; MCP read_file_content opens MinIO I/O next to its Session; chat repository owns its Session; folder service vs organizer tools duplicate CRUD with drifted cache eviction; routers call object storage directly, so uncaught S3Error still surfaces as a generic 500.",
-      "Workstream 8 residuals: expert permission grant/recovery and expiry mid-stream are not driven; native OS picker dialogs are not exercised (the browser file chooser is); the OpenCode web UI's project picker returns an empty folder list in the sandbox, so terminal keystrokes are covered by the relay suite instead; several admin views still have no tests.",
+      "Workstream 8 residuals: expert permission grant/recovery and expiry mid-stream are not driven in a browser; native OS picker dialogs are not exercised (the browser file chooser is); the OpenCode web UI's project picker returns an empty folder list in the sandbox, so terminal keystrokes are covered by the relay suite; HomeView, InboxView, DocView and the token-usage views still have no behavior tests.",
       "Workstream 9 residuals: only environments that need an approved external model service remain unverified here (the indexing/organize pipelines use the in-fixture synthetic provider).",
       "Workstream 10: push the local commits, run the hosted Linux CI jobs (including the new runtime-lifecycle suite) and configure + read back master protection — none of it authorised yet."
     ],
