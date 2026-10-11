@@ -329,12 +329,32 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
 
 def test_runtime_network_cannot_contact_controller_rpc_listener(infrastructure, controller):
     inspect = json.loads(docker("inspect", controller["name"]).stdout)[0]
-    address = inspect["NetworkSettings"]["Networks"][infrastructure["runtime"]]["IPAddress"]
+    networks = inspect["NetworkSettings"]["Networks"]
+    image = inspect["Image"]
     # Supplying the valid service credential still cannot bypass binding the
-    # listener to the separate control interface.
-    script = "try { await fetch(process.argv[1], {headers:{'X-Runtime-Controller-Token':process.argv[2]}, signal:AbortSignal.timeout(1500)}); process.exit(1); } catch { process.exit(0); }"
-    docker("run", "--rm", "--network", infrastructure["runtime"], "node:20", "node", "--input-type=module", "-e", script,
-           "http://" + address + ":5003/health", controller["token"])
+    # listener to the separate control interface. Reuse the built image and
+    # prove the same probe reaches the listener from its permitted network.
+    script = """import http.client, sys
+connection = http.client.HTTPConnection(sys.argv[1], 5003, timeout=2)
+blocked = sys.argv[3] == 'blocked'
+try:
+    connection.connect()
+except OSError:
+    sys.exit(0 if blocked else 1)
+else:
+    if blocked:
+        sys.exit(1)
+    connection.request('GET', '/health', headers={'X-Runtime-Controller-Token': sys.argv[2]})
+    response = connection.getresponse()
+    sys.exit(0 if response.status == 200 else 1)
+finally:
+    connection.close()
+"""
+    for network, expected in ((infrastructure["control"], "allowed"),
+                              (infrastructure["runtime"], "blocked")):
+        address = networks[network]["IPAddress"]
+        docker("run", "--rm", "--network", network, "--entrypoint", "python", image,
+               "-c", script, address, controller["token"], expected)
 
 
 def test_real_redis_ui_ticket_is_atomic_and_expires(infrastructure, monkeypatch):
