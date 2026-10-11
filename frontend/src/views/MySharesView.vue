@@ -56,6 +56,7 @@ import { IconFile, IconRefresh } from '@arco-design/web-vue/es/icon'
 import MainLayout from '../components/MainLayout.vue'
 import { cancelShare, getMyShares, type ShareInfo } from '../api/share'
 import { formatDate } from '@/utils/format'
+import { shareLinkUrl } from '@/utils/shareLink'
 import { logger } from '@/utils/logger'
 
 const loading = ref(false)
@@ -82,9 +83,7 @@ const handleCancelShare = async (record: ShareInfo) => {
   }
 }
 
-const getShareUrl = (token: string) => {
-  return `${window.location.origin}/s/${token}`
-}
+const getShareUrl = (token: string) => shareLinkUrl(token)
 
 // 过期为空表示永久有效，保留业务文案；其余时间走通用格式化
 const formatExpiry = (value: string) => (value ? formatDate(value) : '永久有效')

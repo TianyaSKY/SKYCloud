@@ -26,6 +26,7 @@ import { IconDownload, IconFile } from '@arco-design/web-vue/es/icon'
 import axios from 'axios'
 import { logger } from '@/utils/logger'
 import { safeRevokeObjectURL } from '@/utils/blob'
+import { contentDispositionFilename } from '@/utils/contentDisposition'
 
 const route = useRoute()
 const loading = ref(false)
@@ -49,21 +50,8 @@ const handleDownload = async () => {
       responseType: 'blob',
     })
 
-    let fileName = DEFAULT_FILE_NAME
-    const contentDisposition = response.headers['content-disposition']
-    if (contentDisposition) {
-      const fileNameMatch = contentDisposition.match(/filename="?(.+)"?/)
-      if (fileNameMatch && fileNameMatch.length === 2) {
-        const rawName = fileNameMatch[1]
-        try {
-          // content-disposition 含非编码字符（如直接的中文名）会抛 URIError，需包裹
-          fileName = decodeURIComponent(rawName) || DEFAULT_FILE_NAME
-        } catch (err) {
-          logger.warn('解析分享文件名失败，回退默认名 rawName={} err={}', rawName, err)
-          fileName = rawName || DEFAULT_FILE_NAME
-        }
-      }
-    }
+    // 响应头可能使用 RFC 5987 的 filename*= 形式（本 API 即如此）或旧的 filename= 形式。
+    const fileName = contentDispositionFilename(response.headers['content-disposition']) ?? DEFAULT_FILE_NAME
 
     const url = window.URL.createObjectURL(new Blob([response.data]))
     const link = document.createElement('a')

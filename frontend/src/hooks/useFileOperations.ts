@@ -1,3 +1,4 @@
+import { shareLinkUrl } from '@/utils/shareLink'
 import type { Ref, ShallowRef } from 'vue'
 import { reactive, ref } from 'vue'
 import { Message } from '@arco-design/web-vue'
@@ -125,7 +126,7 @@ export function useFileOperations(
         file_id: file.id,
         expires_at: shareForm.expires_at || undefined,
       })
-      shareUrl.value = `${window.location.origin}/s/${res.token}`
+      shareUrl.value = shareLinkUrl(res.token)
       showShareModal.value = false
       showShareResult.value = true
     } catch (error) {
