@@ -34,6 +34,53 @@ from app.models.upload_reservation import UploadReservation
 pytestmark = pytest.mark.skipif(os.getenv('RUN_UPLOAD_STORAGE_TESTS') != '1', reason='Opt-in isolated PostgreSQL/MinIO upload integration')
 
 
+@pytest.mark.parametrize('alias', ['chunk', 'chunks', 'workspace'])
+def test_multipart_alias_cannot_publish_foreign_bytes(upload_api, postgres, minio_storage, alias):
+    client, headers, root = upload_api
+    admitted = client.post('/api/files/multipart/init', headers=headers,
+                           json={'filename': 'safe.txt', 'total_size': 6})
+    assert admitted.status_code == 200
+    rid = admitted.json()['data']['upload_id']
+    saved = client.post('/api/files/multipart/chunk', headers=headers,
+                        data={'upload_id': rid, 'chunk_index': '0'},
+                        files={'chunk': ('piece', b'safe!!', 'application/octet-stream')})
+    assert saved.status_code == 200
+    chunks = root / 'parts' / '1' / rid / 'chunks'
+    foreign = root / 'foreign'
+    foreign.mkdir()
+    if alias == 'chunk':
+        original = chunks / '0.part'
+        target = foreign / 'private.txt'
+    elif alias == 'chunks':
+        original = chunks
+        target = foreign / 'chunks'
+        target.mkdir()
+    else:
+        original = root / 'parts' / '1'
+        target = foreign / 'workspace'
+        (target / rid / 'chunks').mkdir(parents=True)
+    private = target if alias == 'chunk' else target / ('0.part' if alias == 'chunks' else rid + '/chunks/0.part')
+    private.write_bytes(b'secret')
+    retired = original.with_name(original.name + '-retired')
+    original.rename(retired)
+    original.symlink_to(target, target_is_directory=alias != 'chunk')
+    completed = client.post('/api/files/multipart/complete', headers=headers, json={'upload_id': rid})
+    assert completed.status_code == 400, completed.text
+    assert b'secret' not in completed.content
+    assert private.read_bytes() == b'secret'
+    assert list(minio_storage._client.list_objects(minio_storage._bucket)) == []
+    with postgres.connect() as conn:
+        assert conn.scalar(text('SELECT count(*) FROM files')) == 0
+        assert conn.scalar(text("SELECT status FROM upload_reservations WHERE id=:id"), {'id': rid}) == 'active'
+    original.unlink()
+    retired.rename(original)
+    retried = client.post('/api/files/multipart/complete', headers=headers, json={'upload_id': rid})
+    assert retried.status_code == 201, retried.text
+    file_id = retried.json()['data']['id']
+    assert client.get(f'/api/files/{file_id}/download', headers=headers).content == b'safe!!'
+    assert private.read_bytes() == b'secret'
+
+
 @pytest.fixture
 def minio_storage():
     image = os.getenv('SKYCLOUD_TEST_MINIO_IMAGE')

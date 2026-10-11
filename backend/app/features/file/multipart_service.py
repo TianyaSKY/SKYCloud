@@ -149,7 +149,7 @@ class MultipartUploadService:
             "upload_id": upload_id,
             "chunk_size": int(meta["chunk_size"]),
             "total_chunks": int(meta["total_chunks"]),
-            "uploaded_chunks": multipart_storage.list_chunks(chunks_dir),
+            "uploaded_chunks": multipart_storage.list_chunks(chunks_dir, root=self.settings.multipart_root),
             "instant_upload": False,
         }
 
@@ -163,7 +163,7 @@ class MultipartUploadService:
             "upload_id": meta["upload_id"],
             "chunk_size": int(meta["chunk_size"]),
             "total_chunks": int(meta["total_chunks"]),
-            "uploaded_chunks": multipart_storage.list_chunks(chunks_dir),
+            "uploaded_chunks": multipart_storage.list_chunks(chunks_dir, root=self.settings.multipart_root),
         }
 
 
@@ -204,7 +204,7 @@ class MultipartUploadService:
         return {
             "upload_id": safe_upload_id,
             "chunk_index": idx,
-            "uploaded_chunks": multipart_storage.list_chunks(chunks_dir),
+            "uploaded_chunks": multipart_storage.list_chunks(chunks_dir, root=self.settings.multipart_root),
         }
 
 
@@ -226,7 +226,7 @@ class MultipartUploadService:
         upload_dir = self.directory(workspace_id, safe_upload_id)
         chunks_dir = multipart_storage.chunks_directory(upload_dir)
 
-        uploaded_chunks = set(multipart_storage.list_chunks(chunks_dir))
+        uploaded_chunks = set(multipart_storage.list_chunks(chunks_dir, root=self.settings.multipart_root))
         missing = [idx for idx in range(total_chunks) if idx not in uploaded_chunks]
         if missing:
             preview = ",".join(str(i) for i in missing[:10])
@@ -238,7 +238,8 @@ class MultipartUploadService:
         final_path = staging.path
         try:
             multipart_storage.assemble(chunks_dir, final_path, total_chunks=total_chunks,
-                                       chunk_size=int(meta["chunk_size"]), total_size=total_size)
+                                       chunk_size=int(meta["chunk_size"]), total_size=total_size,
+                                       root=self.settings.multipart_root)
         except DomainError:
             close_staging_safely(staging)
             raise
