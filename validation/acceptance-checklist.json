@@ -1,7 +1,7 @@
 {
   "date": "2026-10-11",
   "scope": "SKYCloud 整改最终验收清单：原分析问题、工程建议与当前整改项一一对应，含实现、证据、剩余任务与完成标准",
-  "current_head": "1cce6895b1b476370776b0ed0d47da8cc2a905b8",
+  "current_head": "cf6d853670f6c9d48937792f72fd3cc2dd5bab3b",
   "workstreams": [
     {
       "id": "1-acceptance-checklist",
@@ -726,7 +726,7 @@
       "Workstreams 4/5/6 residual gaps: file/service.py and docker_service.py still fuse persistence with external I/O; MCP read_file_content opens MinIO I/O next to its Session; chat repository owns its Session; folder service vs organizer tools duplicate CRUD with drifted cache eviction; routers call object storage directly, so uncaught S3Error still surfaces as a generic 500.",
       "Workstream 8 residuals: expert permission grant/recovery and expiry mid-stream are not driven in a browser; native OS picker dialogs are not exercised (the browser file chooser is); the OpenCode web UI's project picker returns an empty folder list in the sandbox, so terminal keystrokes are covered by the relay suite; HomeView, InboxView, DocView and the token-usage views still have no behavior tests.",
       "Workstream 9 residuals: only environments that need an approved external model service remain unverified here (the indexing/organize pipelines use the in-fixture synthetic provider).",
-      "Workstream 10: hosted CI result for 6b28fb4 (in progress when this record was written); any job it reports failing must be fixed the same way before the remediation can be called complete."
+      "Workstream 10: done for this revision (push, protection read-back and a green hosted Linux run on cf6d853). The only follow-up is re-checking the run for the final documentation-only commit."
     ],
     "verified_cache_semantics": {
       "finding": "Cache correctness after mutations/permission changes is fenced transactionally, not by best-effort deletes.",
@@ -741,9 +741,26 @@
       ]
     },
     "delivery": {
-      "pushed": "git push origin master -> 6a72958..6b28fb4",
-      "protection": "applied via gh api PUT and read back: strict checks with 9 contexts, linear history, no force push/delete, conversation resolution, no required reviews, admins not enforced",
-      "hosted_ci": "earlier runs for 6b972a6 and 6a72958 failed in the integration job (10 failed / 33 errors) for exactly the causes fixed in this session; the run for 6b28fb4 is being watched"
+      "pushed": "git push origin master -> 6a72958..cf6d853 (30 commits)",
+      "protection": "applied via gh api PUT and read back twice: strict checks with the nine job contexts, linear history, no force pushes/deletions, conversation resolution, no required reviews, admins not enforced",
+      "hosted_ci": {
+        "run": "38149241007 on cf6d853",
+        "result": "success — every job green",
+        "jobs": {
+          "Backend tests": "3m10s (locked installs, compile+ruff, the newly required mypy gate, actionlint+shellcheck, runtime check, regular suite)",
+          "Frontend checks": "1m6s",
+          "PostgreSQL, RabbitMQ, MinIO and Controller": "25m47s (all three groups: migrations/lifecycle/security/queues/objects, upload+indexing+organize pipelines, OpenCode provisioning+gateway+terminal+refresh sessions)",
+          "Image (backend/controller/frontend/runtime/minio)": "14s-2m9s each",
+          "CI quality gate": "2s"
+        },
+        "history": "earlier runs for 6b972a6 and 6a72958 failed at the workflow-validation step (shellcheck SC2129) and, for 6a72958, in the integration group with 10 failed/343 passed/33 errors; the run for ac5f82c passed backend/frontend/images and was truncated by the integration job 30 minute budget.",
+        "fixes_that_made_it_green": [
+          "stale workspace-insight cache assertions and the image-sensitive generation-retirement case (a38a5eb, b439824)",
+          "/private/tmp artifact writes in the opt-in harnesses and the fixture volume leak (c8d510b, 0a4fdd5)",
+          "shellcheck-satisfying grouped redirect in the fixture env step (ac5f82c)",
+          "integration job budget raised to the measured 35-40 minutes (cf6d853)"
+        ]
+      }
     }
   },
   "completion_rule": "每个工作流的每一条完成标准都必须有当前（本轮或上一轮可复现）证据；任何缺少直接证据的条目都保持未完待续，不得标记为完成。",
