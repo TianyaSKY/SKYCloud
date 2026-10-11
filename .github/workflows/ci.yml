@@ -26,12 +26,19 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-          cache-dependency-path: backend/requirements-test.lock
+          cache-dependency-path: |
+            backend/requirements-test.lock
+            backend/requirements-quality.lock
       - name: Native libraries for real OpenCV imports
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
       - run: 'python -m pip install --require-hashes --only-binary=:all: -r backend/requirements-test.lock'
+      - run: 'python -m pip install --require-hashes --only-binary=:all: -r backend/requirements-quality.lock'
+      - name: Compile and lint production Python
+        run: |
+          python -m compileall -q backend/app backend/entry backend/runtime_controller
+          python -m ruff check backend/app backend/entry backend/runtime_controller --config backend/ruff.toml
       - name: Validate GitHub Actions workflow
         run: |
           curl --fail --location --retry 3 \

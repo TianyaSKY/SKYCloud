@@ -16,6 +16,7 @@ def main():
     for source, target, constraints in [
         ('backend/requirements.txt', 'backend/requirements.lock', []),
         ('backend/requirements-test.txt', 'backend/requirements-test.lock', ['-c', 'backend/requirements.lock']),
+        ('backend/requirements-quality.txt', 'backend/requirements-quality.lock', []),
         ('backend/runtime_controller/requirements.txt', 'backend/runtime_controller/requirements.lock', []),
     ]:
         command = ['uv', 'pip', 'compile', source, '--python-version', '3.11', '--universal',

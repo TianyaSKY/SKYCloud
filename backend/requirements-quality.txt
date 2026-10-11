@@ -1,0 +1,2 @@
+# Static checks are separate from deployed application dependencies.
+ruff==0.14.10

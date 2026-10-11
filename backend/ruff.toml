@@ -1,0 +1,7 @@
+target-version = "py311"
+
+[lint]
+select = ["F"]
+# Keep this gate focused on binding/control-flow errors, rather than import
+# cleanup and formatting in compatibility modules with intentional reexports.
+ignore = ["F401", "F403", "F405", "F541", "F841"]
