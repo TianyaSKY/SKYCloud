@@ -821,6 +821,7 @@ async def test_settings_owned_routes_reject_stale_admin_with_warm_cache(postgres
     from fastapi import FastAPI
     from app.api.dependencies import require_admin
     from app.features.sys_dict import router
+    from app.features.sys_dict import service as sys_dict_service
     from app.infra.extensions import get_session_factory
     from app.infra import cache
     from app.exceptions import register_exception_handlers
@@ -830,6 +831,12 @@ async def test_settings_owned_routes_reject_stale_admin_with_warm_cache(postgres
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin')"))
         db.execute(text("INSERT INTO sys_dict(id,key,value,des,enable) VALUES (1,'original','value','description',true)"))
     monkeypatch.setattr(cache, 'redis_client', infrastructure['redis'])
+    # Warm the shared cache through the cached read itself: the HTTP route locks the
+    # actor row for authorization, and a row-locking transaction is deliberately
+    # excluded from the shared cache, so it can never be the warming step.
+    with sessionmaker(bind=postgres)() as warmer:
+        sys_dict_service.get_sys_dict_all_sync(warmer)
+    assert warmed(infrastructure['redis'], 'sys_dict:all:all')
     app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
     # Explicit stale identity seam; current SQL authorization is real.
     app.dependency_overrides[require_admin] = lambda: SimpleNamespace(id=1, role='admin')
@@ -837,7 +844,6 @@ async def test_settings_owned_routes_reject_stale_admin_with_warm_cache(postgres
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
         assert (await client.get('/sys_dicts')).status_code == 200
         assert (await client.get('/sys_dicts/1')).status_code == 200
-        assert warmed(infrastructure['redis'], 'sys_dict:all:all')
         with postgres.begin() as independent:
             independent.execute(text("UPDATE users SET role='common' WHERE id=1" if change == 'demote' else 'DELETE FROM users WHERE id=1'))
         for method, path, body in [
