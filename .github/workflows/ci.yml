@@ -39,6 +39,8 @@ jobs:
         run: |
           python -m compileall -q backend/app backend/entry backend/runtime_controller
           python -m ruff check backend/app backend/entry backend/runtime_controller --config backend/ruff.toml
+      - name: Type-check production Python
+        run: python -m mypy --config-file backend/mypy.ini
       - name: Validate GitHub Actions workflow
         run: |
           curl --fail --location --retry 3 \
