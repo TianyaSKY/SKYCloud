@@ -42,6 +42,7 @@ from app.features.workspace.permissions import assert_member, assert_can_write_l
 from app.features.file import upload_authorization
 from app.features.file import upload_quota, repository
 from app.features.file.upload_service import FileUploadService, UploadSettings, FilePublicationOperations
+from app.features.file.avatar_service import AvatarUploadService, AvatarOperations
 from app.features.file.multipart_service import (
     MultipartUploadService, MultipartSettings, MultipartFileOperations, validate_upload_id,
 )
@@ -474,44 +475,23 @@ def get_root_file_id(session: Session, workspace_id: int) -> int | None:
     return root_file.id if root_file else None
 
 
-def upload_avatar(session: Session, img_file: Any, user_id: int, *, actor_id: int | None = None) -> dict[str, Any]:
+def _avatar_service() -> AvatarUploadService:
     from app.features.folder import service as folder_service
     from app.features.share import service as share_service
-    from app.features.auth import user_service
-
-    def authorize_avatar():
-        user_service.authorize_account_mutation(session, user_id if actor_id is None else actor_id, user_id)
-    # Actor/target identity locks precede workspace and upload reservation locks.
-    authorize_avatar()
-    workspace = repository.find_owned_workspace(session, user_id)
-    if workspace is None:
-        raise ResourceNotFoundError("Personal workspace not found")
-    root_folder = repository.find_child_folder(session, workspace.id, None)
-    root_folder_id = root_folder.id if root_folder else None
-    folder = repository.find_child_folder(session, workspace.id, root_folder_id, "所有用户头像")
-    if folder is None:
-        folder = folder_service.create_folder(session, {"name": "所有用户头像", "parent_id": root_folder_id, "workspace_id": workspace.id})
-    from app.features.auth import account_repository
+    from app.features.auth import user_service, account_repository
     from app.infra.cache import evict_cache
-    avatar_url = None
-    def publish_metadata(avatar):
-        nonlocal avatar_url
-        share = share_service.create_share_link(session, user_id, avatar.id, commit=False)
-        avatar_url = f"/api/share/{share.token}"
-        if not account_repository.set_avatar(session, user_id, avatar_url):
-            raise ResourceNotFoundError("User not found")
-    try:
-        avatar = create_file(session, img_file,
-            {"workspace_id": workspace.id, "uploader_id": user_id, "parent_id": folder.id, "max_bytes": AVATAR_LIMIT},
-            before_commit=publish_metadata, authorize_upload=authorize_avatar)
-    finally:
-        # Also invalidate after an ambiguous commit acknowledgement: SQL may
-        # already contain the new URL, so cached profile must be read again.
-        evict_cache(user_service.USER_CACHE_PREFIX, user_id)
+    return AvatarUploadService(AVATAR_LIMIT, AvatarOperations(
+        authorize_account=user_service.authorize_account_mutation,
+        create_folder=folder_service.create_folder,
+        create_share=share_service.create_share_link,
+        set_avatar=account_repository.set_avatar,
+        upload_file=create_file,
+        evict_profile=lambda user_id: evict_cache(user_service.USER_CACHE_PREFIX, user_id),
+    ))
 
-    result = avatar.to_dict()
-    result["avatar_url"] = avatar_url
-    return result
+
+def upload_avatar(session: Session, img_file: Any, user_id: int, *, actor_id: int | None = None) -> dict[str, Any]:
+    return _avatar_service().upload(session, img_file, user_id, actor_id=actor_id)
 
 
 def upload_avatar_for_user(
