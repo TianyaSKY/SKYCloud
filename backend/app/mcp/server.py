@@ -444,6 +444,50 @@ async def get_file_download_url(
     return await run_owned(_work)
 
 
+def _authorized_text_file(context, file_id):
+    """Authorize and describe a text file under a worker-owned Session.
+
+    Returns immutable scalars so object storage can be read after the Session is
+    closed, or a JSON error payload when the file is not readable as text.
+    """
+    with worker_session(SessionLocal) as session:
+        file_obj = _get_authorized_file(session, context, file_id)
+        if not _is_text_file(file_obj.mime_type, file_obj.name):
+            return json.dumps(
+                {
+                    "error": "Not a text file",
+                    "mime_type": file_obj.mime_type,
+                    "hint": "Use get_file_download_url for non-text files.",
+                },
+                ensure_ascii=False,
+            )
+        return str(file_obj.name), str(file_obj.file_path), file_obj.get_abs_path()
+
+
+def _read_bounded_object_bytes(object_name: str, legacy_path: str | None):
+    """Read a bounded byte prefix without holding a database Session.
+
+    Returns ``(file_size, truncated, raw)`` or ``None`` when the object is absent.
+    """
+    storage = get_storage_client()
+    if storage.file_exists(object_name):
+        file_size = storage.get_file_size(object_name)
+        truncated = file_size > _MAX_READ_BYTES
+        raw = storage.read_file_prefix(object_name, _MAX_READ_BYTES) if file_size else b''
+        return file_size, truncated, raw
+    if not is_mcp_request_active() and get_optional_mcp_context() is None:
+        # Compatibility for pre-object-storage direct unit tests. It is
+        # intentionally unavailable through the HTTP MCP boundary.
+        if not legacy_path or not os.path.exists(legacy_path):
+            return None
+        file_size = os.path.getsize(legacy_path)
+        truncated = file_size > _MAX_READ_BYTES
+        with open(legacy_path, "rb") as handle:
+            raw = handle.read(_MAX_READ_BYTES)
+        return file_size, truncated, raw
+    return None
+
+
 @mcp.tool()
 @audited_tool("read_file_content")
 async def read_file_content(
@@ -462,57 +506,37 @@ async def read_file_content(
     context = _require_read_context()
 
     def _work():
-        with worker_session(SessionLocal) as session:
-            try:
-                file_obj = _get_authorized_file(session, context, file_id)
+        try:
+            snapshot = _authorized_text_file(context, file_id)
+        except Exception as e:
+            return _service_error_json(e)
+        if isinstance(snapshot, str):
+            return snapshot
+        name, object_name, legacy_path = snapshot
 
-                if not _is_text_file(file_obj.mime_type, file_obj.name):
-                    return json.dumps(
-                        {
-                            "error": "Not a text file",
-                            "mime_type": file_obj.mime_type,
-                            "hint": "Use get_file_download_url for non-text files.",
-                        },
-                        ensure_ascii=False,
-                    )
+        try:
+            payload = _read_bounded_object_bytes(object_name, legacy_path)
+        except Exception as e:
+            return _service_error_json(e)
+        if payload is None:
+            return _error_json("File not found on server")
+        file_size, truncated, raw = payload
 
-                storage = get_storage_client()
-                object_name = str(file_obj.file_path)
-                if storage.file_exists(object_name):
-                    file_size = storage.get_file_size(object_name)
-                    truncated = file_size > _MAX_READ_BYTES
-
-                    raw = storage.read_file_prefix(object_name, _MAX_READ_BYTES) if file_size else b''
-                elif not is_mcp_request_active() and get_optional_mcp_context() is None:
-                    # Compatibility for pre-object-storage direct unit tests. It
-                    # is intentionally unavailable through the HTTP MCP boundary.
-                    legacy_path = file_obj.get_abs_path()
-                    if not legacy_path or not os.path.exists(legacy_path):
-                        return _error_json("File not found on server")
-                    file_size = os.path.getsize(legacy_path)
-                    truncated = file_size > _MAX_READ_BYTES
-                    with open(legacy_path, "rb") as f:
-                        raw = f.read(_MAX_READ_BYTES)
-                else:
-                    return _error_json("File not found on server")
-
-                # A byte boundary may bisect a character. Retain complete
-                # characters without fabricating a replacement for that suffix.
-                decoder = codecs.getincrementaldecoder(encoding)(errors='replace')
-                content = decoder.decode(raw, final=not truncated)
-                return json.dumps(
-                    {
-                        "file_name": str(file_obj.name),
-                        "file_size": file_size,
-                        "truncated": truncated,
-                        "encoding": encoding,
-                        "content": content,
-                    },
-                    ensure_ascii=False,
-                    default=str,
-                )
-            except Exception as e:
-                return _service_error_json(e)
+        # A byte boundary may bisect a character. Retain complete
+        # characters without fabricating a replacement for that suffix.
+        decoder = codecs.getincrementaldecoder(encoding)(errors='replace')
+        content = decoder.decode(raw, final=not truncated)
+        return json.dumps(
+            {
+                "file_name": name,
+                "file_size": file_size,
+                "truncated": truncated,
+                "encoding": encoding,
+                "content": content,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
 
     return await run_owned(_work)
 

@@ -100,3 +100,32 @@ async def test_mcp_search_worker_owned_session_scope_and_revocation(monkeypatch,
     expected = 2 if mode == 'vector' and not revoked else 1
     assert len(created) == expected and closed == created
     assert members == [(2, 1)] * expected
+
+
+async def test_text_read_closes_session_before_touching_object_storage(monkeypatch):
+    """Authorization must own its Session; storage I/O must not run inside it."""
+    state = {'closed': False, 'storage_saw_closed': None}
+    class Session:
+        def close(self):
+            state['closed'] = True
+    class SessionFactory:
+        def __call__(self):
+            return Session()
+    file = SimpleNamespace(name='read.txt', mime_type='text/plain', file_path='object',
+                           get_abs_path=lambda: None)
+    def file_exists(name):
+        state['storage_saw_closed'] = state['closed']
+        return False
+    storage = SimpleNamespace(file_exists=file_exists, get_file_size=lambda name: 0,
+                              read_file_prefix=lambda name, limit: b'')
+    monkeypatch.setattr(server, 'SessionLocal', SessionFactory())
+    monkeypatch.setattr(server, '_require_read_context', lambda: None)
+    monkeypatch.setattr(server, '_get_authorized_file', lambda *args: file)
+    monkeypatch.setattr(server, 'get_storage_client', lambda: storage)
+    monkeypatch.setattr(server, 'is_mcp_request_active', lambda: False)
+
+    payload = json.loads(await server.read_file_content(1))
+
+    assert state['closed'] is True
+    assert state['storage_saw_closed'] is True, 'object storage was read while the Session was still open'
+    assert payload == {'error': 'File not found on server', 'success': False} or 'error' in payload

@@ -13,7 +13,8 @@ from loguru import logger
 
 @pytest.mark.parametrize('body', [b'abcdefghijklmnopqrstuvwxyz', ('中' * 12).encode()])
 async def test_content_read_bounds_object_bytes_without_full_download(monkeypatch, body):
-    file = SimpleNamespace(name='text.txt', mime_type='text/plain', file_path='object')
+    file = SimpleNamespace(name='text.txt', mime_type='text/plain', file_path='object',
+                          get_abs_path=lambda: None)
     calls = []
     def download(name, destination):
         calls.append(('download', len(body)))
