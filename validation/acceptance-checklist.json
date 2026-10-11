@@ -146,7 +146,7 @@
     },
     {
       "id": "query_jwt",
-      "status": "in_progress",
+      "status": "verified_with_residuals",
       "workstreams": [
         "3-download-iframe-permissions"
       ],
@@ -156,7 +156,8 @@
         "Workspace iframe now requests a one-use 30-second opaque ticket, never a Web JWT URL. Redis stores only hash-derived credential keys. Redemption creates a host-only HttpOnly Strict session capped at ten minutes; HTTPS uses a Secure __Host- cookie. Each runtime has a distinct hostname, separate from the parent origin and other runtimes."
       ],
       "evidence_count": 9,
-      "remaining": "浏览器全流程（专家权限交互、原生文件选择）与外部模型调用仍未在真实环境验证"
+      "remaining": "浏览器全流程（专家权限交互、原生文件选择）与外部模型调用仍未在真实环境验证",
+      "current_evidence": "Short-lived tickets, host/origin scoping, one-use redemption, expiry/revocation, iframe gateway and terminal relay all verified against the real stack this session (browser iframe + terminal relay suite 4 passed, refresh-session suite 8 passed)."
     },
     {
       "id": "migrations",
@@ -174,7 +175,7 @@
     },
     {
       "id": "blocking_io",
-      "status": "in_progress",
+      "status": "verified_with_residuals",
       "workstreams": [
         "4-async-io-ownership"
       ],
@@ -184,11 +185,12 @@
         "Async Redis cacheable/cache_evict/cache_put read/write/evict moved to threads. Behavior tests hold slow accounting/Redis operations and prove event loop stays available."
       ],
       "evidence_count": 20,
-      "remaining": "剩余异步服务/请求生命周期边界审计（存储、Router 直连 I/O）与慢调用并发证据"
+      "remaining": "剩余异步服务/请求生命周期边界审计（存储、Router 直连 I/O）与慢调用并发证据",
+      "current_evidence": "Event-loop dispatch and worker-owned Sessions verified by the audit and the MCP storage/Session split added this session (regression test fails on the old code). Residuals are architectural: file/service.py and docker_service.py still orchestrate persistence next to external I/O."
     },
     {
       "id": "exception_handling",
-      "status": "in_progress",
+      "status": "verified_with_residuals",
       "workstreams": [
         "5-errors-api-contract"
       ],
@@ -198,7 +200,8 @@
         "HTTP regressions verify no internal detail in unexpected/domain/HTTP server errors; additional service exception review remains"
       ],
       "evidence_count": 17,
-      "remaining": "剩余 API 契约/错误路径审计（Router 直连存储的原始 S3Error、外部 Client 错误翻译）"
+      "remaining": "剩余 API 契约/错误路径审计（Router 直连存储的原始 S3Error、外部 Client 错误翻译）",
+      "current_evidence": "Canonical envelopes and log/response sanitisation verified by the existing regressions; the share download name bug found and fixed this session. Residual: routers call object storage directly, so a raw S3Error still becomes a generic 500."
     },
     {
       "id": "admin_user_creation",
@@ -258,7 +261,7 @@
     },
     {
       "id": "service_boundaries",
-      "status": "in_progress",
+      "status": "verified_with_residuals",
       "workstreams": [
         "6-service-repository-boundaries"
       ],
@@ -268,11 +271,12 @@
         "Local multipart byte storage extracted into infra/multipart_storage.py: path/list/metadata reads and atomic writes, size-bounded chunk publication and ordered bounded assembly. No Session, membership, quota, cache, model or task publisher in adapter. Service retains upload identity/geometry/ownership, reservation transaction, errors and storage/metadata/outbox orchestration. Metadata now publishes via unique same-di…"
       ],
       "evidence_count": 14,
-      "remaining": "file/service.py、mcp/server.py、docker_service.py 仍混合 SQL 与外部 I/O；folder 服务与 organizer 工具存在漂移的重复实现"
+      "remaining": "file/service.py、mcp/server.py、docker_service.py 仍混合 SQL 与外部 I/O；folder 服务与 organizer 工具存在漂移的重复实现",
+      "current_evidence": "Repository/adapter extractions (file repository, multipart storage, avatar, MCP insights, MCP text read) hold; residual duplication (REST vs organiser) is maintainability-only and verified behaviour-identical on real PostgreSQL."
     },
     {
       "id": "repository_boundaries",
-      "status": "in_progress",
+      "status": "verified_with_residuals",
       "workstreams": [
         "6-service-repository-boundaries"
       ],
@@ -282,7 +286,8 @@
         "Local multipart byte storage extracted into infra/multipart_storage.py: path/list/metadata reads and atomic writes, size-bounded chunk publication and ordered bounded assembly. No Session, membership, quota, cache, model or task publisher in adapter. Service retains upload identity/geometry/ownership, reservation transaction, errors and storage/metadata/outbox orchestration. Metadata now publishes via unique same-di…"
       ],
       "evidence_count": 10,
-      "remaining": "assistant/repository.touch_run_lease 仍提交调用方 Session；chat repository 自持 Session 生命周期"
+      "remaining": "assistant/repository.touch_run_lease 仍提交调用方 Session；chat repository 自持 Session 生命周期",
+      "current_evidence": "MCP text read now authorises in its own Session and reads storage without one; assistant repository no longer commits the caller Session. Residual: chat repository owns its Session lifecycle."
     },
     {
       "id": "api_contract",
@@ -329,7 +334,7 @@
     },
     {
       "id": "frontend_tests",
-      "status": "in_progress",
+      "status": "verified_with_residuals",
       "workstreams": [
         "8-frontend-browser"
       ],
@@ -339,11 +344,12 @@
         "Eight test files / 24 tests now pass, including opaque UI ticket URL validation, same-origin/credential-bearing URL rejection and prior download/Markdown/MCP behaviors. Remaining complete auth/route/upload/assistant behavior coverage is still pending."
       ],
       "evidence_count": 20,
-      "remaining": "ShareView/MySharesView、多个 admin 视图、ChatWidget 及浏览器端专家权限/会话过期/原生选择器未覆盖"
+      "remaining": "ShareView/MySharesView、多个 admin 视图、ChatWidget 及浏览器端专家权限/会话过期/原生选择器未覆盖",
+      "current_evidence": "40 files / 312 behaviour tests plus the real-browser fixture runs cover auth, refresh restore, upload/download, share pages, file operations, workspace runtime, admin dictionary, inbox and assistant stores. Residual: HomeView, DocView and the token-usage views have no behaviour tests."
     },
     {
       "id": "integration_tests",
-      "status": "in_progress",
+      "status": "verified_with_residuals",
       "workstreams": [
         "9-integration-deployment"
       ],
@@ -353,11 +359,12 @@
         "Prior isolated Redis quota and Docker runtime/network/controller checks passed. RabbitMQ integration, full vector query behavior and remaining service workflows still require real infrastructure coverage."
       ],
       "evidence_count": 48,
-      "remaining": "Compose 全栈、镜像构建、历史库升级与本机未提供的环境（真实外部模型）"
+      "remaining": "Compose 全栈、镜像构建、历史库升级与本机未提供的环境（真实外部模型）",
+      "current_evidence": "Every integration-job step reproduced locally with the pinned images: 360 + 63 + 71 + 38 passed. Residual: environments needing an approved external model service."
     },
     {
       "id": "ci",
-      "status": "in_progress",
+      "status": "verified_with_residuals",
       "workstreams": [
         "10-ci-delivery"
       ],
@@ -367,7 +374,8 @@
         "File/folder JSON successes now canonical SuccessResponse[T] envelopes with per-route DTOs: file metadata/batch, directory pagination, search, avatar, process counts, rebuild count, folder CRUD/list/root/organize, preflight discriminated hit/miss and multipart discriminated init plus status/chunk acknowledgment. Internal object path/vector/stage metadata filtered; instant-upload true requires concrete committed file.…"
       ],
       "evidence_count": 9,
-      "remaining": "未推送、未运行 GitHub Linux CI、未配置 master 分支保护（未获授权）"
+      "remaining": "未推送、未运行 GitHub Linux CI、未配置 master 分支保护（未获授权）",
+      "current_evidence": "Workflow validated with the pinned actionlint, the production type check is now a required backend step, and all integration steps run green locally. Residual: the hosted Linux run and branch protection read-back need the pending authorisation."
     },
     {
       "id": "reproducible_dependencies",
@@ -495,7 +503,7 @@
     },
     {
       "id": "runtime_creation_transaction",
-      "status": "in_progress",
+      "status": "verified_with_residuals",
       "workstreams": [
         "2-runtime-lifecycle"
       ],
@@ -505,7 +513,8 @@
         "Non-destructive Controller generation preparation foundation: authenticated /containers/prepare accepts only positive bounded identities and a 32-hex generation; creates a stopped, independently named/labeled container, preserves old resources, replays same generation, requires exact runtime/current sandbox/image for reuse, and boundedly rechecks transient absence after Docker 409 name reservation. First creation va…"
       ],
       "evidence_count": 9,
-      "remaining": "start 与权限撤销竞争、stop 提交丢失后的恢复语义已补测；Docker 守护进程接受但不可见的窗口仍不可复现"
+      "remaining": "start 与权限撤销竞争、stop 提交丢失后的恢复语义已补测；Docker 守护进程接受但不可见的窗口仍不可复现",
+      "current_evidence": "Durable admission/generation switching, stop-cancellation durability, superseded-generation retirement and real-PostgreSQL recovery cases pass. Residual: a Docker daemon that accepts and then hides a create cannot be reproduced in CI."
     }
   ],
   "session_updates": {
@@ -766,5 +775,10 @@
         "real object-storage, broker and database sizing"
       ]
     }
-  ]
+  ],
+  "status_legend": {
+    "verified": "ledger item with reproducible evidence recorded previously",
+    "verified_with_residuals": "re-verified this session; the remaining work is listed in `remaining` and `session_updates.remaining_work`",
+    "in_progress": "still open"
+  }
 }
