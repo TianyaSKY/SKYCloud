@@ -232,8 +232,12 @@ def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
 def controller(infrastructure, monkeypatch):
     import httpx
     from runtime_controller.client import ControllerClient
-    image = os.getenv("SKYCLOUD_TEST_RUNTIME_IMAGE", "")
-    assert image, "Build scripts/build-runtime-image.py and set SKYCLOUD_TEST_RUNTIME_IMAGE to its immutable ID"
+    # Generation/sandbox checks need the built OpenCode runtime image: the generation
+    # policy rejects images that declare implicit volumes, which the cheap Redis
+    # stand-in (SKYCLOUD_TEST_RUNTIME_IMAGE) does.
+    image = os.getenv("SKYCLOUD_TEST_OPENCODE_IMAGE") or os.getenv("SKYCLOUD_TEST_RUNTIME_IMAGE", "")
+    assert image, ("Build scripts/build-runtime-image.py and set SKYCLOUD_TEST_OPENCODE_IMAGE to its immutable "
+                   "ID (or SKYCLOUD_TEST_RUNTIME_IMAGE when only the stand-in is needed)")
     from app.features.workspace import docker_service
     monkeypatch.setattr(docker_service, "OPENCODE_IMAGE", image)
 

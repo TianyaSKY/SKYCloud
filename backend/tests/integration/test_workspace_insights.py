@@ -13,6 +13,14 @@ from entry.migrate import upgrade
 from tests.integration.test_migrations import postgres
 from tests.integration.test_runtime_security import infrastructure
 
+
+def warmed(redis, prefix):
+    """The synchronous read must have cached its result under this prefix.
+
+    Cache keys carry a durable SQL revision suffix, so only the prefix is asserted.
+    """
+    return bool(redis.keys(prefix + '*'))
+
 pytestmark = pytest.mark.skipif(os.getenv("RUN_WORKSPACE_INSIGHTS_TESTS") != "1",
                                reason="Opt-in isolated PostgreSQL workspace insights")
 
@@ -248,7 +256,7 @@ async def test_search_scope_and_committed_revocation_before_cached_or_vector_rea
         assert first['total'] == len(expected)
         assert all(item['workspace_id'] == 1 for item in first['items'])
         if mode == 'fuzzy':
-            assert infrastructure['redis'].exists('search:fuzzy:1:target:1:10:fuzzy') == 1
+            assert warmed(infrastructure['redis'], 'search:fuzzy:1:sql:')
         with postgres.begin() as remover:
             remover.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
         with pytest.raises(PermissionDeniedError):
@@ -329,7 +337,7 @@ async def test_http_worker_reads_revalidate_committed_removal(postgres, infrastr
         else:
             assert [row['id'] for row in first.json()['data']['items']] == [1]
         if mode == 'fuzzy':
-            assert infrastructure['redis'].exists('search:fuzzy:1:target:1:10:fuzzy') == 1
+            assert warmed(infrastructure['redis'], 'search:fuzzy:1:sql:')
         with postgres.begin() as sql:
             sql.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
         denied = await client.get(path,params=params)
@@ -360,7 +368,7 @@ async def test_http_auth_fresh_role_overrides_cached_admin_and_revokes_version(p
     headers={'Authorization':'Bearer '+generate_token(1)}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
         assert (await client.get('/admin-only',headers=headers)).status_code==200
-        assert infrastructure['redis'].exists('user:profile:1')==1
+        assert warmed(infrastructure['redis'], 'user:profile:1:sql:')
         with postgres.begin() as sql:
             sql.execute(text("UPDATE users SET role='common' WHERE id=1"))
         assert (await client.get('/admin-only',headers=headers)).status_code==403
@@ -389,7 +397,7 @@ async def test_profile_http_current_roles_and_cached_target_lifecycle(postgres,i
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
         first=await client.get('/users/2')
         assert first.status_code==200 and first.json()['data']['role']=='admin'
-        assert infrastructure['redis'].exists(user_service.USER_CACHE_PREFIX+':2')==1
+        assert warmed(infrastructure['redis'], user_service.USER_CACHE_PREFIX+':2:sql:')
         with postgres.begin() as sql:
             sql.execute(text("UPDATE users SET role='common' WHERE id=2"))
         updated=await client.get('/users/2')
@@ -554,7 +562,7 @@ async def test_folder_http_rechecks_stale_workspace_snapshot(postgres, infrastru
             assert (await client.get(path)).status_code == 200
             if operation in {'root', 'all'}:
                 prefix = 'workspace:root_folder:v2' if operation == 'root' else 'workspace:folders'
-                assert infrastructure['redis'].exists(prefix + ':1') == 1
+                assert warmed(infrastructure['redis'], prefix + ':1:sql:')
         with postgres.begin() as independent:
             if method == 'GET':
                 independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
@@ -829,7 +837,7 @@ async def test_settings_owned_routes_reject_stale_admin_with_warm_cache(postgres
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
         assert (await client.get('/sys_dicts')).status_code == 200
         assert (await client.get('/sys_dicts/1')).status_code == 200
-        assert infrastructure['redis'].exists('sys_dict:all:all') == 1
+        assert warmed(infrastructure['redis'], 'sys_dict:all:all')
         with postgres.begin() as independent:
             independent.execute(text("UPDATE users SET role='common' WHERE id=1" if change == 'demote' else 'DELETE FROM users WHERE id=1'))
         for method, path, body in [

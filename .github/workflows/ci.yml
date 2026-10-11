@@ -149,7 +149,6 @@ jobs:
           tests/integration/test_runtime_security.py::test_development_public_port_override_is_rejected
           tests/integration/test_runtime_security.py::test_runtime_network_cannot_contact_controller_rpc_listener
           tests/integration/test_runtime_security.py::test_real_redis_ui_ticket_is_atomic_and_expires
-          tests/integration/test_generation_retirement.py
           tests/integration/test_assistant_lease.py
           tests/integration/test_permission_dispatch.py
           tests/integration/test_task_queue.py
@@ -187,16 +186,20 @@ jobs:
           reference = runpy.run_path("scripts/build-runtime-image.py")["build"]()
           with open(os.environ["GITHUB_ENV"], "a") as environment:
               environment.write("SKYCLOUD_TEST_RUNTIME_IMAGE=" + reference + "\n")
+              environment.write("SKYCLOUD_TEST_OPENCODE_IMAGE=" + reference + "\n")
           PY
           docker build -t skycloud-frontend:locked-test -f frontend/Dockerfile frontend
       - name: Actual OpenCode provisioning, process crash recovery and MCP
         working-directory: backend
         env:
+          RUN_MIGRATION_TESTS: '1'
           RUN_EXPERT_GATEWAY_TESTS: '1'
           RUN_RUNTIME_UI_TESTS: '1'
           RUN_REFRESH_SESSION_TESTS: '1'
         run: >-
           python -m pytest -o addopts='' -q
+          tests/integration/test_generation_retirement.py
+          tests/integration/test_runtime_security.py::test_real_opencode_sandbox_boots_and_reloads_configuration
           tests/integration/test_expert_gateway.py
           tests/integration/test_expert_runtime_lease.py
           tests/integration/test_runtime_ui_terminal.py
