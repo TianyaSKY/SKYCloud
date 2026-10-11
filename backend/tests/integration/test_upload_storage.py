@@ -184,6 +184,41 @@ def test_instant_upload_never_reuses_foreign_workspace_record(upload_api, postgr
         assert client.delete('/api/files/multipart/' + payload['upload_id'], headers=headers).status_code == 204
 
 
+@pytest.mark.parametrize('endpoint', ['single', 'batch', 'preflight', 'multipart/init'])
+def test_upload_publication_rechecks_parent_after_reservation_commit(upload_api, postgres, minio_storage, monkeypatch, endpoint):
+    from app.features.file import upload_authorization
+    client, headers, _ = upload_api
+    content = b'parent-scope-test'
+    content_hash = hashlib.sha256(content).hexdigest()
+    with postgres.begin() as db:
+        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (2,'foreign',2)"))
+        db.execute(text("INSERT INTO folder(id,name,workspace_id,parent_id) VALUES (10,'destination',1,1)"))
+        db.execute(text("INSERT INTO files(name,file_path,file_size,status,content_hash,workspace_id,uploader_id,parent_id) VALUES ('source','allowed-source',:size,'success',:hash,1,1,1)"), {'size': len(content), 'hash': content_hash})
+    minio_storage.upload_data(content, 'allowed-source')
+    reserve = upload_authorization.reserve
+    def move_parent_after_commit(*args, **kwargs):
+        reservation = reserve(*args, **kwargs)
+        with postgres.begin() as db:
+            db.execute(text('UPDATE folder SET workspace_id=2 WHERE id=10'))
+        return reservation
+    monkeypatch.setattr(upload_authorization, 'reserve', move_parent_after_commit)
+    if endpoint in ('single', 'batch'):
+        response = client.post('/api/files' + ('/batch' if endpoint == 'batch' else ''),
+            headers=headers, data={'parent_id': '10'}, files={
+                'files' if endpoint == 'batch' else 'file': ('claimed.txt', content, 'text/plain')})
+    else:
+        response = client.post('/api/files/' + endpoint, headers=headers, json={
+            'filename': 'claimed.txt', 'total_size': len(content), 'chunk_size': len(content),
+            'content_hash': content_hash, 'parent_id': 10})
+    assert response.status_code == 403, response.text
+    with postgres.connect() as db:
+        assert db.scalar(text("SELECT count(*) FROM files WHERE name='claimed.txt'")) == 0
+        assert db.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
+        assert db.scalar(text('SELECT workspace_id FROM folder WHERE id=10')) == 2
+        assert db.scalar(text("SELECT count(*) FROM files WHERE file_path='allowed-source'")) == 1
+    assert [obj.object_name for obj in minio_storage._client.list_objects(minio_storage._bucket)] == ['allowed-source']
+
+
 @pytest.mark.parametrize('body,status', [(b'ab', 400), (b'abcd', 413)])
 def test_chunk_cleanup_failure_preserves_public_validation_and_retry(upload_api, postgres, minio_storage, monkeypatch, body, status):
     from app.infra import upload_cleanup

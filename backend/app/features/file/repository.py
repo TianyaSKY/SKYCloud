@@ -36,7 +36,7 @@ def find_file(session: Session, file_id: int) -> File | None:
 
 
 def find_folder(session: Session, folder_id: int) -> Folder | None:
-    return session.get(Folder, folder_id)
+    return session.get(Folder, folder_id, populate_existing=True)
 
 
 def find_reusable_file(session: Session, content_hash: str, file_size: int, workspace_id: int) -> File | None:

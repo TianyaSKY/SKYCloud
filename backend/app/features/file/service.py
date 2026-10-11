@@ -126,6 +126,8 @@ def _persist_file_record(
         vector_info: Any = None,
         before_commit: Callable[[File], None] | None = None,
 ) -> File:
+    if parent_id is not None:
+        parent_id = _resolve_upload_parent_id(session, workspace_id, parent_id)
     new_file = File(
         name=name,
         file_path=file_path,

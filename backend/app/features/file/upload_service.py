@@ -165,6 +165,10 @@ class FileUploadService:
         try:
             for reservation_id, file_obj in zip(reservations, new_files):
                 upload_authorization.consume(session, workspace_id, uploader_id, reservation_id, file_obj.file_size)
+            if data.get("parent_id") is not None:
+                parent_id = self.files.resolve_parent(session, workspace_id, data["parent_id"])
+                for file_obj in new_files:
+                    file_obj.parent_id = parent_id
             repository.insert_files(session, new_files)
             stage_file_tasks(session, [file.id for file in new_files])
             session.commit()

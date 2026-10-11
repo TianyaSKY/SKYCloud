@@ -271,6 +271,7 @@ class MultipartUploadService:
                 parent_id=parent_id,
             )
             upload_authorization.consume(session, workspace_id, uploader_id, safe_upload_id, total_size)
+            new_file.parent_id = self.files.resolve_parent(session, workspace_id, parent_id)
             repository.insert_file(session, new_file)
             stage_file_tasks(session, [new_file.id])
             session.commit()
