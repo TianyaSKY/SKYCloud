@@ -85,7 +85,10 @@ jobs:
   integration:
     name: PostgreSQL, RabbitMQ, MinIO and Controller
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Fixture image builds (MinIO/runtime) plus the three pytest groups measured
+    # ~35-40 minutes in total; the previous 30 minute budget truncated the OpenCode
+    # provisioning step after the earlier groups had passed.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
