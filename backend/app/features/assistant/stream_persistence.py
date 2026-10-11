@@ -69,7 +69,9 @@ class StreamPersistence:
     def initialize(self, now):
         if self.credential is not None:
             self.credential.validate(self.session, self.user_id)
-        if not repository.touch_run_lease(self.session, self.run_id, now):
+        active = repository.touch_run_lease(self.session, self.run_id, now)
+        self.session.commit()
+        if not active:
             raise ConflictError('任务已结束，不能继续执行')
         return self.run_id, self.message_id, self.workspace_id, self.mode, self.query
 
@@ -82,8 +84,11 @@ class StreamPersistence:
             self.credential.validate(self.session, self.user_id)
         role = get_member_role(self.session, self.workspace_id, self.user_id)
         revoked = role is None or (self.mode == 'expert' and role not in {'editor', 'admin'})
-        if renew_lease and not repository.touch_run_lease(self.session, self.run_id, now):
-            return True, True
+        if renew_lease:
+            active = repository.touch_run_lease(self.session, self.run_id, now)
+            self.session.commit()
+            if not active:
+                return True, True
         row = self.session.query(AssistantRun.status, AssistantRun.cancel_requested).filter(
             AssistantRun.id == self.run_id).first()
         return row is None or row[0] in repository.TERMINAL_RUN_STATUSES, revoked or bool(row and row[1])

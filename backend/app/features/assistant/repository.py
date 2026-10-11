@@ -217,13 +217,16 @@ def lock_run(session: Session, run_id: int) -> AssistantRun | None:
 
 
 def touch_run_lease(session: Session, run_id: int, now: float) -> bool:
-    """Serialize execution heartbeats with abandoned-run recovery across workers."""
+    """Refresh the worker heartbeat under the run row lock.
+
+    The caller owns the transaction and must commit (or roll back) to release the
+    row lock; an uncommitted heartbeat must never look renewed to another worker.
+    """
     run = lock_run(session, run_id)
     if run is None or run.status in TERMINAL_RUN_STATUSES:
-        session.commit()
         return False
     run.metadata_dict = {**run.metadata_dict, "worker_heartbeat_unix": now}
-    session.commit()
+    session.flush()
     return True
 
 

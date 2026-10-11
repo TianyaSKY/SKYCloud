@@ -136,9 +136,11 @@ jobs:
           RUN_SERVER_DIAGNOSTIC_TESTS: '1'
           RUN_CACHE_AUDIT_DIAGNOSTICS: '1'
           RUN_CONTROLLER_DIAGNOSTICS: '1'
+          RUN_RUNTIME_LIFECYCLE_TESTS: '1'
         run: >-
           python -m pytest -o addopts='' -q
           tests/integration/test_migrations.py
+          tests/integration/test_runtime_lifecycle_sql.py
           tests/integration/test_runtime_security.py::test_postgresql_has_no_seeded_admin_and_bootstraps_once
           tests/integration/test_runtime_security.py::test_quota_is_atomic_across_concurrent_requests
           tests/integration/test_runtime_security.py::test_quota_cannot_be_bypassed_by_recreating_runtime

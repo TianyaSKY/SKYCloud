@@ -16,6 +16,7 @@ def test_only_exact_unclaimed_run_cancelled(session, test_user, test_workspace, 
     scope = [test_workspace.id, test_user.id, conversation.id, run.id]
     if state == 'leased':
         repository.touch_run_lease(session, run.id, 1)
+        session.commit()
     elif state == 'completed':
         repository.update_run_status(run, 'completed')
         session.get(AssistantMessage, run.assistant_message_id).status = 'completed'

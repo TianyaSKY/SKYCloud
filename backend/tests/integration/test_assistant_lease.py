@@ -154,10 +154,12 @@ def test_other_worker_preserves_live_permission_and_recovers_expired_lease(postg
     with Session(postgres) as worker, Session(postgres) as observer:
         old = repository.lock_run(observer, run_id); observer.commit()
         assert repository.touch_run_lease(worker, run_id, time.time())
+        worker.commit()  # The caller owns the lease transaction.
         assert not service._recover_abandoned_run(observer, old)
         assert old.to_dict()['pending_permission']['permission_id'] == 'p1'
         observer.commit()
         assert repository.touch_run_lease(worker, run_id, time.time() - 60)
+        worker.commit()
         assert service._recover_abandoned_run(observer, old)
         assert old.status == 'failed'; assert old.to_dict()['pending_permission'] is None
         assert not repository.touch_run_lease(worker, run_id, time.time())

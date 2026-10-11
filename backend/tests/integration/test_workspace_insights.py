@@ -1285,6 +1285,7 @@ async def test_prepared_response_header_failure_after_member_removal(postgres, l
         scope = (1, 1, conversation.id, run.id)
         if leased:
             repository.touch_run_lease(db, run.id, 1)
+            db.commit()
     with postgres.begin() as independent:
         independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
     entered = False
