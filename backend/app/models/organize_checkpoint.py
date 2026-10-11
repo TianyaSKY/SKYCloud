@@ -1,9 +1,15 @@
+import datetime
+from typing import TYPE_CHECKING
+
 from app.infra.utc_datetime import UTCDateTime
-from sqlalchemy import Column, ForeignKey, Integer
-from sqlalchemy.orm import relationship
+from sqlalchemy import ForeignKey, Integer
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.extensions import Base
 from app.infra.datetime_utils import utc_now, local_isoformat
+
+if TYPE_CHECKING:
+    from app.models.workspace import Workspace
 
 
 class OrganizeCheckpoint(Base):
@@ -11,12 +17,12 @@ class OrganizeCheckpoint(Base):
 
     __tablename__ = "organize_checkpoints"
 
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), primary_key=True)
-    last_event_id = Column(Integer, nullable=False, default=0)  # 已处理的最大 event id
-    last_full_scan_at = Column(UTCDateTime(), nullable=True)
-    updated_at = Column(UTCDateTime(), default=utc_now, onupdate=utc_now)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), primary_key=True)
+    last_event_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # 已处理的最大 event id
+    last_full_scan_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    updated_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), default=utc_now, onupdate=utc_now)
 
-    workspace = relationship("Workspace", backref="organize_checkpoint")
+    workspace: Mapped["Workspace"] = relationship("Workspace", backref="organize_checkpoint")
 
     def to_dict(self) -> dict:
         return {

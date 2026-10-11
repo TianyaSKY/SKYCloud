@@ -1,10 +1,16 @@
 from app.infra.utc_datetime import UTCDateTime
 
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Text
-from sqlalchemy.orm import relationship, backref
+import datetime
+
+from sqlalchemy import Integer, String, ForeignKey, Boolean, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship, backref
+from typing import TYPE_CHECKING
 
 from app.infra.extensions import Base
 from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
+
+if TYPE_CHECKING:
+    from app.models.user import User
 
 
 class Inbox(Base):
@@ -12,16 +18,16 @@ class Inbox(Base):
 
     __tablename__ = "inbox"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    title = Column(String(255), nullable=True)
-    content = Column(Text, nullable=False)
-    is_read = Column(Boolean, default=False)
-    type = Column(String(50), default="system")  # 如 system、notification
-    created_at = Column(UTCDateTime(), default=utc_now)
-    is_deleted = Column(Boolean, default=False)  # 软删除标记
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    is_read: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    type: Mapped[str | None] = mapped_column(String(50), default="system")  # 如 system、notification
+    created_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
+    is_deleted: Mapped[bool | None] = mapped_column(Boolean, default=False)  # 软删除标记
 
-    user = relationship("User", backref=backref("inbox_messages", lazy="dynamic"))
+    user: Mapped["User"] = relationship("User", backref=backref("inbox_messages", lazy="dynamic"))
 
     def to_dict(self):
         return {

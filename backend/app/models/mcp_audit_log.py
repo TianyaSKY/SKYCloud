@@ -4,7 +4,8 @@ from app.infra.utc_datetime import UTCDateTime
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Boolean, Column, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infra.datetime_utils import utc_now, local_isoformat
 from app.infra.extensions import Base
@@ -13,28 +14,28 @@ from app.infra.extensions import Base
 class McpAuditLog(Base):
     __tablename__ = "mcp_audit_logs"
 
-    id = Column(Integer, primary_key=True)
-    request_id = Column(String(64), nullable=False)
-    runtime_id = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    runtime_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("opencode_runtimes.id", ondelete="SET NULL"),
         nullable=True,
     )
-    workspace_id = Column(
+    workspace_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("workspaces.id", ondelete="SET NULL"),
         nullable=True,
     )
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    role = Column(String(20), nullable=True)
-    actor_type = Column(String(20), nullable=False, default="user")
-    tool_name = Column(String(100), nullable=False)
-    arguments_summary = Column(Text, nullable=True)
-    entity_id = Column(Integer, nullable=True)
-    success = Column(Boolean, nullable=False, default=False)
-    error_type = Column(String(100), nullable=True)
-    duration_ms = Column(Integer, nullable=True)
-    created_at = Column(UTCDateTime(), default=utc_now)
+    user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    arguments_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
 
     __table_args__ = (
         Index("idx_mcp_audit_workspace_created", "workspace_id", "created_at"),

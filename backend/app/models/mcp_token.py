@@ -1,11 +1,16 @@
 from app.infra.utc_datetime import UTCDateTime
+import datetime
 import hashlib
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Column, ForeignKey, Integer, String
-from sqlalchemy.orm import relationship
+from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.extensions import Base
 from app.infra.datetime_utils import utc_now, local_isoformat, to_utc_datetime
+
+if TYPE_CHECKING:
+    from app.models.user import User
 
 
 class McpToken(Base):
@@ -17,17 +22,17 @@ class McpToken(Base):
 
     __tablename__ = "mcp_tokens"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    name = Column(String(80), nullable=False, default="MCP Token")
-    token_hash = Column(String(64), unique=True, nullable=False, index=True)
-    token_preview = Column(String(32), nullable=False)
-    created_at = Column(UTCDateTime(), default=utc_now)
-    expires_at = Column(UTCDateTime(), nullable=False)
-    last_used_at = Column(UTCDateTime(), nullable=True)
-    revoked_at = Column(UTCDateTime(), nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False, default="MCP Token")
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    token_preview: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
+    expires_at: Mapped[datetime.datetime] = mapped_column(UTCDateTime(), nullable=False)
+    last_used_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
-    user = relationship("User", backref="mcp_tokens")
+    user: Mapped["User"] = relationship("User", backref="mcp_tokens")
 
     @staticmethod
     def hash_token(token: str) -> str:

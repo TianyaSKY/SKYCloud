@@ -1,9 +1,15 @@
+import datetime
+
 from app.infra.utc_datetime import UTCDateTime
-from sqlalchemy import Column, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import relationship
+from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from typing import TYPE_CHECKING
 
 from app.infra.extensions import Base
 from app.infra.datetime_utils import utc_now, local_isoformat
+
+if TYPE_CHECKING:
+    from app.models.workspace import Workspace
 
 
 class FileChangeEvent(Base):
@@ -11,20 +17,20 @@ class FileChangeEvent(Base):
 
     __tablename__ = "file_change_events"
 
-    id = Column(Integer, primary_key=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
-    entity_type = Column(String(20), nullable=False)  # file / folder
-    entity_id = Column(Integer, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id"), nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String(20), nullable=False)  # file / folder
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
     # create / move / rename / delete / update_meta
-    action = Column(String(32), nullable=False)
-    old_parent_id = Column(Integer, nullable=True)
-    new_parent_id = Column(Integer, nullable=True)
-    old_name = Column(String(255), nullable=True)
-    new_name = Column(String(255), nullable=True)
-    payload = Column(Text, nullable=True)  # 可选扩展 JSON/文本
-    created_at = Column(UTCDateTime(), default=utc_now, nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    old_parent_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    new_parent_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    old_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    new_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    payload: Mapped[str | None] = mapped_column(Text, nullable=True)  # 可选扩展 JSON/文本
+    created_at: Mapped[datetime.datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False, index=True)
 
-    workspace = relationship("Workspace", backref="file_change_events")
+    workspace: Mapped["Workspace"] = relationship("Workspace", backref="file_change_events")
 
     def to_dict(self) -> dict:
         return {

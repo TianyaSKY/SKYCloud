@@ -6,13 +6,17 @@
 from app.infra.utc_datetime import UTCDateTime
 
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import Column, BigInteger, Integer, String, ForeignKey, UniqueConstraint, Index, Text
-from sqlalchemy.orm import relationship
+from sqlalchemy import BigInteger, Integer, String, ForeignKey, UniqueConstraint, Index, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.extensions import Base
 from app.infra.datetime_utils import utc_now, local_isoformat
+
+if TYPE_CHECKING:
+    from app.models.opencode_runtime import OpenCodeRuntime
+    from app.models.user import User
 
 
 class Workspace(Base):
@@ -23,22 +27,22 @@ class Workspace(Base):
 
     __tablename__ = "workspaces"
 
-    id = Column(Integer, primary_key=True)
-    name = Column(String(128), nullable=False)
-    search_cache_revision = Column(BigInteger, nullable=False, default=0, server_default="0")
-    description = Column(String(512))
-    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    created_at = Column(UTCDateTime(), default=utc_now)
-    updated_at = Column(UTCDateTime(), default=utc_now, onupdate=utc_now)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    search_cache_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    description: Mapped[str | None] = mapped_column(String(512))
+    owner_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
+    updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=utc_now, onupdate=utc_now)
     # OpenCode 容器生命周期。字段保持可空，兼容既有工作空间记录。
-    container_id = Column(String(64), nullable=True)
-    status = Column(String(20), nullable=False, default="stopped")
-    error_message = Column(Text, nullable=True)
+    container_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="stopped")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # 关系
-    owner = relationship("User", foreign_keys=[owner_id], backref="owned_workspaces")
-    members = relationship("WorkspaceMember", back_populates="workspace", cascade="all, delete-orphan")
-    opencode_runtimes = relationship(
+    owner: Mapped["User"] = relationship("User", foreign_keys=[owner_id], backref="owned_workspaces")
+    members: Mapped[list["WorkspaceMember"]] = relationship("WorkspaceMember", back_populates="workspace", cascade="all, delete-orphan")
+    opencode_runtimes: Mapped[list["OpenCodeRuntime"]] = relationship(
         "OpenCodeRuntime", back_populates="workspace", cascade="all, delete-orphan"
     )
 
@@ -70,16 +74,16 @@ class WorkspaceMember(Base):
 
     __tablename__ = "workspace_members"
 
-    id = Column(Integer, primary_key=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    role = Column(String(20), nullable=False, default="viewer")  # admin / editor / viewer
-    invited_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
-    joined_at = Column(UTCDateTime(), default=utc_now)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="viewer")  # admin / editor / viewer
+    invited_by: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+    joined_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
 
     # 关系
-    workspace = relationship("Workspace", back_populates="members")
-    user = relationship("User", foreign_keys=[user_id], backref="workspace_memberships")
+    workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="members")
+    user: Mapped["User"] = relationship("User", foreign_keys=[user_id], backref="workspace_memberships")
 
     __table_args__ = (
         UniqueConstraint("workspace_id", "user_id", name="uq_workspace_member"),

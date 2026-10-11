@@ -2,7 +2,8 @@ from app.infra.utc_datetime import UTCDateTime
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Boolean, Column, Integer, String
+from sqlalchemy import Boolean, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infra.extensions import Base
 from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
@@ -13,12 +14,12 @@ class SysDict(Base):
 
     __tablename__ = "sys_dict"
 
-    id = Column(Integer, primary_key=True)
-    key = Column(String(100), unique=True, nullable=False)
-    value = Column(String(255), nullable=False)
-    des = Column(String(2048))  # 配置说明
-    enable = Column(Boolean, default=True)
-    created_at = Column(UTCDateTime(), default=utc_now)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    value: Mapped[str] = mapped_column(String(255), nullable=False)
+    des: Mapped[str | None] = mapped_column(String(2048))  # 配置说明
+    enable: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
 
     def to_dict(self):
         return {

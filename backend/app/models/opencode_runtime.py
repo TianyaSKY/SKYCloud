@@ -2,13 +2,18 @@
 from app.infra.utc_datetime import UTCDateTime
 
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import Column, ForeignKey, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import relationship
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.datetime_utils import utc_now, local_isoformat
 from app.infra.extensions import Base
+
+if TYPE_CHECKING:
+    from app.models.mcp_runtime_token import McpRuntimeToken
+    from app.models.user import User
+    from app.models.workspace import Workspace
 
 
 class OpenCodeRuntime(Base):
@@ -16,23 +21,23 @@ class OpenCodeRuntime(Base):
 
     __tablename__ = "opencode_runtimes"
 
-    id = Column(Integer, primary_key=True)
-    workspace_id = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    container_id = Column(String(64), nullable=True)
-    status = Column(String(20), nullable=False, default="stopped")
-    error_message = Column(Text, nullable=True)
-    config_version = Column(Integer, nullable=False, default=0)
-    last_started_at = Column(UTCDateTime(), nullable=True)
-    last_used_at = Column(UTCDateTime(), nullable=True)
-    created_at = Column(UTCDateTime(), default=utc_now)
-    updated_at = Column(UTCDateTime(), default=utc_now, onupdate=utc_now)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    container_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="stopped")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
+    updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=utc_now, onupdate=utc_now)
 
-    workspace = relationship("Workspace", back_populates="opencode_runtimes")
-    user = relationship("User", backref="opencode_runtimes")
-    tokens = relationship(
+    workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="opencode_runtimes")
+    user: Mapped["User"] = relationship("User", backref="opencode_runtimes")
+    tokens: Mapped[list["McpRuntimeToken"]] = relationship(
         "McpRuntimeToken",
         back_populates="runtime",
         cascade="all, delete-orphan",

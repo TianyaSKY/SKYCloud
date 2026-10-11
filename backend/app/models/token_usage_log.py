@@ -1,5 +1,8 @@
+import datetime
+
 from app.infra.utc_datetime import UTCDateTime
-from sqlalchemy import Column, Integer, String, Text, ForeignKey
+from sqlalchemy import Integer, String, Text, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infra.extensions import Base
 from app.infra.datetime_utils import utc_now, local_isoformat
@@ -10,19 +13,19 @@ class TokenUsageLog(Base):
 
     __tablename__ = "token_usage_logs"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     # 调用场景：chat / embedding / rewrite / vl_describe / organize 等
-    action = Column(String(50), nullable=False, index=True)
-    model_name = Column(String(255), nullable=True)
-    prompt_tokens = Column(Integer, default=0)
-    completion_tokens = Column(Integer, default=0)
-    total_tokens = Column(Integer, default=0)
+    action: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
     # 可选：用户输入摘要（前 200 字符），便于审计
-    query_summary = Column(String(200), default=None)
+    query_summary: Mapped[str | None] = mapped_column(String(200), default=None)
     # 可选：附加信息，如检索文件数、rerank 结果数等
-    extra_info = Column(Text, default=None)
-    created_at = Column(UTCDateTime(), default=utc_now)
+    extra_info: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
 
     def to_dict(self):
         return {

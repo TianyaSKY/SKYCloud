@@ -1,13 +1,16 @@
 from app.infra.utc_datetime import UTCDateTime
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import Column, Integer, String, ForeignKey
-from sqlalchemy.orm import relationship, backref
+from sqlalchemy import Integer, String, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column, relationship, backref
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError
 from app.infra.extensions import Base
 from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
+
+if TYPE_CHECKING:
+    from app.models.file import File
 
 
 class Folder(Base):
@@ -17,21 +20,21 @@ class Folder(Base):
     """
 
     __tablename__ = "folder"
-    id = Column(Integer, primary_key=True)
-    name = Column(String(128), nullable=False)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    parent_id = Column(Integer, ForeignKey("folder.id", ondelete="CASCADE"))
-    created_at = Column(UTCDateTime(), default=utc_now)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    parent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("folder.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
 
     # 递归子目录，并级联删除
-    sub_folder = relationship(
+    sub_folder: Mapped[list["Folder"]] = relationship(
         "Folder",
         backref=backref("parent", remote_side=[id]),
         cascade="all, delete-orphan",
     )
 
     # DB 级联删除下属文件元数据；物理文件清理仍在 service 层
-    files = relationship("File", backref="folder", cascade="all, delete-orphan")
+    files: Mapped[list["File"]] = relationship("File", backref="folder", cascade="all, delete-orphan")
 
     def to_dict(self):
         path_parts = []

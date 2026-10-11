@@ -1,6 +1,9 @@
 from app.infra.utc_datetime import UTCDateTime
 
-from sqlalchemy import Column, Integer, BigInteger, String, Enum
+import datetime
+
+from sqlalchemy import Integer, BigInteger, String, Enum
+from sqlalchemy.orm import Mapped, mapped_column
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from app.infra.extensions import Base
@@ -12,19 +15,19 @@ class User(Base):
 
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True)
-    username = Column(String(80), unique=True, nullable=False)
-    password_hash = Column(String(1024), nullable=False)
-    auth_version = Column(Integer, nullable=False, default=0, server_default="0")
-    role = Column(Enum("admin", "common", name="user_roles", native_enum=False, length=10), default="common")
-    avatar = Column(String(255), default=None)  # 头像 URL，可为空
-    created_at = Column(UTCDateTime(), default=utc_now)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(1024), nullable=False)
+    auth_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    role: Mapped[str | None] = mapped_column(Enum("admin", "common", name="user_roles", native_enum=False, length=10), default="common")
+    avatar: Mapped[str | None] = mapped_column(String(255), default=None)  # 头像 URL，可为空
+    created_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
 
     # ---- Token 用量累计（由 LLM 调用明细汇总写入）----
-    total_prompt_tokens = Column(BigInteger, default=0)
-    total_completion_tokens = Column(BigInteger, default=0)
-    total_tokens = Column(BigInteger, default=0)
-    last_active_at = Column(UTCDateTime(), default=None)
+    total_prompt_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    total_completion_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    total_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    last_active_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), default=None)
 
     def __repr__(self):
         return f"<User {self.username}>"

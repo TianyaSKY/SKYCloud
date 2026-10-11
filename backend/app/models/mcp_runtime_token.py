@@ -3,13 +3,17 @@ from app.infra.utc_datetime import UTCDateTime
 
 import hashlib
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-from sqlalchemy import Column, ForeignKey, Index, Integer, String
-from sqlalchemy.orm import relationship
+from sqlalchemy import ForeignKey, Index, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.datetime_utils import utc_now, local_isoformat, to_utc_datetime
 from app.infra.extensions import Base
+
+if TYPE_CHECKING:
+    from app.models.opencode_runtime import OpenCodeRuntime
+    from app.models.user import User
 
 
 class McpRuntimeToken(Base):
@@ -17,28 +21,28 @@ class McpRuntimeToken(Base):
 
     __tablename__ = "mcp_runtime_tokens"
 
-    id = Column(Integer, primary_key=True)
-    runtime_id = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    runtime_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("opencode_runtimes.id", ondelete="CASCADE"),
         nullable=False,
     )
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    workspace_id = Column(
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    workspace_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("workspaces.id", ondelete="CASCADE"),
         nullable=False,
     )
-    jti = Column(String(64), nullable=False, unique=True)
-    token_hash = Column(String(64), nullable=False, unique=True)
-    token_preview = Column(String(32), nullable=False)
-    created_at = Column(UTCDateTime(), default=utc_now)
-    expires_at = Column(UTCDateTime(), nullable=False)
-    last_used_at = Column(UTCDateTime(), nullable=True)
-    revoked_at = Column(UTCDateTime(), nullable=True)
+    jti: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    token_preview: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
-    runtime = relationship("OpenCodeRuntime", back_populates="tokens")
-    user = relationship("User", backref="mcp_runtime_tokens")
+    runtime: Mapped["OpenCodeRuntime"] = relationship("OpenCodeRuntime", back_populates="tokens")
+    user: Mapped["User"] = relationship("User", backref="mcp_runtime_tokens")
 
     __table_args__ = (
         Index("idx_mcp_runtime_tokens_runtime", "runtime_id"),

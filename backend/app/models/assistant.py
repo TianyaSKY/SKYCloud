@@ -10,12 +10,11 @@ from app.infra.utc_datetime import UTCDateTime
 
 import json
 from datetime import datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
-    Column,
     ForeignKey,
     Index,
     Integer,
@@ -23,10 +22,14 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.datetime_utils import utc_now, local_isoformat
 from app.infra.extensions import Base
+
+if TYPE_CHECKING:
+    from app.models.user import User
+    from app.models.workspace import Workspace
 
 
 def _load_json(value: str | None, default: Any) -> Any:
@@ -47,44 +50,44 @@ class AssistantConversation(Base):
 
     __tablename__ = "assistant_conversations"
 
-    id = Column(Integer, primary_key=True)
-    workspace_id = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    mode = Column(String(16), nullable=False, default="fast")
-    title = Column(String(255), nullable=True)
-    status = Column(String(16), nullable=False, default="active")
-    source_conversation_id = Column(
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="fast")
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    source_conversation_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("assistant_conversations.id", ondelete="SET NULL"),
         nullable=True,
     )
-    opencode_runtime_id = Column(
+    opencode_runtime_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("opencode_runtimes.id", ondelete="SET NULL"),
         nullable=True,
     )
-    opencode_session_id = Column(String(128), nullable=True)
-    created_at = Column(UTCDateTime(), default=utc_now, nullable=False)
-    updated_at = Column(UTCDateTime(), default=utc_now, onupdate=utc_now, nullable=False)
-    last_message_at = Column(UTCDateTime(), nullable=True)
+    opencode_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, onupdate=utc_now, nullable=False)
+    last_message_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
-    workspace = relationship("Workspace", backref="assistant_conversations")
-    user = relationship("User", backref="assistant_conversations")
-    messages = relationship(
+    workspace: Mapped["Workspace"] = relationship("Workspace", backref="assistant_conversations")
+    user: Mapped["User"] = relationship("User", backref="assistant_conversations")
+    messages: Mapped[list["AssistantMessage"]] = relationship(
         "AssistantMessage",
         back_populates="conversation",
         cascade="all, delete-orphan",
         order_by="AssistantMessage.sequence",
     )
-    runs = relationship(
+    runs: Mapped[list["AssistantRun"]] = relationship(
         "AssistantRun",
         back_populates="conversation",
         cascade="all, delete-orphan",
         order_by="AssistantRun.created_at",
     )
-    source_conversation = relationship(
+    source_conversation: Mapped["AssistantConversation | None"] = relationship(
         "AssistantConversation",
         remote_side=[id],
         foreign_keys=[source_conversation_id],
@@ -120,23 +123,23 @@ class AssistantMessage(Base):
 
     __tablename__ = "assistant_messages"
 
-    id = Column(Integer, primary_key=True)
-    conversation_id = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("assistant_conversations.id", ondelete="CASCADE"),
         nullable=False,
     )
-    role = Column(String(16), nullable=False)
-    content = Column(Text, nullable=False, default="")
-    status = Column(String(16), nullable=False, default="completed")
-    provider_message_id = Column(String(128), nullable=True)
-    metadata_json = Column(Text, nullable=True)
-    usage_json = Column(Text, nullable=True)
-    sequence = Column(Integer, nullable=False)
-    created_at = Column(UTCDateTime(), default=utc_now, nullable=False)
-    updated_at = Column(UTCDateTime(), default=utc_now, onupdate=utc_now, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="completed")
+    provider_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, onupdate=utc_now, nullable=False)
 
-    conversation = relationship("AssistantConversation", back_populates="messages")
+    conversation: Mapped["AssistantConversation"] = relationship("AssistantConversation", back_populates="messages")
 
     __table_args__ = (
         CheckConstraint("role IN ('user', 'assistant', 'system')", name="ck_assistant_message_role"),
@@ -187,42 +190,42 @@ class AssistantRun(Base):
 
     __tablename__ = "assistant_runs"
 
-    id = Column(Integer, primary_key=True)
-    conversation_id = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("assistant_conversations.id", ondelete="CASCADE"),
         nullable=False,
     )
-    user_message_id = Column(
+    user_message_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("assistant_messages.id", ondelete="SET NULL"),
         nullable=True,
     )
-    assistant_message_id = Column(
+    assistant_message_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("assistant_messages.id", ondelete="SET NULL"),
         nullable=True,
     )
-    engine = Column(String(16), nullable=False)
-    status = Column(String(24), nullable=False, default="pending")
-    request_id = Column(String(128), nullable=True)
-    opencode_session_id = Column(String(128), nullable=True)
-    runtime_lease_token = Column(String(32), nullable=True)
-    runtime_lease_runtime_id = Column(Integer, nullable=True)
-    runtime_lease_container_id = Column(String(64), nullable=True)
-    pending_permission_id = Column(String(128), nullable=True)
-    permission_response = Column(String(16), nullable=True)
-    cancel_requested = Column(Boolean, nullable=False, default=False)
-    error_code = Column(String(64), nullable=True)
-    error_message = Column(Text, nullable=True)
-    metadata_json = Column(Text, nullable=True)
-    started_at = Column(UTCDateTime(), nullable=True)
-    completed_at = Column(UTCDateTime(), nullable=True)
-    created_at = Column(UTCDateTime(), default=utc_now, nullable=False)
+    engine: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    opencode_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    runtime_lease_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    runtime_lease_runtime_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    runtime_lease_container_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    pending_permission_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    permission_response: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utc_now, nullable=False)
 
-    conversation = relationship("AssistantConversation", back_populates="runs")
-    user_message = relationship("AssistantMessage", foreign_keys=[user_message_id])
-    assistant_message = relationship("AssistantMessage", foreign_keys=[assistant_message_id])
+    conversation: Mapped["AssistantConversation"] = relationship("AssistantConversation", back_populates="runs")
+    user_message: Mapped["AssistantMessage | None"] = relationship("AssistantMessage", foreign_keys=[user_message_id])
+    assistant_message: Mapped["AssistantMessage | None"] = relationship("AssistantMessage", foreign_keys=[assistant_message_id])
 
     __table_args__ = (
         CheckConstraint("engine IN ('fast', 'expert')", name="ck_assistant_run_engine"),

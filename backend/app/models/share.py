@@ -1,11 +1,18 @@
 from app.infra.utc_datetime import UTCDateTime
 import uuid
 
-from sqlalchemy import Column, Integer, String, ForeignKey
-from sqlalchemy.orm import relationship
+import datetime
+
+from sqlalchemy import Integer, String, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from typing import TYPE_CHECKING
 
 from app.infra.extensions import Base
 from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
+
+if TYPE_CHECKING:
+    from app.models.file import File
+    from app.models.user import User
 
 
 class Share(Base):
@@ -13,17 +20,17 @@ class Share(Base):
 
     __tablename__ = "shares"
 
-    id = Column(Integer, primary_key=True)
-    token = Column(
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token: Mapped[str] = mapped_column(
         String(512), unique=True, nullable=False, default=lambda: str(uuid.uuid4())
     )
-    file_id = Column(Integer, ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    created_at = Column(UTCDateTime(), default=utc_now)
-    expires_at = Column(UTCDateTime(), nullable=True)  # 为空表示不过期
+    file_id: Mapped[int] = mapped_column(Integer, ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), nullable=True)  # 为空表示不过期
 
-    file = relationship("File", back_populates="shares")
-    user = relationship("User")
+    file: Mapped["File"] = relationship("File", back_populates="shares")
+    user: Mapped["User"] = relationship("User")
 
     def to_dict(self):
         return {
