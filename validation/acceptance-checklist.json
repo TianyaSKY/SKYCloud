@@ -672,7 +672,7 @@
         "types-docker, types-pika and pandas-stubs are real dependencies of the quality lock (regenerated with the pinned uv 0.12.1)",
         "redis-py's shared sync/async mixin is recorded as a SyncRedisClient/RedisPipeline Protocol with a single documented cast"
       ],
-      "ci_gate": "backend CI step now installs the quality lock that carries those stubs; the mypy command is the same one verified here (gate wiring listed as remaining until the hosted run)."
+      "ci_gate": "backend CI job now runs `python -m mypy --config-file backend/mypy.ini` as a required step (after compile+ruff), with the same command that reports zero diagnostics locally; the workflow is validated with the pinned actionlint."
     },
     "verification": {
       "unit_suite": "2320 passed / 475 skipped (backend, --ignore=tests/real) after every change in this session",
