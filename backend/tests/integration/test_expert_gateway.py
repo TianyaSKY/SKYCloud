@@ -825,8 +825,8 @@ asyncio.run(main())
             current = docker_service.runtime_service.get_runtime(cleanup_db,ws_id,user_id)
             if current and current.container_id:
                 runtime_name = current.container_id
-        FIXTURE_DIR / 'skycloud-expert-gateway-results.json'.write_text(json.dumps([{'fields': list(body), 'max_tokens': body.get('max_tokens')} for body in requests]))
-        FIXTURE_DIR / 'skycloud-expert-gateway-events.json'.write_text(json.dumps([{'type': event.type, 'payload': event.payload} for event in observed], ensure_ascii=False))
+        (FIXTURE_DIR / 'skycloud-expert-gateway-results.json').write_text(json.dumps([{'fields': list(body), 'max_tokens': body.get('max_tokens')} for body in requests]))
+        (FIXTURE_DIR / 'skycloud-expert-gateway-events.json').write_text(json.dumps([{'type': event.type, 'payload': event.payload} for event in observed], ensure_ascii=False))
         for name, label in [(runtime_name, 'runtime'), (bridge, 'proxy')]:
             logs = docker('logs', name, check=False)
             (FIXTURE_DIR / f'skycloud-expert-gateway-{label}.log').write_text(logs.stdout + logs.stderr)

@@ -48,7 +48,7 @@ def broker(monkeypatch):
             raise AssertionError("Isolated RabbitMQ did not start")
         yield name
     finally:
-        docker("rm", "-f", name, check=False)
+        docker("rm", "-f", "-v", name, check=False)
 
 
 def test_confirmed_publish_and_unroutable_rejection(broker):

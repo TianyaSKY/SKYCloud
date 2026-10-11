@@ -110,7 +110,7 @@ def redis_client(monkeypatch):
     finally:
         if client:
             client.close()
-        docker("rm", "-f", name, check=False)
+        docker("rm", "-f", "-v", name, check=False)
 
 
 def test_prefix_or_stale_token_cannot_mutate_or_run_new_task(redis_client, monkeypatch):

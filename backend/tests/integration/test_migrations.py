@@ -73,7 +73,7 @@ def postgres():
     finally:
         if engine:
             engine.dispose()
-        docker("rm", "-f", name, check=False)
+        docker("rm", "-f", "-v", name, check=False)
 
 
 def test_fresh_upgrade_matches_models_and_supports_vectors(postgres):

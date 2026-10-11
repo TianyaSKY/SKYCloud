@@ -126,7 +126,7 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
             json={'command': 'sh', 'args': [], 'cwd': '/workspace', 'title': 'Real terminal', 'env': {}})
         if created.status_code != 200:
             logs = docker('logs', container.id, check=False)
-            FIXTURE_DIR / 'skycloud-ui-terminal-runtime.log'.write_text(logs.stdout + logs.stderr)
+            (FIXTURE_DIR / 'skycloud-ui-terminal-runtime.log').write_text(logs.stdout + logs.stderr)
         assert created.status_code == 200, created.text
         pty_id = created.json()['id']
         path = f'/runtime-ui/pty/{pty_id}/connect?directory=%2Fworkspace&cursor=0'
