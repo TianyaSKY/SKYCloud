@@ -38,8 +38,10 @@ def file_database(postgres, monkeypatch):
         db.add(workspace); db.flush()
         file = File(name="worker.txt", file_path="worker.txt", workspace_id=workspace.id,
                     uploader_id=user.id, status="processing")
-        db.add(file); db.commit()
-        yield factory, file.id, workspace.id
+        db.add(file); db.flush()
+        file_id, workspace_id = file.id, workspace.id
+        db.commit()
+        yield factory, file_id, workspace_id
 
 
 def test_failure_status_database_error_propagates_and_rolls_back(file_database, postgres):

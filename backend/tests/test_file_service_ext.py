@@ -6,7 +6,7 @@ import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.exceptions import PermissionDeniedError, ResourceNotFoundError
+from app.exceptions import PermissionDeniedError, ResourceNotFoundError, ServiceOperationError
 from app.models.file import File
 from app.models.folder import Folder
 from app.features.file.service import (
@@ -85,8 +85,8 @@ class TestRebuildFailedIndexes:
         session.flush()
 
         with patch("app.features.file.service.stage_file_tasks", side_effect=Exception("intent staging error")):
-            count = rebuild_failed_indexes(session, test_workspace.id)
-        assert count == 0
+            with pytest.raises(ServiceOperationError, match="Failed to rebuild file indexes"):
+                rebuild_failed_indexes(session, test_workspace.id)
 
 
 # ---------------------------------------------------------------------------

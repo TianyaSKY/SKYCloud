@@ -1422,8 +1422,9 @@ class TestFileServiceDeepBranches:
 
         # rebuild 查询到 fail 文件，尝试 UPDATE + commit
         # commit 时 flush 会 INSERT bad_file → FK 约束失败
-        result = rebuild_failed_indexes(session, workspace_id=test_workspace.id)
-        assert result == 0
+        from app.exceptions import ServiceOperationError
+        with pytest.raises(ServiceOperationError):
+            rebuild_failed_indexes(session, workspace_id=test_workspace.id)
 
 
 # ===========================================================================

@@ -528,17 +528,19 @@ def retry_embedding(session: Session, file_id: int) -> None:
 
 
 def rebuild_failed_indexes(session: Session, workspace_id: int | None = None) -> int:
-    file_ids = repository.failed_file_ids(session, workspace_id)
-    if not file_ids:
-        return 0
     try:
+        file_ids = repository.failed_file_ids(session, workspace_id)
+        if not file_ids:
+            return 0
         repository.mark_pending(session, file_ids)
         stage_file_tasks(session, file_ids)
         session.commit()
     except Exception as exc:
         session.rollback()
         logger.error("Failed to update file status to pending (error_type={})", type(exc).__name__)
-        return 0
+        if isinstance(exc, DomainError):
+            raise
+        raise ServiceOperationError("Failed to rebuild file indexes") from exc
 
     return len(file_ids)
 

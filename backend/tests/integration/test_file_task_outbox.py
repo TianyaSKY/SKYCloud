@@ -70,6 +70,47 @@ def test_task_insert_failure_rolls_back_file_metadata(file_database, postgres):
         assert db.query(FileTaskOutbox).count() == 0
 
 
+@pytest.mark.parametrize('failure', ['status', 'outbox', 'commit'])
+def test_rebuild_http_reports_sql_failure_and_preserves_retryable_state(file_database, postgres, failure):
+    from fastapi.testclient import TestClient
+    from app.api.factory import create_fastapi_app
+    from app.features.auth.service import generate_token
+    from app.infra.extensions import get_session_factory
+    factory, file_id, workspace_id = file_database
+    with postgres.begin() as db:
+        user_id = db.scalar(text('SELECT owner_id FROM workspaces WHERE id=:id'), {'id': workspace_id})
+        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (:workspace,:user,'admin')"),
+                   {'workspace': workspace_id, 'user': user_id})
+        db.execute(text("UPDATE files SET status='fail' WHERE id=:id"), {'id': file_id})
+        if failure == 'outbox':
+            db.execute(text('ALTER TABLE file_task_outbox ADD CONSTRAINT private_rebuild_fault CHECK (file_id < 0)'))
+        else:
+            db.execute(text("""CREATE FUNCTION reject_rebuild() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN RAISE EXCEPTION 'private-rebuild-diagnostic'; END $$"""))
+            db.execute(text('CREATE ' + ('CONSTRAINT ' if failure == 'commit' else '') +
+                'TRIGGER private_rebuild_fault ' + ('AFTER' if failure == 'commit' else 'BEFORE') +
+                ' UPDATE ON files ' + ('DEFERRABLE INITIALLY DEFERRED ' if failure == 'commit' else '') +
+                'FOR EACH ROW EXECUTE FUNCTION reject_rebuild()'))
+    app = create_fastapi_app()
+    app.dependency_overrides[get_session_factory] = lambda: factory
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = {'authorization': 'Bearer ' + generate_token(user_id), 'X-Workspace-Id': str(workspace_id)}
+    response = client.post('/api/files/rebuild_failed_indexes', headers=headers)
+    assert response.status_code == 500, response.text
+    assert response.json() == {'success': False, 'error': {'code': 'INTERNAL_ERROR', 'message': 'Internal server error'}}
+    with factory() as db:
+        assert db.get(File, file_id).status == 'fail'
+        assert db.query(FileTaskOutbox).count() == 0
+    with postgres.begin() as db:
+        db.execute(text('ALTER TABLE file_task_outbox DROP CONSTRAINT private_rebuild_fault') if failure == 'outbox'
+                   else text('DROP TRIGGER private_rebuild_fault ON files'))
+    response = client.post('/api/files/rebuild_failed_indexes', headers=headers)
+    assert response.status_code == 200 and response.json()['data']['count'] == 1
+    with factory() as db:
+        assert db.get(File, file_id).status == 'pending'
+        assert db.query(FileTaskOutbox).one().file_id == file_id
+
+
 def test_concurrent_dispatchers_do_not_send_a_committed_row_twice(file_database, broker):
     factory, file_id, _ = file_database
     with factory() as db:
