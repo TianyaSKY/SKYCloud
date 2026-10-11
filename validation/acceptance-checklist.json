@@ -775,14 +775,6 @@
       ]
     },
     {
-      "environment": "Hosted GitHub Actions (ubuntu-24.04)",
-      "reason": "Push is still pending because no GitHub credential is available on this machine; the local runs reproduce the job commands on the Linux engine with the same pinned images.",
-      "affected": [
-        "all CI jobs",
-        "master branch protection read-back"
-      ]
-    },
-    {
       "environment": "macOS / Docker Desktop",
       "reason": "Verification ran on the Linux engine. The harness portability fix keeps the previous assumptions (/private/tmp, host.docker.internal) as the default on Docker Desktop.",
       "affected": [
@@ -802,5 +794,15 @@
     "verified": "ledger item with reproducible evidence recorded previously",
     "verified_with_residuals": "re-verified this session; the remaining work is listed in `remaining` and `session_updates.remaining_work`",
     "in_progress": "still open"
-  }
+  },
+  "verified_environments": [
+    {
+      "environment": "Hosted GitHub Actions (ubuntu-24.04)",
+      "evidence": "runs 38149241007 (cf6d853) and 38151078852 (c6a4b64) pass every job: backend (locked installs, compile+ruff, required mypy gate, actionlint+shellcheck, runtime check, regular suite), frontend, five image builds, the full integration job and the quality gate."
+    },
+    {
+      "environment": "Linux x86_64 with the Docker engine (local workstation)",
+      "evidence": "unit, frontend, browser-fixture and all three integration groups reproduced locally with the pinned images."
+    }
+  ]
 }
