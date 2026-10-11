@@ -151,6 +151,34 @@ def test_worker_reconciles_real_orphan_object_and_retains_committed_object(uploa
     assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == 1
 
 
+@pytest.mark.parametrize('link_level', ['root', 'workspace'])
+@pytest.mark.parametrize('operation', ['worker', 'abort'])
+def test_closed_reservation_cleanup_does_not_follow_directory_aliases(upload_api, postgres, monkeypatch, link_level, operation):
+    client, headers, root = upload_api
+    outside = root / 'outside'
+    upload_id = 'closed-upload-123'
+    directory = outside / '1' / upload_id
+    directory.mkdir(parents=True)
+    payload = directory / 'part'
+    payload.write_bytes(b'outside-reservation-tree')
+    multipart = root / 'aliases'
+    if link_level == 'root':
+        multipart.symlink_to(outside, target_is_directory=True)
+    else:
+        multipart.mkdir()
+        (multipart / '1').symlink_to(outside / '1', target_is_directory=True)
+    monkeypatch.setattr(service, 'MULTIPART_ROOT', str(multipart))
+    with postgres.begin() as db:
+        db.execute(text("""INSERT INTO upload_reservations(id,user_id,workspace_id,size,status,kind,details,created_at,expires_at)
+            VALUES (:id,1,1,10,'cancelled','multipart','{}',now()-interval '2 hours',now()-interval '1 hour')"""), {'id': upload_id})
+    if operation == 'worker':
+        with sessionmaker(bind=postgres)() as db:
+            assert service.cleanup_expired_uploads(session=db) == 0
+    else:
+        assert client.delete('/api/files/multipart/' + upload_id, headers=headers).status_code == 204
+    assert payload.read_bytes() == b'outside-reservation-tree'
+
+
 @pytest.mark.parametrize('endpoint', ['preflight', 'multipart/init'])
 @pytest.mark.parametrize('local_source', [False, True])
 def test_instant_upload_never_reuses_foreign_workspace_record(upload_api, postgres, minio_storage, endpoint, local_source):

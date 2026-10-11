@@ -139,9 +139,8 @@ def cancel(session, workspace_id, user_id, reservation_id, *, missing_ok=False, 
 
 def cleanup(session, multipart_root, *, upload_root=None, storage_factory=None):
     """Reclaim expired/closed sessions under the same locks as writers."""
-    import os
     import re
-    import shutil
+    from app.infra.multipart_cleanup import remove_multipart_upload
     now = utc_now()
     ids = session.execute(select(UploadReservation.id, UploadReservation.workspace_id, UploadReservation.user_id)
         .where(UploadReservation.cleaned_at.is_(None),
@@ -182,10 +181,7 @@ def cleanup(session, multipart_root, *, upload_root=None, storage_factory=None):
                         continue
             # Database identity cannot supply paths outside the upload root.
             if workspace_id > 0 and re.fullmatch(r'[A-Za-z0-9_-]{8,128}', reservation_id):
-                path = os.path.join(multipart_root, str(workspace_id), reservation_id)
-                if os.path.isdir(path):
-                    shutil.rmtree(path)
-                    removed += 1
+                removed += int(remove_multipart_upload(multipart_root, workspace_id, reservation_id))
             row.cleaned_at = now
             session.commit()
     # Retain recent closed-session responses; admission charges outlive the session.

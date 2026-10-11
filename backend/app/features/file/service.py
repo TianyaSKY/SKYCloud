@@ -9,7 +9,6 @@ import hashlib
 import mimetypes
 import os
 import re
-import shutil
 import uuid
 from typing import Any, Callable, cast
 
@@ -33,6 +32,7 @@ from app.infra.file_task_outbox import stage_file_tasks
 from app.infra.file_object_deletion import stage_object_deletion_fallback, lock_object_path
 from app.infra.storage import get_storage_client
 from app.infra import multipart_storage
+from app.infra.multipart_cleanup import cleanup_legacy_multipart
 from app.infra.upload_adapter import save_bounded
 from app.infra.upload_staging import StagedUpload, cleanup_staging, close_staging_safely
 from app.infra.upload_limits import FILE_LIMIT, AVATAR_LIMIT, positive_limit
@@ -573,47 +573,7 @@ def _process_status(session: Session, workspace_id: int) -> dict[str, int]:
 
 def cleanup_expired_uploads(max_age_hours: int = 24, *, session: Session | None = None) -> int:
     """清理超时未完成的分片上传临时目录，回收磁盘。"""
-    import time
-
     count = cleanup_staging(UPLOAD_FOLDER, upload_quota.TTL_SECONDS)
     count += upload_quota.cleanup(session, MULTIPART_ROOT, upload_root=UPLOAD_FOLDER, storage_factory=get_storage_client) if session is not None else 0
-    if not os.path.exists(MULTIPART_ROOT):
-        return count
-    active_ids = set()
-    if session is not None:
-        active_ids = upload_quota.active_reservation_ids(session)
-    now = time.time()
-    expiration = max_age_hours * 3600
-
-    try:
-        for ws_id_str in os.listdir(MULTIPART_ROOT):
-            ws_dir = os.path.join(MULTIPART_ROOT, ws_id_str)
-            if not os.path.isdir(ws_dir):
-                continue
-
-            for upload_id in os.listdir(ws_dir):
-                if (ws_id_str, upload_id) in active_ids:
-                    continue
-                upload_dir = os.path.join(ws_dir, upload_id)
-                if not os.path.isdir(upload_dir):
-                    continue
-
-                try:
-                    mtime = os.path.getmtime(upload_dir)
-                    if now - mtime > expiration:
-                        logger.info(f"Cleaning up expired upload: {upload_dir}")
-                        shutil.rmtree(upload_dir, ignore_errors=True)
-                        count += 1
-                except OSError as e:
-                    logger.warning("Expired upload cleanup failed (error_type={})", type(e).__name__)
-
-            try:
-                if not os.listdir(ws_dir):
-                    os.rmdir(ws_dir)
-            except OSError:
-                pass
-
-    except Exception as e:
-        logger.error("Error during cleanup_expired_uploads (error_type={})", type(e).__name__)
-
-    return count
+    active_ids = upload_quota.active_reservation_ids(session) if session is not None else set()
+    return count + cleanup_legacy_multipart(MULTIPART_ROOT, max_age_hours * 3600, active_ids)

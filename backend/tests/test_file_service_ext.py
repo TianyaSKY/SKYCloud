@@ -95,6 +95,76 @@ class TestRebuildFailedIndexes:
 
 
 class TestCleanupExpiredUploads:
+    @pytest.mark.skipif(os.name != 'posix', reason='Descriptor-anchored POSIX cleanup')
+    def test_workspace_replacement_cannot_redirect_recursive_removal(self, tmp_path, monkeypatch):
+        import shutil
+        multipart = tmp_path / 'parts'
+        workspace = multipart / '1'
+        upload = workspace / 'expired-upload'
+        upload.mkdir(parents=True)
+        (upload / 'part').write_bytes(b'owned-upload')
+        old = time.time() - 100000
+        os.utime(upload, (old, old))
+        outside = tmp_path / 'outside'
+        foreign = outside / 'expired-upload'
+        foreign.mkdir(parents=True)
+        protected = foreign / 'part'
+        protected.write_bytes(b'outside-tree')
+        retired = tmp_path / 'retired'
+        remove = shutil.rmtree
+        def replace_workspace(path, *args, **kwargs):
+            workspace.rename(retired)
+            workspace.symlink_to(outside, target_is_directory=True)
+            return remove(path, *args, **kwargs)
+        monkeypatch.setattr(shutil, 'rmtree', replace_workspace)
+        monkeypatch.setattr('app.features.file.service.UPLOAD_FOLDER', str(tmp_path / 'uploads'))
+        monkeypatch.setattr('app.features.file.service.MULTIPART_ROOT', str(multipart))
+        assert cleanup_expired_uploads(max_age_hours=1) == 1
+        assert not (retired / 'expired-upload').exists()
+        assert protected.read_bytes() == b'outside-tree'
+
+    @pytest.mark.skipif(os.name == 'nt' or not hasattr(os, 'geteuid') or os.geteuid() == 0,
+                        reason='Requires POSIX permission enforcement for a non-root process')
+    def test_permission_denial_is_not_counted_and_can_be_retried(self, tmp_path, monkeypatch):
+        multipart = tmp_path / 'parts'
+        upload = multipart / '1' / 'expired-upload'
+        upload.mkdir(parents=True)
+        payload = upload / 'part'
+        payload.write_bytes(b'uncleaned-upload')
+        old = time.time() - 100000
+        os.utime(upload, (old, old))
+        monkeypatch.setattr('app.features.file.service.UPLOAD_FOLDER', str(tmp_path / 'uploads'))
+        monkeypatch.setattr('app.features.file.service.MULTIPART_ROOT', str(multipart))
+        upload.chmod(0o500)
+        try:
+            assert cleanup_expired_uploads(max_age_hours=1) == 0
+            assert payload.read_bytes() == b'uncleaned-upload'
+        finally:
+            upload.chmod(0o700)
+        assert cleanup_expired_uploads(max_age_hours=1) == 1
+        assert not upload.exists()
+
+    @pytest.mark.skipif(os.name == 'nt', reason='POSIX symlink containment regression')
+    @pytest.mark.parametrize('link_level', ['root', 'workspace'])
+    def test_cleanup_never_follows_directory_symlinks(self, tmp_path, monkeypatch, link_level):
+        outside = tmp_path / 'outside'
+        upload = outside / '1' / 'expired-upload'
+        upload.mkdir(parents=True)
+        payload = upload / 'part'
+        payload.write_bytes(b'outside-upload-tree')
+        old = time.time() - 100000
+        os.utime(upload, (old, old))
+        multipart = tmp_path / 'parts'
+        if link_level == 'root':
+            multipart.symlink_to(outside, target_is_directory=True)
+        else:
+            multipart.mkdir()
+            (multipart / '1').symlink_to(outside / '1', target_is_directory=True)
+        monkeypatch.setattr('app.features.file.service.UPLOAD_FOLDER', str(tmp_path / 'uploads'))
+        monkeypatch.setattr('app.features.file.service.MULTIPART_ROOT', str(multipart))
+        assert cleanup_expired_uploads(max_age_hours=1) == 0
+        assert payload.read_bytes() == b'outside-upload-tree'
+
     def test_no_multipart_root(self, tmp_path):
         with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path / "nonexist")):
             assert cleanup_expired_uploads() == 0

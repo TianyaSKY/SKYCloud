@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import math
 import os
 import re
-import shutil
 import uuid
 from typing import Any, Callable, cast
 
@@ -17,6 +16,7 @@ from app.exceptions import BusinessRuleError, ConflictError, DomainError, Payloa
 from app.features.file import repository, upload_authorization, upload_quota
 from app.features.file.upload_recovery import compensate_failed_uploads
 from app.infra import multipart_storage
+from app.infra.multipart_cleanup import remove_multipart_upload_safely
 from app.infra.file_task_outbox import stage_file_tasks
 from app.infra.upload_staging import StagedUpload, close_staging_safely
 from app.models.file import File
@@ -142,7 +142,7 @@ class MultipartUploadService:
             except Exception:
                 compensate_failed_uploads(session, workspace_id, uploader_id,
                                           [(upload_id, metadata["object_name"])], None)
-                shutil.rmtree(upload_dir, ignore_errors=True)
+                remove_multipart_upload_safely(self.settings.multipart_root, workspace_id, upload_id)
                 raise ServiceOperationError("Failed to initialize upload")
 
         return {
@@ -285,7 +285,7 @@ class MultipartUploadService:
         finally:
             # 清理本地合并文件与分片目录
             close_staging_safely(staging)
-            shutil.rmtree(upload_dir, ignore_errors=True)
+            remove_multipart_upload_safely(self.settings.multipart_root, workspace_id, safe_upload_id)
 
         self.files.created(new_file)
 
@@ -296,5 +296,4 @@ class MultipartUploadService:
     def abort_multipart_upload(self, session: Session, workspace_id: int, uploader_id: int, upload_id: str) -> None:
         safe_upload_id = validate_upload_id(upload_id)
         upload_quota.cancel(session, workspace_id, uploader_id, safe_upload_id)
-        upload_dir = self.directory(workspace_id, safe_upload_id)
-        shutil.rmtree(upload_dir, ignore_errors=True)
+        remove_multipart_upload_safely(self.settings.multipart_root, workspace_id, safe_upload_id)
