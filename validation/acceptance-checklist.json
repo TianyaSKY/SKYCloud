@@ -673,7 +673,7 @@
       "unit_suite": "2320 passed / 475 skipped (backend, --ignore=tests/real) after every change in this session",
       "compile_and_lint": "compileall + ruff (CI config) clean over app/entry/runtime_controller",
       "frontend": "npm ci, audit (0 vulnerabilities), eslint, vue-tsc, 32 files / 267 tests, production build — all pass",
-      "integration": "360 passed (real PostgreSQL/pgvector, Redis, RabbitMQ, MinIO, Controller, Docker, built OpenCode runtime image) — CI integration step-1 equivalent plus assistant-lease/permission-dispatch/worker-outcome suites",
+      "integration": "360 passed (real PostgreSQL/pgvector, Redis, RabbitMQ, MinIO, Controller, Docker, built OpenCode runtime image) plus 71 passed for the upload/indexing/organize pipelines with a local synthetic provider, 84 passed for object-deletion/upload-storage, 4 passed for the runtime UI terminal relay, 2 for the runtime lifecycle recovery and 2 browser-fixture startup checks",
       "integration_extra": "84 passed for object-deletion + upload-storage after bounding MinIO I/O; 2 real-PostgreSQL runtime-lifecycle cases; 2 browser-fixture startup cases",
       "browser": "Chromium: login, refresh-cookie restore, native file-chooser upload, byte-exact UI download, running-runtime display, OpenCode iframe via the runtime-origin gateway, fail-closed cookie loss — validation/browser-linux-20261011.json",
       "dependencies": "hashed lock install from scratch succeeds for requirements-test.lock + requirements-quality.lock",
@@ -694,8 +694,8 @@
     ],
     "remaining_work": [
       "Workstreams 4/5/6 residual gaps: file/service.py and docker_service.py still fuse persistence with external I/O; MCP read_file_content opens MinIO I/O next to its Session; chat repository owns its Session; folder service vs organizer tools duplicate CRUD with drifted cache eviction; routers call object storage directly, so uncaught S3Error still surfaces as a generic 500.",
-      "Workstream 8 residuals: expert permission grant/recovery, terminal keystrokes, expiry mid-stream and native OS picker dialogs are not driven; ShareView/MySharesView and several admin views have no tests.",
-      "Workstream 9 residuals: backend/frontend image build result, indexing/organize pipeline suites (they need the synthetic provider fixture) and any environment that needs an approved external model service.",
+      "Workstream 8 residuals: expert permission grant/recovery, expiry mid-stream and native OS picker dialogs are not driven; the OpenCode web UI's project picker returns an empty folder list in the sandbox, so terminal keystrokes are covered by the relay suite instead; ShareView/MySharesView and several admin views have no tests.",
+      "Workstream 9 residuals: only environments that need an approved external model service remain unverified here (the indexing/organize pipelines use the in-fixture synthetic provider).",
       "Workstream 10: push the local commits, run the hosted Linux CI jobs (including the new runtime-lifecycle suite) and configure + read back master protection — none of it authorised yet."
     ]
   },

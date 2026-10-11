@@ -35,9 +35,9 @@
   "limitations": [
     "Fixture serves plain HTTP on localhost, so the refresh cookie is not Secure here; deployments require HTTPS.",
     "Browser file chooser is exercised; native OS picker dialogs are not.",
-    "Expert permission grant/recovery, terminal keystrokes and expiry mid-stream were not driven in this run.",
     "No external model provider is called; the runtime uses fixture configuration only.",
-    "The indexing worker is not part of this fixture, so the uploaded file stays in \"processing\" state."
+    "The indexing worker is not part of this fixture, so the uploaded file stays in \"processing\" state.",
+    "Terminal keystrokes were not driven through the OpenCode web UI: its Add-project picker depends on /find/file results that the sandbox server returns empty, so no session/terminal can be opened from the iframe. The terminal relay itself is covered by tests/integration/test_runtime_ui_terminal.py (4 passed) against the real stack."
   ],
   "screenshots": [
     "browser-files-20261011.webp",
@@ -47,5 +47,38 @@
   "harness_fixes": [
     "tests/integration/fixture_paths.FIXTURE_DIR replaces hardcoded /private/tmp",
     "Browser fixture binds its API on the default bridge gateway on Linux and substitutes the literal address into the nginx template (host.docker.internal is resolved through the container resolver, bypassing /etc/hosts)"
-  ]
+  ],
+  "runs": [
+    {
+      "command": "RUN_FULL_BROWSER=1 pytest tests/integration/test_full_browser.py",
+      "result": "1 passed in 253.55s (first run) and 1 passed in 186.49s (second run)",
+      "note": "The fixture asserts the browser driver wrote \"verified\" into its completion file and then removes every disposable container/volume/network."
+    },
+    {
+      "command": "RUN_RUNTIME_UI_TESTS=1 pytest tests/integration/test_runtime_ui_terminal.py",
+      "result": "4 passed in 35.29s",
+      "note": "Real PostgreSQL/Redis/Controller/OpenCode terminal relay: direct and one-use PTY tickets, UID 10001, bounded frames."
+    }
+  ],
+  "iframe_observation": {
+    "frame": "http://r{runtime_id}.skycloud.localhost:{ui_port}/ (title \"OpenCode\")",
+    "served_requests": [
+      "/global/config",
+      "/api/session",
+      "/provider",
+      "/path",
+      "/session/status",
+      "/project",
+      "/global/event",
+      "/assets/Inter.ttf"
+    ],
+    "project_picker": {
+      "ui_request": "GET /find/file?query=&dirs=true&limit=50&directory=%2Fhome%2Fopencode -> 200 []",
+      "probes_through_the_same_gateway": {
+        "/find/file?query=demo": "[\"demo/\",\"demo/README.md\"]",
+        "/file?path=/workspace": "[{\"name\":\"demo\",\"path\":\"demo/\",\"type\":\"directory\",...}]"
+      },
+      "conclusion": "The relay allows the lookup paths (RELAY_ROOTS includes find/file/project); the empty result comes from the OpenCode server scoping its search to the requested directory, so the UI cannot list sandbox folders to add as a project. Creating /home/opencode/demo (with git init) did not change the response."
+    }
+  }
 }
