@@ -1,4 +1,5 @@
 """Opt-in browser harness; serves only isolated fixture data on loopback."""
+from tests.integration.fixture_paths import FIXTURE_DIR
 import json
 import socket
 import subprocess
@@ -64,7 +65,7 @@ def exercise_browser(app, monkeypatch, user_id, workspace_id, auth, temporary):
                                          ws_max_size=1024 * 1024, ws_max_queue=4))
     thread = threading.Thread(target=lambda: server.run(sockets=[listener]), daemon=True)
     thread.start()
-    metadata = Path('/private/tmp/skycloud-runtime-browser.json')
+    metadata = FIXTURE_DIR / 'skycloud-runtime-browser.json'
     signal = temporary / 'browser-finished'
     metadata.write_text(json.dumps({'url': parent, 'completion_file': str(signal)}))
     try:

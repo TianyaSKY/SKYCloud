@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 import uvicorn
 
+from tests.integration.fixture_paths import FIXTURE_DIR
 from tests.integration.test_runtime_security import infrastructure, controller, docker
 from tests.integration.test_migrations import postgres
 from entry.migrate import upgrade
@@ -824,11 +825,11 @@ asyncio.run(main())
             current = docker_service.runtime_service.get_runtime(cleanup_db,ws_id,user_id)
             if current and current.container_id:
                 runtime_name = current.container_id
-        Path('/private/tmp/skycloud-expert-gateway-results.json').write_text(json.dumps([{'fields': list(body), 'max_tokens': body.get('max_tokens')} for body in requests]))
-        Path('/private/tmp/skycloud-expert-gateway-events.json').write_text(json.dumps([{'type': event.type, 'payload': event.payload} for event in observed], ensure_ascii=False))
+        FIXTURE_DIR / 'skycloud-expert-gateway-results.json'.write_text(json.dumps([{'fields': list(body), 'max_tokens': body.get('max_tokens')} for body in requests]))
+        FIXTURE_DIR / 'skycloud-expert-gateway-events.json'.write_text(json.dumps([{'type': event.type, 'payload': event.payload} for event in observed], ensure_ascii=False))
         for name, label in [(runtime_name, 'runtime'), (bridge, 'proxy')]:
             logs = docker('logs', name, check=False)
-            Path(f'/private/tmp/skycloud-expert-gateway-{label}.log').write_text(logs.stdout + logs.stderr)
+            (FIXTURE_DIR / f'skycloud-expert-gateway-{label}.log').write_text(logs.stdout + logs.stderr)
         gateway.dependency_overrides.pop(get_db, None)
         if boot_process is not None and boot_process.poll() is None:
             boot_process.kill(); boot_process.wait(5)

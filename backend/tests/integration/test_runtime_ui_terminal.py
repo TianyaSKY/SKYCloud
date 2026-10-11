@@ -14,6 +14,7 @@ from sqlalchemy import update
 from sqlalchemy.orm import sessionmaker
 from starlette.websockets import WebSocketDisconnect
 
+from tests.integration.fixture_paths import FIXTURE_DIR
 from tests.integration.test_runtime_security import infrastructure, controller, docker
 from tests.integration.test_migrations import postgres
 from entry.migrate import upgrade
@@ -125,7 +126,7 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
             json={'command': 'sh', 'args': [], 'cwd': '/workspace', 'title': 'Real terminal', 'env': {}})
         if created.status_code != 200:
             logs = docker('logs', container.id, check=False)
-            Path('/private/tmp/skycloud-ui-terminal-runtime.log').write_text(logs.stdout + logs.stderr)
+            FIXTURE_DIR / 'skycloud-ui-terminal-runtime.log'.write_text(logs.stdout + logs.stderr)
         assert created.status_code == 200, created.text
         pty_id = created.json()['id']
         path = f'/runtime-ui/pty/{pty_id}/connect?directory=%2Fworkspace&cursor=0'

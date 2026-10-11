@@ -3,6 +3,7 @@
 RUN_RUNTIME_SECURITY_TESTS=1 python -m pytest tests/integration/test_runtime_security.py
 """
 
+from tests.integration.fixture_paths import FIXTURE_DIR
 import concurrent.futures
 import json
 import os
@@ -270,7 +271,7 @@ def controller(infrastructure, monkeypatch):
         yield {"client": ControllerClient(), "url": url, "token": token, "name": name}
     finally:
         logs = docker("logs", name, check=False)
-        Path("/private/tmp/skycloud-controller-integration.log").write_text(logs.stdout + logs.stderr)
+        (FIXTURE_DIR / 'skycloud-controller-integration.log').write_text(logs.stdout + logs.stderr)
 
 
 def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, controller):
@@ -307,7 +308,7 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
                 response = client.get("/global/health")
             except httpx.HTTPError:
                 logs = docker("logs", container.id, check=False)
-                Path("/private/tmp/skycloud-runtime-integration.log").write_text(logs.stdout + logs.stderr)
+                (FIXTURE_DIR / 'skycloud-runtime-integration.log').write_text(logs.stdout + logs.stderr)
                 raise
             if response.status_code == 200:
                 break
@@ -317,13 +318,13 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
         ui = client.get(base.replace("/http", "/ui") + "/")
         assert ui.status_code == 200, (ui.status_code, ui.text[:200])
         assert "text/html" in ui.headers.get("content-type", ""), ui.headers
-        Path("/private/tmp/skycloud-runtime-ui-root.html").write_text(ui.text)
+        (FIXTURE_DIR / 'skycloud-runtime-ui-root.html').write_text(ui.text)
         import re
         script = re.search(r'<script[^>]+src="([^"]+)', ui.text).group(1)
         asset = client.get(base.replace("/http", "/ui") + script)
         assert asset.status_code == 200
         assert "javascript" in asset.headers.get("content-type", "")
-        Path("/private/tmp/skycloud-runtime-ui-main.js").write_text(asset.text)
+        (FIXTURE_DIR / 'skycloud-runtime-ui-main.js').write_text(asset.text)
         config = service.merge_opencode_chat_provider({}, {"base_url": "http://gateway:5002/v1", "model": "test-model", "api_key": "scoped-token"})
         service._write_opencode_config(container, config)
         assert service._read_opencode_config(container) == config

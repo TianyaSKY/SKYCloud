@@ -1,14 +1,19 @@
 """Manual CUA verification against actual frontend/nginx, API, PG, Redis and MinIO.
 
 RUN_FULL_BROWSER=1 SKYCLOUD_TEST_RUNTIME_IMAGE=<builder output> SKYCLOUD_TEST_MINIO_IMAGE=<builder output> pytest tests/integration/test_full_browser.py
-Read the synthetic fixture URL from /private/tmp/skycloud-full-browser.json;
+Read the synthetic fixture URL from the fixture directory
+(SKYCLOUD_TEST_FIXTURE_DIR, default /private/tmp on Docker Desktop, else the system temp dir) skycloud-full-browser.json;
 record verified in its completion file only after browser checks succeed.
 SKYCLOUD_BROWSER_STARTUP_ONLY=1 validates fixture startup without claiming browser checks.
+
+Docker Desktop resolves host.docker.internal implicitly; the Linux engine needs an
+explicit gateway alias, which the fixture adds on Linux only.
 """
 import json
 import os
 from pathlib import Path
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -19,6 +24,7 @@ import uvicorn
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
 
+from tests.integration.fixture_paths import FIXTURE_DIR
 from tests.integration.test_runtime_security import infrastructure, controller, docker
 from tests.integration.test_migrations import postgres
 from tests.integration.test_upload_storage import minio_storage
@@ -45,6 +51,7 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
     from app.infra import cache
     root = Path(__file__).resolve().parents[3]
     assert (root / 'frontend/dist/index.html').is_file(), 'Build the production frontend first'
+    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     nginx_image=next(line.split()[1] for line in (root/'frontend/Dockerfile').read_text().splitlines()
                      if line.startswith('FROM nginx:'))
     assert '@sha256:' in nginx_image, 'Browser fixture must use pinned production nginx'
@@ -111,10 +118,12 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
     infrastructure['cleanup'].append(frontend)
     config = tmp_path / 'default.conf.template'
     config.write_text((root / 'frontend/nginx.conf').read_text().replace('backend-api:5000', f'host.docker.internal:{api_port}'))
-    metadata = Path('/private/tmp/skycloud-full-browser.json')
+    metadata = FIXTURE_DIR / 'skycloud-full-browser.json'
     completion = tmp_path / 'browser-completed'
     try:
-        docker('run', '-d', '--name', frontend, '--network', infrastructure['infra'], '-p', f'127.0.0.1:{parent_port}:80',
+        gateway = ['--add-host', 'host.docker.internal:host-gateway'] if sys.platform.startswith('linux') else []
+        docker('run', '-d', '--name', frontend, '--network', infrastructure['infra'], *gateway,
+               '-p', f'127.0.0.1:{parent_port}:80',
                '-p', f'127.0.0.1:{ui_port}:8081', '-e', f'RUNTIME_UI_CSP_SOURCE=http://*.skycloud.localhost:{ui_port}',
                '-v', str(config) + ':/etc/nginx/templates/default.conf.template:ro',
                '-v', str(root / 'frontend/dist') + ':/usr/share/nginx/html:ro', nginx_image)
@@ -130,7 +139,7 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
             time.sleep(.2)
         if ready is None or ready.status_code != 200:
             logs = docker('logs', frontend, check=False)
-            Path('/private/tmp/skycloud-full-browser-nginx.log').write_text(logs.stdout + logs.stderr)
+            (FIXTURE_DIR / 'skycloud-full-browser-nginx.log').write_text(logs.stdout + logs.stderr)
         assert ready is not None and ready.status_code == 200, 'Isolated nginx cannot reach the loopback API'
         document = httpx.get(f'http://127.0.0.1:{parent_port}/', timeout=3, trust_env=False)
         assert "script-src 'self'" in document.headers['content-security-policy']
