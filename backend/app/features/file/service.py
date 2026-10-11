@@ -227,7 +227,7 @@ def _load_multipart_meta(workspace_id: int, upload_id: str) -> dict[str, Any]:
     if not os.path.exists(meta_path):
         raise ResourceNotFoundError("Upload session not found")
     try:
-        meta = multipart_storage.read_metadata(meta_path)
+        meta = multipart_storage.read_metadata(meta_path, root=MULTIPART_ROOT)
     except Exception as e:
         logger.error("Failed to read upload metadata (error_type={})", type(e).__name__)
         raise ServiceOperationError("Upload session corrupted")
@@ -237,8 +237,8 @@ def _load_multipart_meta(workspace_id: int, upload_id: str) -> dict[str, Any]:
     return meta
 
 
-def _write_multipart_meta(meta_path: str, meta: dict[str, Any]) -> None:
-    multipart_storage.write_metadata(meta_path, meta)
+def _write_multipart_meta(meta_path: str, meta: dict[str, Any], *, root: str | None = None) -> None:
+    multipart_storage.write_metadata(meta_path, meta, root=root)
 
 
 def _upload_service() -> FileUploadService:

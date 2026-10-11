@@ -7,6 +7,7 @@ import base64
 import mimetypes
 import re
 import os
+import tempfile
 
 from app.exceptions import BusinessRuleError, PayloadTooLargeError
 from app.infra.upload_limits import FILE_LIMIT, copy_bounded
@@ -72,7 +73,7 @@ class Base64UploadAdapter:
             ext = mimetypes.guess_extension(self.mimetype) or ".bin"
             self.filename = f"{self.filename}{ext}"
 
-    def save(self, destination: str, max_bytes: int = FILE_LIMIT) -> None:
+    def decoded_bytes(self, max_bytes: int) -> bytes:
         # Reject oversized encoded input before allocating decoded bytes.
         if len(self._data) > 4 * ((max_bytes + 2) // 3):
             raise PayloadTooLargeError("File too large")
@@ -82,6 +83,10 @@ class Base64UploadAdapter:
             raise BusinessRuleError("Invalid Base64 upload") from exc
         if len(file_data) > max_bytes:
             raise PayloadTooLargeError("File too large")
+        return file_data
+
+    def save(self, destination: str, max_bytes: int = FILE_LIMIT) -> None:
+        file_data = self.decoded_bytes(max_bytes)
         with open(destination, "wb") as f:
             f.write(file_data)
 
@@ -108,3 +113,21 @@ def save_bounded(upload, destination: str, max_bytes: int) -> None:
         if os.path.getsize(destination) > max_bytes:
             remove_partial_safely(destination)
             raise PayloadTooLargeError("File too large")
+
+
+def copy_upload_bounded(upload, target, max_bytes: int) -> None:
+    """Write to an already-owned handle; legacy path adapters use a private stage."""
+    if isinstance(upload, FastAPIUploadAdapter):
+        upload._upload_file.file.seek(0)
+        copy_bounded(upload._upload_file.file, target, max_bytes)
+    elif isinstance(upload, FileStorage):
+        upload.stream.seek(0)
+        copy_bounded(upload.stream, target, max_bytes)
+    elif isinstance(upload, Base64UploadAdapter):
+        target.write(upload.decoded_bytes(max_bytes))
+    else:
+        with tempfile.TemporaryDirectory(prefix='skycloud-chunk-', ignore_cleanup_errors=True) as stage:
+            path = os.path.join(stage, 'upload')
+            save_bounded(upload, path, max_bytes)
+            with open(path, 'rb') as source:
+                copy_bounded(source, target, max_bytes)

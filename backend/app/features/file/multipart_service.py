@@ -137,8 +137,8 @@ class MultipartUploadService:
                                               kind="multipart", reservation_id=upload_id, details=metadata)
             meta = metadata
             try:
-                os.makedirs(chunks_dir, exist_ok=True)
-                self.write_metadata(meta_path, meta)
+                multipart_storage.prepare_chunks(chunks_dir, root=self.settings.multipart_root)
+                self.write_metadata(meta_path, meta, root=self.settings.multipart_root)
             except Exception:
                 compensate_failed_uploads(session, workspace_id, uploader_id,
                                           [(upload_id, metadata["object_name"])], None)
@@ -198,7 +198,8 @@ class MultipartUploadService:
             if expected_size <= 0:
                 expected_size = chunk_size
 
-        multipart_storage.save_chunk(chunks_dir, idx, chunk_obj, expected_size, self.settings.max_chunk_size)
+        multipart_storage.save_chunk(chunks_dir, idx, chunk_obj, expected_size, self.settings.max_chunk_size,
+                                     root=self.settings.multipart_root)
         session.commit()
 
         return {

@@ -19,7 +19,7 @@ def test_failed_publication_retains_previous_file_and_removes_temporary(tmp_path
     chunks = tmp_path / "chunks"
     chunks.mkdir()
     (chunks / "0.part").write_bytes(b"abc")
-    def reject_replace(*args):
+    def reject_replace(*args, **kwargs):
         raise OSError("injected disk publication failure")
     monkeypatch.setattr(storage.os, "replace", reject_replace)
     with pytest.raises(OSError, match="publication failure"):

@@ -34,6 +34,58 @@ from app.models.upload_reservation import UploadReservation
 pytestmark = pytest.mark.skipif(os.getenv('RUN_UPLOAD_STORAGE_TESTS') != '1', reason='Opt-in isolated PostgreSQL/MinIO upload integration')
 
 
+@pytest.mark.parametrize('alias', ['root', 'workspace', 'upload', 'chunks'])
+@pytest.mark.parametrize('phase', ['init', 'chunk'])
+def test_multipart_writes_do_not_follow_parent_aliases(upload_api, postgres, minio_storage, alias, phase):
+    client, headers, root = upload_api
+    rid = uuid.uuid4().hex
+    if phase == 'chunk':
+        admitted = client.post('/api/files/multipart/init', headers=headers,
+                               json={'filename': 'safe.txt', 'total_size': 3, 'upload_id': rid})
+        assert admitted.status_code == 200
+    parts = root / 'parts'
+    relative = ['1', rid, 'chunks']
+    level = ['root', 'workspace', 'upload', 'chunks'].index(alias)
+    original = parts.joinpath(*relative[:level])
+    original.mkdir(parents=True, exist_ok=True)
+    foreign = root / 'foreign'
+    foreign_chunks = foreign.joinpath(*relative[level:])
+    foreign_chunks.mkdir(parents=True)
+    private = foreign_chunks / '0.part'
+    private.write_bytes(b'previous')
+    before = sorted(str(path.relative_to(foreign)) for path in foreign.rglob('*'))
+    retired = root / 'retired'
+    original.rename(retired)
+    original.symlink_to(foreign, target_is_directory=True)
+    if phase == 'init':
+        rejected = client.post('/api/files/multipart/init', headers=headers,
+                               json={'filename': 'safe.txt', 'total_size': 3, 'upload_id': rid})
+    else:
+        rejected = client.post('/api/files/multipart/chunk', headers=headers,
+                               data={'upload_id': rid, 'chunk_index': '0'},
+                               files={'chunk': ('piece', b'abc', 'application/octet-stream')})
+    assert rejected.status_code in (400, 500), rejected.text
+    assert private.read_bytes() == b'previous'
+    assert sorted(str(path.relative_to(foreign)) for path in foreign.rglob('*')) == before
+    assert list(minio_storage._client.list_objects(minio_storage._bucket)) == []
+    with postgres.connect() as conn:
+        assert conn.scalar(text('SELECT count(*) FROM files')) == 0
+        assert conn.scalar(text('SELECT status FROM upload_reservations WHERE id=:id'),
+                           {'id': rid}) == ('cancelled' if phase == 'init' else 'active')
+    if phase == 'chunk':
+        original.unlink()
+        retired.rename(original)
+        retried = client.post('/api/files/multipart/chunk', headers=headers,
+                             data={'upload_id': rid, 'chunk_index': '0'},
+                             files={'chunk': ('piece', b'abc', 'application/octet-stream')})
+        assert retried.status_code == 200, retried.text
+        completed = client.post('/api/files/multipart/complete', headers=headers, json={'upload_id': rid})
+        assert completed.status_code == 201, completed.text
+        assert client.get('/api/files/' + str(completed.json()['data']['id']) + '/download',
+                          headers=headers).content == b'abc'
+        assert private.read_bytes() == b'previous'
+
+
 @pytest.mark.parametrize('alias', ['chunk', 'chunks', 'workspace'])
 def test_multipart_alias_cannot_publish_foreign_bytes(upload_api, postgres, minio_storage, alias):
     client, headers, root = upload_api
@@ -306,18 +358,18 @@ def test_chunk_cleanup_failure_preserves_public_validation_and_retry(upload_api,
     data = {'upload_id': upload_id, 'chunk_index': 0}
     path = '/api/files/multipart/chunk'
     assert client.post(path, headers=headers, data=data, files={'chunk': ('part', b'abc')}).status_code == 200
-    original_remove = upload_cleanup.os.remove
+    original_unlink = upload_cleanup.os.unlink
     logs = []
     sink = logger.add(lambda message: logs.append(str(message)))
-    def reject_temporary(path):
+    def reject_temporary(path, **kwargs):
         if str(path).endswith('.tmp'):
             raise PermissionError('private-cleanup-path-and-credential')
-        return original_remove(path)
+        return original_unlink(path, **kwargs)
     try:
-        monkeypatch.setattr(upload_cleanup.os, 'remove', reject_temporary)
+        monkeypatch.setattr(upload_cleanup.os, 'unlink', reject_temporary)
         failed = client.post(path, headers=headers, data=data, files={'chunk': ('part', body)})
     finally:
-        monkeypatch.setattr(upload_cleanup.os, 'remove', original_remove)
+        monkeypatch.setattr(upload_cleanup.os, 'unlink', original_unlink)
         logger.remove(sink)
     assert failed.status_code == status, failed.text
     assert failed.json()['error']['code'] == ('BUSINESS_RULE_VIOLATION' if status == 400 else 'PAYLOAD_TOO_LARGE')
@@ -351,6 +403,17 @@ async def test_cancelled_request_preserves_real_upload_publication(upload_api, p
         consumed.append(Path(destination).read_bytes())
 
     monkeypatch.setattr(FastAPIUploadAdapter, 'save', held_save)
+    if kind == 'chunk':
+        from app.infra import multipart_storage
+        original_copy = multipart_storage.copy_upload_bounded
+        def held_copy(adapter, target, max_bytes):
+            streams.append(adapter._upload_file.file)
+            entered.set()
+            assert release.wait(5)
+            original_copy(adapter, target, max_bytes)
+            adapter._upload_file.file.seek(0)
+            consumed.append(adapter._upload_file.file.read())
+        monkeypatch.setattr(multipart_storage, 'copy_upload_bounded', held_copy)
     path, field = {
         'single': ('/api/files', 'file'),
         'batch': ('/api/files/batch', 'files'),

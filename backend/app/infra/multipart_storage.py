@@ -10,9 +10,10 @@ import os
 import stat
 import uuid
 from typing import Any
+from loguru import logger
 
 from app.exceptions import BusinessRuleError
-from app.infra.upload_adapter import save_bounded
+from app.infra.upload_adapter import copy_upload_bounded
 from app.infra.upload_limits import copy_bounded
 from app.infra.upload_cleanup import remove_partial_safely
 
@@ -38,8 +39,8 @@ def _ordinary(info, mode) -> bool:
 
 
 @contextmanager
-def _chunks_handle(chunks_dir: str, root: str | None):
-    """Anchor reads beneath the configured multipart root, without directory links."""
+def _chunks_handle(chunks_dir: str, root: str | None, *, create: bool = False):
+    """Anchor byte operations beneath the multipart root without directory links."""
     root = os.path.abspath(root or chunks_dir)
     chunks_dir = os.path.abspath(chunks_dir)
     if os.path.commonpath([root, chunks_dir]) != root:
@@ -47,17 +48,29 @@ def _chunks_handle(chunks_dir: str, root: str | None):
     parts = os.path.relpath(chunks_dir, root).split(os.sep)
     handles = []
     try:
+        if create:
+            os.makedirs(root, exist_ok=True)
         if _DESCRIPTORS:
             handle = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             handles.append(handle)
             for part in parts:
                 if part != '.':
+                    if create:
+                        try:
+                            os.mkdir(part, mode=0o700, dir_fd=handle)
+                        except FileExistsError:
+                            pass
                     handle = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=handle)
                     handles.append(handle)
         else:
             handle = root
             for part in ['.'] + parts:
                 handle = os.path.join(handle, part)
+                if create:
+                    try:
+                        os.mkdir(handle, mode=0o700)
+                    except FileExistsError:
+                        pass
                 if not _ordinary(os.stat(handle, follow_symlinks=False), stat.S_ISDIR):
                     raise BusinessRuleError('Invalid multipart directory')
         yield handle
@@ -120,27 +133,64 @@ def _atomic_destination(destination: str):
         remove_partial_safely(temporary)
 
 
-def read_metadata(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as source:
-        return json.load(source)
+@contextmanager
+def _atomic_owned_target(handle, name):
+    """Create, publish and reclaim a temporary file relative to one directory."""
+    temporary = name + '.' + uuid.uuid4().hex + '.tmp'
+    descriptor = None
+    try:
+        if isinstance(handle, int):
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o600, dir_fd=handle)
+        else:
+            descriptor = os.open(os.path.join(handle, temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb', closefd=False) as target:
+            yield target
+        if isinstance(handle, int):
+            os.replace(temporary, name, src_dir_fd=handle, dst_dir_fd=handle)
+        else:
+            os.replace(os.path.join(handle, temporary), os.path.join(handle, name))
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            if isinstance(handle, int):
+                os.unlink(temporary, dir_fd=handle)
+            else:
+                os.unlink(os.path.join(handle, temporary))
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning('Partial upload cleanup deferred (error_type={})', type(exc).__name__)
 
 
-def write_metadata(path: str, metadata: dict[str, Any]) -> None:
-    with _atomic_destination(path) as temporary:
-        with open(temporary, "w", encoding="utf-8") as target:
-            json.dump(metadata, target, ensure_ascii=False)
+def prepare_chunks(chunks_dir: str, *, root: str) -> None:
+    with _chunks_handle(chunks_dir, root, create=True):
+        pass
 
 
-def save_chunk(chunks_dir: str, index: int, upload: Any, expected_size: int, max_size: int) -> None:
-    os.makedirs(chunks_dir, exist_ok=True)
-    destination = os.path.join(chunks_dir, f"{index}.part")
-    with _atomic_destination(destination) as temporary:
-        save_bounded(upload, temporary, min(expected_size, max_size))
-        actual_size = os.path.getsize(temporary)
-        if actual_size != expected_size:
-            raise BusinessRuleError(
-                f"Invalid chunk size for index {index}: expected {expected_size}, got {actual_size}"
-            )
+def read_metadata(path: str, *, root: str | None = None) -> dict[str, Any]:
+    with _chunks_handle(os.path.dirname(path), root) as handle:
+        with _chunk_source(handle, os.path.basename(path)) as source:
+            return json.load(source)
+
+
+def write_metadata(path: str, metadata: dict[str, Any], *, root: str | None = None) -> None:
+    with _chunks_handle(os.path.dirname(path), root, create=True) as handle:
+        with _atomic_owned_target(handle, os.path.basename(path)) as target:
+            target.write(json.dumps(metadata, ensure_ascii=False).encode('utf-8'))
+
+
+def save_chunk(chunks_dir: str, index: int, upload: Any, expected_size: int, max_size: int,
+               *, root: str | None = None) -> None:
+    with _chunks_handle(chunks_dir, root, create=True) as handle:
+        with _atomic_owned_target(handle, f'{index}.part') as target:
+            copy_upload_bounded(upload, target, min(expected_size, max_size))
+            actual_size = target.tell()
+            if actual_size != expected_size:
+                raise BusinessRuleError(
+                    f"Invalid chunk size for index {index}: expected {expected_size}, got {actual_size}"
+                )
 
 
 def assemble(chunks_dir: str, destination: str, *, total_chunks: int,

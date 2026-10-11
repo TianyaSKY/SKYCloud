@@ -15,8 +15,9 @@ from app.infra import multipart_storage, upload_adapter
 def rejected_remove(monkeypatch):
     logs = []
     sink = logger.add(lambda message: logs.append(str(message)))
-    def reject(*args): raise PermissionError('private-cleanup-path-and-password')
+    def reject(*args, **kwargs): raise PermissionError('private-cleanup-path-and-password')
     monkeypatch.setattr(upload_adapter.os, 'remove', reject)
+    monkeypatch.setattr(multipart_storage.os, 'unlink', reject)
     try:
         yield logs
     finally:
@@ -47,7 +48,7 @@ def test_atomic_publication_keeps_primary_exception_and_previous_bytes(tmp_path,
     chunks = tmp_path / 'chunks'
     chunks.mkdir()
     (chunks / '0.part').write_bytes(b'abc')
-    def reject(*args): raise primary
+    def reject(*args, **kwargs): raise primary
     monkeypatch.setattr(multipart_storage.os, 'replace', reject)
     with pytest.raises(error_type) as error:
         if operation == 'metadata':
