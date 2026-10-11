@@ -2,7 +2,7 @@
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from typing import Any
 from dataclasses import dataclass
 
@@ -146,7 +146,7 @@ class RuntimeConnection:
 
 @dataclass(frozen=True)
 class ExpertContext:
-    title: str
+    title: str | None
     opencode_session_id: str | None
     source_conversation_id: int | None
 
@@ -181,6 +181,8 @@ class ExpertEngine:
         with self.runtime_session_factory() as session:
             run = self._active_owned_run(session, workspace_id, user_id)
             conversation = session.get(AssistantConversation, run.conversation_id)
+            if conversation is None:
+                raise ServiceOperationError("专家会话不存在")
             return ExpertContext(conversation.title, conversation.opencode_session_id,
                                  conversation.source_conversation_id)
 
@@ -188,6 +190,8 @@ class ExpertEngine:
         with self.runtime_session_factory() as session:
             run = self._active_owned_run(session, workspace_id, user_id)
             conversation = session.get(AssistantConversation, run.conversation_id)
+            if conversation is None:
+                raise ServiceOperationError("专家会话不存在")
             conversation.opencode_session_id = session_id
             conversation.opencode_runtime_id = runtime_id
             run.opencode_session_id = session_id
@@ -203,10 +207,7 @@ class ExpertEngine:
 
     def _persist_permission(self, workspace_id: int, user_id: int, payload: dict):
         with self.runtime_session_factory() as session:
-            self._owned_run(session, workspace_id, user_id)
-            run = repository.lock_run(session, self.run_id)
-            if run.status in repository.TERMINAL_RUN_STATUSES or run.cancel_requested:
-                raise ConflictError("专家任务已取消或结束")
+            run = self._active_owned_run(session, workspace_id, user_id)
             repository.set_pending_permission(run, payload)
             session.commit()
 
@@ -296,7 +297,7 @@ class ExpertEngine:
         query: str,
         history: Sequence[dict[str, str]],
         controller: Any = None,
-    ) -> AsyncIterator[AssistantEvent]:
+    ) -> AsyncGenerator[AssistantEvent, None]:
         if controller is None:
             raise ServiceOperationError("Expert run controller is unavailable")
 

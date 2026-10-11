@@ -1,5 +1,6 @@
 """Account lifecycle SQL using the caller's Session and transaction."""
 from sqlalchemy import delete, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from app.models.user import User
@@ -31,7 +32,9 @@ def current_role(session: Session, user_id: int) -> str | None:
 def set_avatar(session: Session, user_id: int, avatar_url: str) -> bool:
     """Stage account avatar metadata in the caller's publication transaction."""
     result = session.execute(update(User).where(User.id == user_id).values(avatar=avatar_url))
-    return result.rowcount == 1
+    if isinstance(result, CursorResult):
+        return result.rowcount == 1
+    return False
 
 
 def lock_users(session: Session, user_ids: set[int]) -> list[User]:

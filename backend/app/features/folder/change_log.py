@@ -6,7 +6,6 @@ from typing import Any
 from sqlalchemy.orm import Session
 from sqlalchemy import case
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.infra.extensions import SessionLocal
 from app.infra.datetime_utils import utc_now
@@ -26,7 +25,7 @@ def _build_folder_path(folder_id: int | None, folder_map: dict[int, Folder]) -> 
     if folder_id is None or folder_id == 0:
         return "根目录"
     parts: list[str] = []
-    current_id = folder_id
+    current_id: int | None = folder_id
     seen: set[int] = set()
     while current_id and current_id in folder_map:
         if current_id in seen:
@@ -189,11 +188,7 @@ def update_checkpoint(
     """推进整理检查点；last_event_id 只增不减，避免并发回退。"""
     target_event_id = max(0, int(event_id or 0))
     now = utc_now()
-    dialect = session.get_bind().dialect.name
-    insert = {"postgresql": postgres_insert, "sqlite": sqlite_insert}.get(dialect)
-    if insert is None:
-        raise RuntimeError("Unsupported checkpoint database")
-    statement = insert(OrganizeCheckpoint).values(
+    statement = postgres_insert(OrganizeCheckpoint).values(
         workspace_id=workspace_id, last_event_id=target_event_id,
         last_full_scan_at=now if mark_full_scan else None, updated_at=now,
     )

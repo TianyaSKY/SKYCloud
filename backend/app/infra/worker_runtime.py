@@ -236,18 +236,18 @@ def worker_step(
         else:
             consumer.park_failed(message, error)
         del inflight[future]
-    message = consumer.poll(runtime.available_queues())
-    if message is None:
+    polled = consumer.poll(runtime.available_queues())
+    if polled is None:
         consumer.idle()
         return
     try:
-        if message.raw_body is not None:
-            message.raw_body.decode("utf-8")
-        future = dispatch_message(runtime, message)
+        if polled.raw_body is not None:
+            polled.raw_body.decode("utf-8")
+        future = dispatch_message(runtime, polled)
     except (TypeError, ValueError, json.JSONDecodeError) as error:
-        consumer.park_failed(message, error)
+        consumer.park_failed(polled, error)
     else:
-        inflight[future] = message
+        inflight[future] = polled
 
 
 def run_worker(max_workers: int | None = None) -> None:

@@ -1,6 +1,6 @@
 """Common engine protocol."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Protocol, Sequence
 
 from app.features.assistant.event_protocol import AssistantEvent
@@ -16,4 +16,4 @@ class AssistantEngine(Protocol):
         query: str,
         history: Sequence[dict[str, str]],
         controller: object | None = None,
-    ) -> AsyncIterator[AssistantEvent]: ...
+    ) -> AsyncGenerator[AssistantEvent, None]: ...

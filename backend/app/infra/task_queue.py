@@ -160,6 +160,13 @@ class RabbitMQTaskConsumer:
             raise RuntimeError("RabbitMQ channel is not available")
         return self._channel
 
+    def _require_connection(self) -> pika.BlockingConnection:
+        """Reconnect when needed and return the live connection."""
+        self._ensure_channel()
+        if self._connection is None:
+            raise RuntimeError("RabbitMQ connection is not available")
+        return self._connection
+
     def _decode_body(self, body: bytes | str) -> str:
         if isinstance(body, bytes):
             return body.decode("utf-8")
@@ -169,34 +176,48 @@ class RabbitMQTaskConsumer:
         """取出但不确认；仅在任务持久化完成后确认。"""
         channel = self._ensure_channel()
         method_frame, _, body = channel.basic_get(queue=queue_name, auto_ack=False)
-        if not method_frame:
+        if not method_frame or body is None:
             return None
+        # types-pika declares the body as str, but the blocking channel hands
+        # back bytes for auto_ack=False; normalize whichever arrived.
+        raw_body = body if isinstance(body, bytes) else body.encode("utf-8")
         return QueueMessage(
             queue_name=queue_name,
-            body=body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body,
+            body=raw_body.decode("utf-8", errors="replace"),
             delivery_tag=method_frame.delivery_tag, generation=self._generation,
-            raw_body=body if isinstance(body, bytes) else body.encode("utf-8"),
+            raw_body=raw_body,
         )
 
+    def _owned_delivery(self, message: QueueMessage) -> tuple[BlockingChannel, int] | None:
+        """Return the live delivery (channel, tag) or None once ownership is lost."""
+        channel = self._channel
+        if (message.generation != self._generation or channel is None
+                or channel.is_closed or message.delivery_tag is None):
+            return None
+        return channel, message.delivery_tag
+
     def owns_delivery(self, message: QueueMessage) -> bool:
-        return (message.generation == self._generation and self._channel is not None
-                and not self._channel.is_closed and message.delivery_tag is not None)
+        return self._owned_delivery(message) is not None
 
     def acknowledge(self, message: QueueMessage) -> bool:
         """Confirm on the receiving channel only; old tags cannot survive reconnect."""
-        if not self.owns_delivery(message):
+        owned = self._owned_delivery(message)
+        if owned is None:
             return False
-        self._channel.basic_ack(delivery_tag=message.delivery_tag)
+        channel, delivery_tag = owned
+        channel.basic_ack(delivery_tag=delivery_tag)
         return True
 
     def retry(self, message: QueueMessage) -> bool:
         """Leave busy/transient work available to another attempt."""
-        if not self.owns_delivery(message):
+        owned = self._owned_delivery(message)
+        if owned is None:
             return False
-        self._channel.basic_nack(delivery_tag=message.delivery_tag, requeue=True)
+        channel, delivery_tag = owned
+        channel.basic_nack(delivery_tag=delivery_tag, requeue=True)
         return True
 
-    def park_failed(self, message: QueueMessage, error: Exception) -> None:
+    def park_failed(self, message: QueueMessage, error: BaseException) -> None:
         """Keep failed payloads durably; only ack after the broker confirms the copy."""
         import base64
         if not self.owns_delivery(message):
@@ -226,8 +247,7 @@ class RabbitMQTaskConsumer:
 
     def idle(self) -> None:
         """Service heartbeats even when all executor slots are occupied."""
-        self._ensure_channel()
-        self._connection.sleep(self.poll_interval_seconds)
+        self._require_connection().sleep(self.poll_interval_seconds)
 
     def get_next_message(self) -> QueueMessage:
         """阻塞轮询全部 TASK_QUEUES，公平轮转避免饿死某一队列。"""

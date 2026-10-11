@@ -7,7 +7,7 @@ No SQL Session or model-provider configuration crosses this boundary.
 import asyncio
 import time
 from contextlib import aclosing
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 
 import anyio
@@ -17,14 +17,14 @@ from app.features.assistant.event_protocol import AssistantEvent, heartbeat_even
 
 
 async def engine_events_with_heartbeats(
-    engine_iterator: AsyncIterator[AssistantEvent],
+    engine_iterator: AsyncGenerator[AssistantEvent, None],
     run_id: int,
     interval_seconds: float = 15.0,
     *,
     on_idle: Callable[[], Awaitable[Any]] | None = None,
     on_abort: Callable[[], Awaitable[Any]] | None = None,
     poll_seconds: float = 1.0,
-) -> AsyncIterator[AssistantEvent]:
+) -> AsyncGenerator[AssistantEvent, None]:
     """Forward provider events while keeping reverse proxies' idle timers warm."""
 
     queue: asyncio.Queue[tuple[str, AssistantEvent | BaseException | None]] = asyncio.Queue(maxsize=1)

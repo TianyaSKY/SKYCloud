@@ -4,17 +4,20 @@ from contextlib import aclosing
 import os
 from functools import lru_cache
 from operator import itemgetter
+from typing import Any, Callable
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableParallel, RunnableLambda
+from langchain_core.runnables import Runnable, RunnableParallel, RunnableLambda
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from app.infra.extensions import SessionLocal
 from app.features.chat import repository
 from app.features.chat.stream_events import stream_chat_events
 from app.infra.llm.config import get_chat_model_config, get_embedding_model_config
+from app.infra.owned_work import closeable_event_stream
 from app.features.chat.query_rewrite import (
     build_multi_queries,
     build_retrieval_query,
@@ -48,7 +51,7 @@ def get_chat_model():
     config = get_chat_model_config()
 
     return ChatOpenAI(
-        api_key=config["key"],
+        api_key=SecretStr(config["key"]),
         base_url=config["api"],
         model=config["model"],
         temperature=0,
@@ -61,7 +64,7 @@ def get_embeddings_model():
     config = get_embedding_model_config()
 
     return TrackingOpenAIEmbeddings(
-        api_key=config["key"],
+        api_key=SecretStr(config["key"]),
         base_url=config["api"],
         model=config["model"],
     )
@@ -227,30 +230,32 @@ async def generate_chat_events(user_id: int, workspace_id: int, query: str, hist
             StrOutputParser()
     ).with_config({"run_name": "final_answer_chain"})
 
+    rag_steps: dict[str, Runnable[Any, Any] | Callable[[Any], Any]] = {
+        "context": {
+                       "rewrite_output": rewriter,
+                       "original_vector": RunnableLambda(
+                           embed_original_question
+                       ).with_config({"run_name": "embed_original"}),
+                       "question": itemgetter("question"),
+                       "workspace_id": itemgetter("workspace_id"),
+                       "user_id": itemgetter("user_id"),
+                   } | RunnableLambda(retrieve_docs_with_rewrite).with_config(
+            {"run_name": "custom_db_retriever"}
+        ) | format_docs,
+        "question": itemgetter("question"),
+        "history": itemgetter("history"),
+    }
+
     rag_chain = (
-            RunnableParallel({
-                "context": {
-                               "rewrite_output": rewriter,
-                               "original_vector": RunnableLambda(
-                                   embed_original_question
-                               ).with_config({"run_name": "embed_original"}),
-                               "question": itemgetter("question"),
-                               "workspace_id": itemgetter("workspace_id"),
-                               "user_id": itemgetter("user_id"),
-                           } | RunnableLambda(retrieve_docs_with_rewrite).with_config(
-                    {"run_name": "custom_db_retriever"}
-                ) | format_docs,
-                "question": itemgetter("question"),
-                "history": itemgetter("history")
-            })
+            RunnableParallel(rag_steps)
             | answer_chain
     )
 
     events = stream_chat_events(
-        lambda: rag_chain.astream_events(
+        lambda: closeable_event_stream(rag_chain.astream_events(
             {"question": query, "history": formatted_history, "user_id": user_id, "workspace_id": workspace_id},
             version="v2",
-        ),
+        )),
         user_id=user_id, query=query, record_usage=record_llm_usage,
     )
     async with aclosing(events):

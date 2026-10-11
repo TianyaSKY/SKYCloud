@@ -10,6 +10,7 @@ from app.infra.datetime_utils import utc_now, BEIJING_TZ
 import time
 
 from langchain_openai import ChatOpenAI
+from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import create_react_agent
 
 from app.infra.extensions import SessionLocal
@@ -253,7 +254,7 @@ def _organize_files(workspace_id: int, user_id: int, scope: OrganizeScope):
     all_messages = list(current_messages)
 
     for attempt in range(MAX_VALIDATION_RETRIES):
-        config = {
+        config: RunnableConfig = {
             "configurable": {"thread_id": f"file_org_{workspace_id}_{int(time.time() * 1000)}_{attempt}"},
             "recursion_limit": RECURSION_LIMIT,
         }

@@ -440,7 +440,7 @@ def find_duplicate_folders(workspace_id: int) -> str:
     session = get_session()
     try:
         folders = session.query(Folder).filter_by(workspace_id=workspace_id).all()
-        grouped = {}
+        grouped: dict[tuple[str, int | None], list[Folder]] = {}
         for f in folders:
             key = (f.name, f.parent_id)
             if key not in grouped:

@@ -53,8 +53,7 @@ def build_inline_upload(
             raise ValueError("content must be valid Base64") from exc
         if len(raw) > max_bytes:
             raise ValueError("inline upload exceeds server limit")
-        effective_mime = mime_type or data_mime or mimetypes.guess_type(normalized_filename)[0]
-        effective_mime = effective_mime or "application/octet-stream"
+        effective_mime = mime_type or data_mime or mimetypes.guess_type(normalized_filename)[0] or "application/octet-stream"
         encoded = base64.b64encode(raw).decode("ascii")
     else:
         raise ValueError("content_encoding must be utf-8 or base64")

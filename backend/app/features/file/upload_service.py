@@ -33,7 +33,7 @@ class FilePublicationOperations:
     hash_file: Callable[[str], str]
     persist_record: Callable[..., File]
     created: Callable[[File], None]
-    journal_batch: Callable[[int, list[dict[str, Any]]], None]
+    journal_batch: Callable[[int, list[dict[str, Any]]], int]
     invalidate: Callable[[list[int], int | None], None]
     normalize_hash: Callable[[str | None], str | None]
     resolve_parent: Callable[[Session, int, int | None], int | None]
@@ -123,6 +123,8 @@ class FileUploadService:
         reservations = []
         workspace_id = data.get("workspace_id")
         uploader_id = data.get("uploader_id")
+        if workspace_id is None or uploader_id is None:
+            raise BusinessRuleError("workspace_id and uploader_id are required")
 
         for file_obj in valid_files:
             staging = None
@@ -234,20 +236,20 @@ class FileUploadService:
             # Identity locks precede the shared-object lock, matching cancellation.
             assert_can_write_locked(session, workspace_id, uploader_id)
             lock_object_path(session, object_name)
-            source_file = repository.find_live_file(session, source_id)
-            if source_file is not None and source_file.workspace_id != workspace_id:
+            live_source = repository.find_live_file(session, source_id)
+            if live_source is not None and live_source.workspace_id != workspace_id:
                 raise PermissionDeniedError('Reusable file belongs to another workspace')
-            if source_file is None or source_file.file_path != object_name or not self.storage_factory().file_exists(object_name):
+            if live_source is None or live_source.file_path != object_name or not self.storage_factory().file_exists(object_name):
                 raise ConflictError("Reusable file no longer available; retry upload")
-            resolved_mime = mime_type or cast(str | None, source_file.mime_type)
-            status = cast(str | None, source_file.status) or "pending"
-            description = cast(str | None, source_file.description) if status == "success" else None
-            vector_info = source_file.vector_info if status == "success" else None
-            upload_authorization.consume(session, workspace_id, uploader_id, reservation_id, int(source_file.file_size or 0))
+            resolved_mime = mime_type or cast(str | None, live_source.mime_type)
+            status = cast(str | None, live_source.status) or "pending"
+            description = cast(str | None, live_source.description) if status == "success" else None
+            vector_info = live_source.vector_info if status == "success" else None
+            upload_authorization.consume(session, workspace_id, uploader_id, reservation_id, int(live_source.file_size or 0))
             new_file = self.files.persist_record(session,
                 name=filename,
-                file_path=cast(str, source_file.file_path),
-                file_size=cast(int | None, source_file.file_size) or 0,
+                file_path=cast(str, live_source.file_path),
+                file_size=cast(int | None, live_source.file_size) or 0,
                 mime_type=resolved_mime,
                 workspace_id=workspace_id,
                 uploader_id=uploader_id,

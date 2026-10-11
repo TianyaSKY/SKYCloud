@@ -45,9 +45,10 @@ def _recover_abandoned_run(session: Session, run: AssistantRun, *, commit: bool 
         return False
     # Read and lock the latest durable heartbeat. A process-local registry
     # cannot establish that a worker on another host has disappeared.
-    run = repository.lock_run(session, int(run.id))
-    if run is None or run.status in repository.TERMINAL_RUN_STATUSES:
+    locked = repository.lock_run(session, int(run.id))
+    if locked is None or locked.status in repository.TERMINAL_RUN_STATUSES:
         return False
+    run = locked
     started_at = to_utc_datetime(run.started_at or run.created_at)
     if started_at is None:
         return False
@@ -57,6 +58,8 @@ def _recover_abandoned_run(session: Session, run: AssistantRun, *, commit: bool 
         grace_seconds = 45
     from sqlalchemy import func, select
     now = session.scalar(select(func.clock_timestamp())) if session.get_bind().dialect.name == 'postgresql' else utc_now()
+    if now is None:
+        now = utc_now()
     heartbeat = run.metadata_dict.get("worker_heartbeat_unix")
     if isinstance(heartbeat, (float, int)) and not isinstance(heartbeat, bool) and math.isfinite(heartbeat):
         age = now.timestamp() - heartbeat
@@ -341,10 +344,10 @@ async def _stream_persisted(worker, persistence, history):
                                  run_id=persistence.run_id, message_id=persistence.message_id)
         return
     controller = run_registry.register(run_id)
-    event_log = []
-    answer_parts = []
-    metadata = {}
-    usage = {}
+    event_log: list[AssistantEvent] = []
+    answer_parts: list[str] = []
+    metadata: dict[str, Any] = {}
+    usage: dict[str, Any] = {}
     last_commit = last_lease = time.monotonic()
     event_count = 0
 

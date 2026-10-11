@@ -3,7 +3,7 @@
 服务层抛出 DomainError 子类；API 层统一映射为 JSON HTTP 响应。
 """
 
-from typing import Any
+from typing import Any, Sequence
 
 from fastapi import FastAPI, HTTPException as FastAPIHTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -81,7 +81,7 @@ def _to_json_safe(value: Any) -> Any:
     return value
 
 
-def _compact_validation_errors(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _compact_validation_errors(errors: Sequence[Any]) -> list[dict[str, Any]]:
     """压缩 Pydantic 校验错误，剔除不可 JSON 序列化字段。"""
     compact: list[dict[str, Any]] = []
     for err in errors:

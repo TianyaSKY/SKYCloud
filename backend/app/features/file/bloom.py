@@ -148,7 +148,7 @@ def _maybe_contains(user_id: int | None, file_id: int) -> bool:
 
 def add_file(file_id: int, user_id: int | None) -> None:
     """增量写入；同时更新用户 scope 与全局 scope（若 user_id 非空）。"""
-    scopes = [None]
+    scopes: list[int | None] = [None]
     if user_id is not None:
         scopes.append(user_id)
 

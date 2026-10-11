@@ -1,7 +1,7 @@
 """将变更事件压缩为整理任务可用的摘要文本与受影响实体 ID 集合。"""
 
 from collections import Counter
-from typing import Any
+from typing import Any, Sequence
 
 DEFAULT_SUMMARY_EVENT_LINES = 40
 
@@ -13,7 +13,7 @@ def _event_value(event: dict[str, Any] | Any, key: str, default: Any = None) -> 
 
 
 def summarize_events(
-        events: list[dict[str, Any] | Any],
+        events: Sequence[Any],
         *,
         total_count: int,
         from_event_id: int,

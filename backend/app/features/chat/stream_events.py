@@ -4,7 +4,7 @@ The caller owns model-chain construction and supplies the event source and
 usage writer. This module owns iterator closure and cancellation accounting.
 """
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
 import json
 from typing import Any, Protocol
@@ -21,9 +21,9 @@ class UsageRecorder(Protocol):
 
 
 async def stream_chat_events(
-    event_factory: Callable[[], AsyncIterator[dict[str, Any]]], *,
+    event_factory: Callable[[], AsyncGenerator[dict[str, Any], None]], *,
     user_id: int, query: str, record_usage: UsageRecorder,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     # ---------------------------------------------------------------------------
     # Token 用量追踪
     # ---------------------------------------------------------------------------

@@ -5,10 +5,14 @@ LangChain 等无法替换底层调用的场景，用 record_llm_usage() 手动�
 
 import asyncio
 from app.infra.owned_work import run_owned
-from typing import Any
+from typing import TYPE_CHECKING, Any, Iterable, cast
 
 from langchain_openai import OpenAIEmbeddings
 from openai import AsyncOpenAI
+from pydantic import SecretStr
+
+if TYPE_CHECKING:
+    from openai.types.chat import ChatCompletionMessageParam
 
 from app.infra.llm.usage import safe_record as _safe_record
 
@@ -68,7 +72,9 @@ async def chat_completion(
 
     resp = await client.chat.completions.create(
         model=model,
-        messages=messages,
+        # The SDK types messages as strict TypedDicts; callers build the same
+        # JSON payloads from dynamic text/vision content, so pin the shape here.
+        messages=cast("Iterable[ChatCompletionMessageParam]", messages),
         **kwargs,
     )
 
@@ -162,7 +168,7 @@ class TrackingOpenAIEmbeddings(OpenAIEmbeddings):
 
     def _as_config(self) -> dict[str, str]:
         api_key = self.openai_api_key
-        if hasattr(api_key, "get_secret_value"):
+        if isinstance(api_key, SecretStr):
             key_str = api_key.get_secret_value()
         else:
             key_str = str(api_key or "")
@@ -173,22 +179,22 @@ class TrackingOpenAIEmbeddings(OpenAIEmbeddings):
         }
 
     async def aembed_documents(
-            self, texts: list[str], chunk_size: int | None = None, *, user_id: int = 0
+            self, texts: list[str], chunk_size: int | None = None, **kwargs: Any
     ) -> list[list[float]]:
         if not texts:
             return []
         return await embed_texts(
             texts=texts,
             config=self._as_config(),
-            user_id=user_id,
+            user_id=int(kwargs.get("user_id") or 0),
             query_summary=f"chat_rag({len(texts)} texts)",
         )
 
-    async def aembed_query(self, text: str, *, user_id: int = 0) -> list[float]:
+    async def aembed_query(self, text: str, **kwargs: Any) -> list[float]:
         result = await embed_texts(
             texts=[text],
             config=self._as_config(),
-            user_id=user_id,
+            user_id=int(kwargs.get("user_id") or 0),
             query_summary=f"chat_rag_query",
         )
         return result[0] if result else []

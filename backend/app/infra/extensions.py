@@ -1,7 +1,8 @@
 """基础设施扩展：数据库引擎/Session、Redis 客户端与全局配置。"""
 
 import os
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
+from typing import Any, Protocol, cast
 
 from dotenv import load_dotenv
 from redis import Redis
@@ -75,14 +76,52 @@ db = _DBProxy()
 Base = declarative_base()
 
 # Redis 客户端：socket 超时，避免 localhost/IPv6 问题导致启动挂死
-redis_client = Redis(
+class RedisPipeline(Protocol):
+    """同步 pipeline 子集（redis-py 把同一 mixin 同时标注为同步与异步返回）。"""
+
+    def getbit(self, name: str, offset: int) -> int: ...
+    def setbit(self, name: str, offset: int, value: int) -> int: ...
+    def hset(
+        self,
+        name: str,
+        key: str | None = None,
+        value: str | None = None,
+        mapping: dict[str, str] | None = None,
+    ) -> int: ...
+    def rename(self, src: str, dst: str) -> bool: ...
+    def delete(self, *names: str) -> int: ...
+    def execute(self) -> list[Any]: ...
+
+
+class SyncRedisClient(Protocol):
+    """本代码库实际使用的同步 Redis 契约（键值、哈希、脚本与扫描）。"""
+
+    def get(self, name: str) -> str | None: ...
+    def getdel(self, name: str) -> str | None: ...
+    def set(self, name: str, value: str, *, ex: int | None = None, nx: bool = False) -> bool | None: ...
+    def setex(self, name: str, time: int, value: str) -> bool: ...
+    def ttl(self, name: str) -> int: ...
+    def delete(self, *names: str) -> int: ...
+    def hget(self, name: str, key: str) -> str | None: ...
+    def hgetall(self, name: str) -> dict[str, str]: ...
+    def eval(self, script: str, numkeys: int, *keys_and_args: Any) -> Any: ...
+    def scan(
+        self, cursor: int = 0, match: str | None = None, count: int | None = None
+    ) -> tuple[int, list[str]]: ...
+    def scan_iter(self, match: str | None = None, count: int | None = None) -> Iterator[str]: ...
+    def pipeline(self, transaction: bool = True) -> RedisPipeline: ...
+
+
+# redis-py 把同一 mixin 同时标注为同步与异步返回（Awaitable[X] | X）；同步类在运行时
+# 一定返回 X，这里用一次性 cast 把契约收敛到 SyncRedisClient。
+redis_client = cast(SyncRedisClient, Redis(
     host=REDIS_HOST,
     port=int(REDIS_PORT),
     db=0,
     decode_responses=True,
     socket_connect_timeout=float(os.getenv("REDIS_CONNECT_TIMEOUT", "3")),
     socket_timeout=float(os.getenv("REDIS_SOCKET_TIMEOUT", "5")),
-)
+))
 
 
 def get_db() -> Generator[Session, None, None]:

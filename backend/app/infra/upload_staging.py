@@ -9,20 +9,22 @@ from app.exceptions import ConflictError
 from loguru import logger
 
 import os
+import sys
 from pathlib import Path
 import re
 import shutil
 import time
 import uuid
 
-if os.name == 'nt':
+# sys.platform (not os.name) lets the type checker skip the Windows-only stub gap.
+if sys.platform == 'win32':
     import msvcrt
 else:
     import fcntl
 
 
 def _lock(handle):
-    if os.name == 'nt':
+    if sys.platform == 'win32':
         handle.seek(0)
         msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
     else:
@@ -79,7 +81,7 @@ class StagedUpload:
                 shutil.rmtree(self.directory, ignore_errors=True)
         finally:
             self.handle.close()
-        if os.name == 'nt':
+        if sys.platform == 'win32':
             shutil.rmtree(self.directory, ignore_errors=True)
         try:
             self.directory.parent.rmdir()
@@ -106,7 +108,7 @@ def cleanup_staging(upload_root, max_age_seconds):
                 handle = os.fdopen(fd, 'r+b')
                 _lock(handle)
             # POSIX permits deleting locked files; Windows needs a closed lease.
-            if os.name == 'nt' and handle is not None:
+            if sys.platform == 'win32' and handle is not None:
                 handle.close()
                 handle = None
             shutil.rmtree(directory)

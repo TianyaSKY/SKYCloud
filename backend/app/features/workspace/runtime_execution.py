@@ -11,7 +11,7 @@ from app.exceptions import ConflictError
 
 _local = threading.local()
 _guard = threading.Lock()
-_sqlite_locks = {}
+_sqlite_locks: dict[tuple[int, int, int], tuple[threading.RLock, int]] = {}
 
 
 def _invalidate(connection):
@@ -25,7 +25,7 @@ def _invalidate(connection):
 def execution(session, workspace_id, user_id):
     bind = session.get_bind()
     key = (id(bind.engine), int(workspace_id), int(user_id))
-    active = getattr(_local, 'active', set())
+    active: set[tuple[int, int, int]] = getattr(_local, 'active', set())
     if key in active:
         yield
         return

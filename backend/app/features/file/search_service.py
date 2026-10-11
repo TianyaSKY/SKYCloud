@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.models.workspace import Workspace
 from loguru import logger
-from app.exceptions import PermissionDeniedError
+from app.exceptions import PermissionDeniedError, ServiceOperationError
 from app.infra.cache import cacheable, sql_cache_allowed
 from app.infra.llm.config import get_embedding_model_config
 from app.features.file import repository
@@ -35,6 +35,8 @@ async def search_files(
                     if user_id is not None:
                         assert_member(owned_session, workspace_id, user_id)
                     return function(owned_session, *args) if function is not None else None
+            if session is None:
+                raise ServiceOperationError("A session is required when no session_factory is provided")
             if user_id is not None:
                 assert_member(session, workspace_id, user_id)
             return function(session, *args) if function is not None else None

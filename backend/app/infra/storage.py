@@ -161,10 +161,16 @@ class MinIOStorageClient:
         """获取对象大小（字节）。"""
         try:
             stat = self._client.stat_object(self._bucket, object_name)
-            return stat.size
+            size = stat.size
         except S3Error as e:
             logger.error("MinIO 获取文件大小失败 (error_type={})", type(e).__name__)
             raise
+        if size is None:
+            # An existing object always reports a length; a missing one must not
+            # be silently reported as zero bytes.
+            logger.error("MinIO stat 缺少对象大小 (error_type=ValueError)")
+            raise ValueError("MinIO object size is unavailable")
+        return size
 
     def download_to_temp(self, object_name: str, suffix: str = "") -> str:
         """下载到临时文件并返回路径，供索引等需要本地读取的场景使用。

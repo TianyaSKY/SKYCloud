@@ -47,6 +47,7 @@ def _chunks_handle(chunks_dir: str, root: str | None, *, create: bool = False):
         raise BusinessRuleError('Invalid multipart directory')
     parts = os.path.relpath(chunks_dir, root).split(os.sep)
     handles = []
+    handle: int | str
     try:
         if create:
             os.makedirs(root, exist_ok=True)
@@ -63,16 +64,17 @@ def _chunks_handle(chunks_dir: str, root: str | None, *, create: bool = False):
                     handle = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=handle)
                     handles.append(handle)
         else:
-            handle = root
+            path = root
             for part in ['.'] + parts:
-                handle = os.path.join(handle, part)
+                path = os.path.join(path, part)
                 if create:
                     try:
-                        os.mkdir(handle, mode=0o700)
+                        os.mkdir(path, mode=0o700)
                     except FileExistsError:
                         pass
-                if not _ordinary(os.stat(handle, follow_symlinks=False), stat.S_ISDIR):
+                if not _ordinary(os.stat(path, follow_symlinks=False), stat.S_ISDIR):
                     raise BusinessRuleError('Invalid multipart directory')
+            handle = path
         yield handle
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.ENOTDIR):

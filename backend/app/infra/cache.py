@@ -13,7 +13,7 @@ import asyncio
 import functools
 import json
 import uuid
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Protocol
 from sqlalchemy import text, select
 from app.models.cache_revision import SqlCacheRevision
 
@@ -78,6 +78,12 @@ def invalidate_cache_generation(scope: str) -> None:
         logger.warning("[cache] generation invalidation failed: error_type={}", type(exc).__name__)
 
 
+class CachedFunction(Protocol):
+    """装饰后的可调用对象；运行时经 ``cache_prefix`` 暴露缓存前缀供外部内省。"""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+
+
 def _generation_cache_key(cache_key: str, scope: str) -> str:
     generation = redis_client.get(scope)
     if generation is None:
@@ -115,6 +121,7 @@ def cacheable(
         def sync_wrapper(*args, **kwargs):
             if cache_allowed is not None and not cache_allowed(*args, **kwargs):
                 return func(*args, **kwargs)
+            cache_key: str | None
             cache_key = _build_cache_key(prefix, args, kwargs, key)
             try:
                 if generation_key is not None:
@@ -145,6 +152,7 @@ def cacheable(
         async def async_wrapper(*args, **kwargs):
             if cache_allowed is not None and not await run_owned(cache_allowed, *args, **kwargs):
                 return await func(*args, **kwargs)
+            cache_key: str | None
             cache_key = _build_cache_key(prefix, args, kwargs, key)
             try:
                 if generation_key is not None:
@@ -172,8 +180,8 @@ def cacheable(
                     logger.warning("[cache] write failed: error_type={}", type(e).__name__)
             return result
 
-        chosen = async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
-        chosen.cache_prefix = prefix  # 供外部内省前缀
+        chosen: CachedFunction = async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
+        setattr(chosen, "cache_prefix", prefix)  # 供外部内省前缀
         return chosen
 
     return decorator

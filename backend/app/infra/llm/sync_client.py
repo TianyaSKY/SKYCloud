@@ -8,9 +8,12 @@ are synchronous and do not have an event-loop lifetime to manage.
 from __future__ import annotations
 
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any, Iterable, cast
 
 from openai import OpenAI
+
+if TYPE_CHECKING:
+    from openai.types.chat import ChatCompletionMessageParam
 
 from app.infra.llm.usage import safe_record as _safe_record
 
@@ -58,7 +61,9 @@ def chat_completion(
     model = config.get("model", "")
     response = client.chat.completions.create(
         model=model,
-        messages=messages,
+        # The SDK types messages as strict TypedDicts; callers build the same
+        # JSON payloads from dynamic text/vision content, so pin the shape here.
+        messages=cast("Iterable[ChatCompletionMessageParam]", messages),
         **kwargs,
     )
 

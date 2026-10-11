@@ -5,6 +5,7 @@
 import logging
 import os
 import sys
+from types import FrameType
 
 from loguru import logger
 
@@ -13,11 +14,13 @@ class InterceptHandler(logging.Handler):
     """把标准库 logging 记录转发到 Loguru。"""
 
     def emit(self, record: logging.LogRecord) -> None:
+        level: str | int
         try:
             level = logger.level(record.levelname).name
         except ValueError:
             level = record.levelno
-        frame, depth = logging.currentframe(), 2
+        frame: FrameType | None = logging.currentframe()
+        depth = 2
         while frame is not None and frame.f_code.co_filename == logging.__file__:
             frame = frame.f_back
             depth += 1

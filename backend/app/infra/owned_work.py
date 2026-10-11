@@ -1,7 +1,22 @@
 """Keep synchronous worker lifetime inside the async operation that owns it."""
 import asyncio
 import threading
+from collections.abc import AsyncGenerator, AsyncIterator
+from typing import TypeVar, cast
+
 from app.infra.async_stream import drain_cleanup
+
+_Event = TypeVar("_Event")
+
+
+def closeable_event_stream(events: AsyncIterator[_Event]) -> AsyncGenerator[_Event, None]:
+    """Re-type a provider event stream that is an async generator at runtime.
+
+    Third-party event APIs (for example LangChain's ``astream_events``) declare
+    ``AsyncIterator`` although they return an async generator. Stream owners must
+    be able to ``aclose`` them so the generator is closed on disconnect.
+    """
+    return cast(AsyncGenerator[_Event, None], events)
 
 
 async def run_owned(function, *args, cancel_queued=True, **kwargs):

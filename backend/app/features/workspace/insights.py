@@ -28,7 +28,7 @@ def storage_overview(session: Session, workspace_id: int, user_id: int) -> dict:
 def folder_tree(session: Session, workspace_id: int, user_id: int, max_depth: int = 3) -> list[dict]:
     assert_member(session, workspace_id, user_id)
     depth = max(1, min(max_depth, 10))
-    children = {}
+    children: dict[int | None, list] = {}
     for folder in repository.workspace_folders(session, workspace_id):
         children.setdefault(folder.parent_id, []).append(folder)
 

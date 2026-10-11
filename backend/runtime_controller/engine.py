@@ -64,7 +64,9 @@ class Engine:
             ids = [int(labels[f"skycloud.{key}"]) for key in ("workspace_id", "user_id", "runtime_id")]
         except (KeyError, ValueError, TypeError) as exc:
             raise PolicyViolation("Container is not a managed runtime") from exc
-        if min(ids) <= 0 or labels.get("skycloud.component") != "opencode-runtime" or not matches_runtime_name(container.name, ids[0], ids[1], labels):
+        name = container.name
+        if (name is None or min(ids) <= 0 or labels.get("skycloud.component") != "opencode-runtime"
+                or not matches_runtime_name(name, ids[0], ids[1], labels)):
             raise PolicyViolation("Container identity does not match runtime labels")
         if require_policy:
             host = container.attrs.get("HostConfig", {})
@@ -239,7 +241,10 @@ class Engine:
                     time.sleep(0.05)
         container.reload()
         try:
-            self.managed(container.id, require_policy=True)
+            ref = container.id
+            if not isinstance(ref, str):
+                raise PolicyViolation("Invalid runtime reference")
+            self.managed(ref, require_policy=True)
         except PolicyViolation:
             # An image may declare implicit volumes. Reject the new resource
             # before admission and remove only the container just created.

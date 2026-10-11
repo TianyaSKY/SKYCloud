@@ -157,7 +157,7 @@ def authorize_account_mutation(session: Session, actor_id: int, user_id: int | N
     identities = {actor_id} if user_id is None else {actor_id, user_id}
     users = {user.id: user for user in account_repository.lock_users(session, identities)}
     actor = users.get(actor_id)
-    if actor is None or (user_id is None and actor.role != "admin"):
+    if actor is None or actor.role is None or (user_id is None and actor.role != "admin"):
         raise PermissionDeniedError("Permission denied")
     if user_id is not None:
         ensure_user_access(actor_id, actor.role, user_id)

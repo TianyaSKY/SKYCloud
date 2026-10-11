@@ -40,22 +40,23 @@ async def runtime_lease(runtime_id: int, *, on_lost=None, before_acquire=None):
     lost = False
     keeper = None
     owner = asyncio.current_task()
+    if owner is None:
+        raise ServiceOperationError('Expert runtime lease requires a running task')
     loop = asyncio.get_running_loop()
-    ttl = None
 
-    def acquire():
+    def acquire(ttl_seconds: int):
         nonlocal attempted
         attempted = True
-        deadline = loop.time() + ttl
+        deadline = loop.time() + ttl_seconds
         result = extensions.redis_client.set(
             redis_key, token, nx=True,
-            ex=ttl,
+            ex=ttl_seconds,
         )
         return result, deadline
 
-    def renew():
-        deadline = loop.time() + ttl
-        result = extensions.redis_client.eval(_RENEW, 1, redis_key, token, ttl * 1000)
+    def renew(ttl_seconds: int):
+        deadline = loop.time() + ttl_seconds
+        result = extensions.redis_client.eval(_RENEW, 1, redis_key, token, ttl_seconds * 1000)
         return result, deadline
 
     def lose_ownership():
@@ -63,16 +64,16 @@ async def runtime_lease(runtime_id: int, *, on_lost=None, before_acquire=None):
         lost = True
         owner.cancel('expert-runtime-lease-lost')
 
-    async def keep_alive(deadline):
+    async def keep_alive(ttl_seconds: int, deadline):
         pending = None
         try:
             while True:
-                await asyncio.sleep(min(ttl / 3, max(0, deadline - loop.time())))
+                await asyncio.sleep(min(ttl_seconds / 3, max(0, deadline - loop.time())))
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     lose_ownership()
                     return
-                pending = asyncio.create_task(run_owned(renew))
+                pending = asyncio.create_task(run_owned(renew, ttl_seconds))
                 ready, _ = await asyncio.wait({pending}, timeout=remaining)
                 if not ready:
                     # Signal loss before draining a slow Redis operation. A
@@ -110,7 +111,7 @@ async def runtime_lease(runtime_id: int, *, on_lost=None, before_acquire=None):
             ttl = int(os.getenv('ASSISTANT_RUNTIME_LOCK_TTL', '3600'))
             if ttl <= 0:
                 raise ValueError('Lease lifetime must be positive')
-            result, deadline = await run_owned(acquire)
+            result, deadline = await run_owned(acquire, ttl)
         except Exception as exc:
             logger.error('Expert runtime lease acquisition failed (error_type={})', type(exc).__name__)
             raise ServiceOperationError('Expert runtime lock is temporarily unavailable') from None
@@ -118,7 +119,7 @@ async def runtime_lease(runtime_id: int, *, on_lost=None, before_acquire=None):
             raise ConflictError('Expert runtime is already busy')
         if loop.time() >= deadline:
             raise ServiceOperationError('Expert runtime lock confirmation expired')
-        keeper = asyncio.create_task(keep_alive(deadline))
+        keeper = asyncio.create_task(keep_alive(ttl, deadline))
         yield token
     except asyncio.CancelledError:
         failed = True

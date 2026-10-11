@@ -2,7 +2,7 @@
 
 import json
 from contextlib import aclosing
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from collections.abc import Callable
 from typing import Any
 
@@ -53,7 +53,7 @@ class FastEngine:
         query: str,
         history: Sequence[dict[str, str]],
         controller: object | None = None,
-    ) -> AsyncIterator[AssistantEvent]:
+    ) -> AsyncGenerator[AssistantEvent, None]:
         del controller
         iterator = self.legacy_generator(
             user_id,

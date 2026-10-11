@@ -4,6 +4,7 @@
 """
 
 import base64
+import binascii
 import mimetypes
 import re
 import os
@@ -40,11 +41,10 @@ class FastAPIUploadAdapter:
 class Base64UploadAdapter:
     """解析 data URI 或裸 Base64，补全扩展名后写入磁盘。"""
 
-    def __init__(self, base64_str: str, filename: str = None):
+    def __init__(self, base64_str: str, filename: str | None = None):
         self._base64_str = base64_str
-        self.filename = filename
         self.mimetype = "application/octet-stream"
-        self._data = None
+        self._data: str
 
         # 支持 data:image/png;base64,xxxx 形式
         if "," in base64_str:
@@ -57,7 +57,7 @@ class Base64UploadAdapter:
             self._data = base64_str
 
         # 无文件名时按 MIME 猜扩展名，避免落盘无后缀
-        if not self.filename:
+        if not filename:
             ext = mimetypes.guess_extension(self.mimetype)
             if not ext:
                 if self.mimetype == "image/png":
@@ -69,9 +69,11 @@ class Base64UploadAdapter:
                 else:
                     ext = ".bin"
             self.filename = f"upload_{uuid.uuid4().hex[:8]}{ext}"
-        elif "." not in self.filename:
+        elif "." not in filename:
             ext = mimetypes.guess_extension(self.mimetype) or ".bin"
-            self.filename = f"{self.filename}{ext}"
+            self.filename = f"{filename}{ext}"
+        else:
+            self.filename = filename
 
     def decoded_bytes(self, max_bytes: int) -> bytes:
         # Reject oversized encoded input before allocating decoded bytes.
@@ -79,7 +81,7 @@ class Base64UploadAdapter:
             raise PayloadTooLargeError("File too large")
         try:
             file_data = base64.b64decode(self._data, validate=True)
-        except (ValueError, base64.binascii.Error) as exc:
+        except (ValueError, binascii.Error) as exc:
             raise BusinessRuleError("Invalid Base64 upload") from exc
         if len(file_data) > max_bytes:
             raise PayloadTooLargeError("File too large")

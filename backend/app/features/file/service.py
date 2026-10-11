@@ -509,6 +509,8 @@ def batch_delete_items(session: Session, workspace_id: int, user_id: int, items:
     for item in items:
         assert_can_write_locked(session, workspace_id, user_id)
         item_id = item.get("id")
+        if item_id is None:
+            raise BusinessRuleError("Item id is required")
         is_folder = item.get("is_folder", False)
         if is_folder:
             folder_service.get_authorized_folder(session, workspace_id, user_id, item_id)
@@ -557,6 +559,8 @@ async def process_status(session: Session | None, workspace_id: int, *, session_
                 if user_id is not None:
                     assert_member(owned_session, workspace_id, user_id)
                 return _process_status(owned_session, workspace_id)
+        if session is None:
+            raise ServiceOperationError("A session is required when no session_factory is provided")
         return _process_status(session, workspace_id)
     return await run_owned(work)
 

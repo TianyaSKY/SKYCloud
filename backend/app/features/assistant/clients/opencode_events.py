@@ -242,9 +242,10 @@ def map_opencode_event(
             reasoning_text = text_state.get(reasoning_key, "") + delta
             text_state[reasoning_key] = reasoning_text
         else:
-            reasoning_text = part.get("text")
-            if not isinstance(reasoning_text, str):
+            fallback_text = part.get("text")
+            if not isinstance(fallback_text, str):
                 return result
+            reasoning_text = fallback_text
         title = extract_reasoning_title(reasoning_text)
         if title and text_state.get("__title_emitted") != "1":
             text_state["__title_emitted"] = "1"
@@ -297,14 +298,15 @@ def map_opencode_event(
         return result
 
     if kind in {"session.status", "session.updated", "session.idle", "session.busy"}:
-        status = properties.get("status")
-        status = status.get("type") if isinstance(status, dict) else status
-        status = str(status or ("idle" if kind.endswith("idle") else "busy")).lower()
-        if status in {"idle", "completed", "complete"} or kind.endswith(".idle"):
+        session_status = properties.get("status")
+        if isinstance(session_status, dict):
+            session_status = session_status.get("type")
+        session_status = str(session_status or ("idle" if kind.endswith("idle") else "busy")).lower()
+        if session_status in {"idle", "completed", "complete"} or kind.endswith(".idle"):
             result.append(AssistantEvent("status", {"content": "专家任务已完成", "status": "idle"}))
             result.append(AssistantEvent("done", {"status": "completed"}))
         else:
-            result.append(AssistantEvent("status", {"content": "专家正在处理", "status": status}))
+            result.append(AssistantEvent("status", {"content": "专家正在处理", "status": session_status}))
         return result
 
     if "error" in kind:
