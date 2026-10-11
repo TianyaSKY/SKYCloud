@@ -1,0 +1,51 @@
+{
+  "date": "2026-10-11",
+  "platform": "Linux x86_64, headless Chromium, disposable PostgreSQL/pgvector + Redis + MinIO + Controller + built OpenCode runtime",
+  "fixture": {
+    "url": "http://app.skycloud.localhost:60935",
+    "workspace_id": 197556243,
+    "runtime_frame": "http://r253452771.skycloud.localhost:34447/",
+    "images": {
+      "opencode": "sha256:87145752e1927dc2692ec2ec67b79165a9a60a944b9b83cbfe317734e3114c0d",
+      "controller": "skycloud-ci-cleanup-controller (backend/runtime_controller/Dockerfile)",
+      "minio": "sha256:e8ff8febedb47781465828332a356fea3c1458084704b53ac350210788e56dbc",
+      "infra_redis": "sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499"
+    }
+  },
+  "passed": [
+    "Login through the production Vite build served by pinned nginx",
+    "Reload restores the authenticated file list from the HttpOnly refresh cookie (localStorage holds only current_workspace_id)",
+    "Native file chooser uploads a 104-byte synthetic file: POST /api/files/preflight 200, POST /api/files 201",
+    "UI download emits a real browser download; bytes and sha256 match the uploaded payload",
+    "Workspace page displays the running SKYcode runtime and opens it",
+    "OpenCode iframe loads through the runtime-origin gateway with real /global/config, /provider, /project, /session/status, /global/event 200 responses",
+    "Losing the refresh cookie fails closed: reload shows the login form and no file data",
+    "No console errors on the parent page"
+  ],
+  "payload": {
+    "bytes": 104,
+    "sha256": "1c7abfdc188050eec4a1e4fd1da20c725d20e04a7ed350af9044393c08c11944"
+  },
+  "cookie_flags": {
+    "name": "skycloud_refresh",
+    "httpOnly": true,
+    "sameSite": "Strict",
+    "secure": false
+  },
+  "limitations": [
+    "Fixture serves plain HTTP on localhost, so the refresh cookie is not Secure here; deployments require HTTPS.",
+    "Browser file chooser is exercised; native OS picker dialogs are not.",
+    "Expert permission grant/recovery, terminal keystrokes and expiry mid-stream were not driven in this run.",
+    "No external model provider is called; the runtime uses fixture configuration only.",
+    "The indexing worker is not part of this fixture, so the uploaded file stays in \"processing\" state."
+  ],
+  "screenshots": [
+    "browser-files-20261011.webp",
+    "browser-workspace-20261011.webp"
+  ],
+  "fixture_run": "pytest tests/integration/test_full_browser.py (RUN_FULL_BROWSER=1) -> 1 passed in 253.55s; fixture removed its disposable containers/volumes/networks",
+  "harness_fixes": [
+    "tests/integration/fixture_paths.FIXTURE_DIR replaces hardcoded /private/tmp",
+    "Browser fixture binds its API on the default bridge gateway on Linux and substitutes the literal address into the nginx template (host.docker.internal is resolved through the container resolver, bypassing /etc/hosts)"
+  ]
+}
