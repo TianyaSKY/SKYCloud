@@ -726,7 +726,7 @@
       "Workstreams 4/5/6 residual gaps: file/service.py and docker_service.py still fuse persistence with external I/O; MCP read_file_content opens MinIO I/O next to its Session; chat repository owns its Session; folder service vs organizer tools duplicate CRUD with drifted cache eviction; routers call object storage directly, so uncaught S3Error still surfaces as a generic 500.",
       "Workstream 8 residuals: expert permission grant/recovery and expiry mid-stream are not driven in a browser; native OS picker dialogs are not exercised (the browser file chooser is); the OpenCode web UI's project picker returns an empty folder list in the sandbox, so terminal keystrokes are covered by the relay suite; HomeView, InboxView, DocView and the token-usage views still have no behavior tests.",
       "Workstream 9 residuals: only environments that need an approved external model service remain unverified here (the indexing/organize pipelines use the in-fixture synthetic provider).",
-      "Workstream 10: push the local commits, run the hosted Linux CI jobs (including the new runtime-lifecycle suite) and configure + read back master protection — none of it authorised yet."
+      "Workstream 10: hosted CI result for 6b28fb4 (in progress when this record was written); any job it reports failing must be fixed the same way before the remediation can be called complete."
     ],
     "verified_cache_semantics": {
       "finding": "Cache correctness after mutations/permission changes is fenced transactionally, not by best-effort deletes.",
@@ -739,6 +739,11 @@
         "The legacy literal-key evictions (folder service evict_cache of 'workspace:folders:<id>' and the organizer's clear_workspace_cache) are no-ops under the revision scheme: dead weight, not a correctness risk.",
         "REST folder CRUD and the organizer toolset still implement duplicate-name validation twice; the real-PostgreSQL suites show identical outcomes, so this is maintainability-only."
       ]
+    },
+    "delivery": {
+      "pushed": "git push origin master -> 6a72958..6b28fb4",
+      "protection": "applied via gh api PUT and read back: strict checks with 9 contexts, linear history, no force push/delete, conversation resolution, no required reviews, admins not enforced",
+      "hosted_ci": "earlier runs for 6b972a6 and 6a72958 failed in the integration job (10 failed / 33 errors) for exactly the causes fixed in this session; the run for 6b28fb4 is being watched"
     }
   },
   "completion_rule": "每个工作流的每一条完成标准都必须有当前（本轮或上一轮可复现）证据；任何缺少直接证据的条目都保持未完待续，不得标记为完成。",

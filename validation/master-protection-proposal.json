@@ -2,7 +2,7 @@
   "date": "2026-10-11",
   "repository": "TianyaSKY/SKYCloud",
   "branch": "master",
-  "status": "prepared, not applied (remote push and protection changes are not authorised yet)",
+  "status": "applied and read back on 2026-10-11",
   "push": {
     "remote": "origin (https://github.com/TianyaSKY/SKYCloud)",
     "ahead_of_origin_master": 13,
@@ -66,6 +66,47 @@
     "notes": [
       "The GitHub Linux jobs themselves are still unrun; the local runs mirror their commands.",
       "Indexing/organize pipeline suites and any approved external model provider remain unverified in this environment."
+    ]
+  },
+  "push_result": {
+    "command": "git push origin master",
+    "result": "6a72958..6b28fb4 master -> master",
+    "commits": "29 commits since the last pushed commit"
+  },
+  "protection_read_back": {
+    "required_status_checks": {
+      "strict": true,
+      "contexts": [
+        "Backend tests",
+        "Frontend checks",
+        "PostgreSQL, RabbitMQ, MinIO and Controller",
+        "Image (backend)",
+        "Image (controller)",
+        "Image (frontend)",
+        "Image (runtime)",
+        "Image (minio)",
+        "CI quality gate"
+      ]
+    },
+    "enforce_admins": false,
+    "required_pull_request_reviews": null,
+    "restrictions": null,
+    "required_linear_history": true,
+    "allow_force_pushes": false,
+    "allow_deletions": false,
+    "required_conversation_resolution": true
+  },
+  "hosted_ci_before": {
+    "runs": [
+      "38125025746 (6b972a6) failure",
+      "38132833534 (6a72958) failure"
+    ],
+    "failed_job": "PostgreSQL, RabbitMQ, MinIO and Controller -> Migrations, delivery and crash recovery",
+    "failures": "10 failed, 343 passed, 33 errors",
+    "mapping_to_this_session_fixes": [
+      "9 test_workspace_insights failures: stale cache-key assertions re-pinned and the warm-cache premise corrected (a38a5eb, b439824)",
+      "test_generation_retirement image-sensitive case: moved to the step that exports the built OpenCode image (a38a5eb)",
+      "33 errors: /private/tmp artifact writes in the opt-in harnesses (c8d510b) plus the fixture volume leak and write_text regression fixed later (0a4fdd5)"
     ]
   }
 }
