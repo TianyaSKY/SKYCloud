@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-11",
+  "status": "in_progress",
+  "checker": "mypy 2.4.0",
+  "python_version": "3.11",
+  "configuration": "backend/mypy.ini",
+  "command": "python -m mypy --config-file backend/mypy.ini",
+  "scope": [
+    "backend/app",
+    "backend/entry",
+    "backend/runtime_controller"
+  ],
+  "check_untyped_defs": true,
+  "excluded_application_modules": [],
+  "suppressed_error_codes": [],
+  "source_tree_sha256": "9bedb5b337607527c73c9e58c044cee94a778facf9acc2e8338bf751727f97ca",
+  "checked_source_files": 212,
+  "diagnostic_count": 372,
+  "files_with_diagnostics": 81,
+  "diagnostics_by_code": {
+    "arg-type": 169,
+    "assignment": 72,
+    "attr-defined": 9,
+    "call-overload": 3,
+    "import-not-found": 1,
+    "import-untyped": 10,
+    "misc": 3,
+    "operator": 6,
+    "override": 2,
+    "return-value": 4,
+    "type-var": 4,
+    "union-attr": 20,
+    "var-annotated": 69
+  },
+  "required_ci_gate_enabled": false,
+  "remaining_work": "Resolve diagnostics and validate third-party type declarations before requiring this command in CI."
+}

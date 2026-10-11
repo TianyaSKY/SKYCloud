@@ -15,7 +15,8 @@ class PrivateDiagnosticsHandler(logging.StreamHandler):
         elif record.name == 'uvicorn.access':
             record = copy.copy(record)
             fields = record.args if isinstance(record.args, tuple) else ()
-            method, status = 'unknown', 'unknown'
+            method = 'unknown'
+            status: int | str = 'unknown'
             if len(fields) == 5:
                 if fields[1] in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD', 'CONNECT', 'TRACE'):
                     method = fields[1]

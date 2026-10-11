@@ -21,7 +21,7 @@ def _shape(value: Any, *, numeric: bool = False) -> dict:
     if type(value) is bool:
         return {"type": "bool"}
     if type(value) is int:
-        result = {"type": "int"}
+        result: dict[str, Any] = {"type": "int"}
         # Do not serialize arbitrary large integers or numeric credential values.
         if numeric and -(2**63) <= value < 2**63:
             result["value"] = value

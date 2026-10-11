@@ -251,10 +251,11 @@ class Engine:
         container = self.managed(ref, require_policy=action != "remove")
         labels = container.attrs['Config']['Labels']
         if action == 'remove' and labels.get('skycloud.generation'):
-            return self.retire_generation(*(int(labels[f'skycloud.{key}']) for key in ('workspace_id','user_id','runtime_id')),labels['skycloud.generation'])
+            workspace_id, user_id, runtime_id = (int(labels[f'skycloud.{key}']) for key in ('workspace_id','user_id','runtime_id'))
+            return self.retire_generation(workspace_id, user_id, runtime_id, labels['skycloud.generation'])
         if action in ('start','restart') and labels.get('skycloud.generation'):
-            identity = tuple(int(labels[f'skycloud.{key}']) for key in ('workspace_id','user_id','runtime_id'))
-            with self._generation_record(*identity,labels['skycloud.generation']) as record:
+            workspace_id, user_id, runtime_id = (int(labels[f'skycloud.{key}']) for key in ('workspace_id','user_id','runtime_id'))
+            with self._generation_record(workspace_id, user_id, runtime_id, labels['skycloud.generation']) as record:
                 state = record.read()
                 if state['state'] != 'ready' or state['container_id'] != container.id:
                     raise PolicyViolation('Runtime generation is not active')
