@@ -5,12 +5,20 @@ import hashlib
 import threading
 
 from sqlalchemy import text
+from loguru import logger
 
 from app.exceptions import ConflictError
 
 _local = threading.local()
 _guard = threading.Lock()
 _sqlite_locks = {}
+
+
+def _invalidate(connection):
+    try:
+        connection.invalidate()
+    except Exception as exc:
+        logger.error('Runtime lock connection invalidation failed: error_type={}', type(exc).__name__)
 
 
 @contextmanager
@@ -56,11 +64,15 @@ def execution(session, workspace_id, user_id):
             if acquired:
                 connection.execute(text('SELECT pg_advisory_unlock(:key)'), {'key':lock_id})
                 connection.commit()
-        except Exception:
-            connection.invalidate()
-            raise
+        except Exception as exc:
+            logger.error('Runtime lock release failed: error_type={}', type(exc).__name__)
+            _invalidate(connection)
         finally:
-            connection.close()
+            try:
+                connection.close()
+            except Exception as exc:
+                logger.error('Runtime lock connection close failed: error_type={}', type(exc).__name__)
+                _invalidate(connection)
 
 
 def serialized(function):

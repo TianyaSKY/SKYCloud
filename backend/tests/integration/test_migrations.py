@@ -17,6 +17,38 @@ from tests.integration.test_runtime_security import POSTGRES_IMAGE, docker
 pytestmark = pytest.mark.skipif(os.getenv("RUN_MIGRATION_TESTS") != "1", reason="Opt-in isolated PostgreSQL migrations")
 
 
+@pytest.mark.parametrize('denied', [False, True])
+def test_lifecycle_lock_disconnect_keeps_outcome_and_allows_next_owner(postgres, denied):
+    from sqlalchemy.orm import Session
+    from app.exceptions import PermissionDeniedError
+    from app.features.workspace.runtime_execution import execution
+
+    original = PermissionDeniedError('permission revoked')
+
+    def operation():
+        with Session(postgres) as session:
+            with execution(session, 12, 34):
+                with postgres.begin() as control:
+                    owners = control.scalars(text("SELECT pid FROM pg_locks WHERE locktype='advisory' AND granted")).all()
+                    assert len(owners) == 1
+                    assert control.scalar(text('SELECT pg_terminate_backend(:pid)'), {'pid': owners[0]})
+                if denied:
+                    raise original
+                return 'accepted'
+
+    if denied:
+        with pytest.raises(PermissionDeniedError) as error:
+            operation()
+        assert error.value is original
+    else:
+        assert operation() == 'accepted'
+    with Session(postgres) as successor:
+        with execution(successor, 12, 34):
+            assert successor.scalar(text("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND granted")) == 1
+    with postgres.connect() as control:
+        assert control.scalar(text("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND granted")) == 0
+
+
 @pytest.fixture
 def postgres():
     name = "skycloud-migration-test-" + uuid.uuid4().hex[:12]
