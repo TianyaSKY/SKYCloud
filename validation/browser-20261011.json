@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-11",
+  "source_commit": "4cf7b6ac1ff671b04c6f2f504ce52155f307e539",
+  "environment": {
+    "frontend": "production Vite build served by pinned nginx",
+    "browser": "Codex in-app browser; initial login also verified in Chrome",
+    "services": [
+      "PostgreSQL/pgvector",
+      "Redis",
+      "MinIO",
+      "Runtime Controller",
+      "OpenCode"
+    ],
+    "isolation": "Disposable local fixtures, synthetic account and file; no external model calls"
+  },
+  "passed": [
+    "Login through production frontend with disposable account",
+    "Reload restores authenticated file list using refresh cookie",
+    "Actual browser filechooser uploads synthetic 70-byte text file",
+    "Authenticated frontend Blob download emits browser download",
+    "Downloaded bytes exactly match uploaded bytes",
+    "Workspace page displays current running runtime",
+    "OpenCode iframe loads through the runtime-origin gateway",
+    "Full browser fixture exits successfully and removes disposable resources"
+  ],
+  "payload": {
+    "bytes": 70,
+    "sha256": "6e832b73fa8e97f2bd6c2edfe7ba88fe1e2af02ce1947c60a38c47e8821b1af8"
+  },
+  "checks": {
+    "frontend_unit": "267 passed",
+    "frontend_lint": "passed",
+    "frontend_build_and_typecheck": "passed",
+    "browser_fixture": "1 passed in 681.41s"
+  },
+  "screenshot": "browser-20261011.jpg",
+  "limitations": [
+    "File selection uses the browser filechooser API; macOS native picker interaction is not proven",
+    "Chrome extension UI blocked automation after login; remaining checks used the in-app browser",
+    "OpenCode iframe project-button interactions could not be driven by this automation surface",
+    "Expert permission recovery and approved external model execution are not covered",
+    "Hosted Linux CI and remote branch protection are not verified"
+  ],
+  "overall_goal": "in_progress"
+}
