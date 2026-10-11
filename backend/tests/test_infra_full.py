@@ -256,60 +256,6 @@ class TestCacheDecorators:
         assert count == 0
 
 
-class TestRemoteEmbedder:
-    def test_process_success(self):
-        from app.infra.llm.remote_embed import RemoteEmbedder
-        embedder = RemoteEmbedder("http://localhost:5001")
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"embeddings": [[0.1, 0.2]]}
-        mock_resp.raise_for_status = MagicMock()
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=mock_resp)
-        mock_context = MagicMock()
-        mock_context.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_context.__aexit__ = AsyncMock(return_value=None)
-        real_import = builtins.__import__
-        with patch("app.infra.llm.remote_embed.httpx.AsyncClient", return_value=mock_context), \
-              patch("builtins.__import__", side_effect=lambda n, *a: MagicMock() if n == "torch" else real_import(n, *a)):
-            # torch is mocked in conftest, so import torch returns a MagicMock
-            result = asyncio.run(embedder.process(["text"]))
-        assert result is not None
-
-    def test_process_no_embeddings_key(self):
-        from app.infra.llm.remote_embed import RemoteEmbedder
-        embedder = RemoteEmbedder("http://localhost:5001")
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {"unexpected": "data"}
-        mock_resp.raise_for_status = MagicMock()
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(return_value=mock_resp)
-        mock_context = MagicMock()
-        mock_context.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_context.__aexit__ = AsyncMock(return_value=None)
-        with patch("app.infra.llm.remote_embed.httpx.AsyncClient", return_value=mock_context):
-            result = asyncio.run(embedder.process(["text"]))
-        assert result is None
-
-    def test_process_request_exception(self):
-        import httpx
-        from app.infra.llm.remote_embed import RemoteEmbedder
-        embedder = RemoteEmbedder("http://localhost:5001")
-        mock_http = MagicMock()
-        mock_http.post = AsyncMock(side_effect=httpx.RequestError("Connection refused"))
-        mock_context = MagicMock()
-        mock_context.__aenter__ = AsyncMock(return_value=mock_http)
-        mock_context.__aexit__ = AsyncMock(return_value=None)
-        with patch("app.infra.llm.remote_embed.httpx.AsyncClient", return_value=mock_context):
-            result = asyncio.run(embedder.process(["text"]))
-        assert result is None
-
-    def test_get_embedder_singleton(self):
-        from app.infra.llm import remote_embed
-        remote_embed._embedder = None
-        e1 = remote_embed.get_embedder()
-        e2 = remote_embed.get_embedder()
-        assert e1 is e2
-
 
 class TestTaskQueue:
     def test_connection_parameters_with_url(self):

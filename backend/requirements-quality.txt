@@ -1,3 +1,6 @@
 # Static checks are separate from deployed application dependencies.
 ruff==0.14.10
 mypy==2.4.0
+types-docker==7.2.0.20261006
+types-pika==1.2.0b1
+pandas-stubs==3.0.5.260914

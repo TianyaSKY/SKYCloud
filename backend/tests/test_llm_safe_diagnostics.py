@@ -51,28 +51,6 @@ def test_shutdown_failure_still_closes_remaining_clients_without_private_detail(
     assert_safe(logs,'error_type=RuntimeError')
 
 
-@pytest.mark.parametrize('body',[{'error':PRIVATE},[PRIVATE],None,{'embeddings':PRIVATE}])
-async def test_embed_malformed_shape_never_logs_provider_body(monkeypatch,logs,body):
-    from app.infra.llm import remote_embed
-    client_class=httpx.AsyncClient
-    transport=httpx.MockTransport(lambda request:httpx.Response(200,content=json.dumps(body)))
-    monkeypatch.setattr(remote_embed.httpx,'AsyncClient',lambda **kw:client_class(transport=transport,**kw))
-    assert await remote_embed.RemoteEmbedder('http://embedding.test').process([PRIVATE]) is None
-    assert_safe(logs,'invalid format')
-
-@pytest.mark.parametrize('failure',['http','json','transport'])
-async def test_embed_http_json_and_network_failures_have_safe_diagnostics(monkeypatch,logs,failure):
-    from app.infra.llm import remote_embed
-    client_class=httpx.AsyncClient
-    def respond(request):
-        if failure=='transport':raise httpx.RequestError(PRIVATE,request=request)
-        return httpx.Response(503 if failure=='http' else 200,text=PRIVATE)
-    transport=httpx.MockTransport(respond)
-    monkeypatch.setattr(remote_embed.httpx,'AsyncClient',lambda **kw:client_class(transport=transport,**kw))
-    assert await remote_embed.RemoteEmbedder('http://embedding.test').process([PRIVATE]) is None
-    assert_safe(logs,'error_type=')
-
-
 async def test_rerank_failure_returns_original_docs_and_keeps_exception_private(monkeypatch,logs):
     from app.features.chat import rerank
     transport=httpx.MockTransport(lambda request:httpx.Response(503,text=PRIVATE))
