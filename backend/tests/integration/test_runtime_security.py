@@ -20,6 +20,7 @@ from app.features.runtime_llm import quota
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_RUNTIME_SECURITY_TESTS") != "1", reason="Opt-in isolated Docker integration tests")
 IMAGE = os.getenv("SKYCLOUD_TEST_INFRA_IMAGE", "redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499")
+POSTGRES_IMAGE = "pgvector/pgvector:pg15@sha256:47af0b65960b14f1c6945aa4ccae37836c632e9a6fe0eea9160936e616e5b2e9"
 
 
 def docker(*args, check=True):
@@ -156,7 +157,7 @@ def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
     try:
         docker("run", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=" + password,
                "-p", "127.0.0.1::5432", "-v", str(root / "backend/init_db.sql") + ":/docker-entrypoint-initdb.d/init_db.sql:ro",
-               "pgvector/pgvector:pg15")
+               POSTGRES_IMAGE)
         port = docker("port", name, "5432/tcp").stdout.strip().rsplit(":", 1)[1]
         engine = create_engine(f"postgresql://postgres:{password}@127.0.0.1:{port}/postgres")
         deadline = time.monotonic() + 30

@@ -104,7 +104,7 @@ jobs:
           PY
       - name: Preload fixture images before their readiness deadlines
         run: |
-          docker pull pgvector/pgvector:pg15
+          docker pull pgvector/pgvector:pg15@sha256:47af0b65960b14f1c6945aa4ccae37836c632e9a6fe0eea9160936e616e5b2e9
           docker pull rabbitmq:3.13-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
       - name: Build Controller and pin disposable cleanup fixture
         run: |
@@ -119,6 +119,7 @@ jobs:
         working-directory: backend
         env:
           RUN_MIGRATION_TESTS: '1'
+          RUN_RUNTIME_SECURITY_TESTS: '1'
           RUN_TASK_QUEUE_TESTS: '1'
           RUN_FILE_OUTBOX_TESTS: '1'
           RUN_ORGANIZE_TASK_TESTS: '1'
@@ -138,6 +139,7 @@ jobs:
         run: >-
           python -m pytest -o addopts='' -q
           tests/integration/test_migrations.py
+          tests/integration/test_runtime_security.py::test_postgresql_has_no_seeded_admin_and_bootstraps_once
           tests/integration/test_generation_retirement.py
           tests/integration/test_assistant_lease.py
           tests/integration/test_permission_dispatch.py

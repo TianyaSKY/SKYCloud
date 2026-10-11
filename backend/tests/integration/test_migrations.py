@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, inspect, text
 
 from app.infra.schema import EXPECTED_REVISION, check_schema
 from entry.migrate import migration_config, upgrade
-from tests.integration.test_runtime_security import docker
+from tests.integration.test_runtime_security import POSTGRES_IMAGE, docker
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_MIGRATION_TESTS") != "1", reason="Opt-in isolated PostgreSQL migrations")
 
@@ -24,7 +24,7 @@ def postgres():
     engine = None
     try:
         docker("run", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=" + password,
-               "-p", "127.0.0.1::5432", "pgvector/pgvector:pg15")
+               "-p", "127.0.0.1::5432", POSTGRES_IMAGE)
         port = docker("port", name, "5432/tcp").stdout.strip().rsplit(":", 1)[1]
         engine = create_engine(f"postgresql://postgres:{password}@127.0.0.1:{port}/postgres")
         deadline = time.monotonic() + 20
