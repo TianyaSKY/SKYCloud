@@ -1,0 +1,11 @@
+{
+  "include": [
+    "backend/app",
+    "backend/entry",
+    "backend/runtime_controller"
+  ],
+  "extraPaths": ["backend"],
+  "stubPath": "backend/typings",
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "strict"
+}

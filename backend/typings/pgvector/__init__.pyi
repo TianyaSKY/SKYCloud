@@ -1,0 +1,9 @@
+"""Type declarations for the pgvector Python vector value."""
+
+from collections.abc import Sequence
+
+
+class Vector:
+    def __init__(self, value: Sequence[float]) -> None: ...
+    def dimensions(self) -> int: ...
+    def to_list(self) -> list[float]: ...
