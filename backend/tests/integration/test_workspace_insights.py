@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+from dataclasses import replace
 
 import pytest
 from sqlalchemy import text
@@ -47,7 +48,9 @@ async def test_disconnected_cancel_drains_native_sql_lock_and_signals_only_commi
     with factory() as db:
         workspace = db.get(Workspace, 1)
         conversation = service.create_conversation(db, workspace, 1, mode, 'cancel')
-        _, run, _ = service.prepare_run(db, workspace, 1, conversation.id, 'cancel query')
+        _, run, _ = service.prepare_run(db, service.PrepareRunParams(
+            workspace=workspace, user_id=1,
+            conversation_id=conversation.id, query='cancel query'))
         run_id = run.id
     if reject_commit:
         with postgres.begin() as db:
@@ -761,7 +764,10 @@ async def test_share_publication_locks_membership_and_file_and_preserves_owner_c
         db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id) VALUES (1,'original','original',3,'success',1,1)"))
     factory = sessionmaker(bind=postgres)
     with factory() as owned:
-        share = service.create_share_link(owned, 1, 1, commit=False)
+        share = service.create_share_link(
+            owned,
+            service.CreateShareLinkParams(user_id=1, file_id=1, commit=False),
+        )
         for statement in ['DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1',
                           "UPDATE files SET name='concurrent' WHERE id=1", 'DELETE FROM files WHERE id=1']:
             with postgres.connect() as independent:
@@ -995,7 +1001,9 @@ async def test_assistant_owned_http_rechecks_committed_membership(postgres, chan
         workspace = owned.get(Workspace, 1)
         conversation = service.create_conversation(owned, workspace, 1, mode, 'original')
         cid = conversation.id
-        _, run, _ = service.prepare_run(owned, workspace, 1, cid, 'original query')
+        _, run, _ = service.prepare_run(owned, service.PrepareRunParams(
+            workspace=workspace, user_id=1,
+            conversation_id=cid, query='original query'))
         run.status = 'waiting_permission'; run.pending_permission_id = 'p1'
         owned.commit(); rid = run.id
         source = service.create_conversation(owned, workspace, 1, 'fast', 'source')
@@ -1052,10 +1060,12 @@ def test_assistant_recovery_retains_member_lock_until_outer_write_commit(postgre
         workspace = owned.get(Workspace, 1)
         conversation = service.create_conversation(owned, workspace, 1, 'expert', 'original')
         cid = conversation.id
-        _, old, _ = service.prepare_run(owned, workspace, 1, cid, 'old query')
+        _, old, _ = service.prepare_run(owned, service.PrepareRunParams(
+            workspace=workspace, user_id=1,
+            conversation_id=cid, query='old query'))
         old.started_at = utc_now() - timedelta(minutes=5)
         old.metadata_dict = {}; owned.commit()
-    recover = service._recover_abandoned_run
+    recover = service.recover_abandoned_run
     observed = []
     def observe_recovery(session, run, *, commit=True):
         assert commit is False
@@ -1069,11 +1079,29 @@ def test_assistant_recovery_retains_member_lock_until_outer_write_commit(postgre
                 independent.rollback()
             observed.append(True)
         return result
-    monkeypatch.setattr(service, '_recover_abandoned_run', observe_recovery)
+    monkeypatch.setattr(service, 'recover_abandoned_run', observe_recovery)
     with factory() as owned:
         workspace = owned.get(Workspace, 1)
-        if operation == 'prepare': service.prepare_run(owned, workspace, 1, cid, 'replacement')
-        elif operation == 'archive': service.update_conversation(owned, workspace, 1, cid, status='archived')
+        if operation == 'prepare':
+            service.prepare_run(
+                owned,
+                service.PrepareRunParams(
+                    workspace=workspace,
+                    user_id=1,
+                    conversation_id=cid,
+                    query='replacement',
+                ),
+            )
+        elif operation == 'archive':
+            service.update_conversation(
+                owned,
+                service.UpdateConversationParams(
+                    workspace=workspace,
+                    user_id=1,
+                    conversation_id=cid,
+                    status='archived',
+                ),
+            )
         else: service.delete_conversation(owned, workspace, 1, cid)
     assert observed == [True]
     with postgres.begin() as independent:
@@ -1151,7 +1179,7 @@ def test_accounting_faults_preserve_business_and_recover_actual_postgres(postgre
     monkeypatch.setattr(service.logger, 'error', lambda message,*args: logged.append(message.format(*args)))
     # SQL rejection is native varchar(50) enforcement after the aggregate UPDATE.
     action = 'x'*51 if phase in {'sql-reject','rollback-fault'} else 'chat'
-    assert service.record_usage(1, action, prompt_tokens=2, completion_tokens=3, query_summary=private) is None
+    assert service.record_usage(service.RecordUsageParams(user_id=1, action=action, prompt_tokens=2, completion_tokens=3, query_summary=private)) is None
     assert logged and private not in str(logged)
     assert 'close' in calls
     if phase in {'rollback-fault','close-fault'}: assert 'invalidate' in calls
@@ -1161,7 +1189,7 @@ def test_accounting_faults_preserve_business_and_recover_actual_postgres(postgre
         assert db.scalar(text('SELECT count(*) FROM token_usage_logs')) == (0 if initial == 0 else 1)
     # A later accounting call succeeds on the same real engine/pool without retries.
     active[0] = False
-    assert service.record_usage(1, 'chat', prompt_tokens=2, completion_tokens=3) is None
+    assert service.record_usage(service.RecordUsageParams(user_id=1, action='chat', prompt_tokens=2, completion_tokens=3)) is None
     with postgres.connect() as db:
         assert db.scalar(text('SELECT total_tokens FROM users WHERE id=1')) == initial + 5
         assert db.scalar(text('SELECT sum(total_tokens) FROM token_usage_logs')) == initial + 5
@@ -1184,7 +1212,9 @@ async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, mo
         workspace = owned.get(Workspace, 1)
         conversation = service.create_conversation(owned, workspace, 1, 'fast', 'original')
         cid = conversation.id
-        _, run, history = service.prepare_run(owned, workspace, 1, cid, 'query')
+        _, run, history = service.prepare_run(owned, service.PrepareRunParams(
+            workspace=workspace, user_id=1,
+            conversation_id=cid, query='query'))
         rid, mid = run.id, run.assistant_message_id
     loop_thread = threading.get_ident()
     calls, logged = [], []
@@ -1203,18 +1233,26 @@ async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, mo
             return super().invalidate()
     entered = asyncio.Event()
     class Engine:
-        async def stream(self, **kwargs):
+        async def stream(self, request):
             yield AssistantEvent('token', {'content':'Answer'})
             if outcome == 'engine-error': raise RuntimeError('private-provider-url')
             if outcome == 'cancel':
                 entered.set()
                 await asyncio.Event().wait()
-    monkeypatch.setattr(service, 'FastEngine', Engine)
+    monkeypatch.setattr(
+        'app.features.assistant.engines.fast_engine.FastEngine', Engine)
     monkeypatch.setattr(service.logger, 'error', lambda message,*args: logged.append(message.format(*args)))
     factory = sessionmaker(bind=postgres, class_=FaultSession)
     async def collect():
-        return [event async for event in service.stream_run(factory, 1, 1,
-                999 if outcome == 'creation-error' else cid, rid, history)]
+        params = service.StreamRunParams(
+            session_factory=factory,
+            workspace_id=1,
+            user_id=1,
+            conversation_id=999 if outcome == 'creation-error' else cid,
+            run_id=rid,
+            history=history,
+        )
+        return [event async for event in service.stream_run(params)]
     if outcome == 'creation-error':
         with pytest.raises(ResourceNotFoundError): await collect()
     elif outcome == 'cancel':
@@ -1240,7 +1278,8 @@ async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, mo
 @pytest.mark.parametrize('quiet', [False,True])
 async def test_legacy_chat_http_stops_after_committed_member_removal(postgres, monkeypatch, quiet):
     import httpx
-    from types import SimpleNamespace
+    from app.models.user import User
+    from app.models.workspace import Workspace
     from fastapi import FastAPI
     from app.api.dependencies import get_current_user,get_current_workspace
     from app.features.chat import router
@@ -1251,8 +1290,8 @@ async def test_legacy_chat_http_stops_after_committed_member_removal(postgres, m
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
         db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'viewer')"))
     app=FastAPI();app.include_router(router.router)
-    app.dependency_overrides[get_current_user]=lambda:SimpleNamespace(id=1)
-    app.dependency_overrides[get_current_workspace]=lambda:SimpleNamespace(id=1)
+    app.dependency_overrides[get_current_user]=lambda:User(id=1)
+    app.dependency_overrides[get_current_workspace]=lambda:Workspace(id=1)
     app.dependency_overrides[get_session_factory]=lambda:sessionmaker(bind=postgres)
     entered,closed=asyncio.Event(),asyncio.Event()
     async def model(*args,**kwargs):
@@ -1295,7 +1334,9 @@ async def test_prepared_response_header_failure_after_member_removal(postgres, l
     with factory() as db:
         workspace = SimpleNamespace(id=1)
         conversation = service.create_conversation(db, workspace, 1, 'fast', 'test')
-        _, run, _ = service.prepare_run(db, workspace, 1, conversation.id, 'question')
+        _, run, _ = service.prepare_run(db, service.PrepareRunParams(
+            workspace=workspace, user_id=1,
+            conversation_id=conversation.id, query='question'))
         scope = (1, 1, conversation.id, run.id)
         if leased:
             repository.touch_run_lease(db, run.id, 1)
@@ -1359,7 +1400,9 @@ def test_prepared_compensation_serializes_with_native_lease_claim(postgres):
     with factory() as db:
         workspace = SimpleNamespace(id=1)
         conversation = service.create_conversation(db, workspace, 1, 'fast', 'test')
-        _, run, _ = service.prepare_run(db, workspace, 1, conversation.id, 'question')
+        _, run, _ = service.prepare_run(db, service.PrepareRunParams(
+            workspace=workspace, user_id=1,
+            conversation_id=conversation.id, query='question'))
         scope = (1, 1, conversation.id, run.id)
         assert repository.cancel_unclaimed_run(db, *scope)
         with postgres.connect() as independent:
@@ -1427,9 +1470,17 @@ async def test_http_preparation_abort_compensates_after_owned_transaction(postgr
             calls.append('prepare-invalidate' if self.preparing else 'cleanup-invalidate')
             super().invalidate()
     factory = sessionmaker(bind=postgres, class_=OwnedSession)
+    from app.api.dependencies import RequestContext
     pending = asyncio.create_task(router.stream_assistant_message(
-        conversation_id, AssistantMessageRequest(query='question'), SimpleNamespace(headers={}),
-        current_user=SimpleNamespace(id=1), workspace=workspace, session_factory=factory))
+        conversation_id,
+        AssistantMessageRequest(query='question'),
+        SimpleNamespace(headers={}),
+        RequestContext(
+            user=SimpleNamespace(id=1, http_stream_credential=None),
+            session_factory=factory,
+        ),
+        workspace,
+    ))
     if fault.startswith('cancel-'):
         try:
             assert await asyncio.to_thread(entered.wait, 2)
@@ -1509,11 +1560,21 @@ async def test_http_stream_initialization_abort_cleans_unclaimed_run(postgres, m
             super().close()
             closed.append(self)
     def forbidden_engine(*args, **kwargs): raise AssertionError('model must not start')
-    monkeypatch.setattr(service, 'FastEngine', forbidden_engine)
+    monkeypatch.setattr(
+        'app.features.assistant.engines.fast_engine.FastEngine',
+        forbidden_engine)
     factory = sessionmaker(bind=postgres, class_=OwnedSession)
+    from app.api.dependencies import RequestContext
     response = await router.stream_assistant_message(
-        conversation_id, AssistantMessageRequest(query='question'), SimpleNamespace(headers={}),
-        current_user=SimpleNamespace(id=1), workspace=workspace, session_factory=factory)
+        conversation_id,
+        AssistantMessageRequest(query='question'),
+        SimpleNamespace(headers={}),
+        RequestContext(
+            user=SimpleNamespace(id=1, http_stream_credential=None),
+            session_factory=factory,
+        ),
+        workspace,
+    )
     run_id = int(response.headers['X-Assistant-Run-Id'])
     if fault == 'revoked':
         with postgres.begin() as independent:
@@ -1673,7 +1734,8 @@ async def test_assistant_stream_live_signed_session_revocation(postgres, infrast
                 first_sent.set()
         await app(scope,receive,observe)
     class Engine:
-        async def stream(self,controller,**kwargs):
+        async def stream(self,request):
+            controller=request.controller
             async def abort():aborted.append(True)
             controller.set_abort_callback(abort)
             try:
@@ -1685,7 +1747,8 @@ async def test_assistant_stream_live_signed_session_revocation(postgres, infrast
                     revoke()
                     yield AssistantEvent('token',{'content':'private-late-data'})
             finally:closed.set()
-    monkeypatch.setattr(service,'FastEngine',Engine)
+    monkeypatch.setattr(
+        'app.features.assistant.engines.fast_engine.FastEngine',Engine)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(observed_app),base_url='http://test') as client:
         pending=asyncio.create_task(client.post(f'/assistant/conversations/{cid}/messages/stream',headers={'Authorization':'Bearer '+raw,'X-Workspace-Id':'1'},json={'query':'question'}))
         if quiet:
@@ -2173,11 +2236,11 @@ async def test_http_completed_header_teardown_cancel_closes_native_upstream(post
             return response
         client.send=opened
         return client
-    async def checked_wait(operation,*,check,**options):
+    async def checked_wait(operation, policy):
         async def checked():
-            await check()
+            await policy.check()
             if responses:asyncio.get_running_loop().call_soon(asyncio.current_task().cancel)
-        return await guarded_wait(operation,check=checked,**options)
+        return await guarded_wait(operation, replace(policy, check=checked))
     monkeypatch.setattr(gateway,'guarded_wait',checked_wait)
     if kind=='model':monkeypatch.setattr(gateway,'upstream_client',lambda:upstream(timeout=60,trust_env=False))
     else:monkeypatch.setattr(gateway.httpx,'AsyncClient',upstream)

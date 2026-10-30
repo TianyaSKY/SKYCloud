@@ -228,7 +228,7 @@ def test_stop_commits_cancellation_before_rpc_so_crash_cannot_resume(session,tes
     containers = {'a'*64: None}
     class Container:
         def __init__(self,identity): self.id = identity
-        def stop(self,timeout=None): events.append(('stop',timeout))
+        def stop(self): events.append(('stop',self.id))
         def start(self): events.append(('start',self.id))
     containers['a'*64] = Container('a'*64)
     class Controller:
@@ -245,7 +245,7 @@ def test_stop_commits_cancellation_before_rpc_so_crash_cannot_resume(session,tes
     monkeypatch.setattr(docker_service.runtime_token_service,'revoke_runtime_tokens',crash)
     with pytest.raises(RuntimeError):
         docker_service.stop(session,test_workspace,test_user.id)
-    assert ('stop',10) in events
+    assert ('stop','a'*64) in events
     session.rollback()
 
     factory=lambda:Session(bind=session.get_bind(),join_transaction_mode='create_savepoint')
@@ -281,3 +281,104 @@ def test_start_conflict_after_prepare_retires_candidate_instead_of_leaving_it(se
     assert [event[0] for event in events]==['prepare','retire']
     assert events[1][1][3]==events[0][1]
     assert events[1][1][:1]==(test_workspace.id,)
+
+
+def test_start_publication_conflict_survives_retirement_failure(
+    session, test_workspace, test_user, monkeypatch
+):
+    """Failed immediate compensation cannot replace the publication conflict."""
+    from app.features.workspace import docker_service
+
+    candidates = {}
+    retirements = []
+
+    class Controller:
+        def prepare(self, workspace_id, user_id, runtime_id, generation):
+            identity = (workspace_id, user_id, runtime_id, generation)
+            candidates[identity] = SimpleNamespace(id='b' * 64)
+            with Session(
+                bind=session.get_bind(), join_transaction_mode='create_savepoint'
+            ) as other:
+                repository.cancel_runtime(other, runtime_id)
+                other.commit()
+            return candidates[identity]
+
+        def retire_generation(self, *identity):
+            retirements.append(identity)
+            raise RuntimeError('private controller retirement failure')
+
+    monkeypatch.setattr(docker_service, '_client', Controller)
+
+    with pytest.raises(ConflictError, match='Runtime operation is no longer active'):
+        docker_service.start(session, test_workspace, test_user.id)
+    assert len(candidates) == 1
+    assert retirements == list(candidates)
+
+
+def test_recovery_defers_failed_generation_and_completes_later_generation(
+    session, test_workspace, test_user, admin_user, provisioner, monkeypatch
+):
+    """One unexpected Controller failure cannot strand another admitted owner."""
+    from datetime import timedelta
+
+    from app.features.workspace import docker_service
+    from app.infra.runtime_operations import recover_runtime_operations
+
+    session.add(WorkspaceMember(
+        workspace_id=test_workspace.id, user_id=admin_user.id, role='admin'
+    ))
+    session.flush()
+    first = repository.admit(session, test_workspace.id, test_user.id)
+    second = repository.admit(session, test_workspace.id, admin_user.id)
+    first_generation, second_generation = first.generation, second.generation
+    # Ordering is explicit rather than dependent on UUIDs or clock resolution.
+    first.next_attempt_at = utc_now() - timedelta(seconds=2)
+    second.next_attempt_at = utc_now() - timedelta(seconds=1)
+    session.commit()
+    controller = docker_service._client
+    unavailable = True
+    containers, _ = provisioner
+
+    class Controller(controller):
+        def prepare(self, workspace_id, user_id, runtime_id, generation):
+            if generation == first_generation and unavailable:
+                raise RuntimeError('private controller recovery failure')
+            container = super().prepare(
+                workspace_id, user_id, runtime_id, generation
+            )
+            if generation == first_generation:
+                return containers.setdefault('c' * 64, type(container)('c' * 64))
+            return container
+
+    monkeypatch.setattr(docker_service, '_client', Controller)
+    factory = lambda: Session(
+        bind=session.get_bind(), join_transaction_mode='create_savepoint'
+    )
+    before = utc_now()
+    assert recover_runtime_operations(session_factory=factory) == 1
+    after = utc_now()
+
+    with factory() as observer:
+        failed = observer.get(RuntimeOperation, first_generation)
+        assert failed.state == 'preparing'
+        assert failed.finished_at is None and failed.candidate_container_id is None
+        assert failed.attempts == 1 and failed.last_error_type == 'RuntimeError'
+        assert (
+            before + timedelta(seconds=2)
+            <= failed.next_attempt_at
+            <= after + timedelta(seconds=2)
+        )
+        completed = observer.get(RuntimeOperation, second_generation)
+        assert completed.state == 'complete' and completed.finished_at is not None
+        assert observer.get(OpenCodeRuntime, completed.runtime_id).status == 'running'
+        failed.next_attempt_at = before - timedelta(seconds=1)
+        observer.commit()
+
+    unavailable = False
+    assert recover_runtime_operations(session_factory=factory) == 1
+    with factory() as observer:
+        retried = observer.get(RuntimeOperation, first_generation)
+        assert retried.state == 'complete' and retried.finished_at is not None
+        assert retried.last_error_type is None
+        assert observer.get(OpenCodeRuntime, retried.runtime_id).container_id == 'c' * 64
+        assert observer.query(RuntimeOperation).count() == 2

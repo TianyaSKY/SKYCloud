@@ -1,27 +1,82 @@
 """Cancellation-safe teardown of an owned async iterator and its active read."""
+
 import asyncio
-import anyio
 import logging
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+)
 from time import monotonic
+from typing import Any, Final, Protocol, Self, TypedDict, TypeVar, Unpack, cast
+
+import anyio
+import httpx
 from fastapi import HTTPException
+from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
+
+T = TypeVar("T")
+T_co = TypeVar("T_co", covariant=True)
+
+logger = logging.getLogger(__name__)
+
+TIMEOUT_STATUS: Final = 502
+TIMEOUT_DETAIL: Final = "Runtime response timed out"
+DEFAULT_INTERVAL: Final = 1.0
 
 
-async def close_reader(pending, iterator):
-    """Drain the owned read before closing its iterator, despite repeat cancellation."""
-    async def release():
+class AsyncClosableIterator(Protocol[T_co]):
+    """An owned async read that can be closed explicitly."""
+
+    def __aiter__(self) -> Self:
+        """Return the iterator itself, as async iterators do."""
+        ...
+
+    def __anext__(self) -> Coroutine[Any, Any, T_co]:
+        """Return the next chunk of the owned read."""
+        ...
+
+    async def aclose(self) -> None:
+        """Close the owned read."""
+        ...
+
+
+def closable(iterator: AsyncIterator[T]) -> AsyncClosableIterator[T]:
+    """Project a known async-generator iterator onto its closable surface."""
+    return cast("AsyncClosableIterator[T]", iterator)
+
+
+async def close_reader(
+    pending: asyncio.Task[T] | None,
+    iterator: AsyncClosableIterator[T],
+) -> bool:
+    """Drain the owned read before closing its iterator, despite cancellation."""
+
+    async def release() -> None:
         if pending is not None:
             if not pending.done():
                 pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
+        error: BaseException | None = None
         try:
             await iterator.aclose()
         except (Exception, asyncio.CancelledError) as exc:
-            logging.error("Stream iterator close failed (error_type=%s)", type(exc).__name__)
+            # Any iterator teardown failure is isolated here: the stream is
+            # already finished and only its own close can fail this call.
+            error = exc
+        if error is not None:
+            logger.error(
+                "Stream iterator close failed (error_type=%s)", type(error).__name__,
+            )
+
     return await drain_cleanup(release())
 
 
-async def drain_cleanup(operation):
+async def drain_cleanup(operation: Coroutine[Any, Any, None]) -> bool:
     """Wait for owned teardown without cancelling it when its caller is cancelled."""
     cancelled = False
     with anyio.CancelScope(shield=True):
@@ -36,22 +91,18 @@ async def drain_cleanup(operation):
 
 
 class UpstreamLease:
-    def __init__(self, client):
-        self.client = client
-        self.upstream = None
-        self.cleanup = None
+    """Owned upstream response and client whose teardown survives cancellation."""
 
-    async def close(self):
-        async def release():
-            for resource, phase in ((self.upstream, 'response'), (self.client, 'client')):
-                if resource is None:
-                    continue
-                try:
-                    await resource.aclose()
-                except (Exception, asyncio.CancelledError) as exc:
-                    logging.error("Upstream HTTP %s close failed (error_type=%s)", phase, type(exc).__name__)
+    def __init__(self, client: httpx.AsyncClient) -> None:
+        """Own one upstream client; the relay attaches its response later."""
+        self.client = client
+        self.upstream: httpx.Response | None = None
+        self.cleanup: asyncio.Task[None] | None = None
+
+    async def close(self) -> None:
+        """Release the upstream response and client exactly once."""
         if self.cleanup is None:
-            self.cleanup = asyncio.create_task(release())
+            self.cleanup = asyncio.create_task(self._release())
         cancelled = False
         with anyio.CancelScope(shield=True):
             while not self.cleanup.done():
@@ -61,15 +112,53 @@ class UpstreamLease:
                     cancelled = True
         self.cleanup.result()
         if cancelled:
-            raise asyncio.CancelledError()
+            raise asyncio.CancelledError
+
+    async def _release(self) -> None:
+        for resource, phase in ((self.upstream, "response"), (self.client, "client")):
+            if resource is None:
+                continue
+            error: BaseException | None = None
+            try:
+                await resource.aclose()
+            except (Exception, asyncio.CancelledError) as exc:
+                # Closing an upstream SDK object is the last step of the lease;
+                # keep the other resource closeable whatever this one raises.
+                error = exc
+            if error is not None:
+                logger.error(
+                    "Upstream HTTP %s close failed (error_type=%s)",
+                    phase,
+                    type(error).__name__,
+                )
+
+
+class ResponseOptions(TypedDict, total=False):
+    """Streaming response options actually used by the upstream relay."""
+
+    status_code: int
+    headers: dict[str, str] | None
+    media_type: str | None
+    background: BackgroundTask | None
 
 
 class UpstreamResponse(StreamingResponse):
-    def __init__(self, content, *, lease, **kwargs):
-        super().__init__(content, **kwargs)
-        self.lease = lease
+    """Streaming relay response that owns and closes its upstream lease."""
 
-    async def __call__(self, scope, receive, send):
+    def __init__(
+        self,
+        content: AsyncIterator[str | bytes],
+        *,
+        lease: UpstreamLease,
+        **options: Unpack[ResponseOptions],
+    ) -> None:
+        """Attach the owned lease and the closed-by-this-response iterator."""
+        super().__init__(content, **options)
+        self.lease = lease
+        self.iterator = closable(content)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Send the relayed stream and always release the upstream lease."""
         failed = False
         try:
             await super().__call__(scope, receive, send)
@@ -77,35 +166,60 @@ class UpstreamResponse(StreamingResponse):
             failed = True
             raise
         finally:
-            async def release():
-                await close_reader(None, self.body_iterator)
+
+            async def release() -> None:
+                await close_reader(None, self.iterator)
                 await self.lease.close()
+
             cancelled = await drain_cleanup(release())
             if cancelled and not failed:
-                raise asyncio.CancelledError()
+                raise asyncio.CancelledError
 
 
-async def deadline_reader(iterator, seconds, *, check=None, interval=1.0):
+def _raise_if_expired(deadline: float) -> None:
+    if monotonic() >= deadline:
+        raise HTTPException(TIMEOUT_STATUS, TIMEOUT_DETAIL)
+
+
+async def _wait_ready(
+    pending: "asyncio.Task[T]",
+    deadline: float,
+    check: Callable[[], Awaitable[None]] | None,
+    interval: float,
+) -> bool:
+    """Wait one bounded interval for a chunk and re-check the caller identity."""
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise HTTPException(TIMEOUT_STATUS, TIMEOUT_DETAIL)
+    ready, _ = await asyncio.wait(
+        {pending},
+        timeout=remaining if check is None else min(interval, remaining),
+    )
+    _raise_if_expired(deadline)
+    if check is not None:
+        await check()
+    _raise_if_expired(deadline)
+    return bool(ready)
+
+
+async def deadline_reader(
+    iterator: AsyncIterator[T],
+    seconds: float,
+    *,
+    check: Callable[[], Awaitable[None]] | None = None,
+    interval: float = DEFAULT_INTERVAL,
+) -> AsyncGenerator[T, None]:
     """Enforce a total lifetime even when a read produces no bytes."""
-    iterator = iterator.__aiter__()
+    owned = closable(iterator.__aiter__())
     deadline = monotonic() + seconds
-    pending = None
+    pending: asyncio.Task[T] | None = None
     failed = False
     try:
         while True:
-            remaining = deadline - monotonic()
-            if remaining <= 0:
-                raise HTTPException(502, 'Runtime response timed out')
+            _raise_if_expired(deadline)
             if pending is None:
-                pending = asyncio.create_task(anext(iterator))
-            ready, _ = await asyncio.wait({pending}, timeout=remaining if check is None else min(interval, remaining))
-            if monotonic() >= deadline:
-                raise HTTPException(502, 'Runtime response timed out')
-            if check is not None:
-                await check()
-            if monotonic() >= deadline:
-                raise HTTPException(502, 'Runtime response timed out')
-            if not ready:
+                pending = asyncio.create_task(anext(owned))
+            if not await _wait_ready(pending, deadline, check, interval):
                 continue
             try:
                 chunk = pending.result()
@@ -117,6 +231,6 @@ async def deadline_reader(iterator, seconds, *, check=None, interval=1.0):
         failed = True
         raise
     finally:
-        cancelled = await close_reader(pending, iterator)
+        cancelled = await close_reader(pending, owned)
         if cancelled and not failed:
-            raise asyncio.CancelledError()
+            raise asyncio.CancelledError

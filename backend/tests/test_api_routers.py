@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi import HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import sessionmaker
 
 from app.api.dependencies import (
     get_current_user,
@@ -29,12 +30,13 @@ from app.models.workspace import Workspace
 class TestGetCurrentUser:
     async def test_no_token(self):
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(credentials=None, session=MagicMock())
+            await get_current_user(credentials=None, session_factory=MagicMock())
         assert exc_info.value.status_code == 401
 
     async def test_valid_token(self, session, test_user):
         token = jwt.encode({"sub": str(test_user.id), "ver": test_user.auth_version}, SECRET_KEY, algorithm="HS256")
-        user = await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=session)
+        factory = sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
+        user = await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session_factory=factory)
         assert user.id == test_user.id
 
     async def test_expired_token(self):
@@ -44,32 +46,34 @@ class TestGetCurrentUser:
             SECRET_KEY, algorithm="HS256"
         )
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=MagicMock())
+            await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session_factory=MagicMock())
         assert exc_info.value.status_code == 401
         assert "expired" in exc_info.value.detail.lower()
 
     async def test_invalid_token(self):
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid.token.here"), session=MagicMock())
+            await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid.token.here"), session_factory=MagicMock())
         assert exc_info.value.status_code == 401
 
     async def test_no_sub(self):
         token = jwt.encode({"foo": "bar"}, SECRET_KEY, algorithm="HS256")
         with pytest.raises(HTTPException) as exc_info:
-            await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=MagicMock())
+            await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session_factory=MagicMock())
         assert exc_info.value.status_code == 401
 
     async def test_mcp_token_revoked(self, session, test_user):
         token = jwt.encode({"sub": str(test_user.id), "type": "mcp"}, SECRET_KEY, algorithm="HS256")
         with patch("app.mcp.token_service.get_active_mcp_token", return_value=None):
             with pytest.raises(HTTPException) as exc_info:
-                await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=session)
+                factory = sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
+                await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session_factory=factory)
             assert exc_info.value.status_code == 401
 
     async def test_mcp_token_valid(self, session, test_user):
         token = jwt.encode({"sub": str(test_user.id), "type": "mcp"}, SECRET_KEY, algorithm="HS256")
         with patch("app.mcp.token_service.get_active_mcp_token", return_value=MagicMock()):
-            user = await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=session)
+            factory = sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
+            user = await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session_factory=factory)
         assert user.id == test_user.id
 
     async def test_bearer_credentials(self, session, test_user):
@@ -77,7 +81,8 @@ class TestGetCurrentUser:
         creds = MagicMock()
         creds.scheme = "Bearer"
         creds.credentials = token
-        user = await get_current_user(credentials=creds, session=session)
+        factory = sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
+        user = await get_current_user(credentials=creds, session_factory=factory)
         assert user.id == test_user.id
 
 
@@ -138,13 +143,13 @@ class TestGetCurrentWorkspace:
         user = MagicMock()
         user.id = 1
         with pytest.raises(HTTPException) as exc_info:
-            get_current_workspace(request, user, session)
+            get_current_workspace(request, user, lambda: session)
         assert exc_info.value.status_code == 404
 
     async def test_success(self, session, test_workspace, test_user):
         request = MagicMock()
         request.headers = {"X-Workspace-Id": str(test_workspace.id)}
-        ws = get_current_workspace(request, test_user, session)
+        ws = get_current_workspace(request, test_user, lambda: session)
         assert ws.id == test_workspace.id
 
 
@@ -152,21 +157,21 @@ class TestRequireWorkspaceRole:
     async def test_sufficient_role(self, session, test_workspace, test_user):
         checker = require_workspace_role("viewer")
         with patch("app.features.workspace.permissions.get_member_role", return_value="admin"):
-            result = checker(workspace=test_workspace, current_user=test_user, session=session)
+            result = checker(workspace=test_workspace, current_user=test_user, session_factory=lambda: session)
         assert result.id == test_workspace.id
 
     async def test_insufficient_role(self, session, test_workspace, test_user):
         checker = require_workspace_role("admin")
         with patch("app.features.workspace.permissions.get_member_role", return_value="viewer"):
             with pytest.raises(HTTPException) as exc_info:
-                checker(workspace=test_workspace, current_user=test_user, session=session)
+                checker(workspace=test_workspace, current_user=test_user, session_factory=lambda: session)
             assert exc_info.value.status_code == 403
 
     async def test_no_role(self, session, test_workspace, test_user):
         checker = require_workspace_role("editor")
         with patch("app.features.workspace.permissions.get_member_role", return_value=None):
             with pytest.raises(HTTPException) as exc_info:
-                checker(workspace=test_workspace, current_user=test_user, session=session)
+                checker(workspace=test_workspace, current_user=test_user, session_factory=lambda: session)
             assert exc_info.value.status_code == 403
 
 

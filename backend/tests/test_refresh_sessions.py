@@ -147,5 +147,5 @@ async def test_authoritative_session_check_does_not_block_event_loop(session, te
     with patch('app.features.auth.sessions.valid_session', side_effect=slow_check):
         _, elapsed = await asyncio.gather(get_current_user(
             credentials=HTTPAuthorizationCredentials(scheme='Bearer', credentials=generate_token(test_user.id)),
-            session=session), tick())
+            session_factory=sessionmaker(bind=session.get_bind(), join_transaction_mode='create_savepoint')), tick())
     assert elapsed < .15

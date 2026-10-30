@@ -119,8 +119,8 @@ async def test_text_read_closes_session_before_touching_object_storage(monkeypat
     storage = SimpleNamespace(file_exists=file_exists, get_file_size=lambda name: 0,
                               read_file_prefix=lambda name, limit: b'')
     monkeypatch.setattr(server, 'SessionLocal', SessionFactory())
-    monkeypatch.setattr(server, '_require_read_context', lambda: None)
-    monkeypatch.setattr(server, '_get_authorized_file', lambda *args: file)
+    monkeypatch.setattr(server, 'require_read_context', lambda: None)
+    monkeypatch.setattr(server, 'get_authorized_file', lambda *args: file)
     monkeypatch.setattr(server, 'get_storage_client', lambda: storage)
     monkeypatch.setattr(server, 'is_mcp_request_active', lambda: False)
 

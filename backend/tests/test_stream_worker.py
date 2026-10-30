@@ -53,7 +53,14 @@ async def test_cancel_during_stream_session_creation_closes_on_owner_thread():
         def close(self):
             assert threading.get_ident() == self.owner
             calls.append('close')
-    events = service.stream_run(Session, 1, 2, 3, 4, [])
+    events = service.stream_run(service.StreamRunParams(
+        session_factory=Session,
+        workspace_id=1,
+        user_id=2,
+        conversation_id=3,
+        run_id=4,
+        history=[],
+    ))
     operation = asyncio.create_task(anext(events))
     try:
         assert await asyncio.to_thread(entered.wait, 2)
@@ -72,13 +79,30 @@ async def test_actual_stream_sql_runs_on_worker_while_loop_is_responsive(session
     from sqlalchemy import event
     from app.features.assistant import repository
     from app.features.assistant.event_protocol import AssistantEvent
-    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'fast', 'Slow SQL')
+    conversation = repository.create_conversation(
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode='fast',
+            title='Slow SQL',
+        ),
+    )
     session.commit()
-    conversation, run, history = service.prepare_run(session, test_workspace, test_user.id, conversation.id, 'query')
+    conversation, run, history = service.prepare_run(
+        session,
+        service.PrepareRunParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            query='query',
+        ),
+    )
     class Engine:
-        async def stream(self, **kwargs):
+        async def stream(self, request):
             yield AssistantEvent('token', {'content': 'Answer'})
-    monkeypatch.setattr(service, 'FastEngine', Engine)
+    monkeypatch.setattr(
+        'app.features.assistant.engines.fast_engine.FastEngine', Engine)
     loop_thread = threading.get_ident()
     entered, release = threading.Event(), threading.Event()
     owners = set()
@@ -92,8 +116,15 @@ async def test_actual_stream_sql_runs_on_worker_while_loop_is_responsive(session
     engine = session.get_bind()
     event.listen(engine, 'before_cursor_execute', record)
     async def collect():
-        return [item async for item in service.stream_prepared_run(session, test_workspace,
-                 user_id, conversation, run, history)]
+        return [item async for item in service.stream_prepared_run(
+            service.StreamPreparedRunParams(
+                session=session,
+                workspace=test_workspace,
+                user_id=user_id,
+                conversation=conversation,
+                run=run,
+                history=history,
+            ))]
     operation = asyncio.create_task(collect())
     try:
         assert await asyncio.to_thread(entered.wait, 2)
@@ -114,10 +145,34 @@ async def test_actual_stream_sql_runs_on_worker_while_loop_is_responsive(session
 
 def test_replayed_permission_preserves_response_and_finish_preserves_terminal(session, test_user, test_workspace):
     from app.features.assistant import repository
-    from app.features.assistant.stream_persistence import StreamPersistence
-    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'expert', 'Permission')
-    user_message = repository.create_message(session, conversation, 'user', 'query')
-    assistant = repository.create_message(session, conversation, 'assistant', '', status='streaming')
+    from app.features.assistant.stream_persistence import (
+        FinalOutcome,
+        StreamPersistence,
+        StreamProgress,
+    )
+    conversation = repository.create_conversation(
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode='expert',
+            title='Permission',
+        ),
+    )
+    user_message = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(role='user', content='query'),
+    )
+    assistant = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(
+            role='assistant',
+            content='',
+            status='streaming',
+        ),
+    )
     run = repository.create_run(session, conversation, user_message, assistant)
     payload = {'permission_id': 'p1', 'title': 'Execute'}
     repository.set_pending_permission(run, payload)
@@ -125,7 +180,11 @@ def test_replayed_permission_preserves_response_and_finish_preserves_terminal(se
     persistence = StreamPersistence(session, test_workspace, test_user.id, conversation, run)
     assert repository.set_permission_response(session, run.id, 'p1', 'once')
     session.commit()
-    assert persistence.checkpoint('', {}, {}, payload, True)
+    assert persistence.checkpoint(
+        StreamProgress(answer_parts=[''], metadata={}, usage={}),
+        payload,
+        commit=True,
+    )
     session.refresh(run)
     assert run.permission_response == 'once' and run.status == 'running'
     assert not repository.set_permission_response(session, run.id, 'p1', 'reject')
@@ -133,7 +192,13 @@ def test_replayed_permission_preserves_response_and_finish_preserves_terminal(se
     assistant.content = 'Existing final answer'
     assistant.status = 'failed'
     session.commit()
-    assert persistence.finish('completed', 'Late answer', {}, {}, []) == 'failed'
+    assert persistence.finish(FinalOutcome(
+        status='completed',
+        content='Late answer',
+        metadata={},
+        usage={},
+        events=[],
+    )) == 'failed'
     session.refresh(run)
     session.refresh(assistant)
     assert run.status == assistant.status == 'failed'
@@ -144,6 +209,7 @@ async def test_http_stream_disconnect_closes_underlying_iterator(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import Mock
     from app.features.assistant import router as module
+    from app.api.dependencies import RequestContext
     from app.features.assistant.schemas import AssistantMessageRequest
     from app.features.assistant.event_protocol import AssistantEvent
     conversation = SimpleNamespace(id=3, mode='fast')
@@ -158,9 +224,16 @@ async def test_http_stream_disconnect_closes_underlying_iterator(monkeypatch):
         finally:
             closed.append(True)
     monkeypatch.setattr(service, 'stream_run', events)
-    response = await module.stream_assistant_message(3, AssistantMessageRequest(query='query'),
-        SimpleNamespace(headers={}), current_user=SimpleNamespace(id=1),
-        workspace=SimpleNamespace(id=2), session_factory=Mock)
+    response = await module.stream_assistant_message(
+        3,
+        AssistantMessageRequest(query='query'),
+        SimpleNamespace(headers={}),
+        RequestContext(
+            user=SimpleNamespace(id=1, http_stream_credential=None),
+            session_factory=Mock,
+        ),
+        SimpleNamespace(id=2),
+    )
     assert 'run_started' in await anext(response.body_iterator)
     await response.body_iterator.aclose()
     assert closed == [True]

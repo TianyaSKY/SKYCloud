@@ -103,6 +103,64 @@ class TestExtractVideoFrames:
         assert len(result) == 3
 
 
+@pytest.mark.parametrize("during_processing", [False, True])
+def test_pdf_failure_still_closes_document(tmp_path, during_processing):
+    document = MagicMock()
+    document.__len__.return_value = 1
+    document.close.side_effect = RuntimeError("PRIVATE_CLOSE_FAILURE")
+    if during_processing:
+        document.load_page.side_effect = RuntimeError("PRIVATE_RENDER_FAILURE")
+    with patch(
+        "app.features.folder.organize.converter.fitz.open",
+        return_value=document,
+    ):
+        result = convert_pdf_to_images("/synthetic.pdf", str(tmp_path))
+    assert result == (
+        [] if during_processing else [str(tmp_path / "page_0.jpg")]
+    )
+    document.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize("during_processing", [False, True])
+def test_video_failure_still_releases_capture(tmp_path, during_processing):
+    capture = MagicMock()
+    capture.isOpened.return_value = True
+    capture.get.return_value = 10
+    capture.read.return_value = (True, MagicMock())
+    capture.release.side_effect = RuntimeError("PRIVATE_RELEASE_FAILURE")
+    if during_processing:
+        capture.read.side_effect = RuntimeError("PRIVATE_FRAME_FAILURE")
+    with (
+        patch("app.features.folder.organize.converter.cv2.VideoCapture",
+              return_value=capture),
+        patch("app.features.folder.organize.converter.cv2.imwrite"),
+    ):
+        result = extract_video_frames(
+            "/synthetic.mp4", str(tmp_path), frame_count=1,
+        )
+    assert result == (
+        [] if during_processing else [str(tmp_path / "frame_0.jpg")]
+    )
+    capture.release.assert_called_once_with()
+
+
+def test_change_event_write_failure_rolls_back_and_closes():
+    from app.features.folder.change_log import log_events_batch
+
+    owned = MagicMock()
+    owned.commit.side_effect = RuntimeError("PRIVATE_CHANGE_EVENT_FAILURE")
+    with patch(
+        "app.features.folder.change_log.SessionLocal", return_value=owned,
+    ):
+        result = log_events_batch(
+            1,
+            [{"entity_type": "file", "entity_id": 1, "action": "move"}],
+        )
+    assert result == 0
+    owned.rollback.assert_called_once_with()
+    owned.close.assert_called_once_with()
+
+
 # ---------------------------------------------------------------------------
 # description 模块
 # ---------------------------------------------------------------------------
@@ -118,8 +176,6 @@ from app.features.folder.organize.description import (
     VIDEO_EXTENSIONS,
     IMAGE_EXTENSIONS,
     AUDIO_EXTENSIONS,
-    desc_file,
-    format_data,
 )
 
 
@@ -227,9 +283,6 @@ class TestGenerateFileDescription:
             result = generate_file_description(str(f), {"api": "a", "key": "k", "model": "m"})
         assert result == "Python代码文件"
 
-    def test_compat_aliases(self):
-        assert desc_file is generate_file_description
-        assert format_data is _extract_text_content
 
 
 # ---------------------------------------------------------------------------

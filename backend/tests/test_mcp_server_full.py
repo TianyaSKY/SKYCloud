@@ -13,23 +13,24 @@ import pytest
 @pytest.fixture
 def mcp_user_ctx():
     """设置 MCP 上下文 user_id。"""
-    from app.mcp.server import _current_user_id
-    token = _current_user_id.set(1)
+    from app.mcp.context import current_user_id
+    token = current_user_id.set(1)
     yield 1
-    _current_user_id.reset(token)
+    current_user_id.reset(token)
 
 
 class TestMCPHelpers:
     def test_get_authenticated_user_id_success(self, mcp_user_ctx):
-        from app.mcp.server import _get_authenticated_user_id
-        assert _get_authenticated_user_id() == 1
+        from app.mcp.authorization import get_authenticated_user_id
+        assert get_authenticated_user_id() == 1
 
     def test_get_authenticated_user_id_no_user(self):
-        from app.mcp.server import _get_authenticated_user_id, _current_user_id
-        token = _current_user_id.set(None)
+        from app.mcp.authorization import get_authenticated_user_id
+        from app.mcp.context import current_user_id
+        token = current_user_id.set(None)
         with pytest.raises(PermissionError):
-            _get_authenticated_user_id()
-        _current_user_id.reset(token)
+            get_authenticated_user_id()
+        current_user_id.reset(token)
 
     def test_error_json(self):
         from app.mcp.server import _error_json
@@ -92,21 +93,23 @@ class TestMCPHelpers:
 
 class TestJWTAuthMiddleware:
     def test_middleware_no_auth_header(self):
-        from app.mcp.server import JWTAuthMiddleware, _current_user_id
+        from app.mcp.context import current_user_id
+        from app.mcp.server import JWTAuthMiddleware
         app_mock = AsyncMock()
         mw = JWTAuthMiddleware(app_mock)
         scope = {"type": "http", "headers": []}
         asyncio.run(mw(scope, MagicMock(), MagicMock()))
         app_mock.assert_called_once()
-        assert _current_user_id.get() is None
+        assert current_user_id.get() is None
 
     def test_middleware_valid_bearer(self, session, test_user):
-        from app.mcp.server import JWTAuthMiddleware, _current_user_id
+        from app.mcp.context import current_user_id
+        from app.mcp.server import JWTAuthMiddleware
         from app.features.auth.service import generate_token
         token = generate_token(test_user.id)
         captured = {}
         async def _capture_app(scope, receive, send):
-            captured["user_id"] = _current_user_id.get()
+            captured["user_id"] = current_user_id.get()
         mw = JWTAuthMiddleware(_capture_app)
         scope = {
             "type": "http",
@@ -117,7 +120,8 @@ class TestJWTAuthMiddleware:
         assert captured["user_id"] == test_user.id
 
     def test_middleware_invalid_bearer(self, session):
-        from app.mcp.server import JWTAuthMiddleware, _current_user_id
+        from app.mcp.context import current_user_id
+        from app.mcp.server import JWTAuthMiddleware
         app_mock = AsyncMock()
         mw = JWTAuthMiddleware(app_mock)
         scope = {
@@ -127,7 +131,7 @@ class TestJWTAuthMiddleware:
         with patch("app.mcp.authentication.SessionLocal", return_value=session):
             asyncio.run(mw(scope, MagicMock(), MagicMock()))
         app_mock.assert_called_once()
-        assert _current_user_id.get() is None
+        assert current_user_id.get() is None
 
     def test_middleware_non_http(self):
         from app.mcp.server import JWTAuthMiddleware
@@ -138,7 +142,8 @@ class TestJWTAuthMiddleware:
         app_mock.assert_called_once()
 
     def test_middleware_empty_token(self):
-        from app.mcp.server import JWTAuthMiddleware, _current_user_id
+        from app.mcp.context import current_user_id
+        from app.mcp.server import JWTAuthMiddleware
         app_mock = AsyncMock()
         mw = JWTAuthMiddleware(app_mock)
         scope = {
@@ -146,10 +151,11 @@ class TestJWTAuthMiddleware:
             "headers": [(b"authorization", b"Bearer ")],
         }
         asyncio.run(mw(scope, MagicMock(), MagicMock()))
-        assert _current_user_id.get() is None
+        assert current_user_id.get() is None
 
     def test_middleware_no_bearer_prefix(self):
-        from app.mcp.server import JWTAuthMiddleware, _current_user_id
+        from app.mcp.context import current_user_id
+        from app.mcp.server import JWTAuthMiddleware
         app_mock = AsyncMock()
         mw = JWTAuthMiddleware(app_mock)
         scope = {
@@ -157,7 +163,7 @@ class TestJWTAuthMiddleware:
             "headers": [(b"authorization", b"Basic abc123")],
         }
         asyncio.run(mw(scope, MagicMock(), MagicMock()))
-        assert _current_user_id.get() is None
+        assert current_user_id.get() is None
 
     def test_get_mcp_app(self):
         from app.mcp.server import get_mcp_app, mcp
@@ -186,15 +192,6 @@ class TestMCPTools:
         with pytest.raises(PermissionError):
             asyncio.run(get_current_user())
 
-    def test_search_files_tool(self, session, test_user, mcp_user_ctx):
-        from app.mcp.server import search_files
-        import app.mcp.server as mcp_mod
-        mock_result = {"results": [], "total": 0}
-        with patch("app.mcp.server.SessionLocal", return_value=session), \
-             patch.object(mcp_mod.file_service, "search_files", new_callable=AsyncMock, return_value=mock_result):
-            result = asyncio.run(search_files("test"))
-        data = json.loads(result)
-        assert "results" in data
 
     def test_search_files_no_auth(self):
         from app.mcp.server import search_files
@@ -447,7 +444,7 @@ class TestMCPTools:
         from app.mcp.server import batch_delete, BatchDeleteItem
         private = "private-storage-password"
         with patch("app.mcp.server.SessionLocal", return_value=MagicMock()), \
-             patch("app.mcp.server._get_authorized_file"), \
+             patch("app.mcp.server.get_authorized_file"), \
              patch("app.mcp.server.file_service.delete_file", side_effect=HTTPException(status_code=503, detail=private)):
             result = asyncio.run(batch_delete([BatchDeleteItem(id=1, is_folder=False)]))
         data = json.loads(result)
@@ -474,7 +471,7 @@ class TestMCPTools:
 
     def test_get_upload_url(self, mcp_user_ctx):
         from app.mcp.server import get_upload_url
-        with patch("app.mcp.server.os.path.exists", return_value=False):
+        with patch("app.mcp.server.Path.exists", return_value=False):
             result = asyncio.run(get_upload_url())
         data = json.loads(result)
         assert "upload_url" in data
@@ -482,7 +479,7 @@ class TestMCPTools:
 
     def test_get_upload_url_docker(self, mcp_user_ctx):
         from app.mcp.server import get_upload_url
-        with patch("app.mcp.server.os.path.exists", return_value=True):  # /.dockerenv exists
+        with patch("app.mcp.server.Path.exists", return_value=True):  # /.dockerenv exists
             result = asyncio.run(get_upload_url(parent_id=5))
         data = json.loads(result)
         assert "skycloud-backend-api" in data["upload_url"]

@@ -201,6 +201,7 @@ from app.infra.llm.client import (
     embed_texts,
     record_llm_usage,
 )
+from app.infra.llm.usage import TokenUsage
 
 
 class TestGetClient:
@@ -217,23 +218,23 @@ class TestGetClient:
 class TestSafeRecord:
     def test_success(self):
         with patch("app.features.token_usage.service.record_usage") as m:
-            _safe_record(1, "chat", "model", 10, 20, 30)
+            _safe_record(TokenUsage(user_id=1, action="chat", model_name="model", prompt_tokens=10, completion_tokens=20, total_tokens=30))
             m.assert_called_once()
 
     def test_exception_swallowed(self):
         with patch("app.features.token_usage.service.record_usage", side_effect=Exception("err")):
-            _safe_record(1, "chat", "model", 10, 20, 30)  # 不应抛异常
+            _safe_record(TokenUsage(user_id=1, action="chat", model_name="model", prompt_tokens=10, completion_tokens=20, total_tokens=30))  # 不应抛异常
 
 
 class TestRecordLlmUsage:
     def test_zero_tokens_skipped(self):
         with patch("app.infra.llm.client._safe_record") as m:
-            record_llm_usage(user_id=1, action="chat", total_tokens=0, prompt_tokens=0)
+            record_llm_usage(usage=TokenUsage(user_id=1, action="chat", total_tokens=0, prompt_tokens=0))
             m.assert_not_called()
 
     def test_nonzero_recorded(self):
         with patch("app.infra.llm.client._safe_record") as m:
-            record_llm_usage(user_id=1, action="chat", total_tokens=100, prompt_tokens=50)
+            record_llm_usage(usage=TokenUsage(user_id=1, action="chat", total_tokens=100, prompt_tokens=50))
             m.assert_called_once()
 
 
@@ -318,7 +319,6 @@ class TestEmbedTexts:
 from app.infra.indexing.handler import (
     handle_file_indexing,
     _mark_file_failed,
-    handle_file_process,
 )
 
 
@@ -406,6 +406,3 @@ class TestMarkFileFailed:
         mock_session.commit.assert_not_called()
 
 
-class TestCompatAlias:
-    def test_handle_file_process_is_handle_file_indexing(self):
-        assert handle_file_process is handle_file_indexing

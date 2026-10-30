@@ -111,7 +111,7 @@ def test_cached_profile_cannot_restore_revoked_session(client, session, test_use
     before = headers(test_user)
     session.execute(update(type(test_user)).where(type(test_user).id == test_user.id).values(auth_version=1))
     session.commit()
-    with patch("app.features.auth.user_service._get_user_data", return_value=test_user.to_dict()):
+    with patch("app.features.auth.user_service.get_user_data", return_value=test_user.to_dict()):
         assert client.get(f"/api/users/{test_user.id}", headers=before).status_code == 401
         assert "revoked" in decode_token(session, before["Authorization"].split(" ", 1)[1]).lower()
 
@@ -214,7 +214,7 @@ def test_server_errors_are_sanitized(kind):
 
 
 def test_registration_failure_hides_internal_error(client):
-    with patch("app.features.auth.service.create_user", side_effect=RuntimeError("database-private-path-password")):
+    with patch("app.features.auth.user_service.create_user", side_effect=RuntimeError("database-private-path-password")):
         response = client.post("/api/auth/register", json={"username": "register-error", "password": "secret"})
     assert response.status_code == 500
     assert "database-private-path-password" not in response.text
@@ -240,9 +240,9 @@ def test_mcp_server_errors_do_not_reveal_internal_details(kind):
 
 
 async def test_vector_search_failure_is_sanitized(session, test_workspace):
-    from app.features.file.service import search_files
+    from app.features.file.search_service import SearchFilesParams, search_files
     with patch("app.features.file.search_service.get_embedding_model_config", side_effect=RuntimeError("private-provider-key")):
-        result = await search_files(session, test_workspace.id, "query", search_type="vector")
+        result = await search_files(session, test_workspace.id, SearchFilesParams(query="query", search_type="vector"))
     assert result["error"] == "Vector search is temporarily unavailable"
     assert "private-provider-key" not in str(result)
 

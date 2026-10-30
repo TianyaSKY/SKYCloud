@@ -24,7 +24,7 @@ os.environ.update(
 
 import httpx
 from langchain_openai import ChatOpenAI
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from app.api.factory import create_fastapi_app
 from app.mcp.server import mcp, get_mcp_app
 from app.features.folder.organize.tools import get_all_files
@@ -39,10 +39,15 @@ async def locked_failure_fixture() -> str:
 
 
 async def check():
-    llm = ChatOpenAI(api_key='disposable-model-key', base_url='http://127.0.0.1:1/v1', model='fixture')
-    create_react_agent(llm, [get_all_files])
+    with httpx.Client(trust_env=False) as sync_client:
+        async with httpx.AsyncClient(trust_env=False) as async_client:
+            llm = ChatOpenAI(
+                api_key='disposable-model-key', base_url='http://127.0.0.1:1/v1',
+                model='fixture', http_client=sync_client, http_async_client=async_client,
+            )
+            create_agent(llm, [get_all_files])
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_fastapi_app()),
-                                base_url='https://cloud.example.test:8443') as client:
+                                base_url='https://cloud.example.test:8443', trust_env=False) as client:
         response = await client.get('/api/health')
         assert response.status_code == 200 and response.json() == {'success': True, 'data': {'status': 'ok'}}
     app = get_mcp_app(mcp)
@@ -50,7 +55,8 @@ async def check():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                     base_url='https://cloud.example.test:8443',
                                     headers={'Accept': 'application/json, text/event-stream',
-                                             'Origin': 'https://cloud.example.test:8443'}) as client:
+                                             'Origin': 'https://cloud.example.test:8443'},
+                                    trust_env=False) as client:
             request = {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
                        'params': {'protocolVersion': '2025-03-26', 'capabilities': {},
                                   '_meta': {'fixture_padding': 'x' * (5 * 1024 * 1024)},

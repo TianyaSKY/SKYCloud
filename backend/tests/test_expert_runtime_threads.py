@@ -181,7 +181,8 @@ async def test_cancelled_runtime_setup_drains_worker_session(monkeypatch, stage,
 @pytest.mark.parametrize('stage', ['persist', 'state', 'dispatch'])
 @pytest.mark.parametrize('fault', [False, True])
 async def test_cancelled_permission_worker_finishes_before_client_and_lease_close(monkeypatch, stage, fault):
-    from app.features.assistant.service import RunController
+    from app.features.assistant.run_control import RunController
+    from app.features.assistant.engines.base import EngineRequest
     from app.features.assistant.event_protocol import AssistantEvent
     from contextlib import asynccontextmanager
     entered, release = threading.Event(), threading.Event()
@@ -228,7 +229,15 @@ async def test_cancelled_permission_worker_finishes_before_client_and_lease_clos
     monkeypatch.setattr(engine,'_permission_state',hold if stage=='state' else lambda *args:('once',False))
     monkeypatch.setattr(engine,'_dispatch_permission',hold if stage=='dispatch' else lambda *args:None)
     async def consume():
-        async for _ in engine.stream(run_id=4,user_id=1,workspace_id=2,query='query',history=[],controller=RunController()): pass
+        request = EngineRequest(
+            run_id=4,
+            user_id=1,
+            workspace_id=2,
+            query='query',
+            history=[],
+            controller=RunController(),
+        )
+        async for _ in engine.stream(request): pass
     pending = asyncio.create_task(consume())
     try:
         assert await asyncio.to_thread(entered.wait,2)

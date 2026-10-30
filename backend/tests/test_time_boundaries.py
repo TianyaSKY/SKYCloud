@@ -29,12 +29,15 @@ def assert_share_and_usage_times(session, user_id, workspace_id):
     session.add(TokenUsageLog(user_id=user_id, action="chat", total_tokens=5,
                              created_at=datetime(2025, 6, 1, 12, 15)))
     session.commit()
-    for query in (usage.get_usage_logs, usage.get_all_users_usage_logs):
-        result = query(session, user_id=user_id,
-            start_date="2025-06-01T00:00:00-04:00", end_date="2025-06-01T05:00:00Z")
+    for query, params_type in (
+        (usage.get_usage_logs, usage.GetUsageLogsParams),
+        (usage.get_all_users_usage_logs, usage.AdminUsageLogsParams),
+    ):
+        result = query(session, params_type(user_id=user_id,
+            start_date="2025-06-01T00:00:00-04:00", end_date="2025-06-01T05:00:00Z"))
         assert result["total"] == 1
         assert result["items"][0]["created_at"] == "2025-06-01T04:15:00+00:00"
-        assert query(session, user_id=user_id, start_date="2025-06-01T04:20:00Z")["total"] == 0
+        assert query(session, params_type(user_id=user_id, start_date="2025-06-01T04:20:00Z"))["total"] == 0
 
 
 def test_share_expiration_and_usage_ranges_preserve_instants(session, test_user, test_workspace):

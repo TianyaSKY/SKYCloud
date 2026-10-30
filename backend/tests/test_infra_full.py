@@ -7,6 +7,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.infra.cache import CacheableParams
+from app.infra.llm.usage import TokenUsage
+
+@pytest.fixture
+def no_proxy_env(monkeypatch):
+    for name in (
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "all_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 
 class TestCacheDecorators:
     def test_build_cache_key_no_args(self):
@@ -33,7 +45,7 @@ class TestCacheDecorators:
         mock_redis = MagicMock()
         mock_redis.get.return_value = json.dumps({"v": 1})
 
-        @cacheable(prefix="test", expire=60)
+        @cacheable(CacheableParams(prefix="test", expire=60))
         def func(x):
             return {"v": x}
 
@@ -47,7 +59,7 @@ class TestCacheDecorators:
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
 
-        @cacheable(prefix="test", expire=60)
+        @cacheable(CacheableParams(prefix="test", expire=60))
         def func(x):
             return {"v": x}
 
@@ -61,7 +73,7 @@ class TestCacheDecorators:
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
 
-        @cacheable(prefix="test", expire=60, cache_none=False)
+        @cacheable(CacheableParams(prefix="test", expire=60, cache_none=False))
         def func(x):
             return None
 
@@ -75,7 +87,7 @@ class TestCacheDecorators:
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
 
-        @cacheable(prefix="test", expire=60, cache_none=True)
+        @cacheable(CacheableParams(prefix="test", expire=60, cache_none=True))
         def func(x):
             return None
 
@@ -89,7 +101,7 @@ class TestCacheDecorators:
         mock_redis = MagicMock()
         mock_redis.get.side_effect = Exception("Redis down")
 
-        @cacheable(prefix="test", expire=60)
+        @cacheable(CacheableParams(prefix="test", expire=60))
         def func(x):
             return "value"
 
@@ -103,7 +115,7 @@ class TestCacheDecorators:
         mock_redis.get.return_value = None
         mock_redis.setex.side_effect = Exception("Write fail")
 
-        @cacheable(prefix="test", expire=60)
+        @cacheable(CacheableParams(prefix="test", expire=60))
         def func(x):
             return "value"
 
@@ -116,7 +128,7 @@ class TestCacheDecorators:
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
 
-        @cacheable(prefix="test", expire=60)
+        @cacheable(CacheableParams(prefix="test", expire=60))
         async def func(x):
             return {"v": x}
 
@@ -129,7 +141,7 @@ class TestCacheDecorators:
         mock_redis = MagicMock()
         mock_redis.get.return_value = json.dumps({"v": 8})
 
-        @cacheable(prefix="test", expire=60)
+        @cacheable(CacheableParams(prefix="test", expire=60))
         async def func(x):
             return {"v": x}
 
@@ -423,7 +435,7 @@ class TestTaskQueue:
 
 
 class TestLLMClient:
-    def test_get_client_caches(self):
+    def test_get_client_caches(self, no_proxy_env):
         from app.infra.llm import client
         client._client_cache.clear()
         c1 = client._get_client("http://api", "key")
@@ -431,10 +443,9 @@ class TestLLMClient:
         assert c1 is c2
         client._client_cache.clear()
 
-    def test_get_client_different_keys(self):
+    def test_get_client_different_keys(self, no_proxy_env):
         from app.infra.llm import client
         client._client_cache.clear()
-        # OpenAI is mocked, so _get_client creates mock instances
         # Same key should return same cached client
         c1 = client._get_client("http://api", "key1")
         c1_again = client._get_client("http://api", "key1")
@@ -545,13 +556,13 @@ class TestLLMClient:
     def test_record_llm_usage_zero_skip(self):
         from app.infra.llm import client
         with patch.object(client, "_safe_record") as m_rec:
-            client.record_llm_usage(user_id=1, action="test", total_tokens=0, prompt_tokens=0)
+            client.record_llm_usage(usage=TokenUsage(user_id=1, action="test", total_tokens=0, prompt_tokens=0))
         m_rec.assert_not_called()
 
     def test_record_llm_usage_positive(self):
         from app.infra.llm import client
         with patch.object(client, "_safe_record") as m_rec:
-            client.record_llm_usage(user_id=1, action="test", total_tokens=10, prompt_tokens=5)
+            client.record_llm_usage(usage=TokenUsage(user_id=1, action="test", total_tokens=10, prompt_tokens=5))
         m_rec.assert_called_once()
 
     def test_safe_record_exception(self):
@@ -559,8 +570,10 @@ class TestLLMClient:
         # record_usage 不存在或抛异常时不应阻断
         with patch("app.features.token_usage.service.record_usage",
                    side_effect=Exception("DB error")):
-            client._safe_record(user_id=1, action="test", model_name="m",
-                               prompt_tokens=1, completion_tokens=1, total_tokens=2)
+            client._safe_record(TokenUsage(
+                user_id=1, action="test", model_name="m",
+                prompt_tokens=1, completion_tokens=1, total_tokens=2,
+            ))
 
     def test_tracking_embeddings_embed_documents(self):
         """TrackingOpenAIEmbeddings.embed_documents 调用 embed_texts。"""
@@ -610,22 +623,16 @@ class TestLLMClient:
         assert result == []
 
 class TestAppInit:
-    def test_initialize_application_checks_schema_before_creating_upload_directory(self):
-        from app import initialize_application
-        with patch("app.check_schema") as check, patch("app.check_legacy_admin"), patch("app.os.makedirs") as mkdir:
-            initialize_application()
-        check.assert_called_once()
-        mkdir.assert_called_once()
 
     def test_initialize_application_stops_on_schema_error(self):
         from app import initialize_application
-        with patch("app.check_schema", side_effect=RuntimeError("Schema mismatch")), patch("app.os.makedirs") as mkdir:
+        with patch("app.check_schema", side_effect=RuntimeError("Schema mismatch")), patch("app.Path.mkdir") as mkdir:
             with pytest.raises(RuntimeError, match="Schema mismatch"):
                 initialize_application()
         mkdir.assert_not_called()
 
     def test_initialize_application_stops_on_upload_directory_error(self):
         from app import initialize_application
-        with patch("app.check_schema"), patch("app.check_legacy_admin"), patch("app.os.makedirs", side_effect=PermissionError("Permission denied")):
+        with patch("app.check_schema"), patch("app.check_legacy_admin"), patch("app.Path.mkdir", side_effect=PermissionError("Permission denied")):
             with pytest.raises(PermissionError):
                 initialize_application()

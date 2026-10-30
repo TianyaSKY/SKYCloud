@@ -228,7 +228,7 @@ def upload_api(postgres, minio_storage, monkeypatch, tmp_path):
         conn.execute(text("INSERT INTO folder (name,workspace_id,parent_id) VALUES ('/',1,NULL)"))
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(change_log, 'SessionLocal', factory)
-    monkeypatch.setattr(storage, '_storage_client', minio_storage)
+    monkeypatch.setattr(storage._holder, 'client', minio_storage)
     monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
     monkeypatch.setattr(service, 'MULTIPART_ROOT', str(tmp_path / 'parts'))
     app = create_fastapi_app()
@@ -293,9 +293,9 @@ def test_worker_reconciles_real_orphan_object_and_retains_committed_object(uploa
     assert response.status_code == 201, response.text
     minio_storage.upload_data(b'orphan', 'crash-orphan')
     with Session(postgres) as session:
-        row = upload_quota.reserve(session, 1, 1, 6, details={'object_name': 'crash-orphan'})
+        row = upload_quota.reserve(session, upload_quota.ReserveParams(workspace_id=1, user_id=1, size=6, details={'object_name': 'crash-orphan'}))
         rid = row.id
-        upload_quota.cancel(session, 1, 1, rid)
+        upload_quota.cancel(session, upload_quota.CancelParams(workspace_id=1, user_id=1, reservation_id=rid))
         service.cleanup_expired_uploads(session=session)
         assert session.get(UploadReservation, rid).cleaned_at is not None
     assert not minio_storage.file_exists('crash-orphan')
@@ -401,7 +401,7 @@ def test_upload_publication_rechecks_parent_after_reservation_commit(upload_api,
 
 @pytest.mark.parametrize('body,status', [(b'ab', 400), (b'abcd', 413)])
 def test_chunk_cleanup_failure_preserves_public_validation_and_retry(upload_api, postgres, minio_storage, monkeypatch, body, status):
-    from app.infra import upload_cleanup
+    from app.infra import multipart_storage
     from loguru import logger
     client, headers, root = upload_api
     response = client.post('/api/files/multipart/init', headers=headers, json={
@@ -411,7 +411,7 @@ def test_chunk_cleanup_failure_preserves_public_validation_and_retry(upload_api,
     data = {'upload_id': upload_id, 'chunk_index': 0}
     path = '/api/files/multipart/chunk'
     assert client.post(path, headers=headers, data=data, files={'chunk': ('part', b'abc')}).status_code == 200
-    original_unlink = upload_cleanup.os.unlink
+    original_unlink = multipart_storage.os.unlink
     logs = []
     sink = logger.add(lambda message: logs.append(str(message)))
     def reject_temporary(path, **kwargs):
@@ -419,10 +419,10 @@ def test_chunk_cleanup_failure_preserves_public_validation_and_retry(upload_api,
             raise PermissionError('private-cleanup-path-and-credential')
         return original_unlink(path, **kwargs)
     try:
-        monkeypatch.setattr(upload_cleanup.os, 'unlink', reject_temporary)
+        monkeypatch.setattr(multipart_storage.os, 'unlink', reject_temporary)
         failed = client.post(path, headers=headers, data=data, files={'chunk': ('part', body)})
     finally:
-        monkeypatch.setattr(upload_cleanup.os, 'unlink', original_unlink)
+        monkeypatch.setattr(multipart_storage.os, 'unlink', original_unlink)
         logger.remove(sink)
     assert failed.status_code == status, failed.text
     assert failed.json()['error']['code'] == ('BUSINESS_RULE_VIOLATION' if status == 400 else 'PAYLOAD_TOO_LARGE')
@@ -449,7 +449,7 @@ async def test_cancelled_request_preserves_real_upload_publication(upload_api, p
     original_save = FastAPIUploadAdapter.save
 
     def held_save(adapter, destination, *args, **kwargs):
-        streams.append(adapter._upload_file.file)
+        streams.append(adapter.upload_file.file)
         entered.set()
         assert release.wait(5)
         original_save(adapter, destination, *args, **kwargs)
@@ -460,12 +460,12 @@ async def test_cancelled_request_preserves_real_upload_publication(upload_api, p
         from app.infra import multipart_storage
         original_copy = multipart_storage.copy_upload_bounded
         def held_copy(adapter, target, max_bytes):
-            streams.append(adapter._upload_file.file)
+            streams.append(adapter.upload_file.file)
             entered.set()
             assert release.wait(5)
             original_copy(adapter, target, max_bytes)
-            adapter._upload_file.file.seek(0)
-            consumed.append(adapter._upload_file.file.read())
+            adapter.upload_file.file.seek(0)
+            consumed.append(adapter.upload_file.file.read())
         monkeypatch.setattr(multipart_storage, 'copy_upload_bounded', held_copy)
     path, field = {
         'single': ('/api/files', 'file'),
@@ -548,13 +548,13 @@ def test_real_storage_rejection_holds_capacity_until_reconciliation(upload_api, 
         row = session.query(UploadReservation).one()
         assert row.status == 'cancelled' and row.cleaned_at is None
         with pytest.raises(BusinessRuleError, match='capacity'):
-            upload_quota.reserve(session, 1, 1, 1)
+            upload_quota.reserve(session, upload_quota.ReserveParams(workspace_id=1, user_id=1, size=1))
         session.rollback()
     minio_storage._client = original_client
     with Session(postgres) as session:
         service.cleanup_expired_uploads(session=session)
         assert session.query(UploadReservation).one().cleaned_at is not None
-        assert upload_quota.reserve(session, 1, 1, 5).size == 5
+        assert upload_quota.reserve(session, upload_quota.ReserveParams(workspace_id=1, user_id=1, size=5)).size == 5
     assert list(original_client.list_objects(minio_storage._bucket)) == []
     assert not (root / 'uploads' / '.staging').exists()
 
@@ -641,13 +641,13 @@ def test_real_batch_staging_failure_compensation_and_worker_recovery(upload_api,
             assert db.scalar(text('SELECT sum(attempts) FROM upload_daily_usage')) == 1
             if delete_failure:
                 with pytest.raises(BusinessRuleError, match='capacity'):
-                    upload_quota.reserve(db, 1, 1, 10)
+                    upload_quota.reserve(db, upload_quota.ReserveParams(workspace_id=1, user_id=1, size=10))
                 db.rollback()
             minio_storage._client = healthy_client
             assert len(list(healthy_client.list_objects(minio_storage._bucket))) == int(delete_failure)
             service.cleanup_expired_uploads(session=db)
             assert db.scalar(text('SELECT count(*) FROM upload_reservations WHERE cleaned_at IS NULL')) == 0
-            assert upload_quota.reserve(db, 1, 1, 10).size == 10
+            assert upload_quota.reserve(db, upload_quota.ReserveParams(workspace_id=1, user_id=1, size=10)).size == 10
         assert list(healthy_client.list_objects(minio_storage._bucket)) == []
         assert not (root / 'uploads' / '.staging').exists()
     finally:
@@ -690,7 +690,7 @@ def test_real_upload_committed_before_ack_failure_keeps_downloadable_objects(upl
                 service.batch_create_files(db, [upload(b'12345'),upload(b'67890')], {'workspace_id':1,'uploader_id':1})
             else:
                 rid = service.init_multipart_upload(db, 1, 1, {'filename':'x.txt','total_size':5})['upload_id']
-                service.save_multipart_chunk(db, 1, 1, rid, 0, upload(b'12345'))
+                service.save_multipart_chunk(db, service.SaveMultipartChunkParams(uploader_id=1, workspace_id=1, upload_id=rid, chunk_index=0, chunk=upload(b'12345')))
                 service.complete_multipart_upload(db, 1, 1, rid)
     expected = 2 if kind == 'batch' else 1
     with Session(postgres) as observer:
@@ -765,7 +765,7 @@ def test_real_batch_cancel_sql_rejection_preserves_error_and_recovers_remaining_
     with Session(postgres) as observer:
         service.cleanup_expired_uploads(session=observer)
         assert observer.scalar(text('SELECT count(*) FROM upload_reservations WHERE cleaned_at IS NULL')) == 0
-        assert upload_quota.reserve(observer, 1, 1, 10).size == 10
+        assert upload_quota.reserve(observer, upload_quota.ReserveParams(workspace_id=1, user_id=1, size=10)).size == 10
     assert not (root / 'uploads' / '.staging').exists()
 
 

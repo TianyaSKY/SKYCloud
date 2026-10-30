@@ -19,7 +19,7 @@ def test_search_passes_workspace_id_not_user_id(session, test_user, test_workspa
     try:
         result = {"items": [], "total": 0}
         with patch("app.mcp.server.SessionLocal", return_value=session), patch(
-            "app.mcp.server.file_service.search_files",
+            "app.mcp.server.file_search_service.search_files",
             new_callable=AsyncMock,
             return_value=result,
         ) as search:
@@ -46,7 +46,7 @@ def test_list_files_resolves_root_in_selected_workspace(session, test_user, test
             asyncio.run(list_files())
 
         assert root_id.call_args.args[1] == test_workspace.id
-        assert list_items.call_args.args[1] == test_workspace.id
+        assert list_items.call_args.args[1].workspace_id == test_workspace.id
     finally:
         from app.mcp.context import reset_mcp_context
 

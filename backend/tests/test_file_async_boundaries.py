@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from app.features.file import router, service, search_service, avatar_upload
+from app.api.dependencies import RequestContext
 
 
 @pytest.mark.parametrize('search_type', ['semantic', 'vector'])
@@ -18,7 +19,7 @@ async def test_semantic_search_uses_embedding_and_vector_adapter(monkeypatch, se
     monkeypatch.setattr(search_service, '_search_files_vector_by_embedding', vector)
     monkeypatch.setattr(search_service, '_search_files_fuzzy', fuzzy)
     session = Mock()
-    result = await service.search_files(session, 2, 'query', 1, 10, search_type)
+    result = await search_service.search_files(session, 2, search_service.SearchFilesParams(query='query', page=1, page_size=10, search_type=search_type))
     assert result['items'] == [{'id': 8}]
     embedding.assert_awaited_once_with('query', {'configured': True}, user_id=0)
     vector.assert_called_once_with(session, 2, [0.1, 0.2], 1, 10)
@@ -41,9 +42,16 @@ async def test_slow_file_boundary_leaves_loop_responsive(monkeypatch, boundary):
         from contextlib import nullcontext
         monkeypatch.setattr(service, 'upload_avatar_for_user', slow)
         monkeypatch.setattr(avatar_upload.account_repository, 'current_role', lambda *args: 'common')
-        operation = router.upload_avatar(1, SimpleNamespace(headers={}),
-            avatar=SimpleNamespace(filename='avatar.png', content_type='image/png'), avatar_base64=None,
-            current_user=SimpleNamespace(id=1, role='common'), session_factory=lambda: nullcontext(Mock()))
+        operation = router.upload_avatar(
+            user_id=1,
+            request=SimpleNamespace(headers={}),
+            avatar=SimpleNamespace(filename='avatar.png', content_type='image/png'),
+            avatar_base64=None,
+            ctx=RequestContext(
+                user=SimpleNamespace(id=1, role='common'),
+                session_factory=lambda: nullcontext(Mock()),
+            ),
+        )
     pending = asyncio.create_task(operation)
     try:
         assert await asyncio.to_thread(entered.wait, 2)

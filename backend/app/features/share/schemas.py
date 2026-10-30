@@ -1,16 +1,18 @@
-"""分享创建请求体。"""
+"""分享创建请求体与公开响应模型."""
 
 from pydantic import BaseModel, Field
 
 
 class ShareCreateRequest(BaseModel):
-    """为文件创建分享链接；expires_at 为空表示使用默认过期策略。"""
+    """为文件创建分享链接;expires_at 为空表示使用默认过期策略."""
 
     file_id: int = Field(ge=1)
     expires_at: str | None = Field(default=None, max_length=40)
 
 
 class ShareResponse(BaseModel):
+    """Public share link metadata."""
+
     id: int
     token: str
     file_id: int
@@ -21,4 +23,6 @@ class ShareResponse(BaseModel):
 
 
 class ShareAcknowledgment(BaseModel):
+    """Acknowledgment returned after cancelling a share."""
+
     message: str

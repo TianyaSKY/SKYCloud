@@ -28,6 +28,7 @@ from app.features.auth.service import (
     register_user,
 )
 from app.features.auth.user_service import (
+    ChangePasswordParams,
     change_password,
     create_user,
     delete_user,
@@ -417,7 +418,7 @@ class TestUserCRUD:
 
     def test_update_user_password(self, session, test_user):
         """更新密码。"""
-        change_password(session, test_user.id, "common", test_user.id, "password123", "newpass")
+        change_password(session, ChangePasswordParams(actor_id=test_user.id, actor_role="common", user_id=test_user.id, old_password="password123", new_password="newpass"))
         user = session.get(User, test_user.id)
         assert user.check_password("newpass")
 
@@ -448,30 +449,30 @@ class TestChangePassword:
 
     def test_self_change_with_correct_old_password(self, session, test_user):
         """本人凭旧密码改密成功。"""
-        change_password(session, test_user.id, "common", test_user.id, "password123", "newpass")
+        change_password(session, ChangePasswordParams(actor_id=test_user.id, actor_role="common", user_id=test_user.id, old_password="password123", new_password="newpass"))
         user = session.get(User, test_user.id)
         assert user.check_password("newpass")
 
     def test_self_change_with_wrong_old_password(self, session, test_user):
         """本人旧密码错误抛 BusinessRuleError。"""
         with pytest.raises(BusinessRuleError, match="Old password"):
-            change_password(session, test_user.id, "common", test_user.id, "wrongold", "newpass")
+            change_password(session, ChangePasswordParams(actor_id=test_user.id, actor_role="common", user_id=test_user.id, old_password="wrongold", new_password="newpass"))
 
     def test_admin_change_without_old_password(self, session, test_user, admin_user):
         """admin 无需旧密码即可改密。"""
-        change_password(session, admin_user.id, "admin", test_user.id, "", "adminset")
+        change_password(session, ChangePasswordParams(actor_id=admin_user.id, actor_role="admin", user_id=test_user.id, old_password="", new_password="adminset"))
         user = session.get(User, test_user.id)
         assert user.check_password("adminset")
 
     def test_non_admin_cannot_change_others(self, session, test_user, admin_user):
         """非 admin 不能改他人密码。"""
         with pytest.raises(PermissionDeniedError):
-            change_password(session, test_user.id, "common", admin_user.id, "x", "y")
+            change_password(session, ChangePasswordParams(actor_id=test_user.id, actor_role="common", user_id=admin_user.id, old_password="x", new_password="y"))
 
     def test_change_password_user_not_found(self, session, admin_user):
         """目标用户不存在抛 ResourceNotFoundError。"""
         with pytest.raises(ResourceNotFoundError):
-            change_password(session, admin_user.id, "admin", 99999, "", "new")
+            change_password(session, ChangePasswordParams(actor_id=admin_user.id, actor_role="admin", user_id=99999, old_password="", new_password="new"))
 
 
 # ===========================================================================

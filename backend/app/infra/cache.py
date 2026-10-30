@@ -1,26 +1,42 @@
-"""Spring 风格 Redis 缓存装饰器，供 service 层复用。
+"""Spring 风格 Redis 缓存装饰器, 供 service 层复用.
 
-三种装饰器对应 Spring Boot 注解语义：
+三种装饰器对应 Spring Boot 注解语义:
 
-    @cacheable  — 先读缓存；未命中则执行函数并写入（Spring @Cacheable）
-    @cache_evict — 执行函数后清除匹配键（Spring @CacheEvict）
-    @cache_put  — 始终执行函数并回写缓存（Spring @CachePut）
+    @cacheable  — 先读缓存; 未命中则执行函数并写入(Spring @Cacheable)
+    @cache_evict — 执行函数后清除匹配键(Spring @CacheEvict)
+    @cache_put  — 始终执行函数并回写缓存(Spring @CachePut)
 
-读/写失败只记日志，不阻断业务；None 默认不缓存，避免穿透。
+读/写失败只记日志, 不阻断业务; None 默认不缓存, 避免穿透。
 """
 
-import asyncio
 import functools
+import inspect
 import json
 import uuid
-from typing import Any, Callable, Optional, Protocol
-from sqlalchemy import text, select
-from app.models.cache_revision import SqlCacheRevision
-
-from app.infra.extensions import redis_client
-from app.infra.owned_work import run_owned
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Generic, ParamSpec, Protocol, TypeVar, cast, overload
 
 from loguru import logger
+from sqlalchemy import select, text
+from sqlalchemy.orm import Session
+
+from app.infra.extensions import redis_client
+from app.infra.owned_work import run_owned, run_owned_persistent
+from app.models.cache_revision import SqlCacheRevision
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+_R_co = TypeVar("_R_co", covariant=True)
+
+_GENERATION_LENGTH = 32
+_EVICTION_BATCH_SIZE = 128
+_CACHE_MISS = object()
+
+
+class _SQLiteDriver(Protocol):
+    @property
+    def in_transaction(self) -> bool: ...
 
 
 # ---------------------------------------------------------------------------
@@ -28,24 +44,25 @@ from loguru import logger
 # ---------------------------------------------------------------------------
 
 def _build_cache_key(
-        prefix: str,
-        args: tuple,
-        kwargs: dict,
-        key: Optional[Callable] = None,
+    prefix: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    key: Callable[_P, object] | None = None,
 ) -> str:
-    """拼 Redis 键：``prefix`` + 自定义 key 回调或全部位置参数。
+    """拼 Redis 键: ``prefix`` + 自定义 key 回调或全部位置参数.
 
-    示例（prefix="user:profile"）：
+    示例(prefix="user:profile"):
         get_user(2)            → "user:profile:2"
         key=lambda id, **_: id → "user:profile:2"
     """
     if key is not None:
-        suffix = str(key(*args, **kwargs))
+        # ParamSpec cannot express a signature reconstructed from stored args.
+        suffix = str(cast("Callable[..., object]", key)(*args, **kwargs))
         return f"{prefix}:{suffix}"
 
-    parts = [str(a) for a in args]
+    parts = [str(value) for value in args]
     if kwargs:
-        parts.extend(f"{k}={v}" for k, v in sorted(kwargs.items()))
+        parts.extend(f"{name}={value}" for name, value in sorted(kwargs.items()))
     return f"{prefix}:{':'.join(parts)}" if parts else prefix
 
 
@@ -53,20 +70,30 @@ def _build_cache_key(
 # @cacheable — 读穿缓存
 # ---------------------------------------------------------------------------
 
-def sql_cache_revision(session, scope: str) -> int:
-    return session.scalar(select(SqlCacheRevision.revision).where(SqlCacheRevision.scope == scope)) or 0
+def sql_cache_revision(session: Session, scope: str) -> int:
+    """Read the SQL revision for a cache scope, defaulting missing scopes to zero."""
+    return (
+        session.scalar(
+            select(SqlCacheRevision.revision).where(SqlCacheRevision.scope == scope),
+        )
+        or 0
+    )
 
 
-def sql_cache_allowed(session, *args, **kwargs) -> bool:
+def sql_cache_allowed(session: Session, *args: object, **kwargs: object) -> bool:
     """Keep shared SQL caches outside transactions which may roll back writes."""
+    del args, kwargs
     if session.new or session.dirty or session.deleted:
         return False
     dialect = session.get_bind().dialect.name
-    if dialect == 'postgresql':
+    if dialect == "postgresql":
         # Flush/direct SQL can empty ORM dirty state while writes remain live.
-        return session.scalar(text('SELECT pg_current_xact_id_if_assigned()')) is None
-    if dialect == 'sqlite':
-        return not session.connection().connection.driver_connection.in_transaction
+        return session.scalar(text("SELECT pg_current_xact_id_if_assigned()")) is None
+    if dialect == "sqlite":
+        driver = cast(
+            "_SQLiteDriver", session.connection().connection.driver_connection,
+        )
+        return not driver.in_transaction
     return not session.in_transaction()
 
 
@@ -75,13 +102,33 @@ def invalidate_cache_generation(scope: str) -> None:
     try:
         redis_client.set(scope, uuid.uuid4().hex)
     except Exception as exc:
-        logger.warning("[cache] generation invalidation failed: error_type={}", type(exc).__name__)
+        # Redis adapters may fail arbitrarily; invalidation must not undo a write.
+        logger.warning(
+            "[cache] generation invalidation failed: error_type={}",
+            type(exc).__name__,
+        )
 
 
-class CachedFunction(Protocol):
-    """装饰后的可调用对象；运行时经 ``cache_prefix`` 暴露缓存前缀供外部内省。"""
+class CachedFunction(Protocol[_P, _R_co]):
+    """装饰后的可调用对象; 经 ``cache_prefix`` 暴露缓存前缀供外部内省."""
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+    cache_prefix: str
+
+    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _R_co:
+        """Call the decorated business function with its original signature."""
+        ...
+
+
+class _CacheableDecorator(Protocol):
+    """A cache decorator without signature-constraining callbacks."""
+
+    def __call__(self, func: Callable[_P, _R]) -> CachedFunction[_P, _R]: ...
+
+
+class _FunctionDecorator(Protocol):
+    """A non-cacheable decorator without signature-constraining callbacks."""
+
+    def __call__(self, func: Callable[_P, _R]) -> Callable[_P, _R]: ...
 
 
 def _generation_cache_key(cache_key: str, scope: str) -> str:
@@ -93,231 +140,440 @@ def _generation_cache_key(cache_key: str, scope: str) -> str:
         else:
             generation = redis_client.get(scope)
     if isinstance(generation, bytes):
-        generation = generation.decode('ascii')
-    if not isinstance(generation, str) or len(generation) != 32 or any(char not in '0123456789abcdef' for char in generation):
-        raise ValueError('Invalid cache generation')
+        generation = generation.decode("ascii")
+    if (
+        not isinstance(generation, str)
+        or len(generation) != _GENERATION_LENGTH
+        or any(char not in "0123456789abcdef" for char in generation)
+    ):
+        message = "Invalid cache generation"
+        raise ValueError(message)
     return f"{cache_key}:generation:{generation}"
 
 
-def cacheable(
-        prefix: str,
-        expire: int = 3600,
-        cache_none: bool = False,
-        key: Optional[Callable] = None,
-        generation_key: Optional[Callable] = None,
-        cache_allowed: Optional[Callable] = None,
-):
-    """先查 Redis，未命中再执行函数并写入。
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CacheableParams:
+    """Configure a read-through cache without changing the wrapped signature."""
 
-    :param prefix: 键前缀（对应 Spring cacheNames）
-    :param expire: TTL 秒，默认 3600
-    :param cache_none: False 时不缓存 None（对应 unless="#result == null"）
-    :param key: 可选 ``(*args, **kwargs) -> Any`` 生成键后缀
-    :param cache_allowed: 可选同步检查，在读取和回写前决定是否允许共享缓存
-    """
+    prefix: str
+    expire: int = 3600
+    cache_none: bool = False
 
-    def decorator(func: Callable) -> Callable:
+
+class _Cacheable(Generic[_P]):
+    def __init__(
+        self,
+        params: CacheableParams,
+        *,
+        key: Callable[_P, object] | None,
+        generation_key: Callable[_P, str] | None,
+        cache_allowed: Callable[_P, bool] | None,
+    ) -> None:
+        self.params = params
+        self.key = key
+        self.generation_key = generation_key
+        self.cache_allowed = cache_allowed
+
+    def _read(
+        self, cache_key: str, args: tuple[object, ...], kwargs: dict[str, object],
+    ) -> tuple[str | None, object]:
+        try:
+            if self.generation_key is not None:
+                generation_key = cast("Callable[..., str]", self.generation_key)
+                cache_key = _generation_cache_key(
+                    cache_key, generation_key(*args, **kwargs),
+                )
+            cached = redis_client.get(cache_key)
+            if cached is not None:
+                return cache_key, json.loads(cached)
+        except Exception as exc:
+            # Generation callbacks, Redis and JSON can fail; retain SQL fallback.
+            logger.warning("[cache] read failed: error_type={}", type(exc).__name__)
+            if self.generation_key is not None:
+                return None, _CACHE_MISS
+        return cache_key, _CACHE_MISS
+
+    async def _read_async(
+        self, cache_key: str, args: tuple[object, ...], kwargs: dict[str, object],
+    ) -> tuple[str | None, object]:
+        try:
+            if self.generation_key is not None:
+                generation_key = cast("Callable[..., str]", self.generation_key)
+                cache_key = await run_owned(
+                    _generation_cache_key, cache_key, generation_key(*args, **kwargs),
+                )
+            cached = await run_owned(redis_client.get, cache_key)
+            if cached is not None:
+                return cache_key, json.loads(cached)
+        except Exception as exc:
+            # Preserve fallback without catching BaseException/cancellation.
+            logger.warning("[cache] read failed: error_type={}", type(exc).__name__)
+            if self.generation_key is not None:
+                return None, _CACHE_MISS
+        return cache_key, _CACHE_MISS
+
+    def _wrap_sync(self, func: Callable[_P, _R]) -> Callable[_P, _R]:
         @functools.wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            if cache_allowed is not None and not cache_allowed(*args, **kwargs):
+        def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            allowed = self.cache_allowed
+            if allowed is not None and not allowed(*args, **kwargs):
                 return func(*args, **kwargs)
-            cache_key: str | None
-            cache_key = _build_cache_key(prefix, args, kwargs, key)
-            try:
-                if generation_key is not None:
-                    cache_key = _generation_cache_key(cache_key, generation_key(*args, **kwargs))
-                cached = redis_client.get(cache_key)
-                if cached is not None:
-                    return json.loads(cached)
-            except Exception as e:
-                logger.warning("[cache] read failed: error_type={}", type(e).__name__)
-                if generation_key is not None:
-                    cache_key = None  # Failed generation reads bypass caching.
-
+            cache_key, cached = self._read(
+                _build_cache_key(self.params.prefix, args, kwargs, self.key),
+                args,
+                kwargs,
+            )
+            if cached is not _CACHE_MISS:
+                return cast("_R", cached)
             result = func(*args, **kwargs)
-            if cache_allowed is not None and not cache_allowed(*args, **kwargs):
+            if allowed is not None and not allowed(*args, **kwargs):
                 return result
-
-            if cache_key is not None and (result is not None or cache_none):
-                try:
-                    redis_client.setex(
-                        cache_key, expire,
-                        json.dumps(result, ensure_ascii=False, default=str),
-                    )
-                except Exception as e:
-                    logger.warning("[cache] write failed: error_type={}", type(e).__name__)
+            if cache_key is not None and (
+                result is not None or self.params.cache_none
+            ):
+                self._write(cache_key, result)
             return result
+
+        return wrapper
+
+    def _write(self, cache_key: str, result: object) -> None:
+        try:
+            redis_client.setex(
+                cache_key,
+                self.params.expire,
+                json.dumps(result, ensure_ascii=False, default=str),
+            )
+        except Exception as exc:
+            # Serialization and Redis failures must not replace business results.
+            logger.warning("[cache] write failed: error_type={}", type(exc).__name__)
+
+    def _wrap_async(self, func: Callable[_P, _R]) -> Callable[_P, _R]:
+        awaited = cast("Callable[_P, Awaitable[_R]]", func)
 
         @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            if cache_allowed is not None and not await run_owned(cache_allowed, *args, **kwargs):
-                return await func(*args, **kwargs)
-            cache_key: str | None
-            cache_key = _build_cache_key(prefix, args, kwargs, key)
-            try:
-                if generation_key is not None:
-                    cache_key = await run_owned(_generation_cache_key, cache_key, generation_key(*args, **kwargs))
-                cached = await run_owned(redis_client.get, cache_key)
-                if cached is not None:
-                    return json.loads(cached)
-            except Exception as e:
-                logger.warning("[cache] read failed: error_type={}", type(e).__name__)
-                if generation_key is not None:
-                    cache_key = None  # Failed generation reads bypass caching.
-
-            result = await func(*args, **kwargs)
-            if cache_allowed is not None and not await run_owned(cache_allowed, *args, **kwargs):
+        async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            allowed = self.cache_allowed
+            if allowed is not None and not await run_owned(allowed, *args, **kwargs):
+                return await awaited(*args, **kwargs)
+            cache_key, cached = await self._read_async(
+                _build_cache_key(self.params.prefix, args, kwargs, self.key),
+                args,
+                kwargs,
+            )
+            if cached is not _CACHE_MISS:
+                return cast("_R", cached)
+            result = await awaited(*args, **kwargs)
+            if allowed is not None and not await run_owned(allowed, *args, **kwargs):
                 return result
-
-            if cache_key is not None and (result is not None or cache_none):
-                try:
-                    await run_owned(
-                        redis_client.setex,
-                        cache_key, expire,
-                        json.dumps(result, ensure_ascii=False, default=str),
-                    )
-                except Exception as e:
-                    logger.warning("[cache] write failed: error_type={}", type(e).__name__)
+            if cache_key is not None and (
+                result is not None or self.params.cache_none
+            ):
+                await self._write_async(cache_key, result)
             return result
 
-        chosen: CachedFunction = async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
-        setattr(chosen, "cache_prefix", prefix)  # 供外部内省前缀
-        return chosen
+        return cast("Callable[_P, _R]", wrapper)
 
-    return decorator
+    async def _write_async(self, cache_key: str, result: object) -> None:
+        try:
+            await run_owned(
+                redis_client.setex,
+                cache_key,
+                self.params.expire,
+                json.dumps(result, ensure_ascii=False, default=str),
+            )
+        except Exception as exc:
+            # Keep serialization on the loop and drain owned Redis I/O on cancel.
+            logger.warning("[cache] write failed: error_type={}", type(exc).__name__)
+
+    def __call__(self, func: Callable[_P, _R]) -> CachedFunction[_P, _R]:
+        chosen = (
+            self._wrap_async(func)
+            if inspect.iscoroutinefunction(func)
+            else self._wrap_sync(func)
+        )
+        # The actual wrapper is a function, so assigning its attribute is supported.
+        cached = cast("CachedFunction[_P, _R]", chosen)
+        cached.cache_prefix = self.params.prefix
+        return cached
+
+
+@overload
+def cacheable(
+    params: CacheableParams,
+    *,
+    key: None = None,
+    generation_key: None = None,
+    cache_allowed: None = None,
+) -> _CacheableDecorator: ...
+
+
+@overload
+def cacheable(
+    params: CacheableParams,
+    *,
+    key: Callable[_P, object],
+    generation_key: Callable[_P, str] | None = None,
+    cache_allowed: Callable[_P, bool] | None = None,
+) -> _Cacheable[_P]: ...
+
+
+@overload
+def cacheable(
+    params: CacheableParams,
+    *,
+    key: None = None,
+    generation_key: Callable[_P, str],
+    cache_allowed: Callable[_P, bool] | None = None,
+) -> _Cacheable[_P]: ...
+
+
+@overload
+def cacheable(
+    params: CacheableParams,
+    *,
+    key: None = None,
+    generation_key: None = None,
+    cache_allowed: Callable[_P, bool],
+) -> _Cacheable[_P]: ...
+
+
+def cacheable(
+    params: CacheableParams,
+    *,
+    key: Callable[..., object] | None = None,
+    generation_key: Callable[..., str] | None = None,
+    cache_allowed: Callable[..., bool] | None = None,
+) -> _CacheableDecorator | _Cacheable[...]:
+    """先查 Redis, 未命中再执行函数并写入.
+
+    CacheableParams 保留键前缀、TTL 和 None 策略。
+    key、generation_key 和 cache_allowed 使用被装饰函数的参数。
+    """
+    return _Cacheable(
+        params, key=key, generation_key=generation_key, cache_allowed=cache_allowed,
+    )
 
 
 # ---------------------------------------------------------------------------
 # @cache_evict — 写后失效
 # ---------------------------------------------------------------------------
 
-def cache_evict(
+class _CacheEvict(Generic[_P]):
+    def __init__(
+        self,
         prefix: str,
-        key: Optional[Callable] = None,
-        all_entries: bool = False,
-        before_invocation: bool = False,
-):
-    """在被装饰函数执行前/后清除缓存。
+        key: Callable[_P, object] | None,
+        *,
+        all_entries: bool,
+        before_invocation: bool,
+    ) -> None:
+        self.prefix = prefix
+        self.key = key
+        self.all_entries = all_entries
+        self.before_invocation = before_invocation
+
+    def __call__(self, func: Callable[_P, _R]) -> Callable[_P, _R]:
+        def do_evict(args: tuple[object, ...], kwargs: dict[str, object]) -> None:
+            try:
+                if self.all_entries:
+                    _evict_pattern(self.prefix)
+                else:
+                    cache_key = _build_cache_key(self.prefix, args, kwargs, self.key)
+                    redis_client.delete(cache_key)
+            except Exception as exc:
+                # Arbitrary key callbacks/adapters must not replace the result.
+                logger.warning(
+                    "[cache] evict failed: error_type={}", type(exc).__name__,
+                )
+
+        @functools.wraps(func)
+        def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            if self.before_invocation:
+                do_evict(args, kwargs)
+            result = func(*args, **kwargs)
+            if not self.before_invocation:
+                do_evict(args, kwargs)
+            return result
+
+        @functools.wraps(func)
+        async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            awaited = cast("Callable[_P, Awaitable[_R]]", func)
+            if self.before_invocation:
+                await run_owned(do_evict, args, kwargs)
+            result = await awaited(*args, **kwargs)
+            if not self.before_invocation:
+                await run_owned_persistent(do_evict, args, kwargs)
+            return result
+
+        chosen = async_wrapper if inspect.iscoroutinefunction(func) else sync_wrapper
+        return cast("Callable[_P, _R]", chosen)
+
+
+@overload
+def cache_evict(
+    prefix: str,
+    key: None = None,
+    *,
+    all_entries: bool = False,
+    before_invocation: bool = False,
+) -> _FunctionDecorator: ...
+
+
+@overload
+def cache_evict(
+    prefix: str,
+    key: Callable[_P, object],
+    *,
+    all_entries: bool = False,
+    before_invocation: bool = False,
+) -> _CacheEvict[_P]: ...
+
+
+def cache_evict(
+    prefix: str,
+    key: Callable[..., object] | None = None,
+    *,
+    all_entries: bool = False,
+    before_invocation: bool = False,
+) -> _FunctionDecorator | _CacheEvict[...]:
+    """在被装饰函数执行前/后清除缓存.
 
     :param prefix: 键前缀
     :param key: 推导待删单键的回调
-    :param all_entries: True 时按 ``prefix:*`` 批量删（Spring allEntries）
-    :param before_invocation: True 时在函数执行前删除（Spring beforeInvocation）
+    :param all_entries: True 时按 ``prefix:*`` 批量删(Spring allEntries)
+    :param before_invocation: True 时在函数执行前删除(Spring beforeInvocation)
     """
-
-    def decorator(func: Callable) -> Callable:
-        def _do_evict(args, kwargs):
-            try:
-                if all_entries:
-                    _evict_pattern(prefix)
-                else:
-                    cache_key = _build_cache_key(prefix, args, kwargs, key)
-                    redis_client.delete(cache_key)
-            except Exception as e:
-                logger.warning("[cache] evict failed: error_type={}", type(e).__name__)
-
-        @functools.wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            if before_invocation:
-                _do_evict(args, kwargs)
-            result = func(*args, **kwargs)
-            if not before_invocation:
-                _do_evict(args, kwargs)
-            return result
-
-        @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            if before_invocation:
-                await run_owned(_do_evict, args, kwargs)
-            result = await func(*args, **kwargs)
-            if not before_invocation:
-                await run_owned(_do_evict, args, kwargs, cancel_queued=False)
-            return result
-
-        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
-
-    return decorator
+    return _CacheEvict(
+        prefix, key, all_entries=all_entries, before_invocation=before_invocation,
+    )
 
 
 # ---------------------------------------------------------------------------
 # @cache_put — 强制回写
 # ---------------------------------------------------------------------------
 
-def cache_put(
+class _CachePut(Generic[_P]):
+    def __init__(
+        self,
         prefix: str,
-        expire: int = 3600,
-        cache_none: bool = False,
-        key: Optional[Callable] = None,
-):
-    """始终执行函数并用结果覆盖缓存（从不先读缓存）。"""
+        expire: int,
+        key: Callable[_P, object] | None,
+        *,
+        cache_none: bool,
+    ) -> None:
+        self.prefix = prefix
+        self.expire = expire
+        self.cache_none = cache_none
+        self.key = key
 
-    def decorator(func: Callable) -> Callable:
+    def __call__(self, func: Callable[_P, _R]) -> Callable[_P, _R]:
         @functools.wraps(func)
-        def sync_wrapper(*args, **kwargs):
+        def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
             result = func(*args, **kwargs)
-            _put_result(prefix, args, kwargs, key, result, expire, cache_none)
+            self._put_result(args, kwargs, result)
             return result
 
         @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            result = await func(*args, **kwargs)
-            await run_owned(_put_result, prefix, args, kwargs, key, result, expire, cache_none, cancel_queued=False)
+        async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            awaited = cast("Callable[_P, Awaitable[_R]]", func)
+            result = await awaited(*args, **kwargs)
+            await run_owned_persistent(
+                self._put_result, args, kwargs, result,
+            )
             return result
 
-        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
+        chosen = async_wrapper if inspect.iscoroutinefunction(func) else sync_wrapper
+        return cast("Callable[_P, _R]", chosen)
 
-    return decorator
+    def _put_result(
+        self, args: tuple[object, ...], kwargs: dict[str, object], result: object,
+    ) -> None:
+        """写入单条缓存; None 且 cache_none=False 时跳过."""
+        if result is None and not self.cache_none:
+            return
+        cache_key = _build_cache_key(self.prefix, args, kwargs, self.key)
+        try:
+            redis_client.setex(
+                cache_key,
+                self.expire,
+                json.dumps(result, ensure_ascii=False, default=str),
+            )
+        except Exception as exc:
+            # Preserve the accepted business result on serialization/Redis errors.
+            logger.warning("[cache] put failed: error_type={}", type(exc).__name__)
 
 
-def _put_result(prefix, args, kwargs, key, result, expire, cache_none):
-    """写入单条缓存；None 且 cache_none=False 时跳过。"""
-    if result is None and not cache_none:
-        return
-    cache_key = _build_cache_key(prefix, args, kwargs, key)
-    try:
-        redis_client.setex(
-            cache_key, expire,
-            json.dumps(result, ensure_ascii=False, default=str),
-        )
-    except Exception as e:
-        logger.warning("[cache] put failed: error_type={}", type(e).__name__)
+@overload
+def cache_put(
+    prefix: str,
+    expire: int = 3600,
+    *,
+    cache_none: bool = False,
+    key: None = None,
+) -> _FunctionDecorator: ...
+
+
+@overload
+def cache_put(
+    prefix: str,
+    expire: int = 3600,
+    *,
+    cache_none: bool = False,
+    key: Callable[_P, object],
+) -> _CachePut[_P]: ...
+
+
+def cache_put(
+    prefix: str,
+    expire: int = 3600,
+    *,
+    cache_none: bool = False,
+    key: Callable[..., object] | None = None,
+) -> _FunctionDecorator | _CachePut[...]:
+    """始终执行函数并用结果覆盖缓存(从不先读缓存)."""
+    return _CachePut(prefix, expire, key, cache_none=cache_none)
 
 
 # ---------------------------------------------------------------------------
 # 手动清除
 # ---------------------------------------------------------------------------
 
-def evict_cache(prefix: str, *key_parts: Any) -> None:
-    """手动删除单键：``evict_cache("user:profile", user_id)``。"""
+def evict_cache(prefix: str, *key_parts: object) -> None:
+    """手动删除单键: ``evict_cache("user:profile", user_id)``."""
     cache_key = (
-        f"{prefix}:{':'.join(str(p) for p in key_parts)}"
-        if key_parts else prefix
+        f"{prefix}:{':'.join(str(part) for part in key_parts)}" if key_parts else prefix
     )
     try:
         redis_client.delete(cache_key)
-    except Exception as e:
-        logger.warning("[cache] manual evict failed: error_type={}", type(e).__name__)
+    except Exception as exc:
+        # Manual invalidation is best effort after accepted business writes.
+        logger.warning("[cache] manual evict failed: error_type={}", type(exc).__name__)
 
 
 def _evict_pattern(prefix: str) -> int:
-    """分批删除匹配键，返回成功提交删除请求的键数。"""
+    """分批删除匹配键, 返回成功提交删除请求的键数."""
     completed = 0
-    batch = []
+    batch: list[str] = []
     try:
-        for cache_key in redis_client.scan_iter(match=f"{prefix}:*", count=128):
+        for cache_key in redis_client.scan_iter(
+            match=f"{prefix}:*", count=_EVICTION_BATCH_SIZE,
+        ):
             batch.append(cache_key)
-            if len(batch) == 128:
+            if len(batch) == _EVICTION_BATCH_SIZE:
                 redis_client.delete(*batch)
                 completed += len(batch)
                 batch.clear()
         if batch:
             redis_client.delete(*batch)
             completed += len(batch)
-    except Exception as e:
-        logger.warning("[cache] pattern evict failed: error_type={}", type(e).__name__)
+    except Exception as exc:
+        # Keep completed batches when an adapter/iterator fails partway through.
+        logger.warning(
+            "[cache] pattern evict failed: error_type={}", type(exc).__name__,
+        )
     return completed
 
 
 def evict_cache_pattern(prefix: str) -> int:
-    """手动按前缀批量失效，返回删除键数。"""
+    """手动按前缀批量失效, 返回删除键数."""
     return _evict_pattern(prefix)

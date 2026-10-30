@@ -23,7 +23,7 @@ def test_rejected_write_rolls_back_counters_and_keeps_sql_binds_private(postgres
     sink=logger.add(lambda message:captured.append((str(message),message.record['exception'])),format='{message}')
     try:
         # PostgreSQL varchar(50) rejects this action during INSERT, after UPDATE.
-        service.record_usage(uid,'x'*51,prompt_tokens=2,completion_tokens=3,query_summary=secret,extra_info=secret)
+        service.record_usage(service.RecordUsageParams(user_id=uid, action='x'*51, prompt_tokens=2,completion_tokens=3,query_summary=secret,extra_info=secret))
     finally:logger.remove(sink)
     assert any('error_type=DataError' in message for message,_ in captured)
     assert all(secret not in message and exception is None for message,exception in captured)

@@ -1,35 +1,83 @@
-"""HTTP 鉴权依赖：JWT 解析、管理员校验、资源归属检查、工作空间上下文。
+"""HTTP authentication dependencies for JWT, admin, ownership and workspace checks.
 
-仅接受 Authorization Bearer；URL 参数不能用作身份凭据。
-MCP 专用 JWT 额外校验库内是否仍有效（吊销后立即拒绝）。
+Only Authorization Bearer is accepted; URL parameters are never identity
+credentials. MCP-specific JWTs must still exist in the mcp_token table.
 """
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Annotated, cast
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from app.infra.owned_work import run_owned
-from sqlalchemy.orm import Session
 
-from app.infra.extensions import SECRET_KEY, get_db, get_session_factory
 from app.api.authentication import resolve_http_user
-from fastapi.params import Depends as DependsParameter
-from contextlib import nullcontext
+from app.features.workspace import permissions
+from app.features.workspace.permissions import assert_member
+from app.infra.extensions import SECRET_KEY, SessionFactory, get_session_factory
+from app.infra.owned_work import run_owned
 from app.models.user import User
 from app.models.workspace import Workspace
-from app.features.auth import user_service
-from app.features.workspace.permissions import assert_member, check_role_level
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
+_MISSING_CREDENTIAL = "Token is missing!"
+_INVALID_CREDENTIAL = "Invalid token!"
+_EXPIRED_CREDENTIAL = "Token expired!"
+_AUTH_UNAVAILABLE = "Authentication service unavailable"
+_RUNTIME_SCOPE = "Runtime token is only valid for the scoped MCP endpoint"
+_INVALID_SCOPE = "Invalid token scope"
+_ADMIN_REQUIRED = "Admin privilege required"
+_PERMISSION_DENIED = "Permission denied"
+_WORKSPACE_HEADER_REQUIRED = "X-Workspace-Id header is required"
+_WORKSPACE_HEADER_INVALID = "Invalid X-Workspace-Id header"
+_WORKSPACE_BOUND = "Runtime token is bound to another workspace"
+_WORKSPACE_MISSING = "Workspace not found"
+
+
+@dataclass(frozen=True, slots=True)
+class RequestContext:
+    """A request user and the factory that owns its SQL work."""
+
+    user: User
+    session_factory: SessionFactory
+
+
+def _claims(encoded: str) -> Mapping[str, object]:
+    return cast(
+        "Mapping[str, object]",
+        jwt.decode(encoded, SECRET_KEY, algorithms=["HS256"]),
+    )
+
+
+def _validate_token_scope(payload: Mapping[str, object]) -> None:
+    """Reject malformed subjects and tokens issued for another HTTP surface."""
+    user_id = payload.get("sub")
+    try:
+        valid_user_id = isinstance(user_id, str) and int(user_id) > 0
+    except ValueError:
+        valid_user_id = False
+    if not valid_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIAL,
+        )
+    token_type = payload.get("type")
+    if token_type in {"mcp_runtime", "runtime_llm"}:
+        raise HTTPException(status_code=403, detail=_RUNTIME_SCOPE)
+    if token_type not in {None, "mcp"}:
+        raise HTTPException(status_code=403, detail=_INVALID_SCOPE)
+
 
 async def get_current_user(
-        credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-        session: Session = Depends(get_db),
-        session_factory=Depends(get_session_factory),
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(bearer_scheme),
+    ],
+    session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> User:
-    """解析当前请求用户；仅接受 Bearer 请求头。
+    """Resolve the request user from an Authorization Bearer header.
 
-    MCP type 的 JWT 必须在 mcp_token 表中仍为 active，否则按未授权处理。
+    MCP JWTs must still be active in the mcp_token table or they are rejected.
     """
     token = None
     if credentials and credentials.scheme.lower() == "bearer":
@@ -37,92 +85,103 @@ async def get_current_user(
 
     if not token:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token is missing!"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=_MISSING_CREDENTIAL,
         )
 
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        user_id = payload.get("sub")
-        try:
-            valid_user_id = isinstance(user_id, str) and int(user_id) > 0
-        except ValueError:
-            valid_user_id = False
-        if not valid_user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token!"
-            )
-        token_type = payload.get("type")
-        if token_type in {"mcp_runtime", "runtime_llm"}:
-            raise HTTPException(status_code=403, detail="Runtime token is only valid for the scoped MCP endpoint")
-        if token_type not in {None, "mcp"}:
-            raise HTTPException(status_code=403, detail="Invalid token scope")
-        # Direct legacy service tests may explicitly supply a borrowed Session.
-        # ASGI dependency resolution always supplies the real factory instead.
-        factory = (lambda: nullcontext(session)) if isinstance(session_factory, DependsParameter) else session_factory
-        current_user = await run_owned(resolve_http_user, factory, payload, token)
-
-        return current_user
+        payload = _claims(token)
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired!"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=_EXPIRED_CREDENTIAL,
         ) from exc
     except jwt.InvalidTokenError as exc:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token!"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIAL,
         ) from exc
+
+    _validate_token_scope(payload)
+    try:
+        return await run_owned(resolve_http_user, session_factory, payload, token)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Authentication service unavailable"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_AUTH_UNAVAILABLE,
         ) from exc
 
 
-def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    """要求管理员角色，用于系统字典、全站 Token 用量等接口。"""
+def request_context(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
+) -> RequestContext:
+    """Bundle the authenticated user and its Session factory for routers."""
+    return RequestContext(current_user, session_factory)
+
+
+Ctx = Annotated[RequestContext, Depends(request_context)]
+
+
+def require_admin(current_user: Annotated[User, Depends(get_current_user)]) -> User:
+    """Require an administrator role."""
     if current_user.role != "admin":
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Admin privilege required"
+            status_code=status.HTTP_403_FORBIDDEN, detail=_ADMIN_REQUIRED,
         )
     return current_user
 
 
+def admin_request_context(
+    current_user: Annotated[User, Depends(require_admin)],
+    session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
+) -> RequestContext:
+    """Bundle an admin user and its Session factory for admin-only routers."""
+    return RequestContext(current_user, session_factory)
+
+
+AdminCtx = Annotated[RequestContext, Depends(admin_request_context)]
+
+
 def ensure_owner_or_admin(current_user: User, owner_id: int) -> None:
-    """非资源所有者且非管理员时拒绝，避免越权读写他人数据。"""
+    """Reject non-owners who are not administrators."""
     if int(current_user.id) != int(owner_id) and current_user.role != "admin":
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied"
+            status_code=status.HTTP_403_FORBIDDEN, detail=_PERMISSION_DENIED,
         )
 
 
-# ---------------------------------------------------------------------------
-# 工作空间上下文依赖
-# ---------------------------------------------------------------------------
+def _runtime_workspace(payload: Mapping[str, object]) -> int | None:
+    """Return a runtime token's bound workspace, or None when it is malformed."""
+    if payload.get("type") != "mcp_runtime":
+        return None
+    try:
+        return int(cast("str | int", payload.get("workspace_id", -1)))
+    except (TypeError, ValueError):
+        return None
 
 
 def get_current_workspace(
-        request: Request,
-        current_user: User = Depends(get_current_user),
-        session: Session = Depends(get_db),
-        session_factory=Depends(get_session_factory),
+    request: Request,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> Workspace:
-    """从 X-Workspace-Id header 解析当前工作空间，校验用户为成员。
+    """Resolve X-Workspace-Id and verify the user is a member.
 
-    前端所有文件/文件夹操作均需携带此 header。
+    File and folder operations require this header.
     """
     ws_id = request.headers.get("X-Workspace-Id")
     if not ws_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-Workspace-Id header is required",
+            detail=_WORKSPACE_HEADER_REQUIRED,
         )
     try:
         workspace_id = int(ws_id)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid X-Workspace-Id header",
-        )
+            detail=_WORKSPACE_HEADER_INVALID,
+        ) from None
 
     # Runtime tokens are cryptographically bound to one workspace. A caller
     # may not reuse the token with a different HTTP workspace header.
@@ -133,54 +192,48 @@ def get_current_workspace(
         raw_token = ""
     if raw_token:
         try:
-            payload = jwt.decode(raw_token, SECRET_KEY, algorithms=["HS256"])
-            if payload.get("type") == "mcp_runtime":
-                if int(payload.get("workspace_id", -1)) != workspace_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Runtime token is bound to another workspace",
-                    )
-        except HTTPException:
-            raise
-        except (jwt.InvalidTokenError, TypeError, ValueError):
-            # get_current_user is responsible for the canonical 401 response
-            # for invalid credentials; do not mask it here.
-            pass
+            payload = _claims(raw_token)
+        except jwt.InvalidTokenError:
+            payload = None
+        if payload is not None:
+            bound_workspace = _runtime_workspace(payload)
+            if bound_workspace is not None and bound_workspace != workspace_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=_WORKSPACE_BOUND,
+                )
 
-    factory = (lambda: nullcontext(session)) if isinstance(session_factory, DependsParameter) else session_factory
-    with factory() as owned:
+    with session_factory() as owned:
         workspace = owned.get(Workspace, workspace_id)
         if not workspace:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Workspace not found",
+                detail=_WORKSPACE_MISSING,
             )
 
-        # 校验用户为工作空间成员
         assert_member(owned, workspace_id, int(current_user.id))
         return workspace
 
 
-def require_workspace_role(min_role: str):
-    """依赖工厂：校验当前用户在当前工作空间的最低角色。
-
-    用法：Depends(require_workspace_role("editor"))
-    """
+def require_workspace_role(
+    min_role: str,
+) -> Callable[[Workspace, User, SessionFactory], Workspace]:
+    """Build a dependency that requires the current workspace role."""
 
     def checker(
-            workspace: Workspace = Depends(get_current_workspace),
-            current_user: User = Depends(get_current_user),
-            session: Session = Depends(get_db),
-            session_factory=Depends(get_session_factory),
+        workspace: Annotated[Workspace, Depends(get_current_workspace)],
+        current_user: Annotated[User, Depends(get_current_user)],
+        session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
     ) -> Workspace:
-        from app.features.workspace.permissions import get_member_role
-        factory = (lambda: nullcontext(session)) if isinstance(session_factory, DependsParameter) else session_factory
-        with factory() as owned:
-            role = get_member_role(owned, workspace.id, int(current_user.id))
-            if role is None or not check_role_level(role, min_role):
+        with session_factory() as owned:
+            role = permissions.get_member_role(
+                owned, workspace.id, int(current_user.id),
+            )
+            if role is None or not permissions.check_role_level(role, min_role):
+                message = f"Requires {min_role} role or higher"
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Requires {min_role} role or higher",
+                    detail=message,
                 )
             return workspace
 

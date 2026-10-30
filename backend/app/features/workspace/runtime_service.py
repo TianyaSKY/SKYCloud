@@ -5,9 +5,12 @@ from sqlalchemy.orm import Session
 from app.models.opencode_runtime import OpenCodeRuntime
 
 
-def get_runtime(session: Session, workspace_id: int, user_id: int) -> OpenCodeRuntime | None:
+def get_runtime(
+    session: Session,
+    workspace_id: int,
+    user_id: int,
+) -> OpenCodeRuntime | None:
     """Return the runtime owned by one workspace member, if it exists."""
-
     return (
         session.query(OpenCodeRuntime)
         .filter_by(workspace_id=workspace_id, user_id=user_id)
@@ -16,10 +19,11 @@ def get_runtime(session: Session, workspace_id: int, user_id: int) -> OpenCodeRu
 
 
 def get_or_create_runtime(
-    session: Session, workspace_id: int, user_id: int
+    session: Session,
+    workspace_id: int,
+    user_id: int,
 ) -> OpenCodeRuntime:
     """Get the unique runtime for a member, creating it without a container."""
-
     runtime = get_runtime(session, workspace_id, user_id)
     if runtime:
         return runtime
@@ -36,6 +40,7 @@ def get_or_create_runtime(
 
 
 def list_runtimes(session: Session, workspace_id: int) -> list[OpenCodeRuntime]:
+    """Return every member runtime of the workspace ordered by owner."""
     return (
         session.query(OpenCodeRuntime)
         .filter_by(workspace_id=workspace_id)

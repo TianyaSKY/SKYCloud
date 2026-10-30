@@ -28,7 +28,7 @@ async def test_cached_sql_read_drains_before_cancellation_returns(monkeypatch, o
             return [] if operation == 'dictionary' else {'id': 1, 'username': 'owned', 'role': 'common', 'avatar': None}
         finally:
             finished.set()
-    monkeypatch.setattr(user_service, '_get_user_data', read)
+    monkeypatch.setattr(user_service, 'get_user_data', read)
     monkeypatch.setattr(user_service.account_repository, 'current_role', lambda *args: 'common')
     monkeypatch.setattr(dictionary, '_get_sys_dict_all_cached', read)
     if operation == 'dictionary':

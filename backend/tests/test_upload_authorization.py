@@ -13,14 +13,14 @@ def test_upload_boundary_rejects_current_permission_loss(session, test_workspace
     # Keep a stale admin ORM identity to ensure locked reads refresh it.
     member = session.query(WorkspaceMember).filter_by(workspace_id=wid, user_id=uid).one()
     if phase != 'admit':
-        reservation_id = upload_quota.reserve(session, wid, uid, 3).id
+        reservation_id = upload_quota.reserve(session, upload_quota.ReserveParams(workspace_id=wid, user_id=uid, size=3)).id
     statement = delete(WorkspaceMember) if phase == 'publish-remove' else update(WorkspaceMember).values(role='viewer')
     session.execute(statement.where(WorkspaceMember.workspace_id == wid, WorkspaceMember.user_id == uid),
                     execution_options={'synchronize_session': False})
     session.commit()
     with pytest.raises(PermissionDeniedError):
         if phase == 'admit':
-            upload_authorization.reserve(session, wid, uid, 3)
+            upload_authorization.reserve(session, upload_quota.ReserveParams(workspace_id=wid, user_id=uid, size=3))
         else:
             upload_authorization.consume(session, wid, uid, reservation_id, 3)
     session.rollback()

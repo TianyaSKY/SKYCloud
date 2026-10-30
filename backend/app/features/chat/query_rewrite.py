@@ -1,10 +1,11 @@
-"""检索关键词改写：解析 LLM 多维度输出，生成多样化向量检索查询。"""
+"""检索关键词改写: 解析 LLM 多维度输出, 生成多样化向量检索查询."""
 
 import json
 import re
-from typing import Any
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from runtime_controller.json_types import JsonValue
 
 DIMENSION_KEYS = (
     "topic_terms",
@@ -15,7 +16,7 @@ DIMENSION_KEYS = (
     "synonym_terms",
 )
 
-# 中英别名映射，兼容 LLM 输出键名不稳定
+# 中英别名映射, 兼容 LLM 输出键名不稳定
 KEY_ALIASES: dict[str, str] = {
     "topic_terms": "topic_terms",
     "topics": "topic_terms",
@@ -59,6 +60,8 @@ TERM_SPLIT_PATTERN = re.compile(r"[,;|/\n]+")
 
 
 class RewriteKeywordDimensions(BaseModel):
+    """Structured retrieval keyword dimensions returned by the rewriter."""
+
     model_config = ConfigDict(extra="forbid")
 
     topic_terms: list[str] = Field(default_factory=list)
@@ -84,7 +87,7 @@ def _dedupe_terms(values: list[str]) -> list[str]:
     return result
 
 
-def _normalize_terms(value: Any) -> list[str]:
+def _normalize_terms(value: JsonValue) -> list[str]:
     if value is None:
         return []
 
@@ -92,7 +95,8 @@ def _normalize_terms(value: Any) -> list[str]:
     if isinstance(value, str):
         chunks = TERM_SPLIT_PATTERN.split(value)
     elif isinstance(value, list):
-        for item in value:
+        items: list[JsonValue] = value
+        for item in items:
             if isinstance(item, str):
                 chunks.extend(TERM_SPLIT_PATTERN.split(item))
             elif isinstance(item, (int, float)):
@@ -104,13 +108,13 @@ def _normalize_terms(value: Any) -> list[str]:
 
 
 def _extract_json_text(raw_output: str) -> str:
-    """从 LLM 原始输出中抠出 JSON 对象（支持 markdown fence）。"""
+    """从 LLM 原始输出中抠出 JSON 对象 (支持 markdown fence)."""
     text = (raw_output or "").strip()
     if not text:
         return ""
 
     fenced_match = re.search(
-        r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S | re.I)
+        r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
     if fenced_match:
         return fenced_match.group(1)
 
@@ -121,16 +125,19 @@ def _extract_json_text(raw_output: str) -> str:
     return text
 
 
-def _parse_json_payload(raw_output: str) -> dict[str, Any] | None:
+def _parse_json_payload(raw_output: str) -> dict[str, JsonValue] | None:
+    """解析原始输出中的 JSON 对象, 非对象或非法 JSON 返回 None."""
     candidate = _extract_json_text(raw_output)
     if not candidate:
         return None
 
     try:
-        payload = json.loads(candidate)
+        decoded: JsonValue = json.loads(candidate)
     except json.JSONDecodeError:
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(decoded, dict):
+        return None
+    return decoded
 
 
 def _normalize_dimensions(
@@ -143,12 +150,12 @@ def _normalize_dimensions(
     return RewriteKeywordDimensions.model_validate(normalized)
 
 
-def validate_keyword_dimensions(payload: dict[str, Any]) -> RewriteKeywordDimensions:
-    normalized_payload: dict[str, Any] = {}
+def validate_keyword_dimensions(
+        payload: dict[str, JsonValue],
+) -> RewriteKeywordDimensions:
+    """按别名映射标准化键名后严格校验, 非法结构直接抛 ValidationError."""
+    normalized_payload: dict[str, JsonValue] = {}
     for key, value in payload.items():
-        if not isinstance(key, str):
-            normalized_payload[key] = value
-            continue
         mapped_key = KEY_ALIASES.get(
             key.strip().lower()) or KEY_ALIASES.get(key.strip())
         normalized_payload[mapped_key or key] = value
@@ -157,8 +164,10 @@ def validate_keyword_dimensions(payload: dict[str, Any]) -> RewriteKeywordDimens
     return _normalize_dimensions(validated)
 
 
-def _fallback_dimensions(question: str = "", raw_output: str = "") -> RewriteKeywordDimensions:
-    # 解析失败时至少用原问题兜底，避免检索链路中断
+def _fallback_dimensions(
+        question: str = "", raw_output: str = "",
+) -> RewriteKeywordDimensions:
+    # 解析失败时至少用原问题兜底, 避免检索链路中断
     fallback_terms: list[str] = []
     if question.strip():
         fallback_terms = [question.strip()]
@@ -169,9 +178,9 @@ def _fallback_dimensions(question: str = "", raw_output: str = "") -> RewriteKey
 
 
 def parse_keyword_dimensions(
-        raw_output: str, question: str = ""
+        raw_output: str, question: str = "",
 ) -> RewriteKeywordDimensions:
-    """尽力解析 LLM 输出；失败则回退到原问题词。"""
+    """尽力解析 LLM 输出; 失败则回退到原问题词."""
     payload = _parse_json_payload(raw_output)
     if not payload:
         return _fallback_dimensions(question, raw_output)
@@ -183,15 +192,16 @@ def parse_keyword_dimensions(
 
 
 def coerce_keyword_dimensions(
-        raw_output: Any, question: str = ""
+        raw_output: object, question: str = "",
 ) -> RewriteKeywordDimensions:
-    """宽松入口：接受 model / dict / str，解析失败时兜底。"""
+    """宽松入口: 接受 model / dict / str, 解析失败时兜底."""
     if isinstance(raw_output, RewriteKeywordDimensions):
         return _normalize_dimensions(raw_output)
 
     if isinstance(raw_output, dict):
+        payload = cast("dict[str, JsonValue]", raw_output)
         try:
-            return validate_keyword_dimensions(raw_output)
+            return validate_keyword_dimensions(payload)
         except ValidationError:
             return _fallback_dimensions(question)
 
@@ -201,17 +211,17 @@ def coerce_keyword_dimensions(
     return _fallback_dimensions(question)
 
 
-def require_keyword_dimensions(raw_output: Any) -> RewriteKeywordDimensions:
-    """严格入口：结构化输出链路用，类型不对直接抛错。"""
+def require_keyword_dimensions(raw_output: object) -> RewriteKeywordDimensions:
+    """严格入口: 结构化输出链路用, 类型不对直接抛错."""
     if isinstance(raw_output, RewriteKeywordDimensions):
         return _normalize_dimensions(raw_output)
 
     if isinstance(raw_output, dict):
-        return validate_keyword_dimensions(raw_output)
+        payload = cast("dict[str, JsonValue]", raw_output)
+        return validate_keyword_dimensions(payload)
 
-    raise ValueError(
-        "Invalid rewrite output type, expected RewriteKeywordDimensions or dict"
-    )
+    message = "Invalid rewrite output type, expected RewriteKeywordDimensions or dict"
+    raise ValueError(message)
 
 
 def build_multi_queries(
@@ -219,9 +229,9 @@ def build_multi_queries(
         dimensions: RewriteKeywordDimensions,
         max_queries: int = 6,
 ) -> list[str]:
-    """生成多样化检索查询（去重截断），提高召回覆盖。
+    """生成多样化检索查询 (去重截断), 提高召回覆盖.
 
-    策略: 原问题 → 全维度合并 → 高价值维度组合 → 问题+同义扩展。
+    策略: 原问题 -> 全维度合并 -> 高价值维度组合 -> 问题+同义扩展.
     """
     if max_queries <= 0:
         return []
@@ -266,8 +276,10 @@ def build_multi_queries(
     return queries[:max_queries]
 
 
-def build_retrieval_query(question: str, dimensions: RewriteKeywordDimensions) -> str:
-    """合并问题与各维度词，作为 rerank / 单路检索的主查询。"""
+def build_retrieval_query(
+        question: str, dimensions: RewriteKeywordDimensions,
+) -> str:
+    """合并问题与各维度词, 作为 rerank / 单路检索的主查询."""
     terms: list[str] = []
     if question.strip():
         terms.append(question.strip())
@@ -280,7 +292,7 @@ def build_retrieval_query(question: str, dimensions: RewriteKeywordDimensions) -
 
 
 def format_keyword_dimensions(dimensions: RewriteKeywordDimensions) -> str:
-    """格式化为 SSE 前端展示文案。"""
+    """格式化为 SSE 前端展示文案."""
     chunks: list[str] = []
     for key in DIMENSION_KEYS:
         terms = getattr(dimensions, key)

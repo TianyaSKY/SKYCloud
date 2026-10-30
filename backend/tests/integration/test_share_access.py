@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from tests.integration.test_migrations import postgres
 from entry.migrate import upgrade
 from app.exceptions import PermissionDeniedError
-from app.features.share.service import create_share_link
+from app.features.share.service import CreateShareLinkParams, create_share_link
 from app.features.workspace.service import create_workspace
 from app.models.user import User
 from app.models.file import File
@@ -30,9 +30,9 @@ def test_cached_member_cannot_publish_after_committed_removal(postgres):
     with factory() as reader:
         cached=reader.get(WorkspaceMember,mid)
         assert cached.role=='viewer'
-        first=create_share_link(reader,vid,fid)
+        first=create_share_link(reader, CreateShareLinkParams(user_id=vid, file_id=fid))
         assert first.user_id==vid
-        with pytest.raises(PermissionDeniedError):create_share_link(reader,oid,fid)
+        with pytest.raises(PermissionDeniedError):create_share_link(reader, CreateShareLinkParams(user_id=oid, file_id=fid))
         reader.rollback()
         # Re-load and retain a stale ORM member across another transaction's removal.
         cached=reader.get(WorkspaceMember,mid)
@@ -40,6 +40,6 @@ def test_cached_member_cannot_publish_after_committed_removal(postgres):
             remover.query(WorkspaceMember).filter_by(workspace_id=wid,user_id=vid).delete()
             remover.commit()
         assert cached.role=='viewer'
-        with pytest.raises(PermissionDeniedError):create_share_link(reader,vid,fid)
+        with pytest.raises(PermissionDeniedError):create_share_link(reader, CreateShareLinkParams(user_id=vid, file_id=fid))
         reader.rollback()
         assert reader.query(Share).filter_by(user_id=vid,file_id=fid).count()==1

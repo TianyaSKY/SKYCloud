@@ -70,20 +70,25 @@ async def test_legacy_http_membership_failure_stays_safe_after_headers(monkeypat
     from app.infra.extensions import get_session_factory
     from app.features.chat import router
     private='private-db-password-and-url'
-    called,logged=[],[]
-    def broken_factory():raise RuntimeError(private)
+    called, logged, opened = [], [], []
+    def broken_factory():
+        opened.append(True)
+        raise RuntimeError(private)
     async def model(*args):
         called.append(True);yield 'never'
     monkeypatch.setattr(router,'generate_chat_events',model)
     monkeypatch.setattr(router.logger,'error',lambda message,*args:logged.append(message.format(*args)))
     app=FastAPI();app.include_router(router.router)
-    app.dependency_overrides[get_current_user]=lambda:SimpleNamespace(id=1)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        id=1, http_stream_credential=None,
+    )
     app.dependency_overrides[get_current_workspace]=lambda:SimpleNamespace(id=2)
     app.dependency_overrides[get_session_factory]=lambda:broken_factory
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
         response=await client.post('/chat',json={'query':'question'})
     assert response.status_code==200 and 'data: ' in response.text
     assert called==[] and logged and private not in response.text+str(logged)
+    assert opened == [True]
 
 
 @pytest.mark.parametrize('cause',['initial-auth','quiet-role','eof'])

@@ -86,13 +86,40 @@ async def main():
         workspace = Workspace(name='rag-failure', owner_id=user.id)
         db.add(workspace); db.flush()
         db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role='admin'))
-        conversation = repository.create_conversation(db, workspace.id, user.id, 'fast', 'failure')
-        request = repository.create_message(db, conversation, 'user', 'query')
-        answer = repository.create_message(db, conversation, 'assistant', '', status='streaming')
+        conversation = repository.create_conversation(
+            db,
+            repository.CreateConversationParams(
+                workspace_id=workspace.id,
+                user_id=user.id,
+                mode='fast',
+                title='failure',
+            ),
+        )
+        request = repository.create_message(
+            db,
+            conversation,
+            repository.CreateMessageParams(role='user', content='query'),
+        )
+        answer = repository.create_message(
+            db,
+            conversation,
+            repository.CreateMessageParams(
+                role='assistant',
+                content='',
+                status='streaming',
+            ),
+        )
         run = repository.create_run(db, conversation, request, answer)
         db.commit()
         events = [event async for event in service.stream_prepared_run(
-            db, workspace, user.id, conversation, run, [])]
+            service.StreamPreparedRunParams(
+                session=db,
+                workspace=workspace,
+                user_id=user.id,
+                conversation=conversation,
+                run=run,
+                history=[],
+            ))]
         db.refresh(run)
         db.refresh(answer)
         if phase == 'empty':
@@ -139,9 +166,29 @@ def create_run(engine):
         session.add(user); session.flush()
         workspace = Workspace(name='lease-space', owner_id=user.id)
         session.add(workspace); session.flush()
-        conversation = repository.create_conversation(session, workspace.id, user.id, 'expert', 'task')
-        request = repository.create_message(session, conversation, 'user', 'patch')
-        response = repository.create_message(session, conversation, 'assistant', '', status='streaming')
+        conversation = repository.create_conversation(
+            session,
+            repository.CreateConversationParams(
+                workspace_id=workspace.id,
+                user_id=user.id,
+                mode='expert',
+                title='task',
+            ),
+        )
+        request = repository.create_message(
+            session,
+            conversation,
+            repository.CreateMessageParams(role='user', content='patch'),
+        )
+        response = repository.create_message(
+            session,
+            conversation,
+            repository.CreateMessageParams(
+                role='assistant',
+                content='',
+                status='streaming',
+            ),
+        )
         run = repository.create_run(session, conversation, request, response)
         repository.set_pending_permission(run, {'permission_id': 'p1', 'title': 'Patch file'})
         run.started_at = beijing_now() - timedelta(minutes=5)
@@ -155,12 +202,12 @@ def test_other_worker_preserves_live_permission_and_recovers_expired_lease(postg
         old = repository.lock_run(observer, run_id); observer.commit()
         assert repository.touch_run_lease(worker, run_id, time.time())
         worker.commit()  # The caller owns the lease transaction.
-        assert not service._recover_abandoned_run(observer, old)
+        assert not service.recover_abandoned_run(observer, old)
         assert old.to_dict()['pending_permission']['permission_id'] == 'p1'
         observer.commit()
         assert repository.touch_run_lease(worker, run_id, time.time() - 60)
         worker.commit()
-        assert service._recover_abandoned_run(observer, old)
+        assert service.recover_abandoned_run(observer, old)
         assert old.status == 'failed'; assert old.to_dict()['pending_permission'] is None
         assert not repository.touch_run_lease(worker, run_id, time.time())
         observer.refresh(old); assert old.status == 'failed'
@@ -173,7 +220,7 @@ def test_heartbeat_and_recovery_serialize_on_the_same_run_row(postgres):
         with Session(postgres) as observer:
             old = observer.get(AssistantRun, run_id)
             started.set()
-            result = service._recover_abandoned_run(observer, old)
+            result = service.recover_abandoned_run(observer, old)
             observer.commit()
             return result
     with Session(postgres) as worker, concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
@@ -195,7 +242,7 @@ def test_stream_poll_observes_committed_permission_loss_with_cached_member(postg
     from sqlalchemy import text
     from app.models.workspace import WorkspaceMember
     from app.models.assistant import AssistantConversation
-    from app.features.assistant.stream_persistence import StreamPersistence
+    from app.features.assistant.stream_persistence import LeasePoll, StreamPersistence
     from app.features.workspace.permissions import assert_can_write
     from app.exceptions import PermissionDeniedError
     run_id=create_run(postgres)
@@ -207,9 +254,11 @@ def test_stream_poll_observes_committed_permission_loss_with_cached_member(postg
         workspace=worker.get(Workspace,conversation.workspace_id)
         cached=worker.query(WorkspaceMember).one()
         persistence=StreamPersistence(worker,workspace,conversation.user_id,conversation,run)
-        assert persistence.poll(False,time.time()) == (False,False)
+        assert persistence.poll(LeasePoll(
+            renew_lease=False, now=time.time())) == (False,False)
         with postgres.begin() as db:
             db.execute(text("UPDATE workspace_members SET role='viewer'" if change=='demote' else 'DELETE FROM workspace_members'))
         assert cached.role=='editor'
-        assert persistence.poll(False,time.time()) == (False,True)
+        assert persistence.poll(LeasePoll(
+            renew_lease=False, now=time.time())) == (False,True)
         with pytest.raises(PermissionDeniedError): assert_can_write(worker,workspace.id,conversation.user_id)

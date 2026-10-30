@@ -46,7 +46,10 @@ def prepared(postgres,monkeypatch,entered,release,calls):
             assert await asyncio.to_thread(release.wait,3)
             return True
     monkeypatch.setattr(module,'OpenCodeClient',Provider)
-    return engine,(ws,user,connection,'provider-session','p1','once'),run_id
+    dispatch=module.PermissionDispatch(
+        provider_session_id='provider-session', permission_id='p1', response='once',
+    )
+    return engine,(ws,user,connection,dispatch),run_id
 
 
 @pytest.mark.parametrize('change',['demote','remove'])

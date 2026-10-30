@@ -27,16 +27,16 @@ def test_accounting_sql_exception_cannot_log_bound_prompt(monkeypatch,logs):
     session=Mock()
     session.execute.side_effect=StatementError(PRIVATE,'INSERT INTO usage VALUES (:prompt)',{'prompt':PRIVATE},ValueError(PRIVATE))
     monkeypatch.setattr(service,'SessionLocal',lambda:session)
-    service.record_usage(1,'chat',query_summary=PRIVATE,extra_info=PRIVATE)
+    service.record_usage(service.RecordUsageParams(user_id=1, action='chat', query_summary=PRIVATE,extra_info=PRIVATE))
     session.rollback.assert_called_once();session.close.assert_called_once()
     assert_safe(logs,'error_type=StatementError')
 
 
 def test_best_effort_accounting_does_not_log_action_or_exception(monkeypatch,logs):
-    from app.infra.llm.usage import safe_record
+    from app.infra.llm.usage import TokenUsage, safe_record
     from app.features.token_usage import service
     monkeypatch.setattr(service,'record_usage',Mock(side_effect=RuntimeError(PRIVATE)))
-    safe_record(1,PRIVATE,None,1,2,3,query_summary=PRIVATE)
+    safe_record(TokenUsage(user_id=1,action=PRIVATE,prompt_tokens=1,completion_tokens=2,total_tokens=3,query_summary=PRIVATE))
     assert_safe(logs,'error_type=RuntimeError')
 
 

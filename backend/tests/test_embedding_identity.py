@@ -82,7 +82,7 @@ shared = rag.get_embeddings_model()
 class Model:
     def with_structured_output(self, *args, **kwargs):
         def rewrite(prompt):
-            question = prompt.to_string().rsplit('问题：', 1)[1].strip()
+            question = next(value for value in ('one', 'two') if value in prompt.to_string())
             return RewriteKeywordDimensions(topic_terms=[question + '-extra'],
                 entity_terms=[], time_terms=[], file_type_terms=[],
                 action_terms=[], synonym_terms=[])
@@ -141,9 +141,13 @@ finally:
 
 
 def test_concurrent_cached_embeddings_keep_user_usage_separate(tmp_path):
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key.lower() not in {'http_proxy', 'https_proxy', 'all_proxy'}
+    }
     result = subprocess.run(
         [sys.executable, '-c', PROBE, str(tmp_path / 'usage.sqlite')],
-        cwd=Path(__file__).resolve().parents[1], env=os.environ.copy(),
+        cwd=Path(__file__).resolve().parents[1], env=environment,
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr

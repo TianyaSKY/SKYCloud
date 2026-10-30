@@ -11,9 +11,46 @@ import pytest
 def mock_organize_session(session, test_workspace):
     """让 organize tools 的 get_session() 返回测试 session。"""
     with patch("app.features.folder.organize.tools.get_session", return_value=session), \
-         patch("app.features.folder.organize.tools.SessionLocal", return_value=session), \
          patch("app.features.folder.organize.tools.clear_workspace_cache"):
         yield session
+
+
+@pytest.mark.parametrize(
+    ("name", "helper", "arguments", "rollback"),
+    [
+        ("get_all_files", "_list_all_files", {"workspace_id": 1}, False),
+        ("get_folder_tree", "_list_folder_tree", {"workspace_id": 1}, False),
+        ("get_file_information", "_file_information", {"file_id": 1}, False),
+        ("find_duplicate_folders", "_find_duplicates", {"workspace_id": 1}, False),
+        ("create_folder", "_create_folder",
+         {"name": "x", "parent_id": 1, "workspace_id": 1}, True),
+        ("rename_folder", "_rename_folder",
+         {"folder_id": 1, "new_name": "x", "workspace_id": 1}, True),
+        ("move_file", "_move_file",
+         {"file_id": 1, "target_folder_id": 2, "workspace_id": 1}, True),
+        ("delete_folder", "_delete_empty_folder",
+         {"folder_id": 1, "workspace_id": 1}, True),
+        ("merge_folders", "_merge_folders",
+         {"source_folder_id": 1, "target_folder_id": 2, "workspace_id": 1}, True),
+        ("move_folder", "_move_folder",
+         {"folder_id": 1, "target_folder_id": 2, "workspace_id": 1}, True),
+    ],
+)
+def test_tool_failures_are_sanitized_and_sessions_close(
+    name, helper, arguments, rollback,
+):
+    from app.features.folder.organize import tools
+
+    owned = MagicMock()
+    with (
+        patch.object(tools, "get_session", return_value=owned),
+        patch.object(tools, helper, side_effect=RuntimeError("PRIVATE_TOOL_FAILURE")),
+    ):
+        result = getattr(tools, name).invoke(arguments)
+    assert "失败" in result and "请稍后重试" in result
+    assert "PRIVATE_TOOL_FAILURE" not in result
+    assert owned.rollback.call_count == int(rollback)
+    owned.close.assert_called_once_with()
 
 
 class TestClearWorkspaceCache:
@@ -36,9 +73,11 @@ class TestClearWorkspaceCache:
 
     def test_clear_cache_exception(self):
         from app.features.folder.organize.tools import clear_workspace_cache
-        with patch("app.features.folder.organize.tools.redis_client", side_effect=Exception("Redis down")):
-            # 不应抛出
+        mock_redis = MagicMock()
+        mock_redis.delete.side_effect = RuntimeError("PRIVATE_REDIS_FAILURE")
+        with patch("app.features.folder.organize.tools.redis_client", mock_redis):
             clear_workspace_cache(1)
+        mock_redis.delete.assert_called_once_with("workspace:folders:1")
 
 
 class TestCheckMixedFolders:

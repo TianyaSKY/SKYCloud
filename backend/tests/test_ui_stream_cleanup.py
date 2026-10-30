@@ -2,7 +2,7 @@
 import asyncio
 import pytest
 from starlette.requests import ClientDisconnect
-from app.features.workspace import ui_stream
+from app.infra import http_stream as ui_stream
 
 
 @pytest.fixture(autouse=True, params=['backend', 'controller'])
@@ -14,10 +14,10 @@ def stream_surface(request, monkeypatch):
 
 
 def capture_logs(monkeypatch, logs):
-    if hasattr(ui_stream, 'logger'):
-        monkeypatch.setattr(ui_stream.logger, 'error', lambda message, *args: logs.append(message.format(*args)))
+    if ui_stream.__name__.startswith('runtime_controller'):
+        monkeypatch.setattr(ui_stream.logger, 'error', lambda message, *args: logs.append(message % args))
     else:
-        monkeypatch.setattr(ui_stream.logging, 'error', lambda message, *args: logs.append(message % args))
+        monkeypatch.setattr(ui_stream.logger, 'error', lambda message, *args: logs.append(message.format(*args)))
 
 
 @pytest.mark.parametrize('phase',['header','body','cancel','normal'])
@@ -73,7 +73,7 @@ async def test_repeated_cancellation_drains_resource_close():
 
 
 @pytest.mark.parametrize('delivery',['headers','cancel','normal'])
-@pytest.mark.parametrize('cleanup',['self-cancel','repeat-cancel'])
+@pytest.mark.parametrize('cleanup',['self-cancel','runtime-error','repeat-cancel'])
 async def test_upstream_response_drains_iterator_before_resources(monkeypatch,delivery,cleanup):
     closing,release=asyncio.Event(),asyncio.Event()
     calls,logs=[],[]
@@ -85,6 +85,7 @@ async def test_upstream_response_drains_iterator_before_resources(monkeypatch,de
             if cleanup=='repeat-cancel':await release.wait()
             calls.append('iterator')
             if cleanup=='self-cancel':raise asyncio.CancelledError('private-close-url')
+            if cleanup=='runtime-error':raise RuntimeError('private-close-url')
     class Resource:
         def __init__(self,name):self.name=name
         async def aclose(self):
@@ -115,4 +116,5 @@ async def test_upstream_response_drains_iterator_before_resources(monkeypatch,de
     await lease.close()
     assert calls==['iterator','response','client']
     assert ('CancelledError' in str(logs)) is (cleanup=='self-cancel')
+    assert ('RuntimeError' in str(logs)) is (cleanup=='runtime-error')
     assert 'private-close-url' not in str(logs)

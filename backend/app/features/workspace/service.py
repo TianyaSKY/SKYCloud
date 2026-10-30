@@ -1,21 +1,39 @@
-"""工作空间业务逻辑：空间 CRUD、成员管理、通知。"""
+"""工作空间业务逻辑: 空间 CRUD、成员管理、通知, 以及 Runtime 生命周期的迁移入口."""
 
 from loguru import logger
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
-from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
-from app.models.user import User
-from app.models.workspace import Workspace, WorkspaceMember
-from app.models.opencode_runtime import OpenCodeRuntime
+from app.exceptions import (
+    BusinessRuleError,
+    PermissionDeniedError,
+    ResourceNotFoundError,
+)
+from app.features.workspace import docker_service, lifecycle_repository, runtime_service
+from app.features.workspace.permissions import (
+    WorkspaceRole,
+    assert_admin,
+)
+from app.features.workspace.schemas import (
+    MemberDetail,
+    WorkspaceDetailData,
+    WorkspaceListEntry,
+)
+from app.mcp import runtime_token_service
 from app.models.folder import Folder
 from app.models.inbox import Inbox
-from app.features.workspace.permissions import WorkspaceRole, assert_admin, assert_can_write
-from app.features.workspace import lifecycle_repository
+from app.models.opencode_runtime import OpenCodeRuntime
+from app.models.user import User
+from app.models.workspace import Workspace, WorkspaceMember
 
 
-def create_workspace(session: Session, owner_id: int, name: str, description: str | None = None) -> Workspace:
-    """创建工作空间 + 根文件夹 + owner 加为 admin 成员。"""
+def create_workspace(
+    session: Session,
+    owner_id: int,
+    name: str,
+    description: str | None = None,
+) -> Workspace:
+    """创建工作空间 + 根文件夹 + owner 加为 admin 成员."""
     workspace = Workspace(name=name, description=description, owner_id=owner_id)
     session.add(workspace)
     session.flush()  # 获取 workspace.id
@@ -33,11 +51,30 @@ def create_workspace(session: Session, owner_id: int, name: str, description: st
     session.add(root_folder)
 
     session.commit()
-    logger.info("创建工作空间：ws_id={}, name={}, owner={}", workspace.id, name, owner_id)
+    logger.info(
+        "创建工作空间: ws_id={}, name={}, owner={}",
+        workspace.id,
+        name,
+        owner_id,
+    )
     return workspace
 
 
-def get_user_workspace_rows(session: Session, user_id: int):
+def _workspace_list_entry(
+    workspace: Workspace, role: str, member_count: int,
+) -> WorkspaceListEntry:
+    """Combine a workspace snapshot with its membership summary."""
+    return {
+        **workspace.to_dict(),
+        "my_role": role,
+        "member_count": member_count,
+    }
+
+
+def get_user_workspace_rows(
+    session: Session,
+    user_id: int,
+) -> list[tuple[WorkspaceListEntry, OpenCodeRuntime | None]]:
     """Fetch membership counts and only the caller's runtime in one statement."""
     counts = (
         session.query(
@@ -48,48 +85,50 @@ def get_user_workspace_rows(session: Session, user_id: int):
         .subquery()
     )
     rows = (
-        session.query(Workspace, WorkspaceMember.role, counts.c.member_count, OpenCodeRuntime)
+        session.query(Workspace, WorkspaceMember.role, counts.c.member_count,
+                      OpenCodeRuntime)
         .join(WorkspaceMember, Workspace.id == WorkspaceMember.workspace_id)
         .join(counts, Workspace.id == counts.c.workspace_id)
-        .outerjoin(OpenCodeRuntime, and_(OpenCodeRuntime.workspace_id == Workspace.id,
-                                         OpenCodeRuntime.user_id == user_id))
+        .outerjoin(
+            OpenCodeRuntime,
+            and_(
+                OpenCodeRuntime.workspace_id == Workspace.id,
+                OpenCodeRuntime.user_id == user_id,
+            ),
+        )
         .filter(WorkspaceMember.user_id == user_id)
         .order_by(Workspace.created_at.desc())
         .all()
     )
     return [
-        ({**workspace.to_dict(), "my_role": role, "member_count": member_count}, runtime)
+        (
+            _workspace_list_entry(workspace, role, member_count),
+            runtime,
+        )
         for workspace, role, member_count, runtime in rows
     ]
 
 
-def get_user_workspaces(session: Session, user_id: int) -> list[dict]:
-    """列出用户拥有的和加入的工作空间。"""
+def get_user_workspaces(session: Session, user_id: int) -> list[WorkspaceListEntry]:
+    """列出用户拥有的和加入的工作空间."""
     return [workspace for workspace, _ in get_user_workspace_rows(session, user_id)]
 
 
 def get_workspace(session: Session, workspace_id: int) -> Workspace:
-    """获取工作空间，不存在则 404。"""
+    """获取工作空间, 不存在则 404."""
     workspace = session.get(Workspace, workspace_id)
     if not workspace:
-        raise ResourceNotFoundError("工作空间不存在")
+        message = "工作空间不存在"
+        raise ResourceNotFoundError(message)
     return workspace
 
 
-def get_workspace_detail(session: Session, workspace_id: int, user_id: int) -> dict:
-    """获取工作空间详情（含成员列表）。"""
-    workspace = get_workspace(session, workspace_id)
-    ws_dict = workspace.to_dict()
+def _member_detail(member: WorkspaceMember, user: User) -> MemberDetail:
+    """Combine a membership snapshot with the user's display fields."""
+    return {**member.to_dict(), "username": user.username, "avatar": user.avatar}
 
-    # 查询当前用户角色
-    my_member = (
-        session.query(WorkspaceMember)
-        .filter_by(workspace_id=workspace_id, user_id=user_id)
-        .first()
-    )
-    ws_dict["my_role"] = my_member.role if my_member else None
 
-    # 成员列表
+def _member_details(session: Session, workspace_id: int) -> list[MemberDetail]:
     members = (
         session.query(WorkspaceMember, User)
         .join(User, WorkspaceMember.user_id == User.id)
@@ -97,19 +136,41 @@ def get_workspace_detail(session: Session, workspace_id: int, user_id: int) -> d
         .order_by(WorkspaceMember.joined_at.asc())
         .all()
     )
-    ws_dict["members"] = [
-        {
-            **member.to_dict(),
-            "username": user.username,
-            "avatar": user.avatar,
-        }
+    return [
+        _member_detail(member, user)
         for member, user in members
     ]
-    return ws_dict
 
 
-def update_workspace(session: Session, workspace_id: int, user_id: int, name: str | None, description: str | None) -> Workspace:
-    """更新工作空间信息（仅 admin）。"""
+def get_workspace_detail(
+    session: Session,
+    workspace_id: int,
+    user_id: int,
+) -> WorkspaceDetailData:
+    """获取工作空间详情 (含成员列表)."""
+    workspace = get_workspace(session, workspace_id)
+
+    # 查询当前用户角色
+    my_member = (
+        session.query(WorkspaceMember)
+        .filter_by(workspace_id=workspace_id, user_id=user_id)
+        .first()
+    )
+    return WorkspaceDetailData(
+        **workspace.to_dict(),
+        my_role=my_member.role if my_member else None,
+        members=_member_details(session, workspace_id),
+    )
+
+
+def update_workspace(
+    session: Session,
+    workspace_id: int,
+    user_id: int,
+    name: str | None,
+    description: str | None,
+) -> Workspace:
+    """更新工作空间信息 (仅 admin)."""
     assert_admin(session, workspace_id, user_id)
     workspace = get_workspace(session, workspace_id)
 
@@ -119,35 +180,43 @@ def update_workspace(session: Session, workspace_id: int, user_id: int, name: st
         workspace.description = description
 
     session.commit()
-    logger.info("更新工作空间：ws_id={}, user={}", workspace_id, user_id)
+    logger.info("更新工作空间: ws_id={}, user={}", workspace_id, user_id)
     return workspace
 
 
 def delete_workspace(session: Session, workspace_id: int, user_id: int) -> None:
-    """删除工作空间（仅 owner）。"""
+    """删除工作空间 (仅 owner)."""
     workspace = lifecycle_repository.lock_workspace(session, workspace_id)
     if workspace is None:
-        raise ResourceNotFoundError("工作空间不存在")
+        message = "工作空间不存在"
+        raise ResourceNotFoundError(message)
     if workspace.owner_id != user_id:
-        raise PermissionDeniedError("只有空间所有者可以删除空间")
+        message = "只有空间所有者可以删除空间"
+        raise PermissionDeniedError(message)
 
-    # 容器清理意图随数据库删除提交，由 Worker 异步释放资源。
-    from app.features.workspace import docker_service
+    # 容器清理意图随数据库删除提交, 由 Worker 异步释放资源.
     docker_service.remove_container(workspace, session)
     lifecycle_repository.delete_workspace(session, workspace_id)
     session.commit()
     session.expire_all()
-    logger.info("删除工作空间：ws_id={}, user={}", workspace_id, user_id)
+    logger.info("删除工作空间: ws_id={}, user={}", workspace_id, user_id)
 
 
-def invite_member(session: Session, workspace_id: int, actor_id: int, username: str, role: str) -> WorkspaceMember:
-    """邀请成员加入工作空间（仅 admin）。"""
+def invite_member(
+    session: Session,
+    workspace_id: int,
+    actor_id: int,
+    username: str,
+    role: str,
+) -> WorkspaceMember:
+    """邀请成员加入工作空间 (仅 admin)."""
     assert_admin(session, workspace_id, actor_id)
 
     # 查找被邀请用户
     target_user = session.query(User).filter_by(username=username).first()
     if not target_user:
-        raise ResourceNotFoundError(f"用户 '{username}' 不存在")
+        message = f"用户 '{username}' 不存在"
+        raise ResourceNotFoundError(message)
 
     # 检查是否已是成员
     existing = (
@@ -156,7 +225,8 @@ def invite_member(session: Session, workspace_id: int, actor_id: int, username: 
         .first()
     )
     if existing:
-        raise BusinessRuleError("该用户已是空间成员")
+        message = "该用户已是空间成员"
+        raise BusinessRuleError(message)
 
     member = WorkspaceMember(
         workspace_id=workspace_id,
@@ -171,23 +241,34 @@ def invite_member(session: Session, workspace_id: int, actor_id: int, username: 
     notification = Inbox(
         user_id=target_user.id,
         title="工作空间邀请",
-        content=f"您已被邀请加入工作空间「{workspace.name}」，角色：{role}",
+        content=f"您已被邀请加入工作空间「{workspace.name}」, 角色: {role}",
         type="workspace",
     )
     session.add(notification)
 
     session.commit()
-    logger.info("邀请成员：ws_id={}, user={}, role={}", workspace_id, target_user.id, role)
+    logger.info(
+        "邀请成员: ws_id={}, user={}, role={}",
+        workspace_id,
+        target_user.id,
+        role,
+    )
     return member
 
 
-def remove_member(session: Session, workspace_id: int, actor_id: int, target_user_id: int) -> None:
-    """移除成员（仅 admin；不可移除 owner）。"""
+def remove_member(
+    session: Session,
+    workspace_id: int,
+    actor_id: int,
+    target_user_id: int,
+) -> None:
+    """移除成员 (仅 admin; 不可移除 owner)."""
     assert_admin(session, workspace_id, actor_id)
 
     workspace = get_workspace(session, workspace_id)
     if workspace.owner_id == target_user_id:
-        raise BusinessRuleError("不可移除空间所有者")
+        message = "不可移除空间所有者"
+        raise BusinessRuleError(message)
 
     member = (
         session.query(WorkspaceMember)
@@ -196,17 +277,15 @@ def remove_member(session: Session, workspace_id: int, actor_id: int, target_use
         .first()
     )
     if not member:
-        raise ResourceNotFoundError("该用户不是空间成员")
+        message = "该用户不是空间成员"
+        raise ResourceNotFoundError(message)
 
     # A removed member's OpenCode credential must stop working immediately and
     # the corresponding container must not survive the membership deletion.
-    from app.features.workspace.runtime_service import get_runtime
-    from app.features.workspace import docker_service
-
-    runtime = get_runtime(session, workspace_id, target_user_id)
+    runtime = runtime_service.get_runtime(session, workspace_id, target_user_id)
     if runtime:
         docker_service.remove_runtime(runtime, session)
-        # Runtime records are owned by the workspace membership.  Once that
+        # Runtime records are owned by the workspace membership. Once that
         # membership is gone, keep no dormant container identity or session
         # binding that could be accidentally reused later.
         session.delete(runtime)
@@ -223,16 +302,23 @@ def remove_member(session: Session, workspace_id: int, actor_id: int, target_use
     session.add(notification)
 
     session.commit()
-    logger.info("移除成员：ws_id={}, user={}", workspace_id, target_user_id)
+    logger.info("移除成员: ws_id={}, user={}", workspace_id, target_user_id)
 
 
-def update_member_role(session: Session, workspace_id: int, actor_id: int, target_user_id: int, new_role: str) -> WorkspaceMember:
-    """变更成员角色（仅 admin；不可变更 owner）。"""
+def update_member_role(
+    session: Session,
+    workspace_id: int,
+    actor_id: int,
+    target_user_id: int,
+    new_role: str,
+) -> WorkspaceMember:
+    """变更成员角色 (仅 admin; 不可变更 owner)."""
     assert_admin(session, workspace_id, actor_id)
 
     workspace = get_workspace(session, workspace_id)
     if workspace.owner_id == target_user_id:
-        raise BusinessRuleError("不可变更空间所有者的角色")
+        message = "不可变更空间所有者的角色"
+        raise BusinessRuleError(message)
 
     member = (
         session.query(WorkspaceMember)
@@ -241,26 +327,23 @@ def update_member_role(session: Session, workspace_id: int, actor_id: int, targe
         .first()
     )
     if not member:
-        raise ResourceNotFoundError("该用户不是空间成员")
+        message = "该用户不是空间成员"
+        raise ResourceNotFoundError(message)
 
     old_role = member.role
     member.role = new_role
     session.commit()
     # Revoke the old role-bound runtime credential before provisioning a new
-    # one.  A running OpenCode runtime is refreshed in place so a role change
-    # takes effect without requiring the user to restart the container.  If
+    # one. A running OpenCode runtime is refreshed in place so a role change
+    # takes effect without requiring the user to restart the container. If
     # Docker/configuration is unavailable, the token remains revoked and the
     # runtime can be repaired through the explicit setup/restart endpoint.
-    from app.mcp import runtime_token_service
-    from app.features.workspace.runtime_service import get_runtime
-    runtime = get_runtime(session, workspace_id, target_user_id)
+    runtime = runtime_service.get_runtime(session, workspace_id, target_user_id)
     if runtime:
         runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
         session.commit()
         if runtime.status == "running" and runtime.container_id:
             try:
-                from app.features.workspace import docker_service
-
                 docker_service.setup_mcp(
                     session,
                     workspace,
@@ -269,30 +352,23 @@ def update_member_role(session: Session, workspace_id: int, actor_id: int, targe
                 )
             except Exception as exc:
                 logger.error(
-                    "角色变更后刷新 OpenCode MCP 配置失败：ws_id={}, user={}, runtime_id={}, error_type={}",
+                    "角色变更后刷新 OpenCode MCP 配置失败: "
+                    "ws_id={}, user={}, runtime_id={}, error_type={}",
                     workspace_id,
                     target_user_id,
                     runtime.id,
                     type(exc).__name__,
                 )
-    logger.info("变更成员角色：ws_id={}, user={}, {} -> {}", workspace_id, target_user_id, old_role, new_role)
+    logger.info(
+        "变更成员角色: ws_id={}, user={}, {} -> {}",
+        workspace_id,
+        target_user_id,
+        old_role,
+        new_role,
+    )
     return member
 
 
-def list_members(session: Session, workspace_id: int) -> list[dict]:
-    """列出工作空间成员。"""
-    members = (
-        session.query(WorkspaceMember, User)
-        .join(User, WorkspaceMember.user_id == User.id)
-        .filter(WorkspaceMember.workspace_id == workspace_id)
-        .order_by(WorkspaceMember.joined_at.asc())
-        .all()
-    )
-    return [
-        {
-            **member.to_dict(),
-            "username": user.username,
-            "avatar": user.avatar,
-        }
-        for member, user in members
-    ]
+def list_members(session: Session, workspace_id: int) -> list[MemberDetail]:
+    """列出工作空间成员."""
+    return _member_details(session, workspace_id)

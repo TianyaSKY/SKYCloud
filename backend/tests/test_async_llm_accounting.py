@@ -23,7 +23,7 @@ async def test_slow_accounting_does_not_block_requests(operation):
     client.chat.completions.create = AsyncMock(return_value=response)
     client.embeddings.create = AsyncMock(return_value=response)
 
-    def slow_record(**kwargs):
+    def slow_record(usage):
         loop.call_soon_threadsafe(started.set)
         release.wait(timeout=2)
 

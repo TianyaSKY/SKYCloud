@@ -99,3 +99,43 @@ def test_usage_log_model_cascades_account_deletion(session, test_user, admin_use
     session.execute(delete(User).where(User.id == test_user.id))
     session.commit()
     assert session.execute(select(TokenUsageLog.user_id, TokenUsageLog.total_tokens)).all() == [(admin_user.id, 7)]
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/token-usage/logs",
+        "/token-usage/logs/{user_id}",
+        "/admin/token-usage/logs",
+    ],
+)
+def test_grouped_usage_query_preserves_flat_parameters_and_defaults(contract, route):
+    client, app, user, admin, log = contract
+    app.dependency_overrides[get_current_user] = lambda: admin
+    path = route.format(user_id=user.id)
+
+    default_page = data(client.get(path))
+    assert default_page["page"] == 1
+    assert default_page["page_size"] == 20
+    assert data(client.get(path, params={"unknown_filter": "ignored"})) == default_page
+    for name, value in (("page", 0), ("page_size", 0), ("page_size", 101)):
+        response = client.get(path, params={name: value})
+        assert response.status_code == 422
+        assert response.json()["error"]["issues"][0]["loc"] == ["query", name]
+
+    operation = client.get("/openapi.json").json()["paths"][route]["get"]
+    assert "requestBody" not in operation
+    parameters = {
+        parameter["name"]: parameter
+        for parameter in operation["parameters"]
+        if parameter["in"] == "query"
+    }
+    expected = {"page", "page_size", "action", "start_date", "end_date"}
+    if route.startswith("/admin/"):
+        expected.add("user_id")
+    assert set(parameters) == expected
+    assert parameters["page"]["schema"]["default"] == 1
+    assert parameters["page"]["schema"]["minimum"] == 1
+    assert parameters["page_size"]["schema"]["default"] == 20
+    assert parameters["page_size"]["schema"]["minimum"] == 1
+    assert parameters["page_size"]["schema"]["maximum"] == 100

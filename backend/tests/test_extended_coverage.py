@@ -13,71 +13,71 @@ from unittest.mock import patch, MagicMock, AsyncMock, mock_open
 class TestFileServiceMultipart:
     """分片上传相关函数测试。"""
 
-    def test_safe_upload_id_valid(self):
-        from app.features.file.service import _safe_upload_id
-        assert _safe_upload_id("abc12345") == "abc12345"  # 至少8字符
+    def testsafe_upload_id_valid(self):
+        from app.features.file.service import safe_upload_id
+        assert safe_upload_id("abc12345") == "abc12345"  # 至少8字符
 
-    def test_safe_upload_id_invalid(self):
-        from app.features.file.service import _safe_upload_id
+    def testsafe_upload_id_invalid(self):
+        from app.features.file.service import safe_upload_id
         from app.exceptions import BusinessRuleError
         with pytest.raises(BusinessRuleError):
-            _safe_upload_id("")
+            safe_upload_id("")
         with pytest.raises(BusinessRuleError):
-            _safe_upload_id("invalid/id")
+            safe_upload_id("invalid/id")
         with pytest.raises(BusinessRuleError):
-            _safe_upload_id("short")  # 少于8字符
+            safe_upload_id("short")  # 少于8字符
 
-    def test_multipart_upload_dir(self):
-        from app.features.file.service import _multipart_upload_dir, MULTIPART_ROOT
-        result = _multipart_upload_dir(1, "abc")
+    def testmultipart_upload_dir(self):
+        from app.features.file.service import multipart_upload_dir, MULTIPART_ROOT
+        result = multipart_upload_dir(1, "abc")
         assert "1" in result
         assert "abc" in result
 
-    def test_multipart_chunks_dir(self):
-        from app.features.file.service import _multipart_chunks_dir
-        result = _multipart_chunks_dir("/tmp/upload")
+    def testmultipart_chunks_dir(self):
+        from app.features.file.service import multipart_chunks_dir
+        result = multipart_chunks_dir("/tmp/upload")
         assert result.endswith("chunks")
 
-    def test_multipart_meta_path(self):
-        from app.features.file.service import _multipart_meta_path
-        result = _multipart_meta_path("/tmp/upload")
+    def testmultipart_meta_path(self):
+        from app.features.file.service import multipart_meta_path
+        result = multipart_meta_path("/tmp/upload")
         assert result.endswith("meta.json")
 
-    def test_list_uploaded_chunks_empty(self, tmp_path):
-        from app.features.file.service import _list_uploaded_chunks
-        result = _list_uploaded_chunks(str(tmp_path / "nonexistent"))
+    def testlist_uploaded_chunks_empty(self, tmp_path):
+        from app.features.file.service import list_uploaded_chunks
+        result = list_uploaded_chunks(str(tmp_path / "nonexistent"))
         assert result == []
 
-    def test_list_uploaded_chunks_with_files(self, tmp_path):
-        from app.features.file.service import _list_uploaded_chunks
+    def testlist_uploaded_chunks_with_files(self, tmp_path):
+        from app.features.file.service import list_uploaded_chunks
         chunks_dir = tmp_path / "chunks"
         chunks_dir.mkdir()
         (chunks_dir / "0.part").write_text("data")
         (chunks_dir / "2.part").write_text("data")
         (chunks_dir / "1.part").write_text("data")
-        result = _list_uploaded_chunks(str(chunks_dir))
+        result = list_uploaded_chunks(str(chunks_dir))
         assert result == [0, 1, 2]
 
-    def test_load_multipart_meta_not_found(self):
-        from app.features.file.service import _load_multipart_meta
+    def testload_multipart_meta_not_found(self):
+        from app.features.file.service import load_multipart_meta
         from app.exceptions import ResourceNotFoundError
         with pytest.raises(ResourceNotFoundError):
-            _load_multipart_meta(999, "nonexistent")
+            load_multipart_meta(999, "nonexistent")
 
-    def test_write_and_load_multipart_meta(self, tmp_path):
-        from app.features.file.service import _write_multipart_meta, _load_multipart_meta, _multipart_upload_dir, _multipart_meta_path
+    def test_write_andload_multipart_meta(self, tmp_path):
+        from app.features.file.service import _write_multipart_meta, load_multipart_meta, multipart_upload_dir, multipart_meta_path
         import app.features.file.service as fs
 
         # 临时修改 MULTIPART_ROOT
         original_root = fs.MULTIPART_ROOT
         fs.MULTIPART_ROOT = str(tmp_path)
         try:
-            upload_dir = _multipart_upload_dir(1, "test12345678")  # 至少8字符
+            upload_dir = multipart_upload_dir(1, "test12345678")  # 至少8字符
             os.makedirs(upload_dir, exist_ok=True)
-            meta_path = _multipart_meta_path(upload_dir)
+            meta_path = multipart_meta_path(upload_dir)
             meta = {"upload_id": "test12345678", "workspace_id": 1, "filename": "test.txt"}
             _write_multipart_meta(meta_path, meta)
-            loaded = _load_multipart_meta(1, "test12345678")
+            loaded = load_multipart_meta(1, "test12345678")
             assert loaded["upload_id"] == "test12345678"
         finally:
             fs.MULTIPART_ROOT = original_root
@@ -102,24 +102,24 @@ class TestFileServiceMultipart:
             assert not (tmp_path / str(test_workspace.id) / result["upload_id"]).exists()
 
     def test_search_files_fuzzy_no_match(self, session, test_user, test_workspace):
-        from app.features.file.service import _search_files_fuzzy
+        from app.features.file.search_service import _search_files_fuzzy
 
         result = _search_files_fuzzy(session, test_workspace.id, "nonexistent", 1, 10)
         assert result["total"] == 0
 
     async def test_search_files_vector_error(self, session, test_user, test_workspace):
-        from app.features.file.service import search_files
+        from app.features.file.search_service import SearchFilesParams, search_files
 
         with patch("app.features.file.search_service.get_embedding_model_config", side_effect=Exception("No config")):
-            result = await search_files(session, test_workspace.id, "test", 1, 10, "vector")
+            result = await search_files(session, test_workspace.id, SearchFilesParams(query="test", page=1, page_size=10, search_type="vector"))
         assert "error" in result
 
     def test_search_files_async(self, session, test_user, test_workspace):
-        from app.features.file.service import search_files
+        from app.features.file.search_service import SearchFilesParams, search_files
         import asyncio
 
         result = asyncio.run(
-            search_files(session, test_workspace.id, "test", 1, 10, "fuzzy")
+            search_files(session, test_workspace.id, SearchFilesParams(query="test", page=1, page_size=10, search_type="fuzzy"))
         )
         assert "items" in result
 
@@ -165,16 +165,16 @@ class TestFileServiceEmbedding:
     """Embedding 相关测试。"""
 
     async def test_embedding_desc_success(self):
-        from app.features.file.service import embedding_desc
+        from app.features.file.search_service import embedding_desc
 
-        with patch("app.infra.llm.client.embed_texts", return_value=[[0.1, 0.2, 0.3]]):
+        with patch("app.features.file.search_service.embed_texts", return_value=[[0.1, 0.2, 0.3]]):
             result = await embedding_desc("test", {"model": "test"})
         assert result == [0.1, 0.2, 0.3]
 
     async def test_embedding_desc_failure(self):
-        from app.features.file.service import embedding_desc
+        from app.features.file.search_service import embedding_desc
 
-        with patch("app.infra.llm.client.embed_texts", side_effect=Exception("API error")):
+        with patch("app.features.file.search_service.embed_texts", side_effect=Exception("API error")):
             result = await embedding_desc("test", {"model": "test"})
         assert result == []
 
@@ -219,8 +219,8 @@ class TestFileServiceCleanup:
 # mcp/server.py 补充测试
 # ---------------------------------------------------------------------------
 
+from app.mcp.context import current_user_id
 from app.mcp.server import (
-    _current_user_id,
     get_file_download_url,
     read_file_content,
     move_folder as mcp_move_folder,
@@ -244,7 +244,7 @@ class TestMcpGetFileDownloadUrl:
         mock_share.to_dict.return_value = {"token": "abc123", "expires_at": "2024-01-01"}
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file), \
@@ -253,14 +253,14 @@ class TestMcpGetFileDownloadUrl:
             parsed = json.loads(result)
             assert "download_url" in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
     async def test_permission_denied(self):
         mock_file = MagicMock()
         mock_file.uploader_id = 999
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file):
@@ -268,7 +268,7 @@ class TestMcpGetFileDownloadUrl:
             parsed = json.loads(result)
             assert "error" in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestMcpReadFileContent:
@@ -279,7 +279,7 @@ class TestMcpReadFileContent:
         mock_file.name = "photo.png"
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file):
@@ -287,7 +287,7 @@ class TestMcpReadFileContent:
             parsed = json.loads(result)
             assert "Not a text file" in parsed.get("error", "")
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
     async def test_file_not_found_on_server(self, tmp_path):
         mock_file = MagicMock()
@@ -297,7 +297,7 @@ class TestMcpReadFileContent:
         mock_file.get_abs_path.return_value = str(tmp_path / "nonexistent.txt")
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file):
@@ -305,7 +305,7 @@ class TestMcpReadFileContent:
             parsed = json.loads(result)
             assert "error" in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
     async def test_success(self, tmp_path):
         test_file = tmp_path / "test.txt"
@@ -318,7 +318,7 @@ class TestMcpReadFileContent:
         mock_file.get_abs_path.return_value = str(test_file)
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file):
@@ -326,7 +326,7 @@ class TestMcpReadFileContent:
             parsed = json.loads(result)
             assert parsed["content"] == "hello world"
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestMcpMoveFolder:
@@ -335,7 +335,7 @@ class TestMcpMoveFolder:
         mock_folder.user_id = 1
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.folder_service.get_folder", return_value=mock_folder):
@@ -343,7 +343,7 @@ class TestMcpMoveFolder:
             parsed = json.loads(result)
             assert "error" in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
     async def test_success(self):
         mock_folder = MagicMock()
@@ -353,7 +353,7 @@ class TestMcpMoveFolder:
         mock_updated.to_dict.return_value = {"id": 1, "name": "renamed"}
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.folder_service.get_folder", return_value=mock_folder), \
@@ -362,7 +362,7 @@ class TestMcpMoveFolder:
             parsed = json.loads(result)
             assert parsed["name"] == "renamed"
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestMcpDeleteFolder:
@@ -372,7 +372,7 @@ class TestMcpDeleteFolder:
         mock_folder.name = "test_folder"
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.folder_service.get_folder", return_value=mock_folder), \
@@ -381,20 +381,20 @@ class TestMcpDeleteFolder:
             parsed = json.loads(result)
             assert parsed["success"] is True
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestMcpGetStorageOverview:
     async def test_success(self):
         from app.mcp import server
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server._run_sync", new_callable=AsyncMock,
                        return_value={"total_files": 10}) as worker:
                 assert json.loads(await get_storage_overview()) == {"total_files": 10}
             worker.assert_awaited_once_with(server.workspace_insights.storage_overview, 1, 1)
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 
@@ -404,7 +404,7 @@ class TestMcpBatchDelete:
         mock_file.uploader_id = 1
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file), \
@@ -414,32 +414,32 @@ class TestMcpBatchDelete:
             parsed = json.loads(result)
             assert parsed["deleted_count"] == 1
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestMcpGetFolderTree:
     async def test_success(self):
         from app.mcp import server
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server._run_sync", new_callable=AsyncMock,
                        return_value=[{"id": 1, "name": "root"}]) as worker:
                 assert json.loads(await mcp_get_folder_tree()) == [{"id": 1, "name": "root"}]
             worker.assert_awaited_once_with(server.workspace_insights.folder_tree, 1, 1, 3)
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 
 class TestMcpGetUploadUrl:
     async def test_success(self):
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             result = await get_upload_url()
             parsed = json.loads(result)
             assert "upload_url" in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 # ---------------------------------------------------------------------------

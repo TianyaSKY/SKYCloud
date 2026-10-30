@@ -18,7 +18,7 @@ def test_multipart_write_rejects_directory_link(tmp_path, operation):
     alias.symlink_to(foreign, target_is_directory=True)
     with pytest.raises(BusinessRuleError):
         if operation == 'chunk':
-            multipart_storage.save_chunk(str(alias), 0, FileStorage(stream=BytesIO(b'abc')), 3, 3)
+            multipart_storage.save_chunk(str(alias), multipart_storage.SaveChunkParams(index=0, upload=FileStorage(stream=BytesIO(b'abc')), expected_size=3, max_size=3))
         else:
             multipart_storage.write_metadata(str(alias / 'meta.json'), {'filename': 'abc'})
     assert sorted(path.name for path in foreign.iterdir()) == ['private.txt']
@@ -56,7 +56,7 @@ def test_parent_replacement_during_write_publishes_only_in_opened_directory(tmp_
             with open(path, 'wb') as target:
                 target.write(b'abc')
         upload = SimpleNamespace(save=save)
-    multipart_storage.save_chunk(str(chunks), 0, upload, 3, 3, root=str(root))
+    multipart_storage.save_chunk(str(chunks), multipart_storage.SaveChunkParams(index=0, upload=upload, expected_size=3, max_size=3, root=str(root)))
     assert (retired / 'upload-session' / 'chunks' / '0.part').read_bytes() == b'abc'
     assert private.read_bytes() == b'previous'
     assert [path.name for path in (retired / 'upload-session' / 'chunks').iterdir()] == ['0.part']

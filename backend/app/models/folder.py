@@ -1,74 +1,117 @@
-from app.infra.utc_datetime import UTCDateTime
-from datetime import datetime
-from typing import TYPE_CHECKING, cast
+"""Folder tree nodes owned by a workspace."""
 
-from sqlalchemy import Integer, String, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column, relationship, backref
+from datetime import datetime
+from typing import TYPE_CHECKING, TypedDict, cast
+
+from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError
+from app.infra.datetime_utils import (
+    local_isoformat,
+    parse_legacy_datetime,
+    utc_now,
+)
 from app.infra.extensions import Base
-from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
+from app.infra.utc_datetime import UTCDateTime
 
 if TYPE_CHECKING:
     from app.models.file import File
 
 
-class Folder(Base):
-    """目录树节点表：支持父子递归；删除时级联子目录与下属文件记录。
+class FolderDict(TypedDict):
+    """Public representation of a folder row."""
 
-    文件夹归属于工作空间（workspace_id），而非用户。
+    id: int
+    name: str
+    workspace_id: int
+    parent_id: int | None
+    path: str
+    created_at: str | None
+
+
+class Folder(Base):
+    """Folder tree node; deleting one cascades into its subtree.
+
+    Folders belong to a workspace rather than to a user.
     """
 
     __tablename__ = "folder"
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
-    workspace_id: Mapped[int] = mapped_column(Integer, ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    parent_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("folder.id", ondelete="CASCADE"))
-    created_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
+    workspace_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    parent_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("folder.id", ondelete="CASCADE"),
+    )
+    created_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        default=utc_now,
+    )
 
-    # 递归子目录，并级联删除
+    parent: Mapped["Folder | None"] = relationship(
+        "Folder",
+        remote_side=[id],
+        back_populates="sub_folder",
+    )
     sub_folder: Mapped[list["Folder"]] = relationship(
         "Folder",
-        backref=backref("parent", remote_side=[id]),
+        back_populates="parent",
+        cascade="all, delete-orphan",
+    )
+    # Database cascade removes file metadata; physical cleanup stays in service.
+    files: Mapped[list["File"]] = relationship(
+        "File",
+        backref="folder",
         cascade="all, delete-orphan",
     )
 
-    # DB 级联删除下属文件元数据；物理文件清理仍在 service 层
-    files: Mapped[list["File"]] = relationship("File", backref="folder", cascade="all, delete-orphan")
-
-    def to_dict(self):
-        path_parts = []
-        current = self
-        seen = set()
-        while current:
-            identity = ('row', current.id) if current.id is not None else ('object', id(current))
+    def to_dict(self) -> FolderDict:
+        """Return the public folder representation including its path."""
+        path_parts: list[str] = []
+        current: Folder | None = self
+        seen: set[tuple[str, int]] = set()
+        while current is not None:
+            # Transient rows have no identity yet; fall back to object identity.
+            row_id = cast("int | None", current.id)
+            identity: tuple[str, int] = (
+                ("row", row_id) if row_id is not None else ("object", id(current))
+            )
             if identity in seen:
-                raise BusinessRuleError('Invalid folder hierarchy')
+                message = "Invalid folder hierarchy"
+                raise BusinessRuleError(message)
             seen.add(identity)
             if current.workspace_id != self.workspace_id:
-                raise PermissionDeniedError('Parent folder belongs to another workspace')
+                message = "Parent folder belongs to another workspace"
+                raise PermissionDeniedError(message)
             if current.parent_id is None:
                 break
             path_parts.append(current.name)
             current = current.parent
 
         path = "/" + "/".join(reversed(path_parts))
-
         return {
             "id": self.id,
             "name": "/" if self.parent_id is None else self.name,
             "workspace_id": self.workspace_id,
             "parent_id": self.parent_id,
             "path": path,
-            "created_at": local_isoformat(cast(datetime | None, self.created_at)),
+            "created_at": local_isoformat(self.created_at),
         }
 
     @classmethod
-    def from_cache(cls, d: dict) -> "Folder":
+    def from_cache(cls, d: FolderDict) -> "Folder":
+        """Build a detached folder row from cached metadata fields."""
         return cls(
             id=d.get("id"),
             name=d.get("name"),
             workspace_id=d.get("workspace_id"),
             parent_id=d.get("parent_id"),
-            created_at=parse_legacy_datetime(cast(str | None, d.get("created_at"))),
+            created_at=parse_legacy_datetime(d.get("created_at")),
         )

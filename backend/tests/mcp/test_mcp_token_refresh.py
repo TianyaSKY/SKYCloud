@@ -21,8 +21,8 @@ def test_runtime_container_name_is_unique_per_user_and_workspace():
     class Workspace:
         id = 12
 
-    assert docker_service._name(Workspace(), 8) == "skycloud-opencode-w12-u8"
-    assert docker_service._name(Workspace(), 19) == "skycloud-opencode-w12-u19"
+    assert docker_service.runtime_container_name(Workspace(), 8) == "skycloud-opencode-w12-u8"
+    assert docker_service.runtime_container_name(Workspace(), 19) == "skycloud-opencode-w12-u19"
 
 
 def test_local_api_uses_authenticated_controller_relay(monkeypatch):
@@ -72,7 +72,7 @@ def test_missing_official_image_is_pulled_automatically(monkeypatch):
     client.images.get.side_effect = docker_service.ImageNotFound("not found")
     monkeypatch.setattr(docker_service, "OPENCODE_IMAGE", image)
 
-    docker_service._ensure_opencode_image(client)
+    docker_service.ensure_runtime_image(client)
 
     client.images.get.assert_called_once_with(image)
     client.images.pull.assert_called_once_with(image)
@@ -164,8 +164,8 @@ def test_chat_provider_change_requires_runtime_reload():
     }
     configured = docker_service.merge_opencode_chat_provider({}, chat_config)
 
-    assert docker_service._opencode_chat_provider_needs_reload({}, chat_config)
-    assert not docker_service._opencode_chat_provider_needs_reload(
+    assert docker_service.opencode_chat_provider_needs_reload({}, chat_config)
+    assert not docker_service.opencode_chat_provider_needs_reload(
         configured,
         chat_config,
     )

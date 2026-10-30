@@ -18,7 +18,6 @@ from app.exceptions import (
     ServiceOperationError,
     register_exception_handlers,
     _to_json_safe,
-    _compact_validation_errors,
 )
 from app.infra.datetime_utils import beijing_now
 from app.models.user import User
@@ -68,16 +67,6 @@ class TestToJsonSafe:
         assert _to_json_safe("str") == "str"
 
 
-class TestCompactValidationErrors:
-    def test_compact(self):
-        errors = [
-            {"loc": ("body", "name"), "msg": "field required", "type": "missing"},
-            {"loc": ("body", "age"), "msg": "value is not a valid integer", "type": "type_error", "ctx": {"error": "invalid"}},
-        ]
-        result = _compact_validation_errors(errors)
-        assert len(result) == 2
-        assert result[0]["msg"] == "Field required"
-        assert "ctx" not in result[1]
 
 
 class TestExceptionHandlers:
@@ -194,7 +183,7 @@ class TestFolderService:
         from app.features.folder.service import delete_folder
 
         folder_id = test_folder.id
-        with patch("app.features.folder.service._clear_search_cache"):
+        with patch("app.features.folder.service.clear_search_cache"):
             delete_folder(session, folder_id)
         assert session.get(Folder, folder_id) is None
 
@@ -222,7 +211,7 @@ class TestFolderService:
 
         folder_id = test_folder.id
         sub_id = sub.id
-        with patch("app.features.folder.service._clear_search_cache"), \
+        with patch("app.features.folder.service.clear_search_cache"), \
              patch("app.features.folder.service.delete_file") as mock_del:
             delete_folder(session, folder_id)
 
@@ -241,13 +230,10 @@ class TestFolderService:
         folders = get_folders(session, test_workspace.id)
         assert len(folders) >= 2  # 根 + 子目录
 
-    def test_organize_files(self, session, test_workspace, test_user, mock_redis):
+    def test_organize_files(self, session, test_workspace, test_user):
         from app.features.folder.service import organize_files
 
-        mock_redis.set.return_value = True  # 模拟获取锁成功
-        with patch("app.features.folder.service.publish_organize_task"):
-            result = organize_files(session, test_workspace.id, test_user.id)
-        assert result is True
+        assert organize_files(session, test_workspace.id, test_user.id) is True
 
     def test_organize_files_lock_taken(self, session, test_workspace, test_user, mock_redis):
         from app.features.folder.service import organize_files

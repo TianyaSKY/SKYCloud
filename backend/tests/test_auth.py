@@ -233,25 +233,21 @@ class TestDeleteUser:
 
 class TestChangePassword:
     def test_change_own_password(self, session, test_user):
-        from app.features.auth.user_service import change_password
+        from app.features.auth.user_service import ChangePasswordParams, change_password
 
-        change_password(
-            session, test_user.id, "common", test_user.id, "password123", "newpass"
-        )
+        change_password(session, ChangePasswordParams(actor_id=test_user.id, actor_role="common", user_id=test_user.id, old_password="password123", new_password="newpass"))
         session.refresh(test_user)
         assert test_user.check_password("newpass")
 
     def test_admin_changes_other_password(self, session, test_user, admin_user):
-        from app.features.auth.user_service import change_password
+        from app.features.auth.user_service import ChangePasswordParams, change_password
 
-        change_password(
-            session, admin_user.id, "admin", test_user.id, "", "adminset"
-        )
+        change_password(session, ChangePasswordParams(actor_id=admin_user.id, actor_role="admin", user_id=test_user.id, old_password="", new_password="adminset"))
         session.refresh(test_user)
         assert test_user.check_password("adminset")
 
     def test_non_admin_cannot_change_other(self, session, test_user):
-        from app.features.auth.user_service import change_password
+        from app.features.auth.user_service import ChangePasswordParams, change_password
 
         other = User(username="other", role="common")
         other.set_password("otherpass")
@@ -259,15 +255,13 @@ class TestChangePassword:
         session.flush()
 
         with pytest.raises(PermissionDeniedError):
-            change_password(session, other.id, "common", test_user.id, "x", "y")
+            change_password(session, ChangePasswordParams(actor_id=other.id, actor_role="common", user_id=test_user.id, old_password="x", new_password="y"))
 
     def test_wrong_old_password(self, session, test_user):
-        from app.features.auth.user_service import change_password
+        from app.features.auth.user_service import ChangePasswordParams, change_password
 
         with pytest.raises(BusinessRuleError):
-            change_password(
-                session, test_user.id, "common", test_user.id, "wrongold", "new"
-            )
+            change_password(session, ChangePasswordParams(actor_id=test_user.id, actor_role="common", user_id=test_user.id, old_password="wrongold", new_password="new"))
 
 
 class TestEnsureUserAccess:
@@ -286,3 +280,28 @@ class TestEnsureUserAccess:
 
         with pytest.raises(PermissionDeniedError):
             ensure_user_access(1, "common", 2)
+
+
+@pytest.mark.parametrize("signer_name", ["generate_token", "generate_mcp_token"])
+@pytest.mark.parametrize("error_class", [RuntimeError, OSError, ValueError])
+def test_token_signing_failure_returns_none_without_private_details(
+    monkeypatch, signer_name, error_class,
+):
+    from app.features.auth import service
+
+    private = "private-signing-key-and-provider-details"
+    records = []
+
+    def fail(*args, **kwargs):
+        raise error_class(private)
+
+    monkeypatch.setattr(service.jwt, "encode", fail)
+    monkeypatch.setattr(
+        service.logger,
+        "error",
+        lambda message, *args: records.append(message.format(*args)),
+    )
+    assert getattr(service, signer_name)(1) is None
+    assert len(records) == 1
+    assert f"error_type={error_class.__name__}" in records[0]
+    assert private not in records[0]

@@ -183,7 +183,7 @@ def test_password_change_is_atomic_and_concurrent_requests_cannot_reuse_old_pass
     from sqlalchemy.orm import Session
     from app.exceptions import BusinessRuleError
     from app.models.user import User
-    from app.features.auth.user_service import change_password
+    from app.features.auth.user_service import ChangePasswordParams, change_password
     from app.features.auth.service import generate_token, decode_token
     from app.mcp.token_service import ensure_user_mcp_token, get_active_mcp_token
 
@@ -199,7 +199,7 @@ def test_password_change_is_atomic_and_concurrent_requests_cannot_reuse_old_pass
         _, external = ensure_user_mcp_token(session, user_id)
         with patch.object(session, "commit", side_effect=RuntimeError("Commit failed")):
             with pytest.raises(RuntimeError, match="Commit failed"):
-                change_password(session, user_id, "common", user_id, "old-long-password", "new-long-password")
+                change_password(session, ChangePasswordParams(actor_id=user_id, actor_role="common", user_id=user_id, old_password="old-long-password", new_password="new-long-password"))
         session.rollback()
         session.expire_all()
         assert session.get(User, user_id).password_hash == original
@@ -209,7 +209,7 @@ def test_password_change_is_atomic_and_concurrent_requests_cannot_reuse_old_pass
     def change(index):
         with Session(postgres) as session:
             try:
-                change_password(session, user_id, "common", user_id, "old-long-password", f"new-long-password-{index}")
+                change_password(session, ChangePasswordParams(actor_id=user_id, actor_role="common", user_id=user_id, old_password="old-long-password", new_password=f"new-long-password-{index}"))
                 return True
             except BusinessRuleError:
                 session.rollback()
@@ -308,7 +308,7 @@ def test_upload_quota_concurrent_admission_cannot_overbook(postgres, monkeypatch
         uid, wid = (1, index + 1) if shared != 'workspace' else (index + 1, 1)
         with Session(postgres) as session:
             try:
-                return quota.reserve(session, wid, uid, 6).id
+                return quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=6)).id
             except BusinessRuleError as exc:
                 errors.append(str(exc))
                 session.rollback()
@@ -335,7 +335,7 @@ def test_upload_consumption_rollback_and_concurrent_completion(postgres):
         conn.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'quota-owner','x','common')"))
         conn.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'quota-space',1)"))
     with Session(postgres) as session:
-        rid = quota.reserve(session, 1, 1, 6).id
+        rid = quota.reserve(session, quota.ReserveParams(workspace_id=1, user_id=1, size=6)).id
         quota.consume(session, 1, 1, rid, 6)
         session.add(File(name=None, file_path='invalid', file_size=6, workspace_id=1, uploader_id=1))
         with pytest.raises(IntegrityError):

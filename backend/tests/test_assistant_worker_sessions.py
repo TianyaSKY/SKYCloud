@@ -48,7 +48,9 @@ async def test_assistant_worker_session_cleanup_and_responsiveness(monkeypatch, 
     monkeypatch.setattr(repository if boundary == "get_owned_run" else router.service, boundary, missing)
     monkeypatch.setattr(router, "assert_member", lambda *args: None)
     app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
-    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        id=1, http_stream_credential=None,
+    )
     app.dependency_overrides[get_current_workspace] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[get_session_factory] = lambda: Owned
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:

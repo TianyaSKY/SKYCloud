@@ -2,6 +2,7 @@ import asyncio
 import pytest
 from fastapi import HTTPException
 from app.infra.http_wait import guarded_wait
+from runtime_controller.http_wait import WaitPolicy
 
 
 @pytest.fixture(autouse=True, params=["backend", "controller"])
@@ -28,8 +29,9 @@ async def test_wait_drains_operation_and_cleans_completed_late_response(cause):
         calls.append('abort')
         if cause=='abort-fault':raise RuntimeError('private-cleanup-url')
         if cause=='cancel':await release.wait()
-    pending=asyncio.create_task(guarded_wait(operation(),check=check,seconds=0.03,status=504,
-        detail='timeout',interval=0.01,on_abort=abort))
+    pending=asyncio.create_task(guarded_wait(operation(), WaitPolicy(
+        check=check,seconds=0.03,status=504,
+        detail='timeout',interval=0.01,on_abort=abort)))
     await entered.wait()
     if cause=='cancel':
         pending.cancel();await asyncio.sleep(0)
@@ -48,7 +50,7 @@ async def test_successful_wait_transfers_resource_without_abort():
     async def operation():return 'opened'
     async def check():calls.append('check')
     async def abort():pytest.fail('successful wait must retain upstream')
-    assert await guarded_wait(operation(),check=check,seconds=1,status=504,detail='timeout',on_abort=abort)=='opened'
+    assert await guarded_wait(operation(), WaitPolicy(check=check,seconds=1,status=504,detail='timeout',on_abort=abort))=='opened'
     assert calls==['check']
 
 
@@ -61,7 +63,7 @@ async def test_successful_wait_cancelled_during_teardown_closes_before_cancellat
     calls,logs,scopes=[],[],[]
     if guarded_wait.__module__.startswith('runtime_controller'):
         from runtime_controller import http_wait as standalone
-        monkeypatch.setattr(standalone.logging,'error',lambda message,*args:logs.append(message % args))
+        monkeypatch.setattr(standalone.logger,'error',lambda message,*args:logs.append(message % args))
     else:
         monkeypatch.setattr(http_wait.logger,'error',lambda message,*args:logs.append(message.format(*args)))
     async def operation():calls.append('operation');return 'opened'
@@ -75,7 +77,7 @@ async def test_successful_wait_cancelled_during_teardown_closes_before_cancellat
         with anyio.CancelScope() as scope:
             scopes.append(scope)
             async def wait():
-                await guarded_wait(operation(),check=check,seconds=1,status=504,detail='timeout',on_abort=abort)
+                await guarded_wait(operation(), WaitPolicy(check=check,seconds=1,status=504,detail='timeout',on_abort=abort))
                 calls.append('transferred')
             if handled_error:
                 try:raise ValueError('already-handled-caller-error')
@@ -103,7 +105,7 @@ async def test_teardown_cancellation_preserves_existing_wait_failure(phase):
         if phase=='auth':raise original
     async def abort():calls.append('abort')
     with pytest.raises(type(original)) as error:
-        await guarded_wait(operation(),check=check,seconds=1,status=504,detail='timeout',on_abort=abort)
+        await guarded_wait(operation(), WaitPolicy(check=check,seconds=1,status=504,detail='timeout',on_abort=abort))
     assert error.value is original and calls==['abort']
 
 
@@ -128,8 +130,8 @@ async def test_admission_closes_response_published_during_cancel_drain(outcome):
             lease.upstream=late
             return late
     async def check():pass
-    pending=asyncio.create_task(guarded_wait(operation(),check=check,
-        seconds=.02 if outcome=='timeout' else 60,status=504,detail='timeout',on_abort=lease.close))
+    pending=asyncio.create_task(guarded_wait(operation(), WaitPolicy(check=check,
+        seconds=.02 if outcome=='timeout' else 60,status=504,detail='timeout',on_abort=lease.close)))
     await asyncio.wait_for(entered.wait(),1)
     if outcome=='cancel':pending.cancel()
     with pytest.raises(HTTPException if outcome=='timeout' else asyncio.CancelledError):

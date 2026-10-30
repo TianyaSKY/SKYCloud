@@ -1,38 +1,47 @@
-"""文档重排序：调用外部 Rerank API；未配置或失败时回退向量排序结果。"""
+"""文档重排序: 调用外部 Rerank API; 未配置或失败时回退向量排序结果."""
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Final, cast
 
 import httpx
 from langchain_core.documents import Document
+from loguru import logger
 
 from app.infra.llm.config import get_rerank_model_config, get_rerank_top_k
 
-from loguru import logger
 
-# 模块级复用 HTTP 客户端，避免每次 rerank 都建新连接
-_rerank_client: httpx.AsyncClient | None = None
+@dataclass
+class _ClientHolder:
+    """Mutable holder for the process-wide rerank HTTP client."""
+
+    client: httpx.AsyncClient | None = None
+
+
+# 模块级复用 HTTP 客户端, 避免每次 rerank 都建新连接
+_CLIENT_HOLDER: Final = _ClientHolder()
 
 
 def _get_rerank_client() -> httpx.AsyncClient:
-    """获取或创建复用的 async HTTP 客户端。"""
-    global _rerank_client
-    if _rerank_client is None or _rerank_client.is_closed:
-        _rerank_client = httpx.AsyncClient(
+    """获取或创建复用的 async HTTP 客户端."""
+    client = _CLIENT_HOLDER.client
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(
             timeout=30,
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         )
-    return _rerank_client
+        _CLIENT_HOLDER.client = client
+    return client
 
 
 async def close_rerank_client() -> None:
-    """在应用停止时关闭重排序 API 的连接池。"""
-    global _rerank_client
-    if _rerank_client is not None:
-        await _rerank_client.aclose()
-        _rerank_client = None
+    """在应用停止时关闭重排序 API 的连接池."""
+    client = _CLIENT_HOLDER.client
+    if client is not None:
+        await client.aclose()
+        _CLIENT_HOLDER.client = None
 
 
-def _get_index(item: dict[str, Any]) -> int | None:
+def _get_index(item: dict[str, object]) -> int | None:
     # 兼容不同厂商的字段名
     for key in ("index", "document_index", "doc_index"):
         value = item.get(key)
@@ -43,7 +52,7 @@ def _get_index(item: dict[str, Any]) -> int | None:
     return None
 
 
-def _get_score(item: dict[str, Any], default: float) -> float:
+def _get_score(item: dict[str, object], default: float) -> float:
     for key in ("relevance_score", "score", "similarity"):
         value = item.get(key)
         if isinstance(value, (int, float)):
@@ -56,22 +65,24 @@ def _get_score(item: dict[str, Any], default: float) -> float:
     return default
 
 
-def _extract_ranked_indices(payload: dict[str, Any]) -> list[int]:
-    """从异构 Rerank 响应中提取去重后的文档下标序列。"""
+def _extract_ranked_indices(payload: dict[str, object]) -> list[int]:
+    """从异构 Rerank 响应中提取去重后的文档下标序列."""
     raw_results = payload.get("results")
     if not isinstance(raw_results, list):
         raw_results = payload.get("data")
     if not isinstance(raw_results, list):
         return []
+    results = cast("list[object]", raw_results)
 
     scored: list[tuple[int, float, int]] = []
-    for pos, item in enumerate(raw_results):
+    for pos, item in enumerate(results):
         if not isinstance(item, dict):
             continue
-        index = _get_index(item)
+        entry = cast("dict[str, object]", item)
+        index = _get_index(entry)
         if index is None:
             continue
-        score = _get_score(item, default=float(len(raw_results) - pos))
+        score = _get_score(entry, default=float(len(results) - pos))
         scored.append((index, score, pos))
 
     scored.sort(key=lambda x: (-x[1], x[2]))
@@ -85,8 +96,26 @@ def _extract_ranked_indices(payload: dict[str, Any]) -> list[int]:
     return ranked_indices
 
 
+def _ranked_documents(
+    result: dict[str, object], docs: list[Document],
+) -> list[Document]:
+    """Project the provider ranking onto the input documents."""
+    ranked_indices = _extract_ranked_indices(result)
+    if not ranked_indices:
+        logger.warning(
+            "Rerank response missing ranked indices, fallback to vector rank")
+        return docs
+
+    ranked_docs = [docs[i] for i in ranked_indices if 0 <= i < len(docs)]
+    if not ranked_docs:
+        return docs
+
+    logger.info("Rerank applied: {} -> {}", len(docs), len(ranked_docs))
+    return ranked_docs
+
+
 async def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
-    """按相关性重排；配置不全或调用失败时返回原 docs，保证检索链路可用。"""
+    """按相关性重排; 配置不全或调用失败时返回原 docs, 保证检索链路可用."""
     if len(docs) <= 1:
         return docs
 
@@ -101,7 +130,7 @@ async def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
             "Rerank is skipped because api/key/model is not fully configured")
         return docs
 
-    payload = {
+    payload: dict[str, object] = {
         "model": model,
         "query": query,
         "documents": [doc.page_content for doc in docs],
@@ -119,19 +148,13 @@ async def rerank_documents(query: str, docs: list[Document]) -> list[Document]:
             json=payload,
         )
         response.raise_for_status()
-        result = response.json()
-        ranked_indices = _extract_ranked_indices(result)
-        if not ranked_indices:
-            logger.warning(
-                "Rerank response missing ranked indices, fallback to vector rank")
-            return docs
-
-        ranked_docs = [docs[i] for i in ranked_indices if 0 <= i < len(docs)]
-        if not ranked_docs:
-            return docs
-
-        logger.info(f"Rerank applied: {len(docs)} -> {len(ranked_docs)}")
-        return ranked_docs
+        result: dict[str, object] = response.json()
+        ranked_docs = _ranked_documents(result, docs)
     except Exception as e:
-        logger.warning("Rerank failed, fallback to vector rank (error_type={})", type(e).__name__)
+        logger.warning(
+            "Rerank failed, fallback to vector rank (error_type={})",
+            type(e).__name__,
+        )
         return docs
+    else:
+        return ranked_docs

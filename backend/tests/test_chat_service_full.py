@@ -2,6 +2,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from langchain_core.documents import Document
 import pytest
 
 
@@ -55,7 +56,7 @@ class TestChatServiceModels:
         mock_emb.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         with patch("app.features.chat.service.get_embeddings_model", return_value=mock_emb), \
              patch("app.features.chat.service._vector_search_docs", return_value=[]), \
-             patch("app.features.chat.rerank.rerank_documents", new_callable=AsyncMock, return_value=[]):
+             patch("app.features.chat.service.rerank_documents", new_callable=AsyncMock, return_value=[]):
             result = asyncio.run(custom_db_retriever("test", 1, user_id=77))
         mock_emb.aembed_query.assert_awaited_once_with("test", user_id=77)
         assert result == []
@@ -77,9 +78,11 @@ class TestChatServiceMultiQuery:
 
     @pytest.mark.parametrize('found', [False, True])
     def test_one_successful_recall_remains_usable_after_sibling_failure(self, found):
-        from types import SimpleNamespace
         from app.features.chat import service
-        document = SimpleNamespace(page_content='found-file', metadata={'id': 1, 'name': 'found', 'distance': .1})
+        document = Document(
+            page_content="found-file",
+            metadata={"id": 1, "name": "found", "distance": 0.1},
+        )
         rows = [document] if found else []
         embeddings = MagicMock()
         embeddings.aembed_documents = AsyncMock(return_value=[[.1] * 1024] * 2)
@@ -106,7 +109,7 @@ class TestChatServiceMultiQuery:
         with patch("app.features.chat.service.get_embeddings_model", return_value=mock_emb), \
              patch("app.features.chat.service._db_search_by_vector", return_value=[]), \
              patch("app.features.chat.service.build_retrieval_query", return_value="test"), \
-             patch("app.features.chat.rerank.rerank_documents", new_callable=AsyncMock, return_value=[]):
+             patch("app.features.chat.service.rerank_documents", new_callable=AsyncMock, return_value=[]):
             result = asyncio.run(multi_query_db_retriever("test", 1, dims, user_id=77))
         assert mock_emb.aembed_documents.await_args.kwargs["user_id"] == 77
         assert result == []
@@ -123,7 +126,7 @@ class TestChatServiceMultiQuery:
         with patch("app.features.chat.service.get_embeddings_model", return_value=mock_emb), \
              patch("app.features.chat.service._db_search_by_vector", return_value=[]), \
              patch("app.features.chat.service.build_retrieval_query", return_value="test"), \
-             patch("app.features.chat.rerank.rerank_documents", new_callable=AsyncMock, return_value=[]):
+             patch("app.features.chat.service.rerank_documents", new_callable=AsyncMock, return_value=[]):
             result = asyncio.run(multi_query_db_retriever("test", 1, dims, original_vector=[0.1] * 1024, user_id=77))
         assert mock_emb.aembed_documents.await_args.kwargs["user_id"] == 77
         assert result == []
@@ -160,11 +163,8 @@ class TestChatServiceMultiQuery:
 
 class TestChatServiceFormat:
     def _make_doc(self, content, metadata):
-        """创建模拟 Document 对象（langchain_core 被 mock）。"""
-        doc = MagicMock()
-        doc.page_content = content
-        doc.metadata = metadata
-        return doc
+        """Build a real SDK document for formatting and fusion."""
+        return Document(page_content=content, metadata=metadata)
 
     def test_format_docs(self):
         from app.features.chat.service import format_docs

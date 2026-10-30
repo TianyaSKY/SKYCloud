@@ -5,6 +5,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.features.token_usage.service import (
+    AdminUsageLogsParams,
+    GetUsageLogsParams,
+    RecordUsageParams,
     record_usage,
     get_usage_logs,
     get_daily_stats,
@@ -13,6 +16,7 @@ from app.features.token_usage.service import (
     get_all_users_daily_stats,
     get_per_user_daily_stats,
 )
+from app.infra.cache import CacheableParams
 from app.models.token_usage_log import TokenUsageLog
 
 
@@ -26,7 +30,7 @@ class TestTokenUsageAdmin:
         mock_session.commit.side_effect = Exception("DB down")
         with patch("app.features.token_usage.service.SessionLocal", return_value=mock_session), \
              patch("app.features.token_usage.service.logger"):
-            record_usage(user_id=1, action="chat", prompt_tokens=5, completion_tokens=10)
+            record_usage(RecordUsageParams(user_id=1, action="chat", prompt_tokens=5, completion_tokens=10))
         mock_session.rollback.assert_called_once()
         mock_session.close.assert_called_once()
 
@@ -38,15 +42,12 @@ class TestTokenUsageAdmin:
         ))
         session.flush()
         # 有效日期
-        result = get_usage_logs(
-            session, test_user.id,
-            start_date="2020-01-01T00:00:00",
-            end_date="2099-12-31T00:00:00",
-        )
+        result = get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id, start_date="2020-01-01T00:00:00",
+        end_date="2099-12-31T00:00:00",))
         assert result["total"] >= 1
         from app.exceptions import BusinessRuleError
         with pytest.raises(BusinessRuleError):
-            get_usage_logs(session, test_user.id, start_date="bad", end_date="bad2")
+            get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id, start_date="bad", end_date="bad2"))
 
     def test_get_daily_stats_empty(self, session, test_user):
         """无数据时返回空列表。"""
@@ -66,21 +67,18 @@ class TestTokenUsageAdmin:
         ))
         session.flush()
         # user_id 过滤
-        r1 = get_all_users_usage_logs(session, user_id=test_user.id)
+        r1 = get_all_users_usage_logs(session, AdminUsageLogsParams(user_id=test_user.id))
         assert r1["total"] >= 1
         # action 过滤
-        r2 = get_all_users_usage_logs(session, action="chat")
+        r2 = get_all_users_usage_logs(session, AdminUsageLogsParams(action="chat"))
         assert r2["total"] >= 1
         # 有效日期
-        r3 = get_all_users_usage_logs(
-            session,
-            start_date="2020-01-01T00:00:00",
-            end_date="2099-12-31T00:00:00",
-        )
+        r3 = get_all_users_usage_logs(session, AdminUsageLogsParams(start_date="2020-01-01T00:00:00",
+        end_date="2099-12-31T00:00:00",))
         assert r3["total"] >= 1
         from app.exceptions import BusinessRuleError
         with pytest.raises(BusinessRuleError):
-            get_all_users_usage_logs(session, start_date="bad", end_date="bad2")
+            get_all_users_usage_logs(session, AdminUsageLogsParams(start_date="bad", end_date="bad2"))
 
     def test_get_all_users_daily_stats(self, session, test_user):
         session.add(TokenUsageLog(
@@ -164,14 +162,16 @@ class TestChangeLog:
         assert "v" in result
 
     def test_log_event_success(self, session, test_workspace):
-        from app.features.folder.change_log import log_event
+        from app.features.folder.change_log import LogEventParams, log_event
         with patch("app.features.folder.change_log.SessionLocal", return_value=session):
             result = log_event(
-                workspace_id=test_workspace.id,
-                entity_type="file",
-                entity_id=1,
-                action="create",
-                payload={"k": "v"},
+                LogEventParams(
+                    workspace_id=test_workspace.id,
+                    entity_type="file",
+                    entity_id=1,
+                    action="create",
+                    payload={"k": "v"},
+                ),
             )
         assert result is True
 
@@ -318,7 +318,7 @@ class TestCacheRemaining:
     def test_cacheable_prefix_attribute(self):
         from app.infra.cache import cacheable
 
-        @cacheable(prefix="myfunc", expire=60)
+        @cacheable(CacheableParams(prefix="myfunc", expire=60))
         def fn(x):
             return x
 
@@ -327,7 +327,7 @@ class TestCacheRemaining:
     def test_cacheable_async_prefix_attribute(self):
         from app.infra.cache import cacheable
 
-        @cacheable(prefix="asyncfunc", expire=60)
+        @cacheable(CacheableParams(prefix="asyncfunc", expire=60))
         async def fn(x):
             return x
 
@@ -339,7 +339,7 @@ class TestCacheRemaining:
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
 
-        @cacheable(prefix="test", expire=60)
+        @cacheable(CacheableParams(prefix="test", expire=60))
         def fn():
             return None
 

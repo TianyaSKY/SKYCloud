@@ -1,4 +1,7 @@
-"""从环境变量读取 Chat / Embedding / VL / Rerank 模型配置；禁止经 sys_dict 落库。"""
+"""Read Chat / Embedding / VL / Rerank model settings from the environment.
+
+Model configuration must never be persisted through sys_dict.
+"""
 
 import os
 from typing import Final
@@ -17,7 +20,7 @@ MODEL_CONFIG_SYS_DICT_KEYS: Final[frozenset[str]] = frozenset(
         "rerank_api_url",
         "rerank_api_key",
         "rerank_model",
-    }
+    },
 )
 
 DEFAULT_MODEL_API_BASE_URL: Final[str] = "https://api.siliconflow.cn/v1"
@@ -29,12 +32,12 @@ DEFAULT_RERANK_TOP_K: Final[int] = 8
 
 
 def is_model_config_sys_dict_key(key: str | None) -> bool:
-    """识别是否为禁止写入 sys_dict 的模型配置键。"""
+    """识别是否为禁止写入 sys_dict 的模型配置键."""
     return (key or "").strip().lower() in MODEL_CONFIG_SYS_DICT_KEYS
 
 
 def _read_env(*keys: str, default: str = "") -> str:
-    # 支持大小写/旧名多键回退，兼容历史部署
+    # Accept case variants and historical key names, newest name first.
     for key in keys:
         value = os.getenv(key)
         if value is not None and value.strip() != "":
@@ -50,12 +53,13 @@ def _read_env_int(*keys: str, default: int) -> int:
     value = _read_env(*keys, default=str(default))
     try:
         parsed = int(value)
-        return parsed if parsed > 0 else default
     except (TypeError, ValueError):
         return default
+    return parsed if parsed > 0 else default
 
 
 def get_chat_model_config() -> dict[str, str]:
+    """Return the chat model endpoint, key and model name."""
     return {
         "api": _read_env(
             "CHAT_API_URL",
@@ -63,11 +67,16 @@ def get_chat_model_config() -> dict[str, str]:
             default=DEFAULT_MODEL_API_BASE_URL,
         ),
         "key": _read_env("CHAT_API_KEY", "chat_api_key", default=_default_api_key()),
-        "model": _read_env("CHAT_API_MODEL", "chat_api_model", default=DEFAULT_CHAT_MODEL),
+        "model": _read_env(
+            "CHAT_API_MODEL",
+            "chat_api_model",
+            default=DEFAULT_CHAT_MODEL,
+        ),
     }
 
 
 def get_embedding_model_config() -> dict[str, str]:
+    """Return the embedding model endpoint, key and model name."""
     return {
         "api": _read_env(
             "EMB_API_URL",
@@ -84,6 +93,7 @@ def get_embedding_model_config() -> dict[str, str]:
 
 
 def get_vl_model_config() -> dict[str, str]:
+    """Return the vision-language model endpoint, key and model name."""
     return {
         "api": _read_env(
             "VL_API_URL",
@@ -96,16 +106,26 @@ def get_vl_model_config() -> dict[str, str]:
 
 
 def get_rerank_model_config() -> dict[str, str]:
+    """Return the rerank model endpoint, key and model name."""
     return {
         "api": _read_env(
             "RERANK_API_URL",
             "rerank_api_url",
             default=DEFAULT_MODEL_API_BASE_URL,
         ),
-        "key": _read_env("RERANK_API_KEY", "rerank_api_key", default=_default_api_key()),
-        "model": _read_env("RERANK_MODEL", "rerank_model", default=DEFAULT_RERANK_MODEL),
+        "key": _read_env(
+            "RERANK_API_KEY",
+            "rerank_api_key",
+            default=_default_api_key(),
+        ),
+        "model": _read_env(
+            "RERANK_MODEL",
+            "rerank_model",
+            default=DEFAULT_RERANK_MODEL,
+        ),
     }
 
 
 def get_rerank_top_k() -> int:
+    """Return the configured rerank candidate count."""
     return _read_env_int("RERANK_TOP_K", "rerank_top_k", default=DEFAULT_RERANK_TOP_K)

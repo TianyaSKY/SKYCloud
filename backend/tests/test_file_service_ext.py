@@ -9,8 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.exceptions import PermissionDeniedError, ResourceNotFoundError, ServiceOperationError
 from app.models.file import File
 from app.models.folder import Folder
+from app.features.file.deletion import clear_search_cache
+from app.features.file.search_service import embedding_desc
 from app.features.file.service import (
-    embedding_desc,
     retry_embedding,
     rebuild_failed_indexes,
     cleanup_expired_uploads,
@@ -21,11 +22,10 @@ from app.features.file.service import (
     _get_reusable_source_file,
     _persist_file_record,
     _invalidate_processing_cache,
-    _clear_search_cache,
-    _multipart_upload_dir,
-    _multipart_chunks_dir,
-    _multipart_meta_path,
-    _load_multipart_meta,
+    multipart_upload_dir,
+    multipart_chunks_dir,
+    multipart_meta_path,
+    load_multipart_meta,
     _write_multipart_meta,
 )
 
@@ -37,7 +37,7 @@ from app.features.file.service import (
 
 class TestEmbeddingDesc:
     def test_exception_returns_empty(self):
-        with patch("app.infra.llm.client.embed_texts", new_callable=AsyncMock,
+        with patch("app.features.file.search_service.embed_texts", new_callable=AsyncMock,
                    side_effect=Exception("api err")):
             result = asyncio.run(embedding_desc("hello", {"api": "a", "key": "k", "model": "m"}))
         assert result == []
@@ -276,7 +276,7 @@ class TestBatchDeleteItems:
         file_id = f.id
 
         with patch("app.features.file.service.change_log_service"), \
-             patch("app.features.file.service._clear_search_cache"):
+             patch("app.features.file.service.clear_search_cache"):
             batch_delete_items(session, test_workspace.id, test_user.id, [{"id": file_id, "is_folder": False}])
         assert session.get(File, file_id) is None
 
@@ -285,7 +285,7 @@ class TestBatchDeleteItems:
         folder_id = test_folder.id
 
         with patch("app.features.file.service.change_log_service"), \
-             patch("app.features.file.service._clear_search_cache"):
+             patch("app.features.file.service.clear_search_cache"):
             batch_delete_items(session, test_workspace.id, test_user.id, [{"id": folder_id, "is_folder": True}])
         assert session.get(Folder, folder_id) is None
 
@@ -331,22 +331,22 @@ class TestInternalUtils:
         _invalidate_processing_cache([], 1)  # 不应报错
 
     def test_invalidate_processing_cache_calls_clear(self):
-        with patch("app.features.file.service._clear_search_cache") as clear:
+        with patch("app.features.file.service.clear_search_cache") as clear:
             _invalidate_processing_cache([1], 1)
         clear.assert_called_once_with(1)
 
     def test_clear_search_cache(self):
-        with patch("app.features.file.service.evict_cache_pattern") as m:
-            _clear_search_cache(1)
+        with patch("app.features.file.deletion.evict_cache_pattern") as m:
+            clear_search_cache(1)
             m.assert_called_once()
 
     def test_multipart_paths(self):
         with patch("app.features.file.service.MULTIPART_ROOT", "/base"):
-            d = _multipart_upload_dir(1, "abc12345")
+            d = multipart_upload_dir(1, "abc12345")
             assert "1" in d
             assert "abc12345" in d
-            assert _multipart_chunks_dir(d).endswith("chunks")
-            assert _multipart_meta_path(d).endswith("meta.json")
+            assert multipart_chunks_dir(d).endswith("chunks")
+            assert multipart_meta_path(d).endswith("meta.json")
 
     def test_write_and_load_meta(self, tmp_path, test_workspace):
         import json
@@ -361,7 +361,7 @@ class TestInternalUtils:
             meta_file = upload_dir / "meta.json"
             meta_file.write_text(json.dumps(meta))
 
-            loaded = _load_multipart_meta(test_workspace.id, "abc12345")
+            loaded = load_multipart_meta(test_workspace.id, "abc12345")
             assert loaded["filename"] == "test.bin"
 
     def test_load_meta_wrong_workspace(self, tmp_path, test_workspace):
@@ -373,4 +373,4 @@ class TestInternalUtils:
 
         with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path)):
             with pytest.raises(PermissionDeniedError):
-                _load_multipart_meta(test_workspace.id, "abc12345")
+                load_multipart_meta(test_workspace.id, "abc12345")

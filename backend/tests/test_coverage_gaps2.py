@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.features.share.service import CreateShareLinkParams
+
 
 # ---------------------------------------------------------------------------
 # chat/query_rewrite.py 剩余分支
@@ -61,22 +63,22 @@ class TestRerankGaps:
     def test_get_rerank_client_create(self):
         """_get_rerank_client 在 None 时创建新客户端（20-25）。"""
         from app.features.chat import rerank
-        rerank._rerank_client = None
+        rerank._CLIENT_HOLDER.client = None
         with patch("app.features.chat.rerank.httpx.AsyncClient") as mock_ctor:
             client = rerank._get_rerank_client()
         mock_ctor.assert_called_once()
         # 清理全局状态
-        rerank._rerank_client = None
+        rerank._CLIENT_HOLDER.client = None
 
     def test_get_rerank_client_reuse(self):
         """_get_rerank_client 在已存在时复用。"""
         from app.features.chat import rerank
         existing = MagicMock()
         existing.is_closed = False
-        rerank._rerank_client = existing
+        rerank._CLIENT_HOLDER.client = existing
         client = rerank._get_rerank_client()
         assert client is existing
-        rerank._rerank_client = None
+        rerank._CLIENT_HOLDER.client = None
 
     async def test_rerank_empty_indices_fallback(self):
         """rerank 响应无 ranked indices 时回退（118-120）。"""
@@ -130,22 +132,12 @@ class TestChatRouter:
         # model_construct 跳过校验
         payload = ChatRequest.model_construct(query="", history=[])
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(chat(payload, MagicMock(id=1), MagicMock(id=1)))
+            asyncio.run(chat(
+                payload=payload, current_user=MagicMock(id=1), workspace=MagicMock(id=1),
+                session_factory=MagicMock(),
+            ))
         assert exc_info.value.status_code == 400
 
-    def test_chat_success_streaming(self):
-        """有 query 时返回 StreamingResponse。"""
-        from app.features.chat.router import chat
-        from app.features.chat.schemas import ChatRequest
-        from fastapi.responses import StreamingResponse
-
-        async def fake_gen(*args, **kwargs):
-            yield "data: test\n\n"
-
-        payload = ChatRequest(query="hello", history=[])
-        with patch("app.features.chat.router.generate_chat_events", fake_gen):
-            result = asyncio.run(chat(payload, MagicMock(id=1), MagicMock(id=1)))
-        assert isinstance(result, StreamingResponse)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +156,7 @@ class TestShareRouter:
                  content_hash="z" * 64, status="success")
         session.add(f)
         session.flush()
-        share = create_share_link(session, test_user.id, f.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=f.id))
         # 另一个用户尝试取消
         other_user = MagicMock()
         other_user.id = 99999

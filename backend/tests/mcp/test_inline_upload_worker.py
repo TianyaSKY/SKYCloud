@@ -37,7 +37,7 @@ async def test_blocked_adaptation_leaves_loop_free_and_keeps_sql_session_on_work
         return SimpleNamespace(to_dict=lambda: {'id':7})
     monkeypatch.setattr(server, '_inline_upload_adapter', adapt)
     monkeypatch.setattr(server, 'SessionLocal', Session)
-    monkeypatch.setattr(server, '_assert_current_write_permission', authorize)
+    monkeypatch.setattr(server, 'assert_current_write_permission', authorize)
     monkeypatch.setattr(server.file_service, 'create_uploaded_file', upload)
     token = set_mcp_context(McpRequestContext(1,2,'editor'))
     task = asyncio.create_task(server.upload_file('note.txt','hello'))
@@ -68,3 +68,16 @@ async def test_viewer_is_rejected_before_any_inline_adaptation(monkeypatch):
     finally:
         reset_mcp_context(token)
     adapt.assert_not_called()
+
+
+async def test_upload_factory_failure_returns_safe_tool_error(monkeypatch):
+    def fail():
+        raise RuntimeError("private-upload-database-details")
+
+    monkeypatch.setattr(server, "SessionLocal", fail)
+    token = set_mcp_context(McpRequestContext(1, 2, "editor"))
+    try:
+        result = json.loads(await server.upload_file("note.txt", "hello"))
+    finally:
+        reset_mcp_context(token)
+    assert result == {"error": "Service temporarily unavailable"}

@@ -1,26 +1,43 @@
-"""将变更事件压缩为整理任务可用的摘要文本与受影响实体 ID 集合。"""
+"""Compress change events into organizer context text and affected entity ids."""
 
 from collections import Counter
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import TypedDict
+
+from app.models.file_change_event import FileChangeEvent
 
 DEFAULT_SUMMARY_EVENT_LINES = 40
 
 
-def _event_value(event: dict[str, Any] | Any, key: str, default: Any = None) -> Any:
+class EventSummary(TypedDict):
+    """Aggregated event statistics handed to the organizer prompt."""
+
+    summary_text: str
+    changed_file_ids: list[int]
+    changed_folder_ids: list[int]
+    action_breakdown: dict[str, int]
+
+
+def _event_value(
+    event: FileChangeEvent | dict[str, int | float | str | None],
+    key: str,
+    default: float | str | None = None,
+) -> int | float | str | None:
+    """Read one field from either an ORM row or a plain mapping."""
     if isinstance(event, dict):
         return event.get(key, default)
     return getattr(event, key, default)
 
 
 def summarize_events(
-        events: Sequence[Any],
-        *,
-        total_count: int,
-        from_event_id: int,
-        to_event_id: int,
-        max_lines: int = DEFAULT_SUMMARY_EVENT_LINES,
-) -> dict[str, Any]:
-    """汇总动作分布与样例行；样例行数受 max_lines 限制，避免提示词过长。"""
+    events: Sequence[FileChangeEvent | dict[str, int | float | str | None]],
+    *,
+    total_count: int,
+    from_event_id: int,
+    to_event_id: int,
+    max_lines: int = DEFAULT_SUMMARY_EVENT_LINES,
+) -> EventSummary:
+    """Summarize action distribution and sample rows up to `max_lines`."""
     action_counter: Counter[str] = Counter()
     changed_file_ids: set[int] = set()
     changed_folder_ids: set[int] = set()
@@ -49,10 +66,13 @@ def summarize_events(
         if len(lines) < max_lines:
             lines.append(
                 f"- #{event_id} {entity_type}:{action} id={entity_id} "
-                f"parent({old_parent_id}->{new_parent_id}) name({old_name}->{new_name})"
+                f"parent({old_parent_id}->{new_parent_id}) "
+                f"name({old_name}->{new_name})",
             )
 
-    breakdown_lines = [f"- {k}: {v}" for k, v in sorted(action_counter.items())]
+    breakdown_lines = [
+        f"- {key}: {count}" for key, count in sorted(action_counter.items())
+    ]
     summary_parts = [
         f"Event range: ({from_event_id}, {to_event_id}]",
         f"Total events: {total_count}",

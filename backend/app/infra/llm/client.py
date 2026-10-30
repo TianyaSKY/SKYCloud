@@ -1,48 +1,56 @@
-"""统一 LLM / Embedding 调用入口，自动记录 token 用量。
+"""Unified async LLM and embedding entry points with token accounting.
 
-LangChain 等无法替换底层调用的场景，用 record_llm_usage() 手动补记。
+LangChain paths that cannot be intercepted still record usage through
+``record_llm_usage``.
 """
 
+from __future__ import annotations
+
 import asyncio
-from app.infra.owned_work import run_owned
-from typing import TYPE_CHECKING, Any, Iterable, cast
+from typing import TYPE_CHECKING, cast
 
 from langchain_openai import OpenAIEmbeddings
 from openai import AsyncOpenAI
 from pydantic import SecretStr
 
-if TYPE_CHECKING:
-    from openai.types.chat import ChatCompletionMessageParam
-
+from app.infra.llm.usage import TokenUsage
 from app.infra.llm.usage import safe_record as _safe_record
+from app.infra.owned_work import run_owned_persistent
 
-from loguru import logger
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from typing import SupportsIndex, SupportsInt
+
+    from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
 # ---------------------------------------------------------------------------
-# 连接池
+# Connection pool
 # ---------------------------------------------------------------------------
 _client_cache: dict[tuple[str, str, int], AsyncOpenAI] = {}
 
 
 def _get_client(api_base: str, api_key: str) -> AsyncOpenAI:
-    """按 (api_base, api_key) 复用异步 OpenAI 客户端，减少连接开销。"""
-    # AsyncClient 的连接池绑定事件循环。API 进程通常只有一个事件循环；
-    # Worker 不使用此模块，而是使用独立的同步 client。
+    """Reuse an async OpenAI client per endpoint, key and event loop."""
+    # The AsyncClient connection pool is bound to an event loop. API processes
+    # normally own one loop; the worker uses the independent sync client.
     try:
         loop_id = id(asyncio.get_running_loop())
     except RuntimeError:
-        # 仅供命令行/测试预创建客户端；实际网络调用仍必须发生在协程中。
+        # Allow command-line/test pre-creation; network calls still run in a
+        # coroutine.
         loop_id = 0
     cache_key = (api_base, api_key, loop_id)
     if cache_key not in _client_cache:
         _client_cache[cache_key] = AsyncOpenAI(
-            api_key=api_key, base_url=api_base, timeout=120
+            api_key=api_key,
+            base_url=api_base,
+            timeout=120,
         )
     return _client_cache[cache_key]
 
 
 async def close_llm_clients() -> None:
-    """关闭进程内复用的异步 HTTP 连接池。"""
+    """Close the process-wide async HTTP connection pools."""
     clients = list(_client_cache.values())
     _client_cache.clear()
     for client in clients:
@@ -50,57 +58,49 @@ async def close_llm_clients() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 公开接口
+# Public interface
 # ---------------------------------------------------------------------------
 
 
 async def chat_completion(
-        *,
-        messages: list[dict[str, Any]],
-        config: dict[str, str],
-        user_id: int = 0,
-        action: str = "chat",
-        query_summary: str | None = None,
-        **kwargs: Any,
-) -> Any:
-    """异步 Chat Completion；成功后按 resp.usage 自动记 token。
-
-    config 需含 api / key / model；kwargs 透传给 OpenAI client。
-    """
+    *,
+    messages: Iterable[ChatCompletionMessageParam],
+    config: dict[str, str],
+    user_id: int = 0,
+    action: str = "chat",
+    query_summary: str | None = None,
+) -> ChatCompletion:
+    """Run an async chat completion and record its token usage."""
     client = _get_client(config["api"], config["key"])
     model = config.get("model", "")
 
-    resp = await client.chat.completions.create(
-        model=model,
-        # The SDK types messages as strict TypedDicts; callers build the same
-        # JSON payloads from dynamic text/vision content, so pin the shape here.
-        messages=cast("Iterable[ChatCompletionMessageParam]", messages),
-        **kwargs,
-    )
+    resp = await client.chat.completions.create(model=model, messages=messages)
 
     if resp.usage:
-        await run_owned(
-            _safe_record, cancel_queued=False,
-            user_id=user_id,
-            action=action,
-            model_name=model,
-            prompt_tokens=resp.usage.prompt_tokens or 0,
-            completion_tokens=resp.usage.completion_tokens or 0,
-            total_tokens=resp.usage.total_tokens or 0,
-            query_summary=query_summary,
+        await run_owned_persistent(
+            _safe_record,
+            TokenUsage(
+                user_id=user_id,
+                action=action,
+                model_name=model,
+                prompt_tokens=resp.usage.prompt_tokens or 0,
+                completion_tokens=resp.usage.completion_tokens or 0,
+                total_tokens=resp.usage.total_tokens or 0,
+                query_summary=query_summary,
+            ),
         )
 
     return resp
 
 
 async def embed_texts(
-        *,
-        texts: list[str] | str,
-        config: dict[str, str],
-        user_id: int = 0,
-        query_summary: str | None = None,
+    *,
+    texts: list[str] | str,
+    config: dict[str, str],
+    user_id: int = 0,
+    query_summary: str | None = None,
 ) -> list[list[float]]:
-    """Embedding 调用；向量截取前 1024 维以匹配 DB 列维度。"""
+    """Embed texts and truncate vectors to the 1024 dimensions storage expects."""
     if isinstance(texts, str):
         texts = [texts]
     if not texts:
@@ -114,59 +114,46 @@ async def embed_texts(
     vectors = [item.embedding[:1024] for item in sorted_data]
 
     if resp.usage and resp.usage.total_tokens:
-        await run_owned(
-            _safe_record, cancel_queued=False,
-            user_id=user_id,
-            action="embedding",
-            model_name=model,
-            prompt_tokens=resp.usage.prompt_tokens or resp.usage.total_tokens,
-            completion_tokens=0,
-            total_tokens=resp.usage.total_tokens,
-            query_summary=query_summary,
+        await run_owned_persistent(
+            _safe_record,
+            TokenUsage(
+                user_id=user_id,
+                action="embedding",
+                model_name=model,
+                prompt_tokens=resp.usage.prompt_tokens or resp.usage.total_tokens,
+                completion_tokens=0,
+                total_tokens=resp.usage.total_tokens,
+                query_summary=query_summary,
+            ),
         )
 
     return vectors
 
 
-def record_llm_usage(
-        *,
-        user_id: int,
-        action: str,
-        model_name: str | None = None,
-        prompt_tokens: int = 0,
-        completion_tokens: int = 0,
-        total_tokens: int = 0,
-        query_summary: str | None = None,
-) -> None:
-    """手动记 token（LangChain 流式等无法拦截底层 API 的场景）。
-
-    用量为 0 时跳过，避免空记录噪音。
-    """
-    if total_tokens <= 0 and prompt_tokens <= 0:
+def record_llm_usage(*, usage: TokenUsage) -> None:
+    """Record usage from streaming LangChain paths that cannot be intercepted."""
+    if usage.total_tokens <= 0 and usage.prompt_tokens <= 0:
         return
-    _safe_record(
-        user_id=user_id,
-        action=action,
-        model_name=model_name,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=total_tokens,
-        query_summary=query_summary,
-    )
+    _safe_record(usage)
 
 
 # ---------------------------------------------------------------------------
-# LangChain 兼容层
+# LangChain compatibility layer
 # ---------------------------------------------------------------------------
 
 
 class TrackingOpenAIEmbeddings(OpenAIEmbeddings):
-    """LangChain Embeddings 包装：走 embed_texts 以统一记 token。
+    """LangChain embeddings wrapper that routes through ``embed_texts``.
 
-    用户身份按每次调用传入，缓存对象不保存请求身份。
+    Request identity is passed per call; the cached object keeps no identity.
     """
 
+    # The base accepts arbitrary kwargs; retain that contract. At the SDK
+    # boundary int() still performs the original runtime conversion/validation
+    # of user_id, so the cast neither rejects nor normalizes extra kwargs.
+
     def _as_config(self) -> dict[str, str]:
+        """Project the LangChain client settings onto the shared config shape."""
         api_key = self.openai_api_key
         if isinstance(api_key, SecretStr):
             key_str = api_key.get_secret_value()
@@ -179,22 +166,42 @@ class TrackingOpenAIEmbeddings(OpenAIEmbeddings):
         }
 
     async def aembed_documents(
-            self, texts: list[str], chunk_size: int | None = None, **kwargs: Any
+        self,
+        texts: list[str],
+        chunk_size: int | None = None,
+        **kwargs: object,
     ) -> list[list[float]]:
+        """Embed document batches through the shared accounting entry point."""
         if not texts:
             return []
+        del chunk_size  # embed_texts sends one batch; base batching is unused.
         return await embed_texts(
             texts=texts,
             config=self._as_config(),
-            user_id=int(kwargs.get("user_id") or 0),
+            user_id=int(
+                cast(
+                    "str | bytes | bytearray | SupportsInt | SupportsIndex",
+                    kwargs.get("user_id") or 0,
+                ),
+            ),
             query_summary=f"chat_rag({len(texts)} texts)",
         )
 
-    async def aembed_query(self, text: str, **kwargs: Any) -> list[float]:
+    async def aembed_query(
+        self,
+        text: str,
+        **kwargs: object,
+    ) -> list[float]:
+        """Embed one query through the shared accounting entry point."""
         result = await embed_texts(
             texts=[text],
             config=self._as_config(),
-            user_id=int(kwargs.get("user_id") or 0),
-            query_summary=f"chat_rag_query",
+            user_id=int(
+                cast(
+                    "str | bytes | bytearray | SupportsInt | SupportsIndex",
+                    kwargs.get("user_id") or 0,
+                ),
+            ),
+            query_summary="chat_rag_query",
         )
         return result[0] if result else []

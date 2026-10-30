@@ -1,33 +1,64 @@
-import datetime
+"""LLM token usage audit rows aggregated into per-user totals."""
 
-from app.infra.utc_datetime import UTCDateTime
-from sqlalchemy import Integer, String, Text, ForeignKey
+from datetime import datetime
+from typing import TypedDict
+
+from sqlalchemy import ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.infra.datetime_utils import local_isoformat, utc_now
 from app.infra.extensions import Base
-from app.infra.datetime_utils import utc_now, local_isoformat
+from app.infra.utc_datetime import UTCDateTime
+
+
+class TokenUsageLogDict(TypedDict):
+    """Public representation of a token usage audit row."""
+
+    id: int
+    user_id: int
+    action: str
+    model_name: str | None
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
+    query_summary: str | None
+    extra_info: str | None
+    created_at: str | None
 
 
 class TokenUsageLog(Base):
-    """LLM 调用 Token 明细表：按场景审计用量，并汇总至用户累计字段。"""
+    """Token usage detail row audited per LLM call."""
 
     __tablename__ = "token_usage_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    # 调用场景：chat / embedding / rewrite / vl_describe / organize 等
-    action: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Call scenario: chat / embedding / rewrite / vl_describe / organize, etc.
+    action: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        index=True,
+    )
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
-    # 可选：用户输入摘要（前 200 字符），便于审计
+    # Optional truncated user input for auditing.
     query_summary: Mapped[str | None] = mapped_column(String(200), default=None)
-    # 可选：附加信息，如检索文件数、rerank 结果数等
+    # Optional extras such as retrieved file counts or rerank results.
     extra_info: Mapped[str | None] = mapped_column(Text, default=None)
-    created_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
+    created_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        default=utc_now,
+    )
 
-    def to_dict(self):
+    def to_dict(self) -> TokenUsageLogDict:
+        """Return the public usage audit representation."""
         return {
             "id": self.id,
             "user_id": self.user_id,

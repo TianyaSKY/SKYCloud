@@ -7,10 +7,12 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import AIMessage, AIMessageChunk
 
+from app.features.assistant.engines.base import EngineRequest
 from app.features.assistant.engines.fast_engine import FastEngine
 from app.features.assistant.event_protocol import AssistantEvent
-from app.features.assistant.service import _engine_events_with_heartbeats
+from app.features.assistant.stream_events import engine_events_with_heartbeats
 from app.features.chat import router as chat_router
 from app.features.chat import service as rag
 
@@ -32,7 +34,13 @@ async def test_fast_engine_closes_legacy_stream_before_returning(cancel_waiting)
     # Retain the nested iterator so GC/finalization cannot satisfy the assertion.
     inner = source()
     outer = FastEngine(legacy_generator=lambda *args: inner).stream(
-        run_id=1, user_id=2, workspace_id=3, query="hello", history=[],
+        EngineRequest(
+            run_id=1,
+            user_id=2,
+            workspace_id=3,
+            query="hello",
+            history=[],
+        ),
     )
     assert (await anext(outer)).payload["content"] == "answer"
     try:
@@ -67,7 +75,9 @@ async def test_legacy_http_stream_close_reaches_rag_generator(monkeypatch):
     monkeypatch.setattr(chat_router, "generate_chat_events", lambda *args: inner)
     response = await chat_router.chat(
         SimpleNamespace(query="hello", history=[]),
-        SimpleNamespace(id=2), SimpleNamespace(id=3), session_factory=lambda: None,
+        SimpleNamespace(id=2, http_stream_credential=None),
+        SimpleNamespace(id=3),
+        session_factory=lambda: None,
     )
     try:
         assert 'answer' in await anext(response.body_iterator)
@@ -87,10 +97,10 @@ async def test_rag_close_awaits_model_cleanup_and_known_usage(monkeypatch, cance
     async def source():
         try:
             yield {"event": "on_chat_model_end", "name": "model", "data": {
-                "output": SimpleNamespace(usage_metadata={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5})},
+                "output": AIMessage(content="", usage_metadata={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5})},
                 "metadata": {"ls_model_name": "synthetic"}}
             yield {"event": "on_chat_model_stream", "name": "final_answer_model", "data": {
-                "chunk": SimpleNamespace(content="answer")}}
+                "chunk": AIMessageChunk(content="answer")}}
             waiting.set()
             await asyncio.Event().wait()
         finally:
@@ -130,8 +140,8 @@ async def test_rag_close_awaits_model_cleanup_and_known_usage(monkeypatch, cance
             await outer.aclose()
         assert closed.is_set()
         assert len(recorded) == 1
-        assert recorded[0]["user_id"] == 2
-        assert recorded[0]["total_tokens"] == 5
+        assert recorded[0]["usage"].user_id == 2
+        assert recorded[0]["usage"].total_tokens == 5
     finally:
         await outer.aclose()
         await inner.aclose()
@@ -153,7 +163,7 @@ async def test_slow_stream_has_backpressure_and_full_queue_cancel_finishes():
             closed.set()
 
     inner = source()
-    outer = _engine_events_with_heartbeats(inner, 1)
+    outer = engine_events_with_heartbeats(inner, 1)
     try:
         assert (await anext(outer)).payload["content"] == "1"
         for _ in range(20):
@@ -172,6 +182,7 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.runnables import RunnableLambda
 from app.features.chat import service as rag
 from app.features.chat.query_rewrite import RewriteKeywordDimensions
+from app.features.assistant.engines.base import EngineRequest
 from app.features.assistant.engines.fast_engine import FastEngine
 from app.infra.llm import client
 
@@ -209,8 +220,8 @@ client.record_llm_usage = lambda **kwargs: recorded.append(kwargs)
 async def main():
     global closed
     closed = asyncio.Event()
-    iterator = FastEngine().stream(run_id=1, user_id=2, workspace_id=3,
-                                   query='hello', history=[])
+    iterator = FastEngine().stream(EngineRequest(
+        run_id=1, user_id=2, workspace_id=3, query='hello', history=[]))
     try:
         async for event in iterator:
             if event.type == 'token':
@@ -218,7 +229,7 @@ async def main():
         assert not closed.is_set(), 'Synthetic model already completed before cancellation'
         await iterator.aclose()
         assert closed.is_set(), 'Real LangChain model task survived outer stream close'
-        assert len(recorded) == 1 and recorded[0]['user_id'] == 2
+        assert len(recorded) == 1 and recorded[0]['usage'].user_id == 2
     finally:
         await iterator.aclose()
 

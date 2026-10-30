@@ -25,11 +25,8 @@ PROBE = """
 import time
 from app.infra.task_queue import RabbitMQTaskConsumer, ORGANIZE_FILE_QUEUE
 from app.infra.worker_runtime import WorkerRuntime, worker_step
-from app.features.folder.organize.handler import ChatOpenAI, create_react_agent
 from app.infra.organize_tasks import deliver_pending_organize_tasks
 import os
-assert ChatOpenAI.__module__.startswith('langchain_openai')
-assert create_react_agent.__module__.startswith('langgraph')
 if os.getenv("ORGANIZE_REPLAY") != "1":
     assert deliver_pending_organize_tasks() >= 1
 consumer = RabbitMQTaskConsumer(.02)
@@ -80,6 +77,27 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             calls.append(request)
             assert not request.get("stream")
+            functions = {
+                item["function"]["name"]: item["function"]["parameters"]
+                for item in request["tools"]
+            }
+            for tool_name, arguments in {
+                "get_all_files": {"workspace_id"},
+                "create_folder": {"name", "parent_id", "workspace_id"},
+                "move_file": {"file_id", "target_folder_id", "workspace_id"},
+                "get_file_information": {"file_id"},
+            }.items():
+                assert set(functions[tool_name]["properties"]) == arguments
+                assert set(functions[tool_name]["required"]) == arguments
+            assert request["messages"][0]["role"] == "user"
+            assert "Current Workspace ID: 1" in request["messages"][0]["content"]
+            tool_replies = [
+                item["tool_call_id"] for item in request["messages"]
+                if item["role"] == "tool"
+            ]
+            assert tool_replies == [
+                f"synthetic-tool-{index}" for index in range(len(calls) - 1)
+            ]
             if mode == "provider_rejected":
                 self.send_response(400)
                 self.send_header("Content-Type", "application/json")

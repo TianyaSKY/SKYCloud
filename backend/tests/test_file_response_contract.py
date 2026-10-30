@@ -112,10 +112,22 @@ def test_multipart_status_and_chunk_ack_filter_storage_details(contract, monkeyp
 
 def test_search_failure_is_canonical_error_and_not_empty_success(contract, monkeypatch):
     client, row, root = contract
-    monkeypatch.setattr(files.file_service,'search_files',AsyncMock(return_value={'items':[],'total':0,'error':'private-provider-details'}))
+    monkeypatch.setattr(files.search_service,'search_files',AsyncMock(return_value={'items':[],'total':0,'error':'private-provider-details'}))
     response=client.get('/files/search',params={'q':'query','type':'semantic'})
     assert response.status_code == 500
     assert response.json() == {'success':False,'error':{'code':'INTERNAL_ERROR','message':'Internal server error'}}
+    assert 'private' not in response.text
+
+
+def test_malformed_avatar_json_is_rejected_without_echoing_body(contract):
+    client, _, _ = contract
+    response = client.post(
+        '/files/upload/avatar/1',
+        content=b'{"avatar":"private',
+        headers={'content-type': 'application/json'},
+    )
+    assert response.status_code == 400
+    assert response.json()['error']['message'] == 'No avatar data'
     assert 'private' not in response.text
 
 

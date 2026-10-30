@@ -33,7 +33,7 @@ async def test_profile_worker_ownership_and_current_authorization(monkeypatch,ac
         return cached
     reader=Mock(side_effect=profile)
     monkeypatch.setattr(user_service.account_repository,'current_role',role)
-    monkeypatch.setattr(user_service,'_get_user_data',reader)
+    monkeypatch.setattr(user_service,'get_user_data',reader)
     pending=asyncio.create_task(user_service.get_user(None,target,session_factory=Owned,actor_id=1))
     try:
         assert await asyncio.to_thread(entered.wait,2)

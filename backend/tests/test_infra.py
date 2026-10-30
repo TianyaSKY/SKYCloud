@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.infra.cache import CacheableParams
+
 from app.infra.datetime_utils import beijing_now, to_beijing_naive, local_isoformat, BEIJING_TZ
 
 
@@ -107,7 +109,7 @@ class TestCacheable:
 
         mock_redis.get.return_value = json.dumps({"data": "cached"})
 
-        @cacheable(prefix="test", expire=60)
+        @cacheable(CacheableParams(prefix="test", expire=60))
         def my_func(x):
             return {"data": "fresh"}
 
@@ -119,7 +121,7 @@ class TestCacheable:
 
         mock_redis.get.return_value = None
 
-        @cacheable(prefix="test", expire=60)
+        @cacheable(CacheableParams(prefix="test", expire=60))
         def my_func(x):
             return {"data": "fresh"}
 
@@ -132,7 +134,7 @@ class TestCacheable:
 
         mock_redis.get.return_value = None
 
-        @cacheable(prefix="test", expire=60)
+        @cacheable(CacheableParams(prefix="test", expire=60))
         def my_func(x):
             return None
 
@@ -145,7 +147,7 @@ class TestCacheable:
 
         mock_redis.get.return_value = None
 
-        @cacheable(prefix="test", expire=60, cache_none=True)
+        @cacheable(CacheableParams(prefix="test", expire=60, cache_none=True))
         def my_func(x):
             return None
 
@@ -158,7 +160,7 @@ class TestCacheable:
 
         mock_redis.get.side_effect = Exception("Redis down")
 
-        @cacheable(prefix="test", expire=60)
+        @cacheable(CacheableParams(prefix="test", expire=60))
         def my_func(x):
             return "fallback"
 

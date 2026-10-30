@@ -61,9 +61,9 @@ def test_task_insert_failure_rolls_back_file_metadata(file_database, postgres):
         db.execute(text("ALTER TABLE file_task_outbox ADD CONSTRAINT reject_intent CHECK (file_id < 0)"))
     with factory() as db:
         with pytest.raises(Exception):
-            service._persist_file_record(db, name="must-rollback.txt", file_path="unused",
+            service._persist_file_record(db, service.FileRecordSpec(name="must-rollback.txt", file_path="unused",
                 file_size=5, mime_type="text/plain", workspace_id=workspace_id,
-                uploader_id=None, parent_id=None, content_hash=None)
+                uploader_id=None, parent_id=None, content_hash=None))
         db.rollback()
     with factory() as db:
         assert db.query(File).filter_by(name="must-rollback.txt").count() == 0

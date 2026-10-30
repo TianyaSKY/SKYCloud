@@ -37,7 +37,7 @@ def test_deletion_intent_retries_and_ignores_deleted_metadata_fk(session,test_wo
     session.add(file)
     session.flush()
     file_id = file.id
-    monkeypatch.setattr(service.change_log_service,"log_event",lambda **kwargs:None)
+    monkeypatch.setattr(service.change_log_service,"log_event",lambda _params:None)
     service.delete_file(session,file_id)
     assert session.get(File,file_id) is None
     intent = session.query(FileObjectDeletion).one()
@@ -62,7 +62,7 @@ def test_shared_reference_retains_object_then_last_delete_creates_new_intent(ses
     session.add_all(files)
     session.flush()
     ids = [file.id for file in files]
-    monkeypatch.setattr(service.change_log_service,"log_event",lambda **kwargs:None)
+    monkeypatch.setattr(service.change_log_service,"log_event",lambda _params:None)
     storage = MagicMock()
     service.delete_file(session,ids[0])
     assert delete_pending_objects(session_factory=owned_factory(session),storage_factory=lambda:storage) == 1

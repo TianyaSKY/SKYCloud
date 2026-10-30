@@ -1,27 +1,54 @@
 """Account lifecycle SQL using the caller's Session and transaction."""
+
 from sqlalchemy import delete, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
+from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.user import User
 from app.models.workspace import Workspace
-from app.models.opencode_runtime import OpenCodeRuntime
 
 
 def lock_user(session: Session, user_id: int) -> User | None:
-    return session.scalar(select(User).where(User.id == user_id).with_for_update().execution_options(populate_existing=True))
+    """Lock and freshly load one account row."""
+    return session.scalar(
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True),
+    )
 
 
 def lock_owned_workspaces(session: Session, user_id: int) -> list[Workspace]:
-    return list(session.scalars(select(Workspace).where(Workspace.owner_id == user_id).order_by(Workspace.id).with_for_update()))
+    """Lock every workspace the account owns, in primary-key order."""
+    return list(
+        session.scalars(
+            select(Workspace)
+            .where(Workspace.owner_id == user_id)
+            .order_by(Workspace.id)
+            .with_for_update(),
+        ),
+    )
 
 
 def user_runtimes(session: Session, user_id: int) -> list[OpenCodeRuntime]:
-    return list(session.scalars(select(OpenCodeRuntime).where(OpenCodeRuntime.user_id == user_id).order_by(OpenCodeRuntime.id)))
+    """List every runtime owned by the account, in primary-key order."""
+    return list(
+        session.scalars(
+            select(OpenCodeRuntime)
+            .where(OpenCodeRuntime.user_id == user_id)
+            .order_by(OpenCodeRuntime.id),
+        ),
+    )
 
 
 def delete_account(session: Session, user_id: int) -> None:
-    session.execute(delete(User).where(User.id == user_id).execution_options(synchronize_session='fetch'))
+    """Delete the account row; the database owns the cascade."""
+    session.execute(
+        delete(User)
+        .where(User.id == user_id)
+        .execution_options(synchronize_session="fetch"),
+    )
 
 
 def current_role(session: Session, user_id: int) -> str | None:
@@ -31,7 +58,9 @@ def current_role(session: Session, user_id: int) -> str | None:
 
 def set_avatar(session: Session, user_id: int, avatar_url: str) -> bool:
     """Stage account avatar metadata in the caller's publication transaction."""
-    result = session.execute(update(User).where(User.id == user_id).values(avatar=avatar_url))
+    result = session.execute(
+        update(User).where(User.id == user_id).values(avatar=avatar_url),
+    )
     if isinstance(result, CursorResult):
         return result.rowcount == 1
     return False
@@ -39,5 +68,12 @@ def set_avatar(session: Session, user_id: int, avatar_url: str) -> bool:
 
 def lock_users(session: Session, user_ids: set[int]) -> list[User]:
     """Lock mutation identities in one deterministic order and refresh their state."""
-    return list(session.scalars(select(User).where(User.id.in_(user_ids))
-        .order_by(User.id).with_for_update().execution_options(populate_existing=True)))
+    return list(
+        session.scalars(
+            select(User)
+            .where(User.id.in_(user_ids))
+            .order_by(User.id)
+            .with_for_update()
+            .execution_options(populate_existing=True),
+        ),
+    )

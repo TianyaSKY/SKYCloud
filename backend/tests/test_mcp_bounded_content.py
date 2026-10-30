@@ -25,8 +25,8 @@ async def test_content_read_bounds_object_bytes_without_full_download(monkeypatc
     storage = SimpleNamespace(file_exists=lambda name: True, get_file_size=lambda name: len(body),
                               download_file=download, read_file_prefix=prefix)
     monkeypatch.setattr(server, '_MAX_READ_BYTES', 16)
-    monkeypatch.setattr(server, '_require_read_context', lambda: None)
-    monkeypatch.setattr(server, '_get_authorized_file', lambda *args: file)
+    monkeypatch.setattr(server, 'require_read_context', lambda: None)
+    monkeypatch.setattr(server, 'get_authorized_file', lambda *args: file)
     monkeypatch.setattr(server, 'get_storage_client', lambda: storage)
     monkeypatch.setattr(server, 'SessionLocal', lambda: SimpleNamespace(close=lambda: None))
     result = json.loads(await server.read_file_content(1))
@@ -36,15 +36,31 @@ async def test_content_read_bounds_object_bytes_without_full_download(monkeypatc
 
 
 async def test_content_storage_failure_returns_safe_tool_error(monkeypatch):
-    file = SimpleNamespace(name='text.txt', mime_type='text/plain', file_path='object')
+    file = SimpleNamespace(
+        name="text.txt", mime_type="text/plain", file_path="object",
+        get_abs_path=lambda: None,
+    )
     def fail(name):
         raise OSError('private-storage-endpoint-and-credential')
-    monkeypatch.setattr(server, '_require_read_context', lambda: None)
-    monkeypatch.setattr(server, '_get_authorized_file', lambda *args: file)
+    monkeypatch.setattr(server, 'require_read_context', lambda: None)
+    monkeypatch.setattr(server, 'get_authorized_file', lambda *args: file)
     monkeypatch.setattr(server, 'get_storage_client', lambda: SimpleNamespace(file_exists=fail))
     monkeypatch.setattr(server, 'SessionLocal', lambda: SimpleNamespace(close=lambda: None))
     result = json.loads(await server.read_file_content(1))
     assert result == {'error': 'Service temporarily unavailable'}
+
+
+async def test_content_authorization_failure_returns_safe_tool_error(monkeypatch):
+    def fail(*args):
+        raise RuntimeError("private-authorization-database-details")
+
+    monkeypatch.setattr(server, "require_read_context", lambda: None)
+    monkeypatch.setattr(server, "get_authorized_file", fail)
+    monkeypatch.setattr(
+        server, "SessionLocal", lambda: SimpleNamespace(close=lambda: None),
+    )
+    result = json.loads(await server.read_file_content(1))
+    assert result == {"error": "Service temporarily unavailable"}
 
 
 @pytest.mark.parametrize('read_fails', [False, True])

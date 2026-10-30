@@ -2,90 +2,131 @@
 
 No SQL sessions, environment lookup or external RPC belongs in this module.
 """
+
 import copy
 
+from runtime_controller.json_types import JsonObject
 
-def merge_opencode_mcp_config(existing: dict | None, mcp_config: dict) -> dict:
+
+def merge_opencode_mcp_config(
+    existing: "JsonObject | None",
+    mcp_config: JsonObject,
+) -> JsonObject:
     """Merge only ``mcp.SKYCLOUD`` while preserving all other config."""
-
-    result = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+    result: JsonObject = copy.deepcopy(existing) if isinstance(existing, dict) else {}
     mcp = result.get("mcp")
-    mcp = copy.deepcopy(mcp) if isinstance(mcp, dict) else {}
-    mcp["SKYCLOUD"] = copy.deepcopy(mcp_config)
-    result["mcp"] = mcp
+    merged_mcp: JsonObject = copy.deepcopy(mcp) if isinstance(mcp, dict) else {}
+    merged_mcp["SKYCLOUD"] = copy.deepcopy(mcp_config)
+    result["mcp"] = merged_mcp
     return result
 
 
-def _build_opencode_chat_provider(chat_config: dict[str, str], *, output_limit: int, context_limit: int) -> dict:
-    options = {"baseURL": chat_config["base_url"]}
+def _build_opencode_chat_provider(
+    chat_config: dict[str, str],
+    *,
+    output_limit: int,
+    context_limit: int,
+) -> JsonObject:
+    options: JsonObject = {"baseURL": chat_config["base_url"]}
     if chat_config["api_key"]:
         # This is a revocable model-only Runtime credential, never the
         # provider key used by the gateway.
         options["apiKey"] = chat_config["api_key"]
     if output_limit <= 0 or context_limit <= 0:
-        raise ValueError("Runtime model token limits must be positive")
+        message = "Runtime model token limits must be positive"
+        raise ValueError(message)
     if context_limit <= output_limit:
-        raise ValueError("Runtime model context must exceed its output limit")
+        message = "Runtime model context must exceed its output limit"
+        raise ValueError(message)
+    model = chat_config["model"]
+    model_entry: JsonObject = {
+        "name": model,
+        "limit": {"context": context_limit, "output": output_limit},
+    }
+    models: JsonObject = {model: model_entry}
     return {
         "npm": "@ai-sdk/openai-compatible",
         "name": "SKYCloud Chat API",
         "options": options,
-        "models": {
-            chat_config["model"]: {"name": chat_config["model"], "limit": {"context": context_limit, "output": output_limit}},
-        },
+        "models": models,
     }
 
 
 def merge_opencode_chat_provider(
-    existing: dict | None,
+    existing: "JsonObject | None",
     chat_config: dict[str, str] | None = None,
-    *, provider_id: str, output_limit: int, context_limit: int,
-) -> dict:
+    *,
+    provider_id: str,
+    output_limit: int,
+    context_limit: int,
+) -> JsonObject:
     """Configure OpenCode to use SKYCloud's existing Chat API provider."""
-
-    result = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+    result: JsonObject = copy.deepcopy(existing) if isinstance(existing, dict) else {}
     provider = result.get("provider")
-    provider = copy.deepcopy(provider) if isinstance(provider, dict) else {}
+    providers: JsonObject = (
+        copy.deepcopy(provider) if isinstance(provider, dict) else {}
+    )
     if chat_config is None:
-        raise ValueError("A scoped Runtime model configuration is required")
-    provider[provider_id] = _build_opencode_chat_provider(chat_config, output_limit=output_limit, context_limit=context_limit)
-    result["provider"] = provider
+        message = "A scoped Runtime model configuration is required"
+        raise ValueError(message)
+    providers[provider_id] = _build_opencode_chat_provider(
+        chat_config,
+        output_limit=output_limit,
+        context_limit=context_limit,
+    )
+    result["provider"] = providers
     result["model"] = f"{provider_id}/{chat_config['model']}"
     return result
 
 
-def _opencode_chat_provider_needs_reload(
-    existing: dict,
+def opencode_chat_provider_needs_reload(
+    existing: JsonObject,
     chat_config: dict[str, str],
-    *, provider_id: str, output_limit: int, context_limit: int,
+    *,
+    provider_id: str,
+    output_limit: int,
+    context_limit: int,
 ) -> bool:
-    expected = merge_opencode_chat_provider({}, chat_config, provider_id=provider_id, output_limit=output_limit, context_limit=context_limit)
+    """Whether the live Runtime provider block differs from the desired one."""
+    expected_provider = _build_opencode_chat_provider(
+        chat_config,
+        output_limit=output_limit,
+        context_limit=context_limit,
+    )
     current_provider = existing.get("provider")
-    current_provider = current_provider if isinstance(current_provider, dict) else {}
+    providers: JsonObject = copy.deepcopy(current_provider) if isinstance(
+        current_provider,
+        dict,
+    ) else {}
     return (
-        current_provider.get(provider_id)
-        != expected["provider"][provider_id]
-        or existing.get("model") != expected["model"]
+        providers.get(provider_id) != expected_provider
+        or existing.get("model") != f"{provider_id}/{chat_config['model']}"
     )
 
 
-def merge_opencode_expert_agent(existing: dict | None, *, agent_name: str) -> dict:
-    """Install the least-privilege SKYCloud expert agent without replacing
-    unrelated user configuration.
+def merge_opencode_expert_agent(
+    existing: "JsonObject | None",
+    *,
+    agent_name: str,
+) -> JsonObject:
+    """Install the least-privilege expert agent without replacing user config.
 
     The provider still asks for high-risk operations; the MCP server remains
     the final workspace and role boundary.
     """
-
-    result = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+    result: JsonObject = copy.deepcopy(existing) if isinstance(existing, dict) else {}
     agents = result.get("agent")
-    agents = copy.deepcopy(agents) if isinstance(agents, dict) else {}
-    agents[agent_name] = {
+    merged_agents: JsonObject = (
+        copy.deepcopy(agents) if isinstance(agents, dict) else {}
+    )
+    merged_agents[agent_name] = {
         "description": "SKYCloud workspace expert",
         "prompt": (
-            "You are the SKYCloud workspace expert. Operate only in the current workspace. "
-            "Use the SKYCloud MCP upload_file tool for cloud-drive uploads; do not depend on "
-            "curl or external upload. Never expose credentials or upload data externally. "
+            "You are the SKYCloud workspace expert. "
+            "Operate only in the current workspace. "
+            "Use the SKYCloud MCP upload_file tool for cloud-drive uploads; "
+            "do not depend on curl or external upload. "
+            "Never expose credentials or upload data externally. "
             "Ask before deletion, overwrite, publication, or risky shell commands."
         ),
         "permission": {
@@ -104,7 +145,5 @@ def merge_opencode_expert_agent(existing: dict | None, *, agent_name: str) -> di
             },
         },
     }
-    result["agent"] = agents
+    result["agent"] = merged_agents
     return result
-
-

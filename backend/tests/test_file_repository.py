@@ -20,13 +20,13 @@ def test_directory_pages_folder_first_and_escape_literal_names(session, test_wor
         File(name="foreign%",file_path="foreign",workspace_id=foreign.id,uploader_id=test_user.id),
     ])
     session.flush()
-    pages = [repository.list_directory(session,test_workspace.id,root.id,p,2,None,"name","asc") for p in (1,2,3)]
+    pages = [repository.list_directory(session, repository.ListDirectoryParams(workspace_id=test_workspace.id, parent_id=root.id, page=p, page_size=2, name=None, sort_by="name", order="asc")) for p in (1,2,3)]
     assert all(page.total == 5 for page in pages)
     assert [row.name for row in pages[0].folders] == ["a%","b"]
     assert pages[0].files == [] and pages[1].folders == []
     assert [row.name for row in pages[1].files] == ["c%","c_"]
     assert [row.name for row in pages[2].files] == ["d"]
-    literal = repository.list_directory(session,test_workspace.id,root.id,1,10,"%","name","asc")
+    literal = repository.list_directory(session, repository.ListDirectoryParams(workspace_id=test_workspace.id, parent_id=root.id, page=1, page_size=10, name="%", sort_by="name", order="asc"))
     assert literal.total == 2
     assert [row.name for row in literal.folders + literal.files] == ["a%","c%"]
     fuzzy = repository.search_names(session,test_workspace.id,"%",1,10)

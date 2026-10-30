@@ -300,6 +300,8 @@ class TestMergeFolderContents:
 # ---------------------------------------------------------------------------
 
 from app.features.token_usage.service import (
+    GetUsageLogsParams,
+    RecordUsageParams,
     record_usage,
     get_user_token_stats,
     get_usage_logs,
@@ -312,22 +314,20 @@ class TestRecordUsage:
     def test_success(self):
         mock_session = MagicMock()
         with patch("app.features.token_usage.service.SessionLocal", return_value=mock_session):
-            record_usage(
-                user_id=1,
-                action="chat",
-                model_name="test-model",
-                prompt_tokens=10,
-                completion_tokens=20,
-                total_tokens=30,
-                query_summary="test query",
-            )
+            record_usage(RecordUsageParams(user_id=1,
+            action="chat",
+            model_name="test-model",
+            prompt_tokens=10,
+            completion_tokens=20,
+            total_tokens=30,
+            query_summary="test query",))
         mock_session.commit.assert_called_once()
         mock_session.close.assert_called_once()
 
     def test_zero_total_calculates(self):
         mock_session = MagicMock()
         with patch("app.features.token_usage.service.SessionLocal", return_value=mock_session):
-            record_usage(user_id=1, action="chat", prompt_tokens=10, completion_tokens=20)
+            record_usage(RecordUsageParams(user_id=1, action="chat", prompt_tokens=10, completion_tokens=20))
         mock_session.commit.assert_called_once()
 
 
@@ -350,7 +350,7 @@ class TestGetUsageLogs:
             prompt_tokens=10, completion_tokens=20, total_tokens=30
         ))
         session.flush()
-        result = get_usage_logs(session, test_user.id)
+        result = get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id))
         assert result["total"] >= 1
 
     def test_with_action_filter(self, session, test_user):
@@ -359,7 +359,7 @@ class TestGetUsageLogs:
             prompt_tokens=10, completion_tokens=20, total_tokens=30
         ))
         session.flush()
-        result = get_usage_logs(session, test_user.id, action="chat")
+        result = get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id, action="chat"))
         assert result["total"] >= 1
 
 

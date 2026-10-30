@@ -144,6 +144,41 @@ def test_socket_concurrency_limit_releases_after_close(socket_setup, monkeypatch
         again.send_text('new'); assert again.receive_text() == 'new'
 
 
+
+def test_terminal_bridge_failure_closes_1011_and_releases_owner_for_next_connection(
+    socket_setup, monkeypatch
+):
+    client, headers, _, _ = socket_setup
+    slots = TrackingSlots(total=2, per_owner=1)
+    monkeypatch.setattr(ui_gateway, 'socket_slots', slots)
+    connect = ui_gateway.direct_connect
+    fail_handshake = True
+
+    class BrokenHandshake(EchoSocket):
+        async def __aenter__(self):
+            raise RuntimeError('private upstream handshake failure')
+
+    def upstream(url, headers):
+        nonlocal fail_handshake
+        if fail_handshake:
+            fail_handshake = False
+            return BrokenHandshake()
+        return connect(url, headers)
+
+    monkeypatch.setattr(ui_gateway, 'direct_connect', upstream)
+    path = '/runtime-ui/pty/pty_42/connect'
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(path, headers=headers):
+            pass
+    assert exc.value.code == 1011
+    assert exc.value.reason == ''
+    assert slots.released.wait(2)
+
+    with client.websocket_connect(path, headers=headers) as following:
+        following.send_text('owner slot reused')
+        assert following.receive_text() == 'owner slot reused'
+    assert slots.released.wait(2)
+
 @pytest.mark.parametrize('limit', ['bytes', 'messages'])
 def test_socket_total_budgets(socket_setup, monkeypatch, limit):
     from runtime_controller import socket_relay

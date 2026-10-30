@@ -1,41 +1,45 @@
 """Synchronous file-indexing worker handlers.
 
-The worker deliberately keeps the whole file pipeline synchronous.  Network
+The worker deliberately keeps the whole file pipeline synchronous. Network
 calls, local parsing, and database writes may block one worker thread, while
-the worker runtime provides the process-level concurrency with a thread pool.
+the worker runtime provides process-level concurrency with a thread pool.
 Database sessions are opened only for short state transitions and writes; no
 session is held while a file is downloaded or an LLM is running.
 """
 
 from __future__ import annotations
 
-from app.infra.datetime_utils import utc_now, BEIJING_TZ
-
-import datetime
-import os
 import math
 from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from loguru import logger
 
 from app.exceptions import ResourceNotFoundError
-from app.infra.extensions import SessionLocal
-from app.infra.storage import get_storage_client
-from app.models.file import File
-from app.models.file_chunk import FileChunk
 from app.features.file import service as file_service
+from app.features.folder.organize.description import (
+    extract_file_sections,
+    generate_file_description,
+)
 from app.features.inbox import service as inbox_service
+from app.infra.datetime_utils import BEIJING_TZ, utc_now
+from app.infra.extensions import SessionLocal
+from app.infra.indexing.chunking import TextSection, build_text_chunks
 from app.infra.llm.config import (
     get_chat_model_config,
     get_embedding_model_config,
     get_vl_model_config,
 )
 from app.infra.llm.sync_client import embed_texts
-from app.features.folder.organize.description import (
-    extract_file_sections,
-    generate_file_description,
-)
-from app.infra.indexing.chunking import TextSection, build_text_chunks
+from app.infra.storage import get_storage_client
+from app.models.file import File
+from app.models.file_chunk import FileChunk
 
-from loguru import logger
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+EMBEDDING_DIMENSIONS = 1024
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,8 @@ class FileIndexContext:
 
 @dataclass(frozen=True)
 class ChunkIndexResult:
+    """Prepared vector payload for one file chunk."""
+
     chunk_index: int
     page_number: int | None
     content: str
@@ -60,12 +66,37 @@ class ChunkIndexResult:
 
 @dataclass(frozen=True)
 class FileIndexResult:
+    """Complete indexing output written in one final transaction."""
+
     file_id: int
     workspace_id: int
     name: str
     description: str
     vector: list[float]
     chunks: list[ChunkIndexResult]
+
+
+def _require_file(session: Session, file_id: int) -> File:
+    """Load one file or raise the shared not-found error."""
+    file = session.get(File, file_id)
+    if file is None:
+        message = f"File {file_id} not found"
+        raise ResourceNotFoundError(message)
+    return file
+
+
+def _require_locked_file(session: Session, file_id: int) -> File:
+    """Lock one file row or raise the shared not-found error."""
+    file = (
+        session.query(File)
+        .filter(File.id == file_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if file is None:
+        message = f"File {file_id} not found"
+        raise ResourceNotFoundError(message)
+    return file
 
 
 def load_file_context(file_id: int) -> FileIndexContext | None:
@@ -86,7 +117,7 @@ def load_file_context(file_id: int) -> FileIndexContext | None:
             uploader_id=int(file.uploader_id or 0),
             name=str(file.name),
             object_name=str(file.file_path),
-            suffix=os.path.splitext(str(file.name))[-1] or "",
+            suffix=Path(str(file.name)).suffix,
         )
     finally:
         session.close()
@@ -96,19 +127,22 @@ def _save_file_description(file_id: int, description: str) -> None:
     """Persist a generated description without holding a session over the LLM call."""
     session = SessionLocal()
     try:
-        file = session.get(File, file_id)
-        if file is None:
-            raise ResourceNotFoundError(f"File {file_id} not found")
+        file = _require_file(session, file_id)
         file.description = description
         session.commit()
     except Exception:
+        # Rollback must run for any ORM/driver failure before re-raising.
         session.rollback()
         raise
     finally:
         session.close()
 
 
-def _mark_file_failed(session, file_id: int, error: Exception) -> None:
+def _mark_file_failed(
+    session: Session,
+    file_id: int,
+    _error: BaseException,
+) -> None:
     """Mark a file failed and notify its uploader using the supplied session."""
     try:
         session.rollback()
@@ -132,19 +166,27 @@ def _mark_file_failed(session, file_id: int, error: Exception) -> None:
                 },
             )
     except Exception as inner_error:
-        logger.error("Failed to mark file {} as failed (error_type={})", file_id, type(inner_error).__name__)
+        logger.error(
+            "Failed to mark file {} as failed (error_type={})",
+            file_id,
+            type(inner_error).__name__,
+        )
         session.rollback()
         raise
 
 
-def mark_file_failed(file_id: int, error: Exception) -> None:
+def mark_file_failed(file_id: int, _error: BaseException) -> None:
     """Open a short-lived session for failure status and notification."""
-    session = None
+    session: Session | None = None
     try:
         session = SessionLocal()
-        _mark_file_failed(session, file_id, error)
+        _mark_file_failed(session, file_id, _error)
     except Exception as exc:
-        logger.error("Could not persist failure status for file {} (error_type={})", file_id, type(exc).__name__)
+        logger.error(
+            "Could not persist failure status for file {} (error_type={})",
+            file_id,
+            type(exc).__name__,
+        )
         raise
     finally:
         if session is not None:
@@ -177,12 +219,19 @@ def _embed_texts(
         query_summary=f"batch({len(texts)} texts)",
     )
     if len(vectors) != len(texts):
-        raise ValueError("Embedding response does not match the requested text count")
+        message = "Embedding response does not match the requested text count"
+        raise ValueError(message)
     for vector in vectors:
-        if (len(vector) != 1024
-                or any(not math.isfinite(value) for value in vector)
-                or not any(value != 0 for value in vector)):
-            raise ValueError("Embedding response must contain finite nonzero 1024-dimensional vectors")
+        if (
+            len(vector) != EMBEDDING_DIMENSIONS
+            or any(not math.isfinite(value) for value in vector)
+            or not any(value != 0 for value in vector)
+        ):
+            message = (
+                "Embedding response must contain finite nonzero"
+                f" {EMBEDDING_DIMENSIONS}-dimensional vectors"
+            )
+            raise ValueError(message)
     return vectors
 
 
@@ -202,14 +251,16 @@ def _build_chunk_results(
 
     chunks = build_text_chunks(sections)
     if not chunks:
-        raise ValueError("未能从文件中提取可索引内容")
+        message = "未能从文件中提取可索引内容"
+        raise ValueError(message)
 
     embedding_texts = [
         f"文件名: {file_name}\n内容:\n{chunk.content}" for chunk in chunks
     ]
     vectors = _embed_texts(embedding_texts, emb_config, user_id=user_id)
     if len(vectors) != len(chunks):
-        raise ValueError("Embedding response does not match the extracted chunk count")
+        message = "Embedding response does not match the extracted chunk count"
+        raise ValueError(message)
 
     return [
         ChunkIndexResult(
@@ -218,7 +269,7 @@ def _build_chunk_results(
             content=chunk.content,
             vector=vector,
         )
-        for chunk, vector in zip(chunks, vectors)
+        for chunk, vector in zip(chunks, vectors, strict=False)
     ]
 
 
@@ -255,20 +306,13 @@ def _save_index_result(result: FileIndexResult) -> None:
     """Write a complete index result in one short transaction."""
     session = SessionLocal()
     try:
-        file = (
-            session.query(File)
-            .filter(File.id == result.file_id)
-            .with_for_update()
-            .one_or_none()
-        )
-        if file is None:
-            raise ResourceNotFoundError(f"File {result.file_id} not found")
+        file = _require_locked_file(session, result.file_id)
 
         file.description = result.description
         file.vector_info = result.vector or None
-        session.query(FileChunk).filter(FileChunk.file_id == result.file_id).delete(
-            synchronize_session=False
-        )
+        session.query(FileChunk).filter(
+            FileChunk.file_id == result.file_id,
+        ).delete(synchronize_session=False)
         session.add_all(
             [
                 FileChunk(
@@ -280,53 +324,20 @@ def _save_index_result(result: FileIndexResult) -> None:
                     vector_info=chunk.vector or None,
                 )
                 for chunk in result.chunks
-            ]
+            ],
         )
         file.status = "success"
         session.commit()
     except Exception:
+        # Rollback must run for any ORM/driver failure before re-raising.
         session.rollback()
         raise
     finally:
         session.close()
 
 
-def _replace_file_chunks(
-    session,
-    file: File,
-    local_path: str,
-    description: str,
-    emb_config: dict,
-    user_id: int,
-) -> int:
-    """Compatibility helper for callers that already own a DB session."""
-    chunk_results = _build_chunk_results(
-        file_name=str(file.name),
-        local_path=local_path,
-        description=description,
-        emb_config=emb_config,
-        user_id=user_id,
-    )
-    session.query(FileChunk).filter(FileChunk.file_id == file.id).delete(
-        synchronize_session=False
-    )
-    session.add_all(
-        [
-            FileChunk(
-                file_id=file.id,
-                workspace_id=file.workspace_id,
-                chunk_index=chunk.chunk_index,
-                page_number=chunk.page_number,
-                content=chunk.content,
-                vector_info=chunk.vector or None,
-            )
-            for chunk in chunk_results
-        ]
-    )
-    return len(chunk_results)
-
-
 def _download_file(context: FileIndexContext) -> str:
+    """Fetch the object into a temporary file for local parsing."""
     storage = get_storage_client()
     return storage.download_to_temp(context.object_name, suffix=context.suffix)
 
@@ -366,19 +377,27 @@ def handle_file_indexing(file_id: int) -> None:
             len(result.chunks),
         )
     except Exception as exc:
-        logger.error("Error indexing file {} (error_type={})", file_id, type(exc).__name__)
+        # One file must not stop the worker task; failure status is persisted
+        # and the original exception still propagates to the task owner.
+        logger.error(
+            "Error indexing file {} (error_type={})",
+            file_id,
+            type(exc).__name__,
+        )
         if context is not None:
             try:
                 mark_file_failed(file_id, exc)
             except Exception as persist_error:
-                logger.error("Could not persist failure status for file {} (error_type={})", file_id, type(persist_error).__name__)
+                logger.error(
+                    "Could not persist failure status for file {} (error_type={})",
+                    file_id,
+                    type(persist_error).__name__,
+                )
                 raise
         else:
             raise
     finally:
-        if local_path and os.path.exists(local_path):
-            os.remove(local_path)
+        if local_path is not None:
+            Path(local_path).unlink(missing_ok=True)
 
 
-# Compatibility import name used by the worker entry point and older callers.
-handle_file_process = handle_file_indexing

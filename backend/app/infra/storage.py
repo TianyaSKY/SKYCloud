@@ -1,18 +1,22 @@
-"""MinIO 对象存储客户端：封装文件上传/下载/删除/存在性检查。
+"""MinIO 对象存储客户端: 封装文件上传/下载/删除/存在性检查.
 
-全局单例 ``storage_client``，由 extensions 配置驱动。
-分片上传临时文件仍走本地磁盘，合并后再推送到 MinIO。
+全局单例 ``storage_client``, 由 extensions 配置驱动.
+分片上传临时文件仍走本地磁盘, 合并后再推送到 MinIO.
 """
 
 import io
 import os
 import tempfile
+from pathlib import Path
 from typing import BinaryIO
 
 import urllib3
 from loguru import logger
 from minio import Minio
 from minio.error import S3Error
+from urllib3.response import BaseHTTPResponse
+
+from app.infra.secrets import configured_password
 
 # ---------------------------------------------------------------------------
 # 配置读取
@@ -22,14 +26,14 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "skycloud")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() in ("true", "1", "yes")
-# 有界 I/O：无超时的对象存储调用会长期占用工作线程。
+# 有界 I/O: 无超时的对象存储调用会长期占用工作线程.
 MINIO_CONNECT_TIMEOUT = float(os.getenv("MINIO_CONNECT_TIMEOUT", "5"))
 MINIO_READ_TIMEOUT = float(os.getenv("MINIO_READ_TIMEOUT", "120"))
 MINIO_RETRIES = int(os.getenv("MINIO_RETRIES", "2"))
 
 
 class MinIOStorageClient:
-    """MinIO 存储操作封装，提供与本地磁盘类似的 upload/download/delete 接口。"""
+    """MinIO 存储操作封装, 提供与本地磁盘类似的 upload/download/delete 接口."""
 
     def __init__(
         self,
@@ -37,21 +41,26 @@ class MinIOStorageClient:
         access_key: str = MINIO_ACCESS_KEY,
         secret_key: str = MINIO_SECRET_KEY,
         bucket: str = MINIO_BUCKET,
+        *,
         secure: bool = MINIO_SECURE,
-    ):
-        from app.infra.secrets import configured_password
+    ) -> None:
+        """Validate the credentials and connect the bounded MinIO client."""
         configured_password("MINIO_SECRET_KEY", secret_key)
         if not access_key:
-            raise RuntimeError("MINIO_ACCESS_KEY must be explicitly configured")
-        self._client = Minio(
+            message = "MINIO_ACCESS_KEY must be explicitly configured"
+            raise RuntimeError(message)
+        self._client: Minio = Minio(
             endpoint,
             access_key=access_key,
             secret_key=secret_key,
             secure=secure,
             http_client=urllib3.PoolManager(
-                timeout=urllib3.Timeout(connect=MINIO_CONNECT_TIMEOUT, read=MINIO_READ_TIMEOUT),
+                timeout=urllib3.Timeout(
+                    connect=MINIO_CONNECT_TIMEOUT, read=MINIO_READ_TIMEOUT,
+                ),
                 retries=urllib3.Retry(
-                    total=MINIO_RETRIES, backoff_factor=0.2,
+                    total=MINIO_RETRIES,
+                    backoff_factor=0.2,
                     status_forcelist=[500, 502, 503, 504],
                 ),
             ),
@@ -60,7 +69,7 @@ class MinIOStorageClient:
         self._ensure_bucket()
 
     def _ensure_bucket(self) -> None:
-        """启动时确保 bucket 存在，不存在则创建。"""
+        """启动时确保 bucket 存在, 不存在则创建."""
         try:
             if not self._client.bucket_exists(self._bucket):
                 self._client.make_bucket(self._bucket)
@@ -74,7 +83,7 @@ class MinIOStorageClient:
     # ------------------------------------------------------------------
 
     def upload_file(self, local_path: str, object_name: str) -> None:
-        """将本地文件上传到 MinIO。"""
+        """将本地文件上传到 MinIO."""
         try:
             self._client.fput_object(self._bucket, object_name, local_path)
             logger.debug("上传文件到 MinIO: {} -> {}", local_path, object_name)
@@ -82,8 +91,13 @@ class MinIOStorageClient:
             logger.error("MinIO 上传失败 (error_type={})", type(e).__name__)
             raise
 
-    def upload_data(self, data: bytes, object_name: str, content_type: str = "application/octet-stream") -> None:
-        """将内存数据上传到 MinIO。"""
+    def upload_data(
+        self,
+        data: bytes,
+        object_name: str,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        """将内存数据上传到 MinIO."""
         try:
             self._client.put_object(
                 self._bucket,
@@ -97,8 +111,14 @@ class MinIOStorageClient:
             logger.error("MinIO 数据上传失败 (error_type={})", type(e).__name__)
             raise
 
-    def upload_stream(self, stream: BinaryIO, object_name: str, length: int, content_type: str = "application/octet-stream") -> None:
-        """将流式数据上传到 MinIO。"""
+    def upload_stream(
+        self,
+        stream: BinaryIO,
+        object_name: str,
+        length: int,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        """将流式数据上传到 MinIO."""
         try:
             self._client.put_object(
                 self._bucket,
@@ -113,7 +133,7 @@ class MinIOStorageClient:
             raise
 
     def download_file(self, object_name: str, local_path: str) -> None:
-        """从 MinIO 下载文件到本地路径。"""
+        """从 MinIO 下载文件到本地路径."""
         try:
             self._client.fget_object(self._bucket, object_name, local_path)
             logger.debug("从 MinIO 下载: {} -> {}", object_name, local_path)
@@ -121,8 +141,8 @@ class MinIOStorageClient:
             logger.error("MinIO 下载失败 (error_type={})", type(e).__name__)
             raise
 
-    def get_file_stream(self, object_name: str):
-        """获取文件流（用于 StreamingResponse），调用方负责关闭。"""
+    def get_file_stream(self, object_name: str) -> BaseHTTPResponse:
+        """获取文件流用于 StreamingResponse, 调用方负责关闭."""
         try:
             return self._client.get_object(self._bucket, object_name)
         except S3Error as e:
@@ -132,25 +152,38 @@ class MinIOStorageClient:
     def read_file_prefix(self, object_name: str, max_bytes: int) -> bytes:
         """Read an HTTP range into bounded memory and always release its response."""
         if max_bytes <= 0:
-            raise ValueError('max_bytes must be positive')
-        response = self._client.get_object(self._bucket, object_name, length=max_bytes)
+            message = "max_bytes must be positive"
+            raise ValueError(message)
+        response = self._client.get_object(
+            self._bucket, object_name, length=max_bytes,
+        )
         try:
             return response.read(max_bytes)
         finally:
             self.close_file_stream(response)
 
     @staticmethod
-    def close_file_stream(stream) -> None:
-        """关闭下载流并归还 HTTP 连接，供流式响应结束后调用。"""
+    def close_file_stream(stream: BaseHTTPResponse) -> None:
+        """关闭下载流并归还 HTTP 连接, 供流式响应结束后调用."""
         # Always try to return the connection even if closing the body fails.
-        for method in ("close", "release_conn"):
-            try:
-                getattr(stream, method)()
-            except Exception as exc:
-                logger.warning("MinIO download stream cleanup failed (error_type={})", type(exc).__name__)
+        # Delivery is arbitrary for response bodies, so the failure set is open.
+        try:
+            stream.close()
+        except Exception as exc:
+            logger.warning(
+                "MinIO download stream cleanup failed (error_type={})",
+                type(exc).__name__,
+            )
+        try:
+            stream.release_conn()
+        except Exception as exc:
+            logger.warning(
+                "MinIO download stream cleanup failed (error_type={})",
+                type(exc).__name__,
+            )
 
     def delete_file(self, object_name: str) -> None:
-        """从 MinIO 删除对象。"""
+        """从 MinIO 删除对象."""
         try:
             self._client.remove_object(self._bucket, object_name)
             logger.debug("从 MinIO 删除: {}", object_name)
@@ -159,18 +192,18 @@ class MinIOStorageClient:
             raise
 
     def file_exists(self, object_name: str) -> bool:
-        """检查对象是否存在。"""
+        """检查对象是否存在."""
         try:
             self._client.stat_object(self._bucket, object_name)
-            return True
         except S3Error as e:
             if e.code == "NoSuchKey":
                 return False
             logger.error("MinIO stat 失败 (error_type={})", type(e).__name__)
             raise
+        return True
 
     def get_file_size(self, object_name: str) -> int:
-        """获取对象大小（字节）。"""
+        """获取对象大小 (字节)."""
         try:
             stat = self._client.stat_object(self._bucket, object_name)
             size = stat.size
@@ -181,36 +214,49 @@ class MinIOStorageClient:
             # An existing object always reports a length; a missing one must not
             # be silently reported as zero bytes.
             logger.error("MinIO stat 缺少对象大小 (error_type=ValueError)")
-            raise ValueError("MinIO object size is unavailable")
+            message = "MinIO object size is unavailable"
+            raise ValueError(message)
         return size
 
     def download_to_temp(self, object_name: str, suffix: str = "") -> str:
-        """下载到临时文件并返回路径，供索引等需要本地读取的场景使用。
+        """下载到临时文件并返回路径, 供索引等需要本地读取的场景使用.
 
-        调用方使用完毕后应自行删除临时文件。
+        调用方使用完毕后应自行删除临时文件.
         """
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
         os.close(tmp_fd)
         try:
             self.download_file(object_name, tmp_path)
-            return tmp_path
         except Exception:
-            # 下载失败时清理临时文件
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+            # 下载失败时清理临时文件.任意存储失败都要清理后原样抛出.
+            path = Path(tmp_path)
+            if path.exists():
+                path.unlink()
             raise
+        return tmp_path
 
 
 # ---------------------------------------------------------------------------
-# 全局单例（延迟初始化，避免 import 时即连接）
+# 全局单例 (延迟初始化, 避免 import 时即连接)
 # ---------------------------------------------------------------------------
-_storage_client: MinIOStorageClient | None = None
+class _StorageClientHolder:
+    """Lazily initialized process-wide storage client."""
+
+    client: MinIOStorageClient | None = None
+
+
+_holder = _StorageClientHolder()
 
 
 def get_storage_client() -> MinIOStorageClient:
-    """获取全局 MinIO 存储客户端单例。"""
-    global _storage_client
-    if _storage_client is None:
-        _storage_client = MinIOStorageClient()
-        logger.info("MinIO 存储客户端已初始化: endpoint={}, bucket={}", MINIO_ENDPOINT, MINIO_BUCKET)
-    return _storage_client
+    """获取全局 MinIO 存储客户端单例."""
+    client = _holder.client
+    if client is None:
+        client = MinIOStorageClient()
+        _holder.client = client
+        logger.info(
+            "MinIO 存储客户端已初始化: endpoint={}, bucket={}",
+            MINIO_ENDPOINT,
+            MINIO_BUCKET,
+        )
+    return client

@@ -1,48 +1,66 @@
-"""文件分享：创建/取消分享链接，按 token 解析可下载文件（含过期校验）。"""
+"""文件分享:创建/取消分享链接,按 token 解析可下载文件(含过期校验)."""
 
-import os
+from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
 
 from sqlalchemy.orm import Session
 
-from app.exceptions import BusinessRuleError, ResourceNotFoundError, PermissionDeniedError
-from app.infra.datetime_utils import utc_now, to_utc_datetime
+from app.exceptions import (
+    BusinessRuleError,
+    PermissionDeniedError,
+    ResourceNotFoundError,
+)
+from app.features.share import repository
+from app.features.workspace.permissions import assert_member_locked
+from app.infra.datetime_utils import to_utc_datetime, utc_now
 from app.infra.storage import get_storage_client
 from app.models.file import File
-from app.models.share import Share
-from app.features.workspace.permissions import assert_member_locked
-from app.features.share import repository
+from app.models.share import Share, ShareDict
+
+_DENIED = "Permission denied"
 
 
-def create_share_link(session: Session, user_id, file_id, expires_at=None, *, commit=True, workspace_id=None):
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateShareLinkParams:
+    """Inputs for creating one share link."""
+
+    user_id: int
+    file_id: int
+    expires_at: datetime | None = None
+    commit: bool = True
+    workspace_id: int | None = None
+
+
+def create_share_link(session: Session, params: CreateShareLinkParams) -> Share:
+    """Create one share link inside the caller's transaction."""
     # Both REST and MCP callers must be current members of the file workspace.
-    current_workspace_id = repository.file_workspace_id(session, file_id)
-    if workspace_id is not None and current_workspace_id != workspace_id:
-        raise PermissionDeniedError("Permission denied")
-    workspace_id = current_workspace_id
-    if workspace_id is None:
-        raise ValueError("File not found")
-    assert_member_locked(session, workspace_id, user_id)
-    file = repository.lock_scoped_file(session, file_id, workspace_id)
+    current_workspace_id = repository.file_workspace_id(session, params.file_id)
+    if params.workspace_id is not None and current_workspace_id != params.workspace_id:
+        raise PermissionDeniedError(_DENIED)
+    if current_workspace_id is None:
+        message = "File not found"
+        raise ValueError(message)
+    assert_member_locked(session, current_workspace_id, params.user_id)
+    file = repository.lock_scoped_file(session, params.file_id, current_workspace_id)
     if file is None:
-        raise ValueError("File not found")
+        message = "File not found"
+        raise ValueError(message)
 
     share = Share(
-        user_id=user_id,
-        file_id=file_id,
-        expires_at=to_utc_datetime(expires_at)
+        user_id=params.user_id,
+        file_id=params.file_id,
+        expires_at=to_utc_datetime(params.expires_at),
     )
     session.add(share)
-    if commit:
+    if params.commit:
         session.commit()
     else:
         session.flush()
     return share
 
 
-def get_share_by_token(session: Session, token):
-    """按 token 取分享；过期视为无效返回 None。"""
+def get_share_by_token(session: Session, token: str) -> Share | None:
+    """按 token 取分享;过期视为无效返回 None."""
     share = session.query(Share).filter_by(token=token).first()
     if not share:
         return None
@@ -54,8 +72,8 @@ def get_share_by_token(session: Session, token):
     return share
 
 
-def get_my_shares(session: Session, user_id):
-    """用户分享列表，按创建时间倒序。"""
+def get_my_shares(session: Session, user_id: int) -> list[ShareDict]:
+    """用户分享列表,按创建时间倒序."""
     shares = (
         session.query(Share)
         .filter_by(user_id=user_id)
@@ -65,8 +83,8 @@ def get_my_shares(session: Session, user_id):
     return [share.to_dict() for share in shares]
 
 
-def cancel_share(session: Session, share_id, user_id):
-    """仅允许取消本人分享；不存在则返回 False。"""
+def cancel_share(session: Session, share_id: int, user_id: int) -> bool:
+    """仅允许取消本人分享;不存在则返回 False."""
     share = session.query(Share).filter_by(id=share_id, user_id=user_id).first()
     if share:
         session.delete(share)
@@ -75,34 +93,47 @@ def cancel_share(session: Session, share_id, user_id):
     return False
 
 
-def create_share(session: Session, user_id: int, file_id: int, expires_at_raw: str | None) -> Share:
-    """解析 ISO 过期时间后创建分享；ValueError 转为业务异常。"""
+def create_share(
+    session: Session, user_id: int, file_id: int, expires_at_raw: str | None,
+) -> Share:
+    """解析 ISO 过期时间后创建分享;ValueError 转为业务异常."""
     expires_at = None
     if expires_at_raw:
         try:
             expires_at = datetime.fromisoformat(expires_at_raw)
         except ValueError as exc:
-            raise BusinessRuleError("Invalid date format") from exc
+            message = "Invalid date format"
+            raise BusinessRuleError(message) from exc
     try:
-        return create_share_link(session, user_id, file_id, expires_at)
+        return create_share_link(
+            session,
+            CreateShareLinkParams(
+                user_id=user_id, file_id=file_id, expires_at=expires_at,
+            ),
+        )
     except ValueError as exc:
         raise ResourceNotFoundError(str(exc)) from exc
 
 
 def cancel_share_for_user(session: Session, share_id: int, user_id: int) -> None:
+    """Cancel one share owned by the user or report it missing."""
     if not cancel_share(session, share_id, user_id):
-        raise ResourceNotFoundError("Share not found or permission denied")
+        message = "Share not found or permission denied"
+        raise ResourceNotFoundError(message)
 
 
 def resolve_shared_file(session: Session, token: str) -> File:
-    """公开下载入口：校验链接有效且对象存储中文件仍存在。"""
+    """公开下载入口:校验链接有效且对象存储中文件仍存在."""
     share = get_share_by_token(session, token)
     if not share:
-        raise ResourceNotFoundError("Link invalid or expired")
+        message = "Link invalid or expired"
+        raise ResourceNotFoundError(message)
     file = share.file
     if not file:
-        raise ResourceNotFoundError("File not found")
+        message = "File not found"
+        raise ResourceNotFoundError(message)
     storage = get_storage_client()
-    if not storage.file_exists(cast(str, file.file_path)):
-        raise ResourceNotFoundError("File not found")
+    if not storage.file_exists(file.file_path):
+        message = "File not found"
+        raise ResourceNotFoundError(message)
     return file

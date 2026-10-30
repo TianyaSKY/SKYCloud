@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from langchain_core.messages import AIMessage, ToolMessage
+
 
 class TestHandlerHelpers:
     def test_get_llm_config(self):
@@ -70,15 +72,19 @@ class TestOrganizeFiles:
             "has_checkpoint": True,
             "target_event_id": 10,
         }
+        mock_agent = MagicMock()
         with patch("app.features.folder.organize.handler.get_llm_config",
                     return_value=("http://x", "y", "z")), \
              patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
+             patch("app.features.folder.organize.handler.agents.create_agent", return_value=mock_agent), \
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint") as m_upd:
             usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         m_upd.assert_called_once()
-        assert "跳过" in results or "跳过" in results
+        assert "跳过" in results
+        assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        mock_agent.stream.assert_not_called()
 
     def test_no_changes_no_checkpoint_full_scan(self, session, test_workspace):
         """无 checkpoint 时执行全量扫描。"""
@@ -97,13 +103,87 @@ class TestOrganizeFiles:
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
-             patch("app.features.folder.organize.handler.create_react_agent", return_value=mock_agent), \
+             patch("app.features.folder.organize.handler.agents.create_agent", return_value=mock_agent), \
              patch("app.features.folder.organize.handler.check_mixed_folders_internal",
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
             usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert usage["input_tokens"] == 0
+
+    def test_model_updates_preserve_usage_messages_and_checkpoint(
+        self, session, test_workspace,
+    ):
+        """Model/tool deltas survive validation retries without double billing."""
+        from app.features.folder.organize.handler import organize_files
+
+        usage = {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}
+        first = AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "get_all_files",
+                "args": {"workspace_id": test_workspace.id},
+                "id": "files-call",
+            }],
+            usage_metadata=usage,
+        )
+        tool_result = ToolMessage(content="file listing", tool_call_id="files-call")
+        finished = AIMessage(content="First pass complete", usage_metadata=usage)
+        retry = AIMessage(content="Structure fixed", usage_metadata=usage)
+        mock_agent = MagicMock()
+        mock_agent.stream.side_effect = [
+            iter([
+                {"model": {"messages": [first]}},
+                {"tools": {"messages": [tool_result]}},
+                {"model": {"messages": [finished]}},
+            ]),
+            iter([{"model": {"messages": [retry]}}]),
+        ]
+        with (
+            patch("app.features.folder.organize.handler.get_llm_config",
+                  return_value=("http://x", "y", "z")),
+            patch("app.features.folder.organize.handler.SessionLocal",
+                  side_effect=lambda: Session(
+                      bind=session.get_bind(),
+                      join_transaction_mode="create_savepoint",
+                  )),
+            patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
+                  return_value={
+                      "has_changes": False,
+                      "has_checkpoint": False,
+                      "target_event_id": 17,
+                  }),
+            patch("app.features.folder.organize.handler.change_log_service.update_checkpoint") as checkpoint,
+            patch("app.features.folder.organize.handler.agents.create_agent",
+                  return_value=mock_agent),
+            patch("app.features.folder.organize.handler.record_llm_usage") as record,
+            patch("app.features.folder.organize.handler.check_mixed_folders_internal",
+                  side_effect=[(False, "mixed"), (True, "clean")]),
+            patch("app.features.folder.organize.handler.check_empty_folders_internal",
+                  return_value=(True, "clean")),
+        ):
+            totals, results = organize_files(
+                test_workspace.id, test_workspace.owner_id,
+            )
+
+        assert totals == {
+            "input_tokens": 15, "output_tokens": 9, "total_tokens": 24,
+        }
+        assert record.call_count == 3
+        assert [call.kwargs["usage"].total_tokens for call in record.call_args_list] == [8, 8, 8]
+        replay = mock_agent.stream.call_args_list[1].args[0]["messages"]
+        assert replay[1:4] == [first, tool_result, finished]
+        assert "mixed" in replay[-1].content
+        for call in mock_agent.stream.call_args_list:
+            assert call.kwargs["stream_mode"] == "updates"
+            assert call.args[1]["recursion_limit"] == 40
+            assert call.args[1]["configurable"]["thread_id"].startswith(
+                f"file_org_{test_workspace.id}_",
+            )
+        assert checkpoint.call_args.args[1:] == (test_workspace.id, 17)
+        assert checkpoint.call_args.kwargs == {"mark_full_scan": True}
+        assert "file listing" in results
+        assert "checkpoint" in results
 
     def test_incremental_mode(self, session, test_workspace):
         """增量模式。"""
@@ -128,7 +208,7 @@ class TestOrganizeFiles:
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
-             patch("app.features.folder.organize.handler.create_react_agent", return_value=mock_agent), \
+             patch("app.features.folder.organize.handler.agents.create_agent", return_value=mock_agent), \
              patch("app.features.folder.organize.handler.check_mixed_folders_internal",
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
@@ -157,7 +237,7 @@ class TestOrganizeFiles:
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
-             patch("app.features.folder.organize.handler.create_react_agent", return_value=mock_agent), \
+             patch("app.features.folder.organize.handler.agents.create_agent", return_value=mock_agent), \
              patch("app.features.folder.organize.handler.check_mixed_folders_internal",
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
@@ -177,7 +257,7 @@ class TestOrganizeFiles:
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    side_effect=Exception("Context error")), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
-             patch("app.features.folder.organize.handler.create_react_agent", return_value=mock_agent), \
+             patch("app.features.folder.organize.handler.agents.create_agent", return_value=mock_agent), \
              patch("app.features.folder.organize.handler.check_mixed_folders_internal",
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
@@ -208,7 +288,7 @@ class TestOrganizeFiles:
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
-             patch("app.features.folder.organize.handler.create_react_agent", return_value=mock_agent), \
+             patch("app.features.folder.organize.handler.agents.create_agent", return_value=mock_agent), \
              patch("app.features.folder.organize.handler.check_mixed_folders_internal",
                    side_effect=mixed_results), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
@@ -241,7 +321,7 @@ class TestOrganizeFiles:
              patch("app.features.folder.organize.handler.change_log_service.load_incremental_context",
                    return_value=mock_ctx), \
              patch("app.features.folder.organize.handler.change_log_service.update_checkpoint"), \
-             patch("app.features.folder.organize.handler.create_react_agent", return_value=mock_agent), \
+             patch("app.features.folder.organize.handler.agents.create_agent", return_value=mock_agent), \
              patch("app.features.folder.organize.handler.check_mixed_folders_internal",
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
@@ -392,7 +472,7 @@ class TestDescription:
         mock_resp.choices[0].message.content = ""
         with patch("app.infra.llm.sync_client.chat_completion",
                    return_value=mock_resp):
-            with pytest.raises(Exception, match="无法生成"):
+            with pytest.raises(RuntimeError, match="无法生成"):
                 _generate_text_description(
                     str(f), {"api": "x", "key": "y", "model": "z"})
 
@@ -426,10 +506,44 @@ class TestDescription:
                 str(f), {"api": "x", "key": "y", "model": "z"})
         assert result == "A JPEG image"
 
-    def test_desc_file_alias(self):
-        from app.features.folder.organize.description import desc_file, generate_file_description
-        assert desc_file is generate_file_description
 
-    def test_format_data_alias(self):
-        from app.features.folder.organize.description import format_data, _extract_text_content
-        assert format_data is _extract_text_content
+@pytest.mark.parametrize(
+    ("suffix", "operation", "exception_type", "expected"),
+    [
+        (".mp4", "cv2.VideoCapture", KeyboardInterrupt, "Video File: sample.mp4"),
+        (".docx", "Document", KeyboardInterrupt, ""),
+        (".txt", "Path.read_text", KeyboardInterrupt, ""),
+        (".pdf", "fitz.open", RuntimeError, ""),
+        (".csv", "pd.read_csv", RuntimeError, ""),
+    ],
+)
+def test_extraction_failure_keeps_original_fallback(
+    tmp_path, suffix, operation, exception_type, expected,
+):
+    from app.features.folder.organize.description import _extract_text_content
+
+    source = tmp_path / f"sample{suffix}"
+    source.write_bytes(b"synthetic content")
+    with patch(
+        f"app.features.folder.organize.description.{operation}",
+        side_effect=exception_type("PRIVATE_PARSE_FAILURE"),
+    ):
+        result = _extract_text_content(str(source))
+    assert result == expected
+    assert "PRIVATE_PARSE_FAILURE" not in result
+
+
+def test_pdf_page_failure_falls_back_to_full_text(tmp_path):
+    from app.features.folder.organize.description import extract_file_sections
+
+    source = tmp_path / "sample.pdf"
+    source.write_bytes(b"synthetic PDF")
+    with (
+        patch("app.features.folder.organize.description._pdf_sections",
+              side_effect=RuntimeError("PRIVATE_PAGE_FAILURE")),
+        patch("app.features.folder.organize.description._extract_text_content",
+              return_value="fallback text"),
+    ):
+        sections = extract_file_sections(str(source))
+    assert len(sections) == 1
+    assert sections[0].text == "fallback text"

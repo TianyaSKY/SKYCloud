@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from app.features.assistant import service
+from app.features.assistant.run_control import RunController
 
 
 async def test_worker_permission_notification_wakes_owning_loop():
@@ -13,7 +14,7 @@ async def test_worker_permission_notification_wakes_owning_loop():
     original_debug = loop.get_debug()
     loop.set_debug(True)  # asyncio rejects unsafe cross-thread Future.set_result.
     try:
-        controller = service.RunController()
+        controller = RunController()
         future = controller.wait_for_permission('p1')
         async def wait():
             return await future
@@ -27,7 +28,7 @@ async def test_worker_permission_notification_wakes_owning_loop():
 
 
 async def test_cancelled_future_ignores_queued_worker_notification():
-    controller = service.RunController()
+    controller = RunController()
     future = controller.wait_for_permission('p1')
     # Schedule and cancel in one callback, before queued notification delivery.
     def schedule_then_cancel():
@@ -59,8 +60,26 @@ def test_permission_notification_only_after_successful_commit(monkeypatch, commi
     monkeypatch.setattr(service.run_registry, 'resolve_permission', notify)
     if commit_fails:
         with pytest.raises(RuntimeError, match='database unavailable'):
-            service.respond_permission(session, SimpleNamespace(id=1), 1, 2, 'p1', 'once')
+            service.respond_permission(
+                session,
+                service.RespondPermissionParams(
+                    workspace=SimpleNamespace(id=1),
+                    user_id=1,
+                    run_id=2,
+                    permission_id='p1',
+                    response='once',
+                ),
+            )
         notify.assert_not_called()
     else:
-        assert service.respond_permission(session, SimpleNamespace(id=1), 1, 2, 'p1', 'once') is run
+        assert service.respond_permission(
+            session,
+            service.RespondPermissionParams(
+                workspace=SimpleNamespace(id=1),
+                user_id=1,
+                run_id=2,
+                permission_id='p1',
+                response='once',
+            ),
+        ) is run
         notify.assert_called_once_with(2, 'p1', 'once')

@@ -1,8 +1,11 @@
 """Public inbox response models."""
+
 from pydantic import BaseModel
 
 
 class InboxMessage(BaseModel):
+    """One inbox notification row."""
+
     id: int
     user_id: int
     title: str | None
@@ -13,6 +16,8 @@ class InboxMessage(BaseModel):
 
 
 class InboxPage(BaseModel):
+    """One page of inbox notifications."""
+
     items: list[InboxMessage]
     total: int
     pages: int
@@ -20,4 +25,6 @@ class InboxPage(BaseModel):
 
 
 class InboxAcknowledgment(BaseModel):
+    """Acknowledgment returned after marking messages read."""
+
     message: str

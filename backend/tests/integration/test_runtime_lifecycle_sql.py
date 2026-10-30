@@ -52,7 +52,7 @@ class RecordingController:
 
     def _container(self, identity):
         container = SimpleNamespace(id=identity)
-        container.stop = lambda timeout=None: self.events.append(('stop', timeout))
+        container.stop = lambda: self.events.append(('stop', identity))
         container.start = lambda: self.events.append(('start', identity))
         return container
 
@@ -114,7 +114,7 @@ def test_stop_cancellation_commits_before_the_rpc_and_survives_lost_commit(graph
     finally:
         runtime_token_service.revoke_runtime_tokens = original
 
-    assert ('stop', 10) in controller['events']
+    assert ('stop', 'a' * 64) in controller['events']
     # The stop lost its final commit, so only the durable cancellation can prevent recovery.
     assert operation_state(graph, generation) == 'cancelled'
     assert recover_runtime_operations(session_factory=graph) == 0

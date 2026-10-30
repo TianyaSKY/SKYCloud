@@ -280,14 +280,15 @@ def controller(infrastructure, monkeypatch):
 
 def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, controller):
     import httpx
-    from types import SimpleNamespace
+    from app.models.opencode_runtime import OpenCodeRuntime
+    from app.models.workspace import Workspace
     from app.features.workspace import docker_service as service
     from runtime_controller.client import auth_headers
 
-    workspace = SimpleNamespace(id=int(uuid.uuid4().hex[:10], 16))
+    workspace = Workspace(id=int(uuid.uuid4().hex[:10], 16))
     name = f"skycloud-opencode-w{workspace.id}-u1"
     infrastructure["cleanup"].append(name)
-    container = service._create(workspace, 1, 1)
+    container = service.create_runtime_container(workspace, 1, 1)
     inspect = json.loads(docker("inspect", container.id).stdout)[0]
     snapshot = controller["client"].user_snapshot(1)
     assert {"id": container.id, "workspace_id": workspace.id, "user_id": 1, "runtime_id": 1, "status": "running"} in snapshot
@@ -303,7 +304,7 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
     assert "size=512m" in policy["Tmpfs"]["/workspace"]
     assert not policy.get("PortBindings")
     assert not inspect["Mounts"]
-    runtime = SimpleNamespace(container_id=container.id, id=1)
+    runtime = OpenCodeRuntime(container_id=container.id, id=1)
     base = service.get_runtime_base_url(workspace, 1, runtime)
     with httpx.Client(base_url=base, headers=auth_headers(base), timeout=10) as client:
         deadline = time.monotonic() + 20
@@ -330,13 +331,13 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
         assert "javascript" in asset.headers.get("content-type", "")
         (FIXTURE_DIR / 'skycloud-runtime-ui-main.js').write_text(asset.text)
         config = service.merge_opencode_chat_provider({}, {"base_url": "http://gateway:5002/v1", "model": "test-model", "api_key": "scoped-token"})
-        service._write_opencode_config(container, config)
-        assert service._read_opencode_config(container) == config
+        container.write_config(config)
+        assert container.read_config() == config
         assert client.post("/instance/dispose").status_code == 200
         loaded = client.get("/config")
         assert loaded.status_code == 200
         assert loaded.json()["model"] == "skycloud-chat/test-model"
-        assert service._read_opencode_config(container)["provider"] == config["provider"]
+        assert container.read_config()["provider"] == config["provider"]
     async def exercise_async_client():
         import asyncio
         from app.features.assistant.clients.opencode_client import OpenCodeClient

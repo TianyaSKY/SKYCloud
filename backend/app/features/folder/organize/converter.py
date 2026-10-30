@@ -1,24 +1,25 @@
-"""格式转换工具：Office→PDF、PDF→图、视频抽帧，供描述生成链路使用。
+"""格式转换工具: Office->PDF、PDF->图、视频抽帧, 供描述生成链路使用.
 
-仅做本地转换，不访问 LLM / DB；LibreOffice 路径可通过 LIBREOFFICE_PATH 覆盖。
+仅做本地转换, 不访问 LLM / DB; LibreOffice 路径可通过 LIBREOFFICE_PATH 覆盖.
 """
 
 import os
 import subprocess
+from pathlib import Path
 
 import cv2
 import fitz
-
 from loguru import logger
+
 from app.infra.processes import run_converter
 
 OFFICE_CONVERSION_TIMEOUT_SECONDS = 120
 
 
-def get_libreoffice_command():
-    """解析 soffice 可执行路径：环境变量 → Windows 常见安装位 → PATH 中的 soffice。"""
+def get_libreoffice_command() -> str:
+    """Resolve soffice: env override, then Windows install paths, then PATH."""
     env_path = os.environ.get("LIBREOFFICE_PATH")
-    if env_path and os.path.exists(env_path):
+    if env_path and Path(env_path).exists():
         return env_path
 
     if os.name == "nt":
@@ -27,18 +28,18 @@ def get_libreoffice_command():
             r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
         ]
         for path in possible_paths:
-            if os.path.exists(path):
+            if Path(path).exists():
                 return path
 
     return "soffice"
 
 
-def convert_office_to_pdf(input_path, output_dir):
-    """用 LibreOffice headless 转 PDF；独立 UserInstallation 避免并发锁 profile。"""
+def convert_office_to_pdf(input_path: str, output_dir: str) -> str:
+    """Convert with headless LibreOffice; a private profile avoids locks."""
     soffice_cmd = get_libreoffice_command()
     logger.info("Converting office document to PDF")
 
-    user_profile_path = os.path.join(output_dir, "libreoffice_user_profile")
+    user_profile_path = str(Path(output_dir) / "libreoffice_user_profile")
     user_profile_url = f"file:///{user_profile_path.replace(os.sep, '/')}"
 
     cmd = [
@@ -54,17 +55,24 @@ def convert_office_to_pdf(input_path, output_dir):
     try:
         run_converter(cmd, timeout=OFFICE_CONVERSION_TIMEOUT_SECONDS)
         logger.info("Office conversion finished")
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ) as exc:
         logger.error("Office conversion failed (error_type={})", type(exc).__name__)
         raise
 
-    base_name = os.path.splitext(os.path.basename(input_path))[0]
-    return os.path.join(output_dir, base_name + ".pdf")
+    return str(Path(output_dir) / f"{Path(input_path).stem}.pdf")
 
 
-def convert_pdf_to_images(pdf_path, output_dir, max_pages=5):
-    """PDF 前 max_pages 页渲成 JPEG；2x zoom 兼顾清晰度与体积。"""
-    image_paths = []
+def convert_pdf_to_images(
+    pdf_path: str,
+    output_dir: str,
+    max_pages: int = 5,
+) -> list[str]:
+    """Render the first `max_pages` pages to JPEG at 2x zoom."""
+    image_paths: list[str] = []
     doc = None
     try:
         doc = fitz.open(pdf_path)
@@ -75,7 +83,7 @@ def convert_pdf_to_images(pdf_path, output_dir, max_pages=5):
             mat = fitz.Matrix(zoom, zoom)
             pix = page.get_pixmap(matrix=mat)
 
-            image_path = os.path.join(output_dir, f"page_{i}.jpg")
+            image_path = str(Path(output_dir) / f"page_{i}.jpg")
             pix.save(image_path)
             image_paths.append(image_path)
     except Exception as e:
@@ -85,13 +93,20 @@ def convert_pdf_to_images(pdf_path, output_dir, max_pages=5):
             try:
                 doc.close()
             except Exception as exc:
-                logger.warning("PDF document cleanup failed (error_type={})", type(exc).__name__)
+                logger.warning(
+                    "PDF document cleanup failed (error_type={})",
+                    type(exc).__name__,
+                )
     return image_paths
 
 
-def extract_video_frames(video_path, output_dir, frame_count=5):
-    """等间隔抽取 frame_count 帧，覆盖片头到片尾。"""
-    image_paths = []
+def extract_video_frames(
+    video_path: str,
+    output_dir: str,
+    frame_count: int = 5,
+) -> list[str]:
+    """Extract `frame_count` evenly spaced frames spanning the whole video."""
+    image_paths: list[str] = []
     cap = None
     try:
         cap = cv2.VideoCapture(video_path)
@@ -107,7 +122,7 @@ def extract_video_frames(video_path, output_dir, frame_count=5):
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = cap.read()
             if ret:
-                frame_path = os.path.join(output_dir, f"frame_{i}.jpg")
+                frame_path = str(Path(output_dir) / f"frame_{i}.jpg")
                 cv2.imwrite(frame_path, frame)
                 image_paths.append(frame_path)
     except Exception as e:
@@ -117,5 +132,8 @@ def extract_video_frames(video_path, output_dir, frame_count=5):
             try:
                 cap.release()
             except Exception as exc:
-                logger.warning("Video capture cleanup failed (error_type={})", type(exc).__name__)
+                logger.warning(
+                    "Video capture cleanup failed (error_type={})",
+                    type(exc).__name__,
+                )
     return image_paths

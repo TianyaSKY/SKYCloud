@@ -4,7 +4,7 @@ import threading
 from types import SimpleNamespace
 import pytest
 from app.exceptions import ResourceNotFoundError
-from app.features.assistant import service, stream_persistence
+from app.features.assistant import service
 from app.features.assistant.event_protocol import AssistantEvent
 
 
@@ -42,11 +42,28 @@ async def test_cleanup_fault_preserves_stream_outcome_and_thread(monkeypatch, bo
             entered.set()
             await asyncio.Event().wait()
         yield AssistantEvent('done', {})
-    monkeypatch.setattr(stream_persistence, 'StreamPersistence', persistence)
+    monkeypatch.setattr(service, 'StreamPersistence', persistence)
     monkeypatch.setattr(service, '_stream_persisted', events)
     monkeypatch.setattr(service.logger, 'error', lambda message,*args: logged.append(message.format(*args)))
-    iterator = (service.stream_prepared_run(session, None, 1, None, None, []) if borrowed
-                else service.stream_run(lambda: session, 1, 1, 1, 1, []))
+    iterator = (
+        service.stream_prepared_run(service.StreamPreparedRunParams(
+            session=session,
+            workspace=None,
+            user_id=1,
+            conversation=None,
+            run=None,
+            history=[],
+        ))
+        if borrowed
+        else service.stream_run(service.StreamRunParams(
+            session_factory=lambda: session,
+            workspace_id=1,
+            user_id=1,
+            conversation_id=1,
+            run_id=1,
+            history=[],
+        ))
+    )
     async def collect(): return [event.type async for event in iterator]
     if outcome == 'done': assert await collect() == ['done']
     elif outcome == 'cancel':

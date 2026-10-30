@@ -1,55 +1,99 @@
 """Bounded direct WebSocket transport shared by the two runtime relay hops."""
+
 import asyncio
-import re
+import contextlib
 import logging
+import re
 import threading
+from collections.abc import Awaitable, Callable
+from typing import Final
 
 from fastapi import HTTPException
-from starlette.websockets import WebSocketDisconnect
-from websockets.asyncio.client import connect
+from starlette.types import Message
+from starlette.websockets import WebSocket, WebSocketDisconnect
+from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
-transport_logger = logging.Logger('runtime.socket.transport', level=logging.WARNING)
+transport_logger = logging.getLogger("runtime.socket.transport")
+transport_logger.setLevel(logging.WARNING)
 transport_logger.addHandler(logging.NullHandler())
 transport_logger.propagate = False
 
-MAX_MESSAGE = 1024 * 1024
-MAX_INPUT = 256 * 1024
-MAX_BYTES = 64 * 1024 * 1024
-MAX_MESSAGES = 100000
+MAX_MESSAGE: Final = 1024 * 1024
+MAX_INPUT: Final = 256 * 1024
+MAX_BYTES: Final = 64 * 1024 * 1024
+MAX_MESSAGES: Final = 100000
+MAX_SESSION_SECONDS: Final = 600
+GUARD_INTERVAL_SECONDS: Final = 15
+WRITE_LIMIT_BYTES: Final = 32768
+MAX_QUEUE: Final = 4
+CONNECT_TIMEOUT_SECONDS: Final = 5
+PING_INTERVAL_SECONDS: Final = 20
+PING_TIMEOUT_SECONDS: Final = 20
+TERMINAL_PATH_PATTERN: Final = (
+    r"(?:api/)?pty/[A-Za-z0-9_-]{1,128}/connect"
+)
+
+WS_NORMAL_CLOSURE: Final = 1000
+WS_POLICY_VIOLATION: Final = 1008
+WS_MESSAGE_TOO_BIG: Final = 1009
+WS_INTERNAL_ERROR: Final = 1011
 
 
-def terminal_path(path):
-    return bool(re.fullmatch(r'(?:api/)?pty/[A-Za-z0-9_-]{1,128}/connect', path))
+def terminal_path(path: str) -> bool:
+    """Return whether the relay path addresses one runtime terminal."""
+    return bool(re.fullmatch(TERMINAL_PATH_PATTERN, path))
 
 
 class DirectConnect(connect):
-    # websockets 15.0.1 follows handshake redirects by default. Never send
-    # either hop's credentials to a redirected endpoint; the version is pinned.
-    def process_redirect(self, exc):
+    """Fixed connection policy: no redirects, no proxies, bounded frames."""
+
+    def process_redirect(self, exc: Exception) -> Exception:
+        """Refuse handshake redirects; the pinned client follows them by default."""
+        # Never send either hop's credentials to a redirected endpoint.
         return exc
 
 
-def direct_connect(url, headers):
-    return DirectConnect(url, additional_headers=headers, proxy=None,
-        logger=transport_logger, compression=None, max_size=MAX_MESSAGE, max_queue=4, write_limit=32768,
-        open_timeout=5, close_timeout=5, ping_interval=20, ping_timeout=20)
+def direct_connect(url: str, headers: dict[str, str]) -> connect:
+    """Open one bounded WebSocket connection to the runtime."""
+    return DirectConnect(
+        url,
+        additional_headers=headers,
+        proxy=None,
+        logger=transport_logger,
+        compression=None,
+        max_size=MAX_MESSAGE,
+        max_queue=MAX_QUEUE,
+        write_limit=WRITE_LIMIT_BYTES,
+        open_timeout=CONNECT_TIMEOUT_SECONDS,
+        close_timeout=CONNECT_TIMEOUT_SECONDS,
+        ping_interval=PING_INTERVAL_SECONDS,
+        ping_timeout=PING_TIMEOUT_SECONDS,
+    )
 
 
 class SocketSlots:
-    def __init__(self, total=64, per_owner=4):
+    """Fixed per-owner and total socket budget with a thread-safe counter."""
+
+    def __init__(self, total: int = 64, per_owner: int = 4) -> None:
+        """Set the total and per-owner relay budgets."""
         self.total, self.per_owner = total, per_owner
-        self.counts = {}
+        self.counts: dict[str | int, int] = {}
         self.lock = threading.Lock()
 
-    def acquire(self, owner):
+    def acquire(self, owner: str | int) -> bool:
+        """Reserve one relay slot for the owner, or refuse at the budget."""
         with self.lock:
-            if sum(self.counts.values()) >= self.total or self.counts.get(owner, 0) >= self.per_owner:
+            if (
+                sum(self.counts.values()) >= self.total
+                or self.counts.get(owner, 0) >= self.per_owner
+            ):
                 return False
             self.counts[owner] = self.counts.get(owner, 0) + 1
             return True
 
-    def release(self, owner):
+    def release(self, owner: str | int) -> None:
+        """Return one relay slot held by the owner."""
         with self.lock:
             count = self.counts.get(owner, 0)
             if count <= 1:
@@ -59,65 +103,114 @@ class SocketSlots:
 
 
 class SocketLimit(Exception):
-    pass
+    """The relay exceeded its frame, byte or message budget."""
 
 
-async def pump(websocket, upstream, *, seconds, guard, interval=15):
+def _frame(message: Message) -> bytes | str:
+    """Return the payload of one received ASGI WebSocket message."""
+    raw = message.get("bytes")
+    if raw is not None:
+        return raw
+    return message.get("text", "")
+
+
+def _length(data: bytes | str) -> int:
+    return len(data) if isinstance(data, bytes) else len(data.encode())
+
+
+async def _shutdown(
+    websocket: WebSocket, tasks: list["asyncio.Task[None]"], code: int,
+) -> None:
+    """Cancel every pump, close the client and drain the cancelled tasks."""
+    for task in tasks:
+        task.cancel()
+    with contextlib.suppress(RuntimeError, WebSocketDisconnect):
+        await websocket.close(code=code)
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _close_code(done: set["asyncio.Task[None]"]) -> int:
+    """Map completed pump outcomes onto the fixed WebSocket close codes."""
+    code = WS_NORMAL_CLOSURE
+    for task in done:
+        try:
+            task.result()
+        except SocketLimit:
+            code = WS_MESSAGE_TOO_BIG
+        except HTTPException:
+            code = WS_POLICY_VIOLATION
+        except (ConnectionClosed, WebSocketDisconnect):
+            pass
+        except Exception:
+            # Any pump failure must still close the client with a fixed code.
+            code = WS_INTERNAL_ERROR
+    return code
+
+
+async def _inbound(websocket: WebSocket, upstream: ClientConnection) -> None:
+    """Relay client frames upstream within the input budget."""
+    size = 0
+    count = 0
+    while True:
+        message = await websocket.receive()
+        if message["type"] == "websocket.disconnect":
+            return
+        data = _frame(message)
+        length = _length(data)
+        size += length
+        count += 1
+        if length > MAX_INPUT or size > MAX_BYTES or count > MAX_MESSAGES:
+            raise SocketLimit
+        await upstream.send(data)
+
+
+async def _outbound(websocket: WebSocket, upstream: ClientConnection) -> None:
+    """Relay runtime frames to the client within the message budget."""
+    size = 0
+    count = 0
+    async for data in upstream:
+        length = _length(data)
+        size += length
+        count += 1
+        if length > MAX_MESSAGE or size > MAX_BYTES or count > MAX_MESSAGES:
+            raise SocketLimit
+        if isinstance(data, bytes):
+            await websocket.send_bytes(data)
+        else:
+            await websocket.send_text(data)
+
+
+async def _monitor(guard: Callable[[], Awaitable[None]], interval: float) -> None:
+    """Re-check the runtime identity for the lifetime of the session."""
+    while True:
+        await asyncio.sleep(interval)
+        await guard()
+
+
+async def _expiry(seconds: float) -> None:
+    """End the session at its fixed lifetime."""
+    await asyncio.sleep(max(0, min(MAX_SESSION_SECONDS, seconds)))
+    raise HTTPException(401, "Runtime UI session expired")
+
+
+async def pump(
+    websocket: WebSocket,
+    upstream: ClientConnection,
+    *,
+    seconds: float,
+    guard: Callable[[], Awaitable[None]],
+    interval: float = GUARD_INTERVAL_SECONDS,
+) -> None:
     """End both pumps on peer close, lifetime/budget exhaustion or revocation."""
-    async def inbound():
-        size = count = 0
-        while True:
-            message = await websocket.receive()
-            if message['type'] == 'websocket.disconnect':
-                return
-            data = message.get('bytes') if message.get('bytes') is not None else message.get('text', '')
-            length = len(data) if isinstance(data, bytes) else len(data.encode())
-            size += length; count += 1
-            if length > MAX_INPUT or size > MAX_BYTES or count > MAX_MESSAGES:
-                raise SocketLimit()
-            await upstream.send(data)
-
-    async def outbound():
-        size = count = 0
-        async for data in upstream:
-            length = len(data) if isinstance(data, bytes) else len(data.encode())
-            size += length; count += 1
-            if length > MAX_MESSAGE or size > MAX_BYTES or count > MAX_MESSAGES:
-                raise SocketLimit()
-            if isinstance(data, bytes):
-                await websocket.send_bytes(data)
-            else:
-                await websocket.send_text(data)
-
-    async def monitor():
-        while True:
-            await asyncio.sleep(interval)
-            await guard()
-
-    async def expiry():
-        await asyncio.sleep(max(0, min(600, seconds)))
-        raise HTTPException(401, 'Runtime UI session expired')
-
-    tasks = [asyncio.create_task(fn()) for fn in (inbound, outbound, monitor, expiry)]
-    code = 1000
+    tasks = [
+        asyncio.create_task(_inbound(websocket, upstream)),
+        asyncio.create_task(_outbound(websocket, upstream)),
+        asyncio.create_task(_monitor(guard, interval)),
+        asyncio.create_task(_expiry(seconds)),
+    ]
+    code = WS_NORMAL_CLOSURE
     try:
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            try:
-                task.result()
-            except SocketLimit:
-                code = 1009
-            except HTTPException:
-                code = 1008
-            except (ConnectionClosed, WebSocketDisconnect):
-                pass
-            except Exception:
-                code = 1011
+        code = _close_code(done)
     finally:
-        for task in tasks:
-            task.cancel()
-        try:
-            await websocket.close(code=code)
-        except (RuntimeError, WebSocketDisconnect):
-            pass
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await _shutdown(websocket, tasks, code)

@@ -1,72 +1,101 @@
-"""MCP 协议适配层：将云盘能力暴露为 tools / resources / prompts。
+"""MCP 协议适配层:将云盘能力暴露为 tools / resources / prompts.
 
-职责边界：只做协议适配与鉴权注入，业务逻辑在 features；请求认证和工具授权在独立 MCP 模块。
-独立容器运行；JWT 经 ASGI 中间件写入 ContextVar，工具侧无需手传 user_id。
+职责边界:只做协议适配与鉴权注入,业务逻辑在 features;请求认证和工具授权在独立 MCP 模块。
+独立容器运行;JWT 经 ASGI 中间件写入 ContextVar,工具侧无需手传 user_id。
 
-约束：
-1. 同步 DB 调用须经 _run_sync / to_thread，并在同一线程 SessionLocal() + close()
-2. service 的 DomainError / HTTPException 转为结构化 JSON 错误，避免 MCP 客户端拿到裸栈
-3. 工具参数与名称保持稳定，供 Claude Desktop / Cursor / OpenCode 长期配置
+约束:
+1. 同步 DB 调用须经 _run_sync / to_thread,并在同一线程 SessionLocal() + close()
+2. service 的 DomainError / HTTPException 转为结构化 JSON 错误,避免 MCP 客户端拿到裸栈
+3. 工具参数与名称保持稳定,供 Claude Desktop / Cursor / OpenCode 长期配置
 """
 
-from app.infra.owned_work import run_owned
-from app.mcp.unit_of_work import worker_session
-import json
 import codecs
+import json
 import os
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import timedelta
-from typing import Any
+from pathlib import Path
+from typing import Any, Concatenate, ParamSpec, TypeVar
 
 from fastapi import HTTPException
+from loguru import logger
 from mcp.server.fastmcp import FastMCP
-from app.mcp.transport import transport_options
-from app.mcp.inline_upload import build_inline_upload
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+from starlette.types import ASGIApp
 
 from app.exceptions import DomainError
-from app.infra.datetime_utils import utc_now
-from app.infra.extensions import SessionLocal
-from app.infra.storage import get_storage_client
-from app.infra.upload_adapter import Base64UploadAdapter
-from app.infra.upload_limits import BufferedJsonBodyLimitMiddleware, positive_limit
+from app.features.file import search_service as file_search_service
 from app.features.file import service as file_service
 from app.features.folder import service as folder_service
 from app.features.share import service as share_service
-from app.features.workspace.permissions import assert_member
 from app.features.workspace import insights as workspace_insights
-from app.mcp.context import (McpRequestContext, _current_user_id,
-                             get_optional_mcp_context, is_mcp_request_active)
+from app.infra.datetime_utils import utc_now
+from app.infra.extensions import SessionLocal
+from app.infra.owned_work import run_owned
+from app.infra.storage import get_storage_client
+from app.infra.upload_adapter import Base64UploadAdapter
+from app.infra.upload_limits import BufferedJsonBodyLimitMiddleware, positive_limit
+from app.mcp.audit import audited_tool
 from app.mcp.authentication import JWTAuthMiddleware
 from app.mcp.authorization import (
-    _get_authenticated_user_id, _get_tool_context, _require_read_context,
-    _require_write_context, _require_admin_context, _current_read_role,
-    _assert_current_write_permission, _get_authorized_file, _get_authorized_folder,
+    assert_current_write_permission,
+    current_read_role,
+    get_authorized_file,
+    get_authorized_folder,
+    require_read_context,
+    require_write_context,
 )
-from app.mcp.audit import audited_tool
-
-from loguru import logger
+from app.mcp.context import (
+    McpRequestContext,
+    get_optional_mcp_context,
+    is_mcp_request_active,
+)
+from app.mcp.inline_upload import build_inline_upload
+from app.mcp.transport import transport_options
+from app.mcp.unit_of_work import worker_session
+from app.models.folder import FolderDict
+from app.models.user import User
 
 MCP_INLINE_UPLOAD_MAX_BYTES = 8 * 1024 * 1024
 
-def get_mcp_app(mcp_instance: FastMCP):
-    """包装 streamable HTTP ASGI 应用，挂上 JWT 中间件。"""
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+_SERVER_ERROR_STATUS = 500
+_UNAVAILABLE_MESSAGE = "Service temporarily unavailable"
+_MAX_SHARE_EXPIRES_HOURS = 168
+_MIN_SHARE_EXPIRES_HOURS = 1
+_DOCKERENV_PATH = Path("/.dockerenv")
+
+
+def get_mcp_app(mcp_instance: FastMCP) -> ASGIApp:
+    """包装 streamable HTTP ASGI 应用,挂上 JWT 中间件."""
     raw_app = mcp_instance.streamable_http_app()
-    return JWTAuthMiddleware(BufferedJsonBodyLimitMiddleware(raw_app,
-        positive_limit("MCP_MAX_REQUEST_SIZE", 32 * 1024 * 1024),
-        positive_limit("MCP_REQUEST_CONCURRENCY", 4)))
+    return JWTAuthMiddleware(
+        BufferedJsonBodyLimitMiddleware(
+            raw_app,
+            positive_limit("MCP_MAX_REQUEST_SIZE", 32 * 1024 * 1024),
+            positive_limit("MCP_REQUEST_CONCURRENCY", 4),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
 # 工具辅助
 # ---------------------------------------------------------------------------
-async def _run_sync(fn, *args, **kwargs):
-    """在线程池执行同步函数；同一线程内 SessionLocal()，结束后 close。
+async def _run_sync(
+    fn: Callable[Concatenate[Session, _P], _R],
+    *args: _P.args,
+    **kwargs: _P.kwargs,
+) -> _R:
+    """在线程池执行同步函数;同一线程内 SessionLocal(),结束后 close.
 
-    fn 的第一个参数须为 session（与 service 签名一致）。
+    fn 的第一个参数须为 session(与 service 签名一致)。
     """
 
-    def _work():
+    def _work() -> _R:
         with worker_session(SessionLocal) as session:
             return fn(session, *args, **kwargs)
 
@@ -74,33 +103,40 @@ async def _run_sync(fn, *args, **kwargs):
 
 
 def _error_json(msg: str) -> str:
-    """MCP 工具统一错误载荷。"""
+    """MCP 工具统一错误载荷."""
     return json.dumps({"error": msg}, ensure_ascii=False)
+
+
+def _detail_text(detail: object) -> str:
+    """Keep only text error details; structured payloads stay internal."""
+    return detail if isinstance(detail, str) else "Request failed"
 
 
 def _service_error_json(exc: Exception) -> str:
     """Expose only client-facing domain errors; retain internal diagnostics in logs."""
-    if isinstance(exc, DomainError) and exc.status_code < 500:
+    if isinstance(exc, DomainError) and exc.status_code < _SERVER_ERROR_STATUS:
         return _error_json(str(exc))
-    if isinstance(exc, HTTPException) and exc.status_code < 500:
-        detail = exc.detail if isinstance(exc.detail, str) else "Request failed"
-        return _error_json(detail)
+    if isinstance(exc, HTTPException) and exc.status_code < _SERVER_ERROR_STATUS:
+        return _error_json(_detail_text(exc.detail))
     logger.error("MCP service operation failed: {}", type(exc).__name__)
-    return _error_json("Service temporarily unavailable")
+    return _error_json(_UNAVAILABLE_MESSAGE)
 
 
 # ---------------------------------------------------------------------------
 # FastMCP 实例
 # ---------------------------------------------------------------------------
+_transport = transport_options()
+
 mcp = FastMCP(
     "SKYCloud",
-    **transport_options(),
+    transport_security=_transport["transport_security"],
+    max_request_body_size=_transport["max_request_body_size"],
     instructions=(
         "SKYCloud 是一个智能云盘系统。你可以通过以下工具来搜索文件、浏览文件夹、"
         "获取文件信息、创建文件夹、移动/重命名文件、删除文件、"
-        "读取文本文件内容，以及使用 upload_file 直接上传文件内容到云盘。"
+        "读取文本文件内容,以及使用 upload_file 直接上传文件内容到云盘。"
         "上传不依赖 curl。\n"
-        "所有操作需要在连接时提供有效的 JWT Bearer Token 进行身份认证，"
+        "所有操作需要在连接时提供有效的 JWT Bearer Token 进行身份认证,"
         "无需手动传递 user_id。"
     ),
 )
@@ -109,23 +145,21 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
-
 @mcp.tool()
 @audited_tool("get_current_user")
 async def get_current_user() -> str:
-    """获取当前已认证用户的基本信息，包括用户名、角色、Token 用量统计等。"""
-    context = _require_read_context()
+    """获取当前已认证用户的基本信息,包括用户名、角色、Token 用量统计等."""
+    context = require_read_context()
     user_id = context.user_id
 
-    def _work():
+    def _work() -> str:
         with worker_session(SessionLocal) as session:
             try:
-                role = _current_read_role(session, context)
-                from app.models.user import User
+                role = current_read_role(session, context)
                 user = session.get(User, user_id)
                 if not user:
                     return _error_json("User not found")
-                info = user.to_dict()
+                info = dict(user.to_dict())
                 info.pop("password_hash", None)  # 绝不经 MCP 回传哈希
                 info["workspace_id"] = context.workspace_id
                 info["workspace_role"] = role
@@ -141,30 +175,41 @@ async def get_current_user() -> str:
 @mcp.tool()
 @audited_tool("search_files")
 async def search_files(
-        query: str,
-        page: int = 1,
-        page_size: int = 10,
-        search_type: str = "fuzzy",
+    query: str,
+    page: int = 1,
+    page_size: int = 10,
+    search_type: str = "fuzzy",
 ) -> str:
-    """搜索用户的文件。
+    """搜索用户的文件.
 
     Args:
         query: 搜索关键词
-        page: 页码（默认 1）
-        page_size: 每页条数（默认 10）
+        page: 页码(默认 1)
+        page_size: 每页条数(默认 10)
         search_type: 搜索类型。
-            - "fuzzy"：仅对文件名进行模糊匹配，不搜索文件内容或描述。
-            - "vector"：AI 语义搜索，可匹配文件内容和描述。
-              如果需要按文件内容查找，请使用 vector 模式。
+            - "fuzzy":仅对文件名进行模糊匹配,不搜索文件内容或描述。
+            - "vector":AI 语义搜索,可匹配文件内容和描述。
+              如果需要按文件内容查找,请使用 vector 模式。
+
     """
-    context = _require_read_context()
+    context = require_read_context()
+
     @contextmanager
-    def search_session():
+    def search_session() -> Generator[Session, None, None]:
         with worker_session(SessionLocal) as session:
             yield session
-    result = await file_service.search_files(
-        None, context.workspace_id, query, page, page_size, search_type,
-        session_factory=search_session, user_id=context.user_id,
+
+    result = await file_search_service.search_files(
+        None,
+        context.workspace_id,
+        file_search_service.SearchFilesParams(
+            query=query,
+            page=page,
+            page_size=page_size,
+            search_type=search_type,
+        ),
+        session_factory=search_session,
+        user_id=context.user_id,
     )
     return json.dumps(result, ensure_ascii=False, default=str)
 
@@ -172,44 +217,48 @@ async def search_files(
 @mcp.tool()
 @audited_tool("list_files")
 async def list_files(
-        parent_id: int | None = None,
-        page: int = 1,
-        page_size: int = 20,
-        name: str | None = None,
-        sort_by: str = "created_at",
-        order: str = "desc",
+    parent_id: int | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    name: str | None = None,
+    sort_by: str = "created_at",
+    order: str = "desc",
 ) -> str:
-    """列出指定目录下的文件和文件夹。
+    """列出指定目录下的文件和文件夹.
 
     Args:
-        parent_id: 父文件夹 ID（None 表示根目录）
-        page: 页码（默认 1）
-        page_size: 每页条数（默认 20）
-        name: 按名称过滤（可选）
-        sort_by: 排序字段，可选 "name"、"size"、"created_at"（默认）
-        order: 排序方向，"asc" 或 "desc"（默认）
-    """
-    context = _require_read_context()
+        parent_id: 父文件夹 ID(None 表示根目录)
+        page: 页码(默认 1)
+        page_size: 每页条数(默认 20)
+        name: 按名称过滤(可选)
+        sort_by: 排序字段,可选 "name"、"size"、"created_at"(默认)
+        order: 排序方向,"asc" 或 "desc"(默认)
 
-    def _work():
+    """
+    context = require_read_context()
+
+    def _work() -> dict[str, Any]:
         with worker_session(SessionLocal) as session:
             try:
-                _current_read_role(session, context)
+                current_read_role(session, context)
                 resolved_parent_id = parent_id
-                # None 表示「用户根目录内容」，需解析真实 root id，避免列出伪根自身
+                # None 表示「用户根目录内容」,需解析真实 root id,避免列出伪根自身
                 if resolved_parent_id is None:
                     resolved_parent_id = folder_service.get_root_folder_id(
-                        session, context.workspace_id
+                        session,
+                        context.workspace_id,
                     )
                 return file_service.get_files_and_folders(
                     session,
-                    context.workspace_id,
-                    resolved_parent_id,
-                    page,
-                    page_size,
-                    name,
-                    sort_by,
-                    order,
+                    file_service.GetFilesAndFoldersParams(
+                        workspace_id=context.workspace_id,
+                        parent_id=resolved_parent_id,
+                        page=page,
+                        page_size=page_size,
+                        name=name,
+                        sort_by=sort_by,
+                        order=order,
+                    ),
                 )
             except (DomainError, HTTPException) as exc:
                 return json.loads(_service_error_json(exc))
@@ -221,20 +270,25 @@ async def list_files(
 @mcp.tool()
 @audited_tool("get_file_info")
 async def get_file_info(file_id: int) -> str:
-    """获取单个文件的详细信息（名称、大小、类型、状态、描述等）。
+    """获取单个文件的详细信息(名称、大小、类型、状态、描述等).
 
     Args:
         file_id: 文件 ID
-    """
-    context = _require_read_context()
 
-    def _work():
+    """
+    context = require_read_context()
+
+    def _work() -> str:
         with worker_session(SessionLocal) as session:
             try:
-                file_obj = _get_authorized_file(session, context, file_id)
-                return json.dumps(file_obj.to_dict(), ensure_ascii=False, default=str)
-            except (DomainError, HTTPException) as e:
-                return _service_error_json(e)
+                file_obj = get_authorized_file(session, context, file_id)
+                return json.dumps(
+                    file_obj.to_dict(),
+                    ensure_ascii=False,
+                    default=str,
+                )
+            except (DomainError, HTTPException) as exc:
+                return _service_error_json(exc)
 
     return await run_owned(_work)
 
@@ -242,29 +296,31 @@ async def get_file_info(file_id: int) -> str:
 @mcp.tool()
 @audited_tool("create_folder")
 async def create_folder(
-        name: str,
-        parent_id: int | None = None,
+    name: str,
+    parent_id: int | None = None,
 ) -> str:
-    """创建一个新文件夹。
+    """创建一个新文件夹.
 
     Args:
         name: 文件夹名称
-        parent_id: 父文件夹 ID（None 表示在根目录下创建）
-    """
-    context = _require_write_context()
+        parent_id: 父文件夹 ID(None 表示在根目录下创建)
 
-    def _work():
+    """
+    context = require_write_context()
+
+    def _work() -> str:
         with worker_session(SessionLocal) as session:
             try:
-                _assert_current_write_permission(session, context)
-                # 与 list_files 一致：避免 parent_id=None 造出第二套「伪根」
+                assert_current_write_permission(session, context)
+                # 与 list_files 一致:避免 parent_id=None 造出第二套「伪根」
                 resolved_parent_id = parent_id
                 if resolved_parent_id is None:
                     resolved_parent_id = folder_service.get_root_folder_id(
-                        session, context.workspace_id
+                        session,
+                        context.workspace_id,
                     )
                 else:
-                    _get_authorized_folder(session, context, resolved_parent_id)
+                    get_authorized_folder(session, context, resolved_parent_id)
 
                 folder = folder_service.create_folder(
                     session,
@@ -275,8 +331,8 @@ async def create_folder(
                     },
                 )
                 return json.dumps(folder.to_dict(), ensure_ascii=False, default=str)
-            except (DomainError, HTTPException) as e:
-                return _service_error_json(e)
+            except (DomainError, HTTPException) as exc:
+                return _service_error_json(exc)
 
     return await run_owned(_work)
 
@@ -284,30 +340,31 @@ async def create_folder(
 @mcp.tool()
 @audited_tool("move_file")
 async def move_file(
-        file_id: int,
-        new_name: str | None = None,
-        new_parent_id: int | None = None,
+    file_id: int,
+    new_name: str | None = None,
+    new_parent_id: int | None = None,
 ) -> str:
-    """移动或重命名文件。至少提供 new_name 或 new_parent_id 之一。
+    """移动或重命名文件。至少提供 new_name 或 new_parent_id 之一.
 
     Args:
         file_id: 文件 ID
-        new_name: 新文件名（可选）
-        new_parent_id: 新的父文件夹 ID（可选，用于移动文件）
-    """
-    context = _require_write_context()
+        new_name: 新文件名(可选)
+        new_parent_id: 新的父文件夹 ID(可选,用于移动文件)
 
-    def _work():
+    """
+    context = require_write_context()
+
+    def _work() -> str:
         with worker_session(SessionLocal) as session:
             try:
-                _assert_current_write_permission(session, context)
-                _get_authorized_file(session, context, file_id)
+                assert_current_write_permission(session, context)
+                get_authorized_file(session, context, file_id)
 
-                update_data: dict[str, Any] = {}
+                update_data: file_service.FileUpdateData = {}
                 if new_name is not None:
                     update_data["name"] = new_name
                 if new_parent_id is not None:
-                    _get_authorized_folder(session, context, new_parent_id)
+                    get_authorized_folder(session, context, new_parent_id)
                     update_data["parent_id"] = new_parent_id
 
                 if not update_data:
@@ -315,8 +372,8 @@ async def move_file(
 
                 updated = file_service.update_file(session, file_id, update_data)
                 return json.dumps(updated.to_dict(), ensure_ascii=False, default=str)
-            except (DomainError, HTTPException) as e:
-                return _service_error_json(e)
+            except (DomainError, HTTPException) as exc:
+                return _service_error_json(exc)
 
     return await run_owned(_work)
 
@@ -324,32 +381,33 @@ async def move_file(
 @mcp.tool()
 @audited_tool("delete_file")
 async def delete_file(file_id: int) -> str:
-    """删除一个文件。此操作不可恢复。
+    """删除一个文件。此操作不可恢复.
 
     Args:
         file_id: 文件 ID
-    """
-    context = _require_write_context()
 
-    def _work():
+    """
+    context = require_write_context()
+
+    def _work() -> str:
         with worker_session(SessionLocal) as session:
             try:
-                _assert_current_write_permission(session, context)
-                _get_authorized_file(session, context, file_id)
+                assert_current_write_permission(session, context)
+                get_authorized_file(session, context, file_id)
 
                 file_service.delete_file(session, file_id)
                 return json.dumps(
                     {"success": True, "message": f"File {file_id} deleted"},
                     ensure_ascii=False,
                 )
-            except (DomainError, HTTPException) as e:
-                return _service_error_json(e)
+            except (DomainError, HTTPException) as exc:
+                return _service_error_json(exc)
 
     return await run_owned(_work)
 
 
 # ---------------------------------------------------------------------------
-# 文本可读性判定（read_file_content）
+# 文本可读性判定 for read_file_content
 # ---------------------------------------------------------------------------
 _TEXT_MIME_PREFIXES: tuple[str, ...] = (
     "text/",
@@ -366,61 +424,104 @@ _TEXT_MIME_EXACT: set[str] = {
     "application/x-python",
     "application/xhtml+xml",
 }
-# mime 常被标成 octet-stream，扩展名作兜底
+# mime 常被标成 octet-stream,扩展名作兜底
 _TEXT_EXTENSIONS: set[str] = {
-    ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".jsonl",
-    ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp",
-    ".h", ".hpp", ".go", ".rs", ".rb", ".php", ".sh", ".bash",
-    ".sql", ".html", ".htm", ".css", ".scss", ".less", ".vue",
-    ".log", ".env", ".gitignore", ".dockerfile",
+    ".txt",
+    ".md",
+    ".markdown",
+    ".csv",
+    ".tsv",
+    ".json",
+    ".jsonl",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".sh",
+    ".bash",
+    ".sql",
+    ".html",
+    ".htm",
+    ".css",
+    ".scss",
+    ".less",
+    ".vue",
+    ".log",
+    ".env",
+    ".gitignore",
+    ".dockerfile",
 }
 
-_MAX_READ_BYTES = 512 * 1024  # 限制上下文体积，超大文件截断
+_MAX_READ_BYTES = 512 * 1024  # 限制上下文体积,超大文件截断
 
 
 def _is_text_file(mime_type: str | None, filename: str | None) -> bool:
-    """MIME 或扩展名命中文本白名单则可直接读内容。"""
+    """MIME 或扩展名命中文本白名单则可直接读内容."""
     if mime_type:
         mt = mime_type.lower()
         if any(mt.startswith(p) for p in _TEXT_MIME_PREFIXES):
             return True
         if mt in _TEXT_MIME_EXACT:
             return True
-    if filename:
-        _, ext = os.path.splitext(filename)
-        if ext.lower() in _TEXT_EXTENSIONS:
-            return True
-    return False
+    if not filename:
+        return False
+    return Path(filename).suffix.lower() in _TEXT_EXTENSIONS
 
 
 @mcp.tool()
 @audited_tool("get_file_download_url")
 async def get_file_download_url(
-        file_id: int,
-        expires_hours: int = 24,
+    file_id: int,
+    expires_hours: int = 24,
 ) -> str:
-    """生成文件的临时下载链接（通过分享链接实现，自带过期时间）。
+    """生成文件的临时下载链接(通过分享链接实现,自带过期时间).
 
     返回的链接可以直接在浏览器中打开下载。
 
     Args:
         file_id: 文件 ID
-        expires_hours: 链接有效时长，单位小时（默认 24，最大 168）
-    """
-    context = _require_read_context()
+        expires_hours: 链接有效时长,单位小时(默认 24,最大 168)
 
-    def _work():
+    """
+    context = require_read_context()
+
+    def _work() -> str:
         with worker_session(SessionLocal) as session:
             try:
-                file_obj = _get_authorized_file(session, context, file_id)
+                file_obj = get_authorized_file(session, context, file_id)
 
-                # 最长 7 天，防止永久分享链接被 MCP 客户端无意创建
-                hours = max(1, min(expires_hours, 168))
+                # 最长 7 天,防止永久分享链接被 MCP 客户端无意创建
+                hours = max(
+                    _MIN_SHARE_EXPIRES_HOURS,
+                    min(expires_hours, _MAX_SHARE_EXPIRES_HOURS),
+                )
                 expires_at = utc_now() + timedelta(hours=hours)
 
                 share = share_service.create_share_link(
-                    session, context.user_id, file_id, expires_at, workspace_id=context.workspace_id
+                    session,
+                    params=share_service.CreateShareLinkParams(
+                        user_id=context.user_id,
+                        file_id=file_id,
+                        expires_at=expires_at,
+                        workspace_id=context.workspace_id,
+                    ),
                 )
                 share_dict = share.to_dict()
 
@@ -438,20 +539,23 @@ async def get_file_download_url(
                     ensure_ascii=False,
                     default=str,
                 )
-            except (DomainError, HTTPException) as e:
-                return _service_error_json(e)
+            except (DomainError, HTTPException) as exc:
+                return _service_error_json(exc)
 
     return await run_owned(_work)
 
 
-def _authorized_text_file(context, file_id):
+def _authorized_text_file(
+    context: McpRequestContext,
+    file_id: int,
+) -> tuple[str, str, str] | str:
     """Authorize and describe a text file under a worker-owned Session.
 
     Returns immutable scalars so object storage can be read after the Session is
     closed, or a JSON error payload when the file is not readable as text.
     """
     with worker_session(SessionLocal) as session:
-        file_obj = _get_authorized_file(session, context, file_id)
+        file_obj = get_authorized_file(session, context, file_id)
         if not _is_text_file(file_obj.mime_type, file_obj.name):
             return json.dumps(
                 {
@@ -464,7 +568,10 @@ def _authorized_text_file(context, file_id):
         return str(file_obj.name), str(file_obj.file_path), file_obj.get_abs_path()
 
 
-def _read_bounded_object_bytes(object_name: str, legacy_path: str | None):
+def _read_bounded_object_bytes(
+    object_name: str,
+    legacy_path: str | None,
+) -> tuple[int, bool, bytes] | None:
     """Read a bounded byte prefix without holding a database Session.
 
     Returns ``(file_size, truncated, raw)`` or ``None`` when the object is absent.
@@ -473,16 +580,23 @@ def _read_bounded_object_bytes(object_name: str, legacy_path: str | None):
     if storage.file_exists(object_name):
         file_size = storage.get_file_size(object_name)
         truncated = file_size > _MAX_READ_BYTES
-        raw = storage.read_file_prefix(object_name, _MAX_READ_BYTES) if file_size else b''
+        raw = (
+            storage.read_file_prefix(object_name, _MAX_READ_BYTES)
+            if file_size
+            else b""
+        )
         return file_size, truncated, raw
     if not is_mcp_request_active() and get_optional_mcp_context() is None:
         # Compatibility for pre-object-storage direct unit tests. It is
         # intentionally unavailable through the HTTP MCP boundary.
-        if not legacy_path or not os.path.exists(legacy_path):
+        if not legacy_path:
             return None
-        file_size = os.path.getsize(legacy_path)
+        legacy = Path(legacy_path)
+        if not legacy.exists():
+            return None
+        file_size = legacy.stat().st_size
         truncated = file_size > _MAX_READ_BYTES
-        with open(legacy_path, "rb") as handle:
+        with legacy.open("rb") as handle:
             raw = handle.read(_MAX_READ_BYTES)
         return file_size, truncated, raw
     return None
@@ -491,40 +605,45 @@ def _read_bounded_object_bytes(object_name: str, legacy_path: str | None):
 @mcp.tool()
 @audited_tool("read_file_content")
 async def read_file_content(
-        file_id: int,
-        encoding: str = "utf-8",
+    file_id: int,
+    encoding: str = "utf-8",
 ) -> str:
-    """读取文本文件的内容并返回。仅支持文本类文件（txt, md, csv, json, 代码文件等）。
+    """读取文本文件的内容并返回。仅支持文本类文件(txt, md, csv, json, 代码文件等).
 
-    对于非文本文件（图片、视频、PDF 等），请使用 get_file_download_url 获取下载链接。
-    内容最大返回 512KB，超出部分会被截断。
+    对于非文本文件(图片、视频、PDF 等),请使用 get_file_download_url 获取下载链接。
+    内容最大返回 512KB,超出部分会被截断。
 
     Args:
         file_id: 文件 ID
-        encoding: 文件编码（默认 utf-8）
-    """
-    context = _require_read_context()
+        encoding: 文件编码(默认 utf-8)
 
-    def _work():
+    """
+    context = require_read_context()
+
+    def _work() -> str:
         try:
             snapshot = _authorized_text_file(context, file_id)
-        except Exception as e:
-            return _service_error_json(e)
+        except Exception as exc:
+            # Authorization and SQL session cleanup span driver/plugin failures;
+            # keep client-facing errors while sanitizing unknown backend errors.
+            return _service_error_json(exc)
         if isinstance(snapshot, str):
             return snapshot
         name, object_name, legacy_path = snapshot
 
         try:
             payload = _read_bounded_object_bytes(object_name, legacy_path)
-        except Exception as e:
-            return _service_error_json(e)
+        except Exception as exc:
+            # Storage SDK and filesystem failures must share the same sanitized
+            # tool error without changing authorization or the byte-read limit.
+            return _service_error_json(exc)
         if payload is None:
             return _error_json("File not found on server")
         file_size, truncated, raw = payload
 
         # A byte boundary may bisect a character. Retain complete
         # characters without fabricating a replacement for that suffix.
-        decoder = codecs.getincrementaldecoder(encoding)(errors='replace')
+        decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
         content = decoder.decode(raw, final=not truncated)
         return json.dumps(
             {
@@ -544,39 +663,44 @@ async def read_file_content(
 @mcp.tool()
 @audited_tool("move_folder")
 async def move_folder(
-        folder_id: int,
-        new_name: str | None = None,
-        new_parent_id: int | None = None,
+    folder_id: int,
+    new_name: str | None = None,
+    new_parent_id: int | None = None,
 ) -> str:
-    """移动或重命名文件夹。至少提供 new_name 或 new_parent_id 之一。
+    """移动或重命名文件夹。至少提供 new_name 或 new_parent_id 之一.
 
     Args:
         folder_id: 文件夹 ID
-        new_name: 新文件夹名称（可选）
-        new_parent_id: 新的父文件夹 ID（可选，用于移动文件夹）
-    """
-    context = _require_write_context()
+        new_name: 新文件夹名称(可选)
+        new_parent_id: 新的父文件夹 ID(可选,用于移动文件夹)
 
-    def _work():
+    """
+    context = require_write_context()
+
+    def _work() -> str:
         with worker_session(SessionLocal) as session:
             try:
-                _assert_current_write_permission(session, context)
-                folder = _get_authorized_folder(session, context, folder_id)
+                assert_current_write_permission(session, context)
+                get_authorized_folder(session, context, folder_id)
 
-                update_data: dict[str, Any] = {}
+                update_data: folder_service.FolderUpdateData = {}
                 if new_name is not None:
                     update_data["name"] = new_name
                 if new_parent_id is not None:
-                    _get_authorized_folder(session, context, new_parent_id)
+                    get_authorized_folder(session, context, new_parent_id)
                     update_data["parent_id"] = new_parent_id
 
                 if not update_data:
                     return _error_json("Please provide new_name or new_parent_id")
 
-                updated = folder_service.update_folder(session, folder_id, update_data)
+                updated = folder_service.update_folder(
+                    session,
+                    folder_id,
+                    update_data,
+                )
                 return json.dumps(updated.to_dict(), ensure_ascii=False, default=str)
-            except (DomainError, HTTPException) as e:
-                return _service_error_json(e)
+            except (DomainError, HTTPException) as exc:
+                return _service_error_json(exc)
 
     return await run_owned(_work)
 
@@ -584,27 +708,33 @@ async def move_folder(
 @mcp.tool()
 @audited_tool("delete_folder")
 async def delete_folder(folder_id: int) -> str:
-    """删除一个文件夹及其下所有内容（子文件夹和文件）。此操作不可恢复。
+    """删除一个文件夹及其下所有内容(子文件夹和文件)。此操作不可恢复.
 
     Args:
         folder_id: 文件夹 ID
-    """
-    context = _require_write_context()
 
-    def _work():
+    """
+    context = require_write_context()
+
+    def _work() -> str:
         with worker_session(SessionLocal) as session:
             try:
-                _assert_current_write_permission(session, context)
-                folder = _get_authorized_folder(session, context, folder_id)
+                assert_current_write_permission(session, context)
+                folder = get_authorized_folder(session, context, folder_id)
 
                 folder_name = folder.name
                 folder_service.delete_folder(session, folder_id)
                 return json.dumps(
-                    {"success": True, "message": f"Folder '{folder_name}' (ID: {folder_id}) deleted"},
+                    {
+                        "success": True,
+                        "message": (
+                            f"Folder '{folder_name}' (ID: {folder_id}) deleted"
+                        ),
+                    },
                     ensure_ascii=False,
                 )
-            except (DomainError, HTTPException) as e:
-                return _service_error_json(e)
+            except (DomainError, HTTPException) as exc:
+                return _service_error_json(exc)
 
     return await run_owned(_work)
 
@@ -612,53 +742,66 @@ async def delete_folder(folder_id: int) -> str:
 @mcp.tool()
 @audited_tool("get_storage_overview")
 async def get_storage_overview() -> str:
-    """获取用户的云盘存储概览，包括文件总数、各状态文件数、总存储大小等。"""
-    context = _require_read_context()
+    """获取用户的云盘存储概览,包括文件总数、各状态文件数、总存储大小等."""
+    context = require_read_context()
 
     try:
-        result = await _run_sync(workspace_insights.storage_overview,
-                                 context.workspace_id, context.user_id)
+        result = await _run_sync(
+            workspace_insights.storage_overview,
+            context.workspace_id,
+            context.user_id,
+        )
     except (DomainError, HTTPException) as exc:
         return _service_error_json(exc)
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
 class BatchDeleteItem(BaseModel):
-    """批量删除操作中的单个项目。"""
+    """批量删除操作中的单个项目."""
+
     id: int = Field(description="文件或文件夹的 ID")
-    is_folder: bool = Field(default=False, description="是否为文件夹。true 表示文件夹，false 表示文件")
+    is_folder: bool = Field(
+        default=False,
+        description="是否为文件夹。true 表示文件夹,false 表示文件",
+    )
 
 
 @mcp.tool()
 @audited_tool("batch_delete")
 async def batch_delete(
-        items: list[BatchDeleteItem],
+    items: list[BatchDeleteItem],
 ) -> str:
-    """批量删除多个文件和/或文件夹。
+    """批量删除多个文件和/或文件夹.
 
     Args:
-        items: 要删除的项目列表，每项包含 id（文件或文件夹ID）和 is_folder（是否为文件夹）
-    """
-    context = _require_write_context()
+        items: 要删除的项目列表,每项包含 id(文件或文件夹ID)和 is_folder(是否为文件夹)
 
-    def _work():
+    """
+    context = require_write_context()
+
+    def _work() -> str:
         with worker_session(SessionLocal) as session:
-            deleted = []
-            errors = []
+            deleted: list[int] = []
+            errors: list[dict[str, object]] = []
             for item in items:
                 item_id = item.id
                 is_folder = item.is_folder
                 try:
-                    _assert_current_write_permission(session, context)
+                    assert_current_write_permission(session, context)
                     if is_folder:
-                        _get_authorized_folder(session, context, item_id)
+                        get_authorized_folder(session, context, item_id)
                         folder_service.delete_folder(session, item_id)
                     else:
-                        _get_authorized_file(session, context, item_id)
+                        get_authorized_file(session, context, item_id)
                         file_service.delete_file(session, item_id)
                     deleted.append(item_id)
-                except (DomainError, HTTPException) as e:
-                    errors.append({"id": item_id, "error": json.loads(_service_error_json(e))["error"]})
+                except (DomainError, HTTPException) as exc:
+                    errors.append(
+                        {
+                            "id": item_id,
+                            "error": json.loads(_service_error_json(exc))["error"],
+                        },
+                    )
 
             return json.dumps(
                 {
@@ -675,16 +818,21 @@ async def batch_delete(
 @mcp.tool()
 @audited_tool("get_folder_tree")
 async def get_folder_tree(max_depth: int = 3) -> str:
-    """获取用户的文件夹树形结构，用于了解云盘的整体目录布局。
+    """获取用户的文件夹树形结构,用于了解云盘的整体目录布局.
 
     Args:
-        max_depth: 最大递归深度（默认 3，最大 10）
+        max_depth: 最大递归深度(默认 3,最大 10)
+
     """
-    context = _require_read_context()
+    context = require_read_context()
 
     try:
-        result = await _run_sync(workspace_insights.folder_tree,
-                                 context.workspace_id, context.user_id, max_depth)
+        result = await _run_sync(
+            workspace_insights.folder_tree,
+            context.workspace_id,
+            context.user_id,
+            max_depth,
+        )
     except (DomainError, HTTPException) as exc:
         return _service_error_json(exc)
     return json.dumps(result, ensure_ascii=False, default=str)
@@ -693,23 +841,26 @@ async def get_folder_tree(max_depth: int = 3) -> str:
 @mcp.tool()
 @audited_tool("get_upload_url")
 async def get_upload_url(parent_id: int | None = None) -> str:
-    """获取文件上传所需的 API 地址和认证信息。
+    """获取文件上传所需的 API 地址和认证信息.
 
     返回上传 URL、认证 Token 和兼容旧客户端的 curl 示例。
-    OpenCode Runtime 应优先使用 upload_file，不依赖 curl。
-    上传后文件会自动进行 AI 处理（描述生成、向量索引）。
+    OpenCode Runtime 应优先使用 upload_file,不依赖 curl。
+    上传后文件会自动进行 AI 处理(描述生成、向量索引)。
 
     Args:
-        parent_id: 目标文件夹 ID（None 表示上传到根目录）
-    """
-    context = _require_write_context()
+        parent_id: 目标文件夹 ID(None 表示上传到根目录)
 
-    # 无需 DB：仅拼装上传指引
-    in_docker = os.path.exists("/.dockerenv")
-    if in_docker:
+    """
+    context = require_write_context()
+
+    # 无需 DB:仅拼装上传指引
+    if _DOCKERENV_PATH.exists():
         api_base = "http://skycloud-backend-api:5000"
     else:
-        api_base = os.getenv("SKYCLOUD_BASE_URL", "http://host.docker.internal:5000")
+        api_base = os.getenv(
+            "SKYCLOUD_BASE_URL",
+            "http://host.docker.internal:5000",
+        )
     upload_url = f"{api_base}/api/files"
 
     parent_flag = ""
@@ -721,13 +872,13 @@ async def get_upload_url(parent_id: int | None = None) -> str:
         f'-H "Authorization: Bearer $TOKEN" '
         f'-H "X-Workspace-Id: {context.workspace_id}" '
         f'-F "file=@/path/to/your/file"'
-        f'{parent_flag}'
+        f"{parent_flag}"
     )
 
     hint = (
         "$TOKEN 应设置为当前连接 SKYCLOUD MCP 时使用的 Bearer Token。"
         "可以从 /root/.config/opencode/opencode.json 中的 "
-        'mcp.SKYCLOUD.headers.Authorization 字段读取。'
+        "mcp.SKYCLOUD.headers.Authorization 字段读取。"
     )
 
     return json.dumps(
@@ -742,46 +893,59 @@ async def get_upload_url(parent_id: int | None = None) -> str:
     )
 
 
-def _inline_upload_adapter(filename: str, content: str, content_encoding: str,
-                           mime_type: str | None) -> Base64UploadAdapter:
-    return build_inline_upload(filename, content, content_encoding, mime_type,
-                               max_bytes=MCP_INLINE_UPLOAD_MAX_BYTES)
+def _inline_upload_adapter(
+    filename: str,
+    content: str,
+    content_encoding: str,
+    mime_type: str | None,
+) -> Base64UploadAdapter:
+    return build_inline_upload(
+        filename,
+        content,
+        content_encoding,
+        mime_type,
+        max_bytes=MCP_INLINE_UPLOAD_MAX_BYTES,
+    )
 
 
 @mcp.tool()
 @audited_tool("upload_file")
 async def upload_file(
-        filename: str,
-        content: str,
-        content_encoding: str = "utf-8",
-        parent_id: int | None = None,
-        mime_type: str | None = None,
+    filename: str,
+    content: str,
+    content_encoding: str = "utf-8",
+    parent_id: int | None = None,
+    mime_type: str | None = None,
 ) -> str:
-    """直接把文本或 Base64 文件内容上传到当前工作空间云盘。
+    """直接把文本或 Base64 文件内容上传到当前工作空间云盘.
 
-    这是专家 Runtime 上传文件的首选工具，不需要 curl、外部 HTTP 请求或
-    读取任何 Token。文本文件默认使用 utf-8；图片、PDF 等二进制文件请将
+    这是专家 Runtime 上传文件的首选工具,不需要 curl、外部 HTTP 请求或
+    读取任何 Token。文本文件默认使用 utf-8;图片、PDF 等二进制文件请将
     content_encoding 设置为 base64。单次内联上传上限为 8 MB。
 
     Args:
-        filename: 云盘中的文件名，例如 ``report.md``。
-        content: 文件正文（文本或 Base64 字符串）。
-        content_encoding: ``utf-8``（默认）或 ``base64``。
-        parent_id: 目标文件夹 ID；不传则上传到根目录。
-        mime_type: 可选 MIME 类型，例如 ``text/markdown``。
-    """
+        filename: 云盘中的文件名,例如 ``report.md``。
+        content: 文件正文(文本或 Base64 字符串)。
+        content_encoding: ``utf-8``(默认)或 ``base64``。
+        parent_id: 目标文件夹 ID;不传则上传到根目录。
+        mime_type: 可选 MIME 类型,例如 ``text/markdown``。
 
-    context = _require_write_context()
+    """
+    context = require_write_context()
     try:
         adapter = await run_owned(
-            _inline_upload_adapter, filename, content, content_encoding, mime_type
+            _inline_upload_adapter,
+            filename,
+            content,
+            content_encoding,
+            mime_type,
         )
     except (TypeError, UnicodeError, ValueError) as exc:
         return _error_json(str(exc))
 
-    def _work(session):
+    def _work(session: Session) -> dict[str, Any]:
         try:
-            _assert_current_write_permission(session, context)
+            assert_current_write_permission(session, context)
             file_obj = file_service.create_uploaded_file(
                 session,
                 context.workspace_id,
@@ -800,21 +964,24 @@ async def upload_file(
     try:
         result = await _run_sync(_work)
     except Exception as exc:
+        # Upload publication/compensation and session cleanup can fail outside
+        # domain errors; preserve the tool's established sanitized JSON result.
         return _service_error_json(exc)
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
 # ---------------------------------------------------------------------------
-# Resources（只读资源 URI）
+# Resources(只读资源 URI)
 # ---------------------------------------------------------------------------
-
 @mcp.resource("skycloud://folders")
 async def get_user_folders() -> str:
-    """获取当前认证用户的所有文件夹列表。"""
-    context = _require_read_context()
-    def _work(session):
-        _current_read_role(session, context)
+    """获取当前认证用户的所有文件夹列表."""
+    context = require_read_context()
+
+    def _work(session: Session) -> list[FolderDict]:
+        current_read_role(session, context)
         return folder_service.get_folders(session, context.workspace_id)
+
     try:
         folders = await _run_sync(_work)
     except (DomainError, HTTPException) as exc:
@@ -824,87 +991,93 @@ async def get_user_folders() -> str:
 
 @mcp.resource("skycloud://files/{file_id}")
 async def get_user_file(file_id: int) -> str:
-    """获取单个文件的元数据和描述信息。"""
-    context = _require_read_context()
+    """获取单个文件的元数据和描述信息."""
+    context = require_read_context()
 
-    def _work():
+    def _work() -> str:
         with worker_session(SessionLocal) as session:
             try:
-                file_obj = _get_authorized_file(session, context, file_id)
-                return json.dumps(file_obj.to_dict(), ensure_ascii=False, default=str)
-            except (DomainError, HTTPException) as e:
-                return _service_error_json(e)
+                file_obj = get_authorized_file(session, context, file_id)
+                return json.dumps(
+                    file_obj.to_dict(),
+                    ensure_ascii=False,
+                    default=str,
+                )
+            except (DomainError, HTTPException) as exc:
+                return _service_error_json(exc)
 
     return await run_owned(_work)
 
 
 # ---------------------------------------------------------------------------
-# Prompts（引导客户端如何组合工具）
+# Prompts 引导客户端如何组合工具
 # ---------------------------------------------------------------------------
-
 @mcp.prompt()
 async def find_file(description: str) -> str:
-    """根据用户的自然语言描述，帮助定位和查找文件。
+    """根据用户的自然语言描述,帮助定位和查找文件.
 
     Args:
         description: 用户对想要查找的文件的描述
+
     """
     return (
-        f"用户想要查找以下文件：{description}\n\n"
-        "请按以下步骤操作：\n"
+        f"用户想要查找以下文件:{description}\n\n"
+        "请按以下步骤操作:\n"
         "1. 首先使用 search_files 工具以 fuzzy 模式搜索关键词。\n"
-        "2. 如果模糊搜索结果不理想，尝试使用 vector 模式进行语义搜索。\n"
-        "3. 如果仍未找到，使用 list_files 工具逐层浏览文件夹查找。\n"
-        "4. 找到文件后，使用 get_file_info 获取详细信息并展示给用户。"
+        "2. 如果模糊搜索结果不理想,尝试使用 vector 模式进行语义搜索。\n"
+        "3. 如果仍未找到,使用 list_files 工具逐层浏览文件夹查找。\n"
+        "4. 找到文件后,使用 get_file_info 获取详细信息并展示给用户。"
     )
 
 
 @mcp.prompt()
 async def organize_workspace() -> str:
-    """帮助用户整理和组织云盘中的文件结构。"""
+    """帮助用户整理和组织云盘中的文件结构."""
     return (
-        "请帮助用户整理云盘文件，按以下步骤操作：\n\n"
+        "请帮助用户整理云盘文件,按以下步骤操作:\n\n"
         "1. 使用 list_files 查看根目录下的所有文件和文件夹。\n"
-        "2. 分析文件类型和命名模式，建议合理的分类方案。\n"
-        "3. 根据用户的确认，使用 create_folder 创建分类文件夹。\n"
+        "2. 分析文件类型和命名模式,建议合理的分类方案。\n"
+        "3. 根据用户的确认,使用 create_folder 创建分类文件夹。\n"
         "4. 使用 move_file 将文件移动到对应的文件夹中。\n"
-        "5. 完成后再次列出文件结构，确认整理结果。\n\n"
-        "建议的分类维度：文件类型（文档/图片/代码等）、项目、时间等。"
+        "5. 完成后再次列出文件结构,确认整理结果。\n\n"
+        "建议的分类维度:文件类型(文档/图片/代码等)、项目、时间等。"
     )
 
 
 @mcp.prompt()
 async def summarize_file(file_id: int) -> str:
-    """读取并总结指定文件的内容。
+    """读取并总结指定文件的内容.
 
     Args:
         file_id: 要总结的文件 ID
+
     """
     return (
-        f"请执行以下操作来总结文件（ID: {file_id}）：\n\n"
+        f"请执行以下操作来总结文件(ID: {file_id}):\n\n"
         "1. 使用 get_file_info 获取文件的基本信息。\n"
-        "2. 如果是文本文件，使用 read_file_content 读取文件内容。\n"
-        "3. 对文件内容进行总结，包括：\n"
+        "2. 如果是文本文件,使用 read_file_content 读取文件内容。\n"
+        "3. 对文件内容进行总结,包括:\n"
         "   - 文件类型和大小\n"
         "   - 主要内容概述\n"
         "   - 关键信息和要点\n"
-        "4. 如果是非文本文件，使用 get_file_download_url 生成下载链接，"
+        "4. 如果是非文本文件,使用 get_file_download_url 生成下载链接,"
         "并告知用户该文件类型无法直接总结。"
     )
 
 
 @mcp.prompt()
 async def batch_download(search_query: str) -> str:
-    """根据搜索条件批量生成文件下载链接。
+    """根据搜索条件批量生成文件下载链接.
 
     Args:
         search_query: 搜索关键词
+
     """
     return (
         f"用户想要批量下载与 '{search_query}' 相关的文件。\n\n"
-        "请按以下步骤操作：\n"
+        "请按以下步骤操作:\n"
         "1. 使用 search_files 搜索匹配的文件。\n"
-        "2. 展示搜索结果列表，让用户确认需要下载的文件。\n"
-        "3. 对用户选择的每个文件，使用 get_file_download_url 生成下载链接。\n"
+        "2. 展示搜索结果列表,让用户确认需要下载的文件。\n"
+        "3. 对用户选择的每个文件,使用 get_file_download_url 生成下载链接。\n"
         "4. 将所有下载链接整理成清单展示给用户。"
     )

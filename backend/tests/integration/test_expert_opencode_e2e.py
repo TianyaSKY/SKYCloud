@@ -268,19 +268,23 @@ def test_expert_engine_streams_through_official_opencode_runtime(
     chat = _chat_config()
     conversation = repository.create_conversation(
         session,
-        test_workspace.id,
-        test_user.id,
-        "expert",
-        "OpenCode 模型 E2E",
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode="expert",
+            title="OpenCode 模型 E2E",
+        ),
     )
     session.commit()
     conversation, run, history = service.prepare_run(
         session,
-        test_workspace,
-        test_user.id,
-        conversation.id,
-        "只输出 E2E_OK，不调用任何工具。",
-        request_id="opencode-model-e2e",
+        service.PrepareRunParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            query="只输出 E2E_OK，不调用任何工具。",
+            request_id="opencode-model-e2e",
+        ),
     )
     runtime = runtime_service.get_or_create_runtime(
         session, test_workspace.id, test_user.id
@@ -314,12 +318,14 @@ def test_expert_engine_streams_through_official_opencode_runtime(
             return [
                 event
                 async for event in service.stream_prepared_run(
-                    session,
-                    test_workspace,
-                    test_user.id,
-                    conversation,
-                    run,
-                    history,
+                    service.StreamPreparedRunParams(
+                        session=session,
+                        workspace=test_workspace,
+                        user_id=test_user.id,
+                        conversation=conversation,
+                        run=run,
+                        history=history,
+                    )
                 )
             ]
 

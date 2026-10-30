@@ -36,7 +36,7 @@ def test_audit_marks_structured_tool_errors_as_failures():
     context_token = set_mcp_context(
         McpRequestContext(user_id=1, workspace_id=2, role="viewer")
     )
-    active_token = set_mcp_request_active(True)
+    active_token = set_mcp_request_active(active=True)
 
     @audited_tool("test_tool")
     async def tool():
@@ -65,22 +65,28 @@ def test_argument_metadata_never_serializes_sensitive_values_or_objects():
     def tool(filename, content, token=None, file_id=None, extra=None):
         pass
     secret = "PRIVATE_BODY_AND_TOKEN"
-    positional = summarize_call(tool, (secret, secret, secret, 42, PrivateObject()), {})
-    keyword = summarize_call(tool, (), {"filename": secret, "content": secret,
-                            "token": secret, "file_id": 42, "extra": {secret: secret}})
+    positional = summarize_call(tool, secret, secret, secret, 42, PrivateObject())
+    keyword = summarize_call(
+        tool,
+        filename=secret,
+        content=secret,
+        token=secret,
+        file_id=42,
+        extra={secret: secret},
+    )
     for metadata in (positional, keyword):
         assert secret not in metadata.summary
         payload = json.loads(metadata.summary)
         assert payload["schema"] == 2
         assert payload["parameters"]["content"] == {"type": "str", "length": len(secret)}
         assert metadata.entity_id == 42
-    invalid = summarize_call(tool, (), {secret: secret})
+    invalid = summarize_call(tool, **{secret: secret})
     assert secret not in invalid.summary and invalid.entity_id is None
     # max_depth is a control, never the entity ID, and bool is never an ID.
     def tree(max_depth):
         pass
-    assert summarize_call(tree, (3,), {}).entity_id is None
-    assert summarize_call(tool, (secret, secret), {"file_id": True}).entity_id is None
+    assert summarize_call(tree, 3).entity_id is None
+    assert summarize_call(tool, secret, secret, file_id=True).entity_id is None
 
 
 def test_real_audit_transaction_stores_only_metadata(session, test_workspace, test_user, monkeypatch):
@@ -92,7 +98,7 @@ def test_real_audit_transaction_stores_only_metadata(session, test_workspace, te
         bind=session.get_bind(), join_transaction_mode="create_savepoint"))
     context_token = set_mcp_context(McpRequestContext(
         user_id=test_user.id, workspace_id=test_workspace.id, role="editor"))
-    active_token = set_mcp_request_active(True)
+    active_token = set_mcp_request_active(active=True)
     @audited_tool("upload_file")
     async def tool(filename, content, token):
         return '{"success":true}'
@@ -123,3 +129,71 @@ def test_cancelled_tool_is_not_recorded_as_success():
         asyncio.run(run())
     assert record.call_args.kwargs["success"] is False
     assert record.call_args.kwargs["error_type"] == "CancelledError"
+
+
+@pytest.mark.parametrize(
+    "faults",
+    [
+        {"factory"},
+        {"add"},
+        {"commit"},
+        {"commit", "rollback"},
+        {"commit", "rollback", "close"},
+        {"close"},
+    ],
+)
+def test_audit_session_failures_stay_isolated_and_sanitized(monkeypatch, faults):
+    from unittest.mock import Mock
+
+    from app.mcp import audit
+    from app.mcp.audit_payload import AuditArguments
+
+    private = "private-audit-database-and-credential"
+    events, records = [], []
+    session = Mock()
+
+    def operation(name):
+        def perform(*args, **kwargs):
+            events.append(name)
+            if name in faults:
+                raise RuntimeError(private)
+        return perform
+
+    for name in ("add", "commit", "rollback", "close"):
+        getattr(session, name).side_effect = operation(name)
+
+    def factory():
+        operation("factory")()
+        return session
+
+    monkeypatch.setattr(audit, "SessionLocal", factory)
+    monkeypatch.setattr(
+        audit.logger,
+        "error",
+        lambda message, *args: records.append(message.format(*args)),
+    )
+    context_token = set_mcp_context(McpRequestContext(1, 2, "editor"))
+    active_token = set_mcp_request_active(active=True)
+    try:
+        assert audit.record_mcp_call(
+            tool_name="list_files",
+            arguments=AuditArguments("{}", None),
+            success=True,
+            error_type=None,
+            duration_ms=1,
+        ) is None
+    finally:
+        reset_mcp_request_active(active_token)
+        reset_mcp_context(context_token)
+
+    assert records and all(private not in record for record in records)
+    assert all("error_type=RuntimeError" in record for record in records)
+    if "factory" in faults:
+        assert events == ["factory"]
+    else:
+        assert events[-1] == "close"
+        session.close.assert_called_once_with()
+        if faults & {"add", "commit"}:
+            session.rollback.assert_called_once_with()
+        else:
+            session.rollback.assert_not_called()

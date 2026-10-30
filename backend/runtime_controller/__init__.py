@@ -1,1 +1,4 @@
-"""Restricted Docker controller. Deliberately independent of the application and database."""
+"""Restricted Docker controller.
+
+Deliberately independent of the application and database.
+"""

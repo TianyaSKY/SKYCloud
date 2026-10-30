@@ -93,16 +93,25 @@ async def test_redis_failure_prevents_expert_execution_and_releases_ambiguous_lo
 
 
 @pytest.mark.parametrize('body_fault', [False, True])
-async def test_release_drains_under_repeat_cancellation_and_preserves_body_error(monkeypatch, body_fault):
+@pytest.mark.parametrize("release_fault", [False, True])
+async def test_release_drains_under_repeat_cancellation_and_preserves_body_error(monkeypatch, body_fault, release_fault):
     store = Store()
     entered, release = threading.Event(), threading.Event()
     real_delete = store.delete
     def held_delete(*args):
         entered.set()
         assert release.wait(3)
-        return real_delete(*args)
+        result = real_delete(*args)
+        if release_fault:
+            raise RuntimeError("private-release-url")
+        return result
     store.delete = held_delete
     monkeypatch.setattr(engine.extensions, 'redis_client', store)
+    logged = []
+    monkeypatch.setattr(
+        engine.logger, "error",
+        lambda message, *args: logged.append(message.format(*args)),
+    )
     original = ValueError('fixed-body-error')
     async def caller():
         async with engine.runtime_lease(81004):
@@ -123,6 +132,9 @@ async def test_release_drains_under_repeat_cancellation_and_preserves_body_error
     if body_fault:
         assert error.value is original
     assert not store.values and not engine._LOCAL_RUNTIME_LOCKS[81004].locked()
+    assert "private-release-url" not in str(logged)
+    if release_fault:
+        assert any("RuntimeError" in message for message in logged)
 
 
 async def test_busy_redis_lease_is_not_deleted_by_failed_acquirer(monkeypatch):
@@ -137,11 +149,17 @@ async def test_busy_redis_lease_is_not_deleted_by_failed_acquirer(monkeypatch):
 
 
 @pytest.mark.parametrize('loss', ['replacement', 'outage'])
-async def test_renewal_loss_stops_body_and_aborts_before_releasing(monkeypatch, loss):
+@pytest.mark.parametrize("abort_fault", [False, True])
+async def test_renewal_loss_stops_body_and_aborts_before_releasing(monkeypatch, loss, abort_fault):
     store = Store()
     aborted = []
     body_entered = asyncio.Event()
     key = 'assistant:expert:runtime:81006'
+    logged = []
+    monkeypatch.setattr(
+        engine.logger, "error",
+        lambda message, *args: logged.append(message.format(*args)),
+    )
     monkeypatch.setenv('ASSISTANT_RUNTIME_LOCK_TTL', '1')
     real_eval = store.eval
     def evaluate(script, *args):
@@ -154,6 +172,8 @@ async def test_renewal_loss_stops_body_and_aborts_before_releasing(monkeypatch, 
     monkeypatch.setattr(engine.extensions, 'redis_client', store)
     async def abort():
         aborted.append(True)
+        if abort_fault:
+            raise RuntimeError("private-abort-url")
     async def caller():
         async with engine.runtime_lease(81006, on_lost=abort):
             body_entered.set()
@@ -170,6 +190,9 @@ async def test_renewal_loss_stops_body_and_aborts_before_releasing(monkeypatch, 
             await asyncio.gather(pending, return_exceptions=True)
     assert store.values == ({key: 'successor-worker'} if loss == 'replacement' else {})
     assert not engine._LOCAL_RUNTIME_LOCKS[81006].locked()
+    assert "private-" not in str(logged)
+    if abort_fault:
+        assert any("RuntimeError" in message for message in logged)
 
 
 async def test_renewal_deadline_aborts_before_slow_redis_worker_finishes(monkeypatch):

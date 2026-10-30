@@ -1,85 +1,177 @@
 """Serialize lifecycle/configuration across commits on a pinned PG connection."""
-from contextlib import contextmanager
-from functools import wraps
+
 import hashlib
 import threading
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from functools import wraps
+from typing import Concatenate, ParamSpec, TypeAlias, TypeVar
 
-from sqlalchemy import text
 from loguru import logger
+from sqlalchemy import text
+from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.orm import Session
 
 from app.exceptions import ConflictError
+from app.models.workspace import Workspace
 
-_local = threading.local()
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+_ExecutionKey: TypeAlias = tuple[int, int, int]
+
+
+class _ExecutionState(threading.local):
+    """Thread-local set of keys already holding the advisory lock."""
+
+    active: set[_ExecutionKey] | None = None
+
+
+_state = _ExecutionState()
 _guard = threading.Lock()
-_sqlite_locks: dict[tuple[int, int, int], tuple[threading.RLock, int]] = {}
+_sqlite_locks: dict[_ExecutionKey, tuple[threading.RLock, int]] = {}
 
 
-def _invalidate(connection):
+def _invalidate(connection: Connection) -> None:
     try:
         connection.invalidate()
     except Exception as exc:
-        logger.error('Runtime lock connection invalidation failed: error_type={}', type(exc).__name__)
+        logger.error(
+            "Runtime lock connection invalidation failed: error_type={}",
+            type(exc).__name__,
+        )
+
+
+def _active_keys() -> set[_ExecutionKey]:
+    active = _state.active
+    if active is None:
+        active = set[_ExecutionKey]()
+        _state.active = active
+    return active
 
 
 @contextmanager
-def execution(session, workspace_id, user_id):
+def _sqlite_execution(
+    key: _ExecutionKey,
+    active: set[_ExecutionKey],
+) -> Generator[None, None, None]:
+    # Test seam only: deployment startup requires PostgreSQL.
+    with _guard:
+        lock, count = _sqlite_locks.get(key, (threading.RLock(), 0))
+        _sqlite_locks[key] = (lock, count + 1)
+    try:
+        with lock:
+            active.add(key)
+            try:
+                yield
+            finally:
+                active.remove(key)
+    finally:
+        with _guard:
+            held_lock, held_count = _sqlite_locks[key]
+            if held_count == 1:
+                del _sqlite_locks[key]
+            else:
+                _sqlite_locks[key] = (held_lock, held_count - 1)
+
+
+def _release_connection(
+    connection: Connection,
+    lock_id: int,
+    *,
+    acquired: bool,
+) -> None:
+    try:
+        if acquired:
+            connection.execute(
+                text("SELECT pg_advisory_unlock(:key)"), {"key": lock_id},
+            )
+            connection.commit()
+    except Exception as exc:
+        logger.error("Runtime lock release failed: error_type={}", type(exc).__name__)
+        _invalidate(connection)
+    finally:
+        try:
+            connection.close()
+        except Exception as exc:
+            logger.error(
+                "Runtime lock connection close failed: error_type={}",
+                type(exc).__name__,
+            )
+            _invalidate(connection)
+
+
+@contextmanager
+def _postgres_execution(
+    engine: Engine,
+    key: _ExecutionKey,
+    active: set[_ExecutionKey],
+    lock_id: int,
+) -> Generator[None, None, None]:
+    connection = engine.connect()
+    acquired = False
+    try:
+        acquired = bool(connection.scalar(
+            text("SELECT pg_try_advisory_lock(:key)"), {"key": lock_id},
+        ))
+        connection.commit()
+        if not acquired:
+            message = "Another Runtime lifecycle operation is in progress"
+            raise ConflictError(message)
+        active.add(key)
+        try:
+            yield
+        finally:
+            active.remove(key)
+    finally:
+        _release_connection(connection, lock_id, acquired=acquired)
+
+
+@contextmanager
+def execution(
+    session: Session,
+    workspace_id: int,
+    user_id: int,
+) -> Generator[None, None, None]:
+    """Hold the Runtime lifecycle lock for this workspace member."""
     bind = session.get_bind()
-    key = (id(bind.engine), int(workspace_id), int(user_id))
-    active: set[tuple[int, int, int]] = getattr(_local, 'active', set())
+    engine = bind if isinstance(bind, Engine) else bind.engine
+    key = (id(engine), int(workspace_id), int(user_id))
+    active = _active_keys()
     if key in active:
         yield
         return
-    _local.active = active
-    if bind.dialect.name == 'sqlite':
-        # Test seam only: deployment startup requires PostgreSQL.
-        with _guard:
-            lock, count = _sqlite_locks.get(key, (threading.RLock(), 0))
-            _sqlite_locks[key] = (lock, count+1)
-        try:
-            with lock:
-                active.add(key)
-                try: yield
-                finally: active.remove(key)
-        finally:
-            with _guard:
-                lock, count = _sqlite_locks[key]
-                if count == 1: del _sqlite_locks[key]
-                else: _sqlite_locks[key] = (lock, count-1)
+    if bind.dialect.name == "sqlite":
+        with _sqlite_execution(key, active):
+            yield
         return
-    if bind.dialect.name != 'postgresql':
-        raise RuntimeError('Runtime lifecycle requires PostgreSQL')
-    lock_id = int.from_bytes(hashlib.sha256(f'Runtime.lifecycle:{workspace_id}:{user_id}'.encode()).digest()[:8], 'big', signed=True)
-    connection = bind.engine.connect()
-    acquired = False
-    try:
-        acquired = connection.scalar(text('SELECT pg_try_advisory_lock(:key)'), {'key':lock_id})
-        connection.commit()
-        if not acquired:
-            raise ConflictError('Another Runtime lifecycle operation is in progress')
-        active.add(key)
-        try: yield
-        finally: active.remove(key)
-    finally:
-        try:
-            if acquired:
-                connection.execute(text('SELECT pg_advisory_unlock(:key)'), {'key':lock_id})
-                connection.commit()
-        except Exception as exc:
-            logger.error('Runtime lock release failed: error_type={}', type(exc).__name__)
-            _invalidate(connection)
-        finally:
-            try:
-                connection.close()
-            except Exception as exc:
-                logger.error('Runtime lock connection close failed: error_type={}', type(exc).__name__)
-                _invalidate(connection)
+    if bind.dialect.name != "postgresql":
+        message = "Runtime lifecycle requires PostgreSQL"
+        raise RuntimeError(message)
+    lock_id = int.from_bytes(
+        hashlib.sha256(
+            f"Runtime.lifecycle:{workspace_id}:{user_id}".encode(),
+        ).digest()[:8],
+        "big",
+        signed=True,
+    )
+    with _postgres_execution(engine, key, active, lock_id):
+        yield
 
 
-def serialized(function):
+def serialized(
+    function: Callable[Concatenate[Session, Workspace, int, _P], _R],
+) -> Callable[Concatenate[Session, Workspace, int, _P], _R]:
+    """Run a lifecycle function while holding the Runtime advisory lock."""
+
     @wraps(function)
-    def wrapper(session, workspace, user_id=None, *args, **kwargs):
-        if user_id is None:
+    def wrapper(
+        session: Session,
+        workspace: Workspace,
+        user_id: int,
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _R:
+        with execution(session, int(workspace.id), user_id):
             return function(session, workspace, user_id, *args, **kwargs)
-        with execution(session, workspace.id, user_id):
-            return function(session, workspace, user_id, *args, **kwargs)
+
     return wrapper

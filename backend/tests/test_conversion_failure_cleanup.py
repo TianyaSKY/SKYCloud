@@ -1,4 +1,5 @@
 """Converter resource cleanup and safe failure diagnostics."""
+from threading import Event
 from unittest.mock import Mock,MagicMock
 import subprocess
 import sys
@@ -61,13 +62,66 @@ def test_description_provider_failure_has_no_exception_body(tmp_path,monkeypatch
     assert_safe(logs,'error_type=RuntimeError')
 
 
-def test_worker_future_failure_has_safe_diagnostics(logs):
-    from app.infra.worker_runtime import WorkerRuntime
-    runtime=WorkerRuntime(index_workers=1)
-    def fail():raise RuntimeError(PRIVATE)
+@pytest.mark.parametrize("completion_boundary", ["reap_completed", "wait_for_capacity"])
+def test_worker_completed_failures_preserve_sibling_results_and_shutdown(
+    monkeypatch, logs, completion_boundary,
+):
+    from app.infra import worker_runtime
+
+    runtime = worker_runtime.WorkerRuntime(index_workers=3)
+    outcomes = []
+    release_followup = Event()
+    followup_started = Event()
+
+    def fail(error_type):
+        raise error_type(PRIVATE)
+
+    def succeed():
+        outcomes.append("sibling_completed")
+
+    def followup():
+        followup_started.set()
+        assert release_followup.wait(timeout=2)
+        outcomes.append("followup_drained")
+
+    def close_clients():
+        assert outcomes == ["sibling_completed", "followup_drained"]
+        outcomes.append("clients_closed")
+
+    monkeypatch.setattr(worker_runtime, "close_sync_clients", close_clients)
     try:
-        future=runtime.submit_index(fail)
-        with pytest.raises(RuntimeError):future.result(timeout=2)
-        runtime.reap_completed()
-        assert_safe(logs,'error_type=RuntimeError')
-    finally:runtime.shutdown()
+        failed = runtime.submit_index(fail, RuntimeError)
+        other_failed = runtime.submit_index(fail, ValueError)
+        successful = runtime.submit_index(succeed)
+        with pytest.raises(RuntimeError):
+            failed.result(timeout=2)
+        with pytest.raises(ValueError):
+            other_failed.result(timeout=2)
+        assert successful.result(timeout=2) is None
+
+        # All three futures are completed before either public boundary runs.
+        # Two distinct failures prove iteration continues regardless of set order.
+        if completion_boundary == "reap_completed":
+            runtime.reap_completed()
+        else:
+            runtime.wait_for_capacity("index")
+
+        assert_safe(logs, "index executor (error_type=RuntimeError)")
+        assert_safe(logs, "index executor (error_type=ValueError)")
+        assert outcomes == ["sibling_completed"]
+        assert set(runtime.available_queues()) == {
+            worker_runtime.FILE_PROCESS_QUEUE,
+            worker_runtime.ORGANIZE_FILE_QUEUE,
+        }
+        next_future = runtime.submit_index(followup)
+        assert followup_started.wait(timeout=2)
+    finally:
+        release_followup.set()
+        runtime.shutdown()
+
+    assert next_future.result(timeout=2) is None
+    assert outcomes == [
+        "sibling_completed",
+        "followup_drained",
+        "clients_closed",
+    ]

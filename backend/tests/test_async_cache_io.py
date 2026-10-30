@@ -1,10 +1,11 @@
 import asyncio
 import threading
+from functools import partial
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.infra.cache import cacheable, cache_evict, cache_put
+from app.infra.cache import CacheableParams, cache_evict, cache_put, cacheable
 
 
 @pytest.mark.parametrize("operation", ["read", "write", "evict", "put"])
@@ -26,9 +27,14 @@ async def test_slow_redis_keeps_event_loop_available(operation):
         redis.delete.side_effect = slow_operation
     else:
         redis.setex.side_effect = slow_operation
-    decorator = cache_evict if operation == "evict" else cache_put if operation == "put" else cacheable
+    if operation == "evict":
+        decorator = cache_evict(prefix="test", key=lambda: "key")
+    elif operation == "put":
+        decorator = cache_put(prefix="test", key=lambda: "key")
+    else:
+        decorator = cacheable(CacheableParams(prefix="test"), key=lambda: "key")
 
-    @decorator(prefix="test", key=lambda: "key")
+    @decorator
     async def work():
         return {"value": 1}
 
@@ -59,7 +65,14 @@ async def test_cancelled_cache_call_drains_started_redis_before_return(operation
         redis.delete.side_effect = held
     else:
         redis.setex.side_effect = held
-    decorator = cache_evict(prefix='owned', before_invocation=operation == 'evict-before') if operation.startswith('evict') else cache_put(prefix='owned') if operation == 'put' else cacheable(prefix='owned')
+    if operation.startswith('evict'):
+        decorator = cache_evict(
+            prefix='owned', before_invocation=operation == 'evict-before',
+        )
+    elif operation == 'put':
+        decorator = cache_put(prefix='owned')
+    else:
+        decorator = cacheable(CacheableParams(prefix='owned'))
     @decorator
     async def work():
         return {'value': 1}
@@ -124,3 +137,42 @@ async def test_queued_cache_effect_follows_business_acceptance_policy(monkeypatc
             await actual_to_thread(lambda: None)
         assert business == ([] if operation == 'evict-before' else ['accepted'])
         assert effects == ([] if operation == 'evict-before' else ['put' if operation == 'put' else 'evict'])
+
+
+@pytest.mark.parametrize("operation", ["cacheable", "evict", "put"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_cache_decorators_preserve_partial_callables(
+    monkeypatch, operation, asynchronous,
+):
+    redis = MagicMock()
+    redis.get.return_value = None
+    monkeypatch.setattr("app.infra.cache.redis_client", redis)
+    calls = []
+
+    if asynchronous:
+        async def source(bound, value):
+            calls.append((bound, value))
+            return {"value": value}
+    else:
+        def source(bound, value):
+            calls.append((bound, value))
+            return {"value": value}
+
+    function = partial(source, "bound")
+    if operation == "cacheable":
+        decorated = cacheable(
+            CacheableParams(prefix="partial"), key=lambda value: value,
+        )(function)
+        assert decorated.cache_prefix == "partial"
+    elif operation == "evict":
+        decorated = cache_evict(prefix="partial", key=lambda value: value)(function)
+    else:
+        decorated = cache_put(prefix="partial", key=lambda value: value)(function)
+
+    result = await decorated(7) if asynchronous else decorated(7)
+    assert result == {"value": 7}
+    assert calls == [("bound", 7)]
+    if operation == "evict":
+        redis.delete.assert_called_once_with("partial:7")
+    else:
+        redis.setex.assert_called_once_with("partial:7", 3600, '{"value": 7}')

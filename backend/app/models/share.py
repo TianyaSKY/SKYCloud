@@ -1,38 +1,73 @@
-from app.infra.utc_datetime import UTCDateTime
+"""File share link rows with optional expiry."""
+
 import uuid
+from datetime import datetime
+from typing import TYPE_CHECKING, TypedDict
 
-import datetime
-
-from sqlalchemy import Integer, String, ForeignKey
+from sqlalchemy import ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from typing import TYPE_CHECKING
 
+from app.infra.datetime_utils import (
+    local_isoformat,
+    parse_legacy_datetime,
+    utc_now,
+)
 from app.infra.extensions import Base
-from app.infra.datetime_utils import utc_now, local_isoformat, parse_legacy_datetime
+from app.infra.utc_datetime import UTCDateTime
 
 if TYPE_CHECKING:
     from app.models.file import File
     from app.models.user import User
 
 
+class ShareDict(TypedDict):
+    """Public representation of a file share row."""
+
+    id: int
+    token: str
+    file_id: int
+    file_name: str | None
+    created_at: str | None
+    expires_at: str | None
+    link: str
+
+
 class Share(Base):
-    """文件外链分享表：token 访问链接，可选过期时间。"""
+    """External file share: token link with an optional expiry."""
 
     __tablename__ = "shares"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     token: Mapped[str] = mapped_column(
-        String(512), unique=True, nullable=False, default=lambda: str(uuid.uuid4())
+        String(512),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid.uuid4()),
     )
-    file_id: Mapped[int] = mapped_column(Integer, ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    created_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
-    expires_at: Mapped[datetime.datetime | None] = mapped_column(UTCDateTime(), nullable=True)  # 为空表示不过期
+    file_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("files.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        default=utc_now,
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
 
     file: Mapped["File"] = relationship("File", back_populates="shares")
     user: Mapped["User"] = relationship("User")
 
-    def to_dict(self):
+    def to_dict(self) -> ShareDict:
+        """Return the public share representation."""
         return {
             "id": self.id,
             "token": self.token,
@@ -44,7 +79,8 @@ class Share(Base):
         }
 
     @classmethod
-    def from_cache(cls, d: dict) -> "Share":
+    def from_cache(cls, d: ShareDict) -> "Share":
+        """Build a detached share row from cached fields."""
         return cls(
             id=d.get("id"),
             token=d.get("token"),

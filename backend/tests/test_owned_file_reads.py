@@ -18,7 +18,7 @@ async def test_cancelled_file_read_drains_owned_session(monkeypatch,kind):
         return {'items':[],'total':0}
     if kind=='search':
         monkeypatch.setattr(search_service,'_search_files_fuzzy',query)
-        operation=search_service.search_files(None,1,'query',session_factory=Session)
+        operation=search_service.search_files(None, 1, search_service.SearchFilesParams(query='query'), session_factory=Session)
     else:
         monkeypatch.setattr(service,'_process_status',query)
         operation=service.process_status(None,1,session_factory=Session)

@@ -4,6 +4,7 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 import pytest
+from app.api.dependencies import RequestContext
 from app.features.file import avatar_upload, router
 
 
@@ -38,9 +39,13 @@ async def test_avatar_adaptation_and_sql_share_owner_without_blocking_loop(monke
     monkeypatch.setattr(avatar_upload,'Base64UploadAdapter',adapt)
     monkeypatch.setattr(avatar_upload,'FastAPIUploadAdapter',adapt)
     monkeypatch.setattr(avatar_upload.service,'upload_avatar_for_user',upload)
-    pending = asyncio.create_task(router.upload_avatar(1,SimpleNamespace(headers={}),
+    pending = asyncio.create_task(router.upload_avatar(
+        user_id=1,
+        request=SimpleNamespace(headers={}),
         avatar=None if encoded else SimpleNamespace(filename='avatar.png'),
-        avatar_base64='eA==' if encoded else None,current_user=SimpleNamespace(id=1,role='admin'),session_factory=Session))
+        avatar_base64='eA==' if encoded else None,
+        ctx=RequestContext(user=SimpleNamespace(id=1, role='admin'), session_factory=Session),
+    ))
     try:
         assert await asyncio.to_thread(entered.wait,2)
         async def probe():

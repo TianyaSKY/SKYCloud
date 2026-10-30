@@ -3,7 +3,7 @@ import pytest
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from app.infra import cache
-from app.features.file import service, search_service
+from app.features.file import deletion, search_service
 
 
 def test_completed_invalidation_cannot_be_undone_by_an_older_search(monkeypatch):
@@ -47,7 +47,7 @@ def test_completed_invalidation_cannot_be_undone_by_an_older_search(monkeypatch)
         try:
             assert entered.wait(1)
             source[0] = 'new-name'
-            service._clear_search_cache(1)
+            deletion.clear_search_cache(1)
         finally:
             release.set()
         assert old.result()['items'][0]['name'] == 'old-name'
@@ -73,7 +73,9 @@ def test_failed_generation_read_bypasses_both_cache_read_and_write(monkeypatch):
     store = MagicMock()
     store.get.side_effect = ConnectionError('private-generation-detail')
     monkeypatch.setattr(cache, 'redis_client', store)
-    @cache.cacheable('data', generation_key=lambda: 'scope')
+    @cache.cacheable(
+        cache.CacheableParams(prefix='data'), generation_key=lambda: 'scope',
+    )
     def query():
         return {'current': True}
     assert query() == {'current': True}
@@ -93,13 +95,17 @@ async def test_cache_policy_skips_shared_effects_when_transaction_becomes_unsafe
     def policy():
         return allowed[0]
     if asynchronous:
-        @cache.cacheable('policy', cache_allowed=policy)
+        @cache.cacheable(
+            cache.CacheableParams(prefix='policy'), cache_allowed=policy,
+        )
         async def query():
             allowed[0] = False
             return {'own-transaction': True}
         result = await query()
     else:
-        @cache.cacheable('policy', cache_allowed=policy)
+        @cache.cacheable(
+            cache.CacheableParams(prefix='policy'), cache_allowed=policy,
+        )
         def query():
             allowed[0] = False
             return {'own-transaction': True}

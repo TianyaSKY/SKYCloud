@@ -23,9 +23,9 @@ async def test_semantic_search_authorization_precedes_embedding_and_usage(monkey
         events.append('provider')
         return SimpleNamespace(data=[SimpleNamespace(index=0,embedding=[1.0]*1024)],
                                usage=SimpleNamespace(total_tokens=12,prompt_tokens=12))
-    def record(**usage):
+    def record(usage):
         assert threading.get_ident()!=loop_thread
-        events.append(('usage',usage['user_id'],usage['total_tokens']))
+        events.append(('usage',usage.user_id,usage.total_tokens))
     def retrieve(session,*args):return {'items':[],'total':0}
     monkeypatch.setattr(search_service,'assert_member',authorize)
     monkeypatch.setattr(search_service,'get_embedding_model_config',lambda:{'api':'http://provider.test','key':'disposable','model':'embedding'})
@@ -34,8 +34,8 @@ async def test_semantic_search_authorization_precedes_embedding_and_usage(monkey
     monkeypatch.setattr(search_service,'_search_files_vector_by_embedding',retrieve)
     if revoked:
         with pytest.raises(PermissionDeniedError):
-            await search_service.search_files(None,11,'query',search_type='semantic',session_factory=Session,user_id=7)
+            await search_service.search_files(None, 11, search_service.SearchFilesParams(query='query', search_type='semantic'), session_factory=Session,user_id=7)
         assert events==['authorize']
     else:
-        assert await search_service.search_files(None,11,'query',search_type='semantic',session_factory=Session,user_id=7)=={'items':[],'total':0}
+        assert await search_service.search_files(None, 11, search_service.SearchFilesParams(query='query', search_type='semantic'), session_factory=Session,user_id=7)=={'items':[],'total':0}
         assert events==['authorize','provider',('usage',7,12),'authorize']

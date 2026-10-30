@@ -1,6 +1,6 @@
 """Runtime secret isolation, revocation, model binding and HTTP proxy regressions."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import jwt
@@ -55,13 +55,13 @@ def auth(raw):
 
 
 def test_password_change_revokes_runtime_and_external_mcp_tokens(session, test_user, runtime):
-    from app.features.auth.user_service import change_password
+    from app.features.auth.user_service import ChangePasswordParams, change_password
     from app.mcp.token_service import ensure_user_mcp_token, get_active_mcp_token
     mcp_record, external = ensure_user_mcp_token(session, test_user.id)
     _, scoped_mcp = runtime_token_service.issue_runtime_token(session, runtime, role="admin")
     credential = tokens.issue_token(session, runtime)
     assert tokens.validate_token(session, credential)
-    change_password(session, test_user.id, "common", test_user.id, "password123", "new-long-password")
+    change_password(session, ChangePasswordParams(actor_id=test_user.id, actor_role="common", user_id=test_user.id, old_password="password123", new_password="new-long-password"))
     assert get_active_mcp_token(session, external) is None
     assert tokens.validate_token(session, credential) is None
     assert runtime_token_service.validate_runtime_token(session, scoped_mcp) is None
@@ -196,7 +196,7 @@ def test_model_token_cannot_access_rest_or_mcp(session, credential, runtime):
 
     credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=credential)
     with pytest.raises(HTTPException) as denied:
-        asyncio.run(get_current_user(credentials=credentials, session=session))
+        asyncio.run(get_current_user(credentials=credentials, session_factory=Mock()))
     assert denied.value.status_code == 403
     assert JWTAuthMiddleware._resolve_context(session, credential, str(runtime.workspace_id)) is None
 

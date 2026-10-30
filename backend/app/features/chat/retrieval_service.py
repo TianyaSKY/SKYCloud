@@ -4,39 +4,66 @@ The SQL search port returns detached Documents and owns its Session. Every
 started search drains before cancellation returns; request identity is passed
 per call and is never stored in a cached embeddings client.
 """
+
 import asyncio
+import time
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Protocol
+from typing import Protocol
 
 from langchain_core.documents import Document
+from loguru import logger
 
 from app.exceptions import PermissionDeniedError, ServiceOperationError
 from app.features.chat.query_rewrite import RewriteKeywordDimensions
 from app.infra.owned_work import run_owned
-from loguru import logger
 
 
 class EmbeddingsClient(Protocol):
-    async def aembed_query(self, text: str, *, user_id: int) -> list[float]: ...
-    async def aembed_documents(self, texts: list[str], *, user_id: int) -> list[list[float]]: ...
+    """Embedding client that accepts request identity as a keyword argument."""
+
+    async def aembed_query(
+        self, text: str, **kwargs: str | float | None,
+    ) -> list[float]:
+        """Embed one query text."""
+        ...
+
+    async def aembed_documents(
+        self,
+        texts: list[str],
+        chunk_size: int | None = None,
+        **kwargs: str | float | None,
+    ) -> list[list[float]]:
+        """Embed a batch of document texts."""
+        ...
 
 
 VectorSearch = Callable[[list[float], str, int, int, int], list[Document]]
 
 
 class QueryBuilder(Protocol):
+    """Build the multi-query variants used for parallel recall."""
+
     def __call__(self, question: str, dimensions: RewriteKeywordDimensions,
-                 *, max_queries: int) -> list[str]: ...
+                 *, max_queries: int) -> list[str]:
+        """Return ordered, de-duplicated retrieval queries."""
+        ...
 
 
 class DocumentFusion(Protocol):
+    """Fuse ranked document lists into one ordering."""
+
     def __call__(self, result_sets: list[list[Document]],
-                 *, rrf_k: int, top_k: int) -> list[Document]: ...
+                 *, rrf_k: int, top_k: int) -> list[Document]:
+        """Return the fused document ranking."""
+        ...
 
 
 @dataclass(frozen=True)
 class RetrievalSettings:
+    """Recall depth, fusion width and rerank policy for one deployment."""
+
     vector_fetch_k: int
     max_queries: int
     rrf_k: int
@@ -45,6 +72,8 @@ class RetrievalSettings:
 
 @dataclass(frozen=True)
 class RetrievalOperations:
+    """External ports the retrieval service calls."""
+
     embeddings: Callable[[], EmbeddingsClient]
     search: VectorSearch
     rerank: Callable[[str, list[Document]], Awaitable[list[Document]]]
@@ -58,7 +87,7 @@ def fuse_docs_with_rrf(
         rrf_k: int,
         top_k: int,
 ) -> list[Document]:
-    """RRF 融合多路召回；同分时按向量 distance 打破平局。"""
+    """RRF 融合多路召回; 同分时按向量 distance 打破平局."""
     if not result_sets:
         return []
 
@@ -86,14 +115,23 @@ def fuse_docs_with_rrf(
 
 
 class RagRetrievalService:
-    def __init__(self, settings: RetrievalSettings, operations: RetrievalOperations):
+    """Single- and multi-query recall with fusion and reranking."""
+
+    def __init__(
+        self, settings: RetrievalSettings, operations: RetrievalOperations,
+    ) -> None:
+        """Bind retrieval policy to its embedding, SQL and rerank ports."""
         self.settings = settings
         self.operations = operations
 
-    async def single_query(self, query_text: str, workspace_id: int, *, user_id: int) -> list[Document]:
-        """单查询向量检索 + rerank；SQL 边界核验当前成员资格。"""
+    async def single_query(
+        self, query_text: str, workspace_id: int, *, user_id: int,
+    ) -> list[Document]:
+        """单查询向量检索 + rerank; SQL 边界核验当前成员资格."""
         embeddings = self.operations.embeddings()
-        query_vector = (await embeddings.aembed_query(query_text, user_id=user_id))[:1024]
+        query_vector = (
+            await embeddings.aembed_query(query_text, user_id=user_id)
+        )[:1024]
         docs = await run_owned(
             self.operations.search,
             query_vector,
@@ -103,7 +141,7 @@ class RagRetrievalService:
             user_id,
         )
         docs = await self.operations.rerank(query_text, docs)
-        logger.info(f"单查询检索结果: {len(docs)}")
+        logger.info("单查询检索结果: {}", len(docs))
         return docs
 
     async def multi_query(
@@ -114,13 +152,40 @@ class RagRetrievalService:
             original_vector: list[float] | None = None,
             *, user_id: int,
     ) -> list[Document]:
-        """多查询并行召回 → RRF → Rerank。
+        """多查询并行召回 -> RRF -> Rerank.
 
-        original_vector 可与关键词改写并行预计算，避免重复 embed 原问题。
+        original_vector 可与关键词改写并行预计算, 避免重复 embed 原问题.
         """
-        import time
         t0 = time.perf_counter()
 
+        queries = self._plan_queries(question, dimensions)
+        embeddings = self.operations.embeddings()
+        all_vectors = await self._embed_queries(
+            embeddings, queries, original_vector, user_id,
+        )
+
+        result_sets, searched_at = await self._search_all(
+            queries, all_vectors, workspace_id, user_id,
+        )
+
+        fused_docs = self.operations.fuse(
+            result_sets, rrf_k=self.settings.rrf_k, top_k=self.settings.fusion_top_k)
+
+        retrieval_query = self.operations.build_query(question, dimensions)
+        reranked_docs = await self.operations.rerank(retrieval_query, fused_docs)
+        t4 = time.perf_counter()
+        logger.info("[计时] Rerank: {:.2f}s", t4 - searched_at)
+
+        logger.info(
+            "多查询融合检索完成: queries={}, fused={}, reranked={}, 总耗时={:.2f}s",
+            len(queries), len(fused_docs), len(reranked_docs), t4 - t0,
+        )
+        return reranked_docs
+
+    def _plan_queries(
+        self, question: str, dimensions: RewriteKeywordDimensions,
+    ) -> list[str]:
+        """Build query variants, falling back to the trimmed question."""
         queries = self.operations.build_queries(
             question,
             dimensions,
@@ -128,41 +193,58 @@ class RagRetrievalService:
         )
         if not queries and question.strip():
             queries = [question.strip()]
+        return queries
 
-        embeddings = self.operations.embeddings()
-
-        # ---------------------------------------------------------------------------
-        # 阶段 1: embedding
-        # ---------------------------------------------------------------------------
-        # 若已预计算原问题向量，只 embed 额外查询
+    async def _embed_queries(
+        self,
+        embeddings: EmbeddingsClient,
+        queries: list[str],
+        original_vector: list[float] | None,
+        user_id: int,
+    ) -> list[list[float]]:
+        """Embed query variants, reusing the precomputed original vector."""
         t1 = time.perf_counter()
         if original_vector and queries:
             additional_queries = queries[1:]  # queries[0] 始终是原始问题
             if additional_queries:
-                extra_vectors = await embeddings.aembed_documents(additional_queries, user_id=user_id)
+                extra_vectors = await embeddings.aembed_documents(
+                    additional_queries, user_id=user_id)
                 all_vectors = [original_vector] + [v[:1024] for v in extra_vectors]
             else:
                 all_vectors = [original_vector]
             t2 = time.perf_counter()
             logger.info(
-                f"[计时] 增量 embedding {len(additional_queries)} 条: {t2 - t1:.2f}s"
-                f" (原始问题已并行预计算)")
+                "[计时] 增量 embedding {} 条: {:.2f}s (原始问题已并行预计算)",
+                len(additional_queries), t2 - t1)
         else:
-            all_vectors = await embeddings.aembed_documents(queries, user_id=user_id)
-            all_vectors = [v[:1024] for v in all_vectors]
+            embedded = await embeddings.aembed_documents(queries, user_id=user_id)
+            all_vectors = [v[:1024] for v in embedded]
             t2 = time.perf_counter()
-            logger.info(f"[计时] 批量 embedding {len(queries)} 条: {t2 - t1:.2f}s")
+            logger.info(
+                "[计时] 批量 embedding {} 条: {:.2f}s", len(queries), t2 - t1)
 
         if len(all_vectors) != len(queries):
-            raise ServiceOperationError("Embedding response does not match retrieval queries")
+            message = "Embedding response does not match retrieval queries"
+            raise ServiceOperationError(message)
+        return all_vectors
 
-        # ---------------------------------------------------------------------------
-        # 阶段 2: 并行数据库向量检索
-        # ---------------------------------------------------------------------------
-        async def _search_one(q_text: str, vec: list[float]):
+    async def _search_all(
+        self,
+        queries: list[str],
+        all_vectors: list[list[float]],
+        workspace_id: int,
+        user_id: int,
+    ) -> tuple[list[list[Document]], float]:
+        """Run every vector search concurrently and keep partial recall."""
+        t2 = time.perf_counter()
+
+        async def _search_one(
+            query_text: str, vector: list[float],
+        ) -> list[Document] | Exception:
             try:
                 return await run_owned(
-                    self.operations.search, vec, q_text, workspace_id, self.settings.vector_fetch_k, user_id
+                    self.operations.search, vector, query_text, workspace_id,
+                    self.settings.vector_fetch_k, user_id,
                 )
             except Exception as exc:
                 # Keep partial recall on ordinary failures. Cancellation still
@@ -170,39 +252,29 @@ class RagRetrievalService:
                 return exc
 
         async with asyncio.TaskGroup() as group:
-            search_tasks = [group.create_task(_search_one(qt, v)) for qt, v in zip(queries, all_vectors)]
+            search_tasks = [
+                group.create_task(_search_one(query_text, vector))
+                for query_text, vector in zip(queries, all_vectors, strict=False)
+            ]
         raw_results = [task.result() for task in search_tasks]
 
         for result in raw_results:
             if isinstance(result, PermissionDeniedError):
                 raise result
         result_sets: list[list[Document]] = []
-        for res in raw_results:
-            if isinstance(res, Exception):
-                logger.warning("Multi-query recall failed (error_type={})", type(res).__name__)
-            elif res:
-                result_sets.append(res)
-        if raw_results and all(isinstance(result, Exception) for result in raw_results):
-            raise ServiceOperationError("File retrieval unavailable")
+        for result in raw_results:
+            if isinstance(result, Exception):
+                logger.warning(
+                    "Multi-query recall failed (error_type={})",
+                    type(result).__name__,
+                )
+            elif result:
+                result_sets.append(result)
+        if raw_results and all(
+                isinstance(result, Exception) for result in raw_results):
+            message = "File retrieval unavailable"
+            raise ServiceOperationError(message)
         t3 = time.perf_counter()
-        logger.info(f"[计时] DB 向量检索 {len(queries)} 条 (并行): {t3 - t2:.2f}s")
-
-        # ---------------------------------------------------------------------------
-        # 阶段 3: RRF 融合
-        # ---------------------------------------------------------------------------
-        fused_docs = self.operations.fuse(
-            result_sets, rrf_k=self.settings.rrf_k, top_k=self.settings.fusion_top_k)
-
-        # ---------------------------------------------------------------------------
-        # 阶段 4: Rerank
-        # ---------------------------------------------------------------------------
-        retrieval_query = self.operations.build_query(question, dimensions)
-        reranked_docs = await self.operations.rerank(retrieval_query, fused_docs)
-        t4 = time.perf_counter()
-        logger.info(f"[计时] Rerank: {t4 - t3:.2f}s")
-
         logger.info(
-            f"多查询融合检索完成: queries={len(queries)}, fused={len(fused_docs)}, "
-            f"reranked={len(reranked_docs)}, 总耗时={t4 - t0:.2f}s"
-        )
-        return reranked_docs
+            "[计时] DB 向量检索 {} 条 (并行): {:.2f}s", len(queries), t3 - t2)
+        return result_sets, t3

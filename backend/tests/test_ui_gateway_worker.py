@@ -133,7 +133,9 @@ async def test_cancelled_terminal_drains_auth_before_socket_and_slot_release(mon
     monkeypatch.setattr(ui_gateway, 'direct_connect', connect)
     monkeypatch.setattr(ui_gateway, 'RECHECK_SECONDS', .01)
     monkeypatch.setattr(ui_tickets, 'authenticate', authenticate)
-    pending = asyncio.create_task(ui_gateway.terminal('pty/owned/connect', websocket, Owned))
+    pending = asyncio.create_task(ui_gateway.terminal(
+        path='pty/owned/connect', websocket=websocket, session_factory=Owned,
+    ))
     try:
         assert await asyncio.to_thread(entered.wait, 2)
         previous = len(closed)
@@ -143,7 +145,7 @@ async def test_cancelled_terminal_drains_auth_before_socket_and_slot_release(mon
         await asyncio.sleep(.01)
         assert not pending.done() and not finished.is_set()
         assert len(closed) == previous and not upstream_closed
-        assert slots.counts == ({1: 1} if stage == 'guard' else {})
+        assert slots.counts == ({'1': 1} if stage == 'guard' else {})
     finally:
         release.set()
         with pytest.raises(asyncio.CancelledError):

@@ -1,27 +1,29 @@
-"""工作空间权限校验：角色枚举与权限断言函数。
+"""工作空间权限校验: 角色枚举与权限断言函数.
 
-角色层级：admin > editor > viewer
+角色层级: admin > editor > viewer
 - admin: 管理成员、删除空间、所有文件操作
 - editor: 上传/编辑/移动/删除文件
-- viewer: 只读（列表、下载、预览）
+- viewer: 只读 (列表、下载、预览).
 """
 
 from enum import Enum
 
 from sqlalchemy.orm import Session
 
-from app.exceptions import PermissionDeniedError, ResourceNotFoundError
+from app.exceptions import PermissionDeniedError
+from app.features.workspace.access_repository import lock_write_identity
 from app.models.workspace import WorkspaceMember
 
 
 class WorkspaceRole(str, Enum):
-    """工作空间成员角色。"""
+    """工作空间成员角色."""
+
     admin = "admin"
     editor = "editor"
     viewer = "viewer"
 
 
-# 角色权限级别映射，数值越大权限越高
+# 角色权限级别映射, 数值越大权限越高
 ROLE_LEVEL: dict[str, int] = {
     "viewer": 1,
     "editor": 2,
@@ -29,60 +31,77 @@ ROLE_LEVEL: dict[str, int] = {
 }
 
 
-def get_member_role(session: Session, workspace_id: int, user_id: int) -> WorkspaceRole | None:
-    """查询用户在指定工作空间中的角色；非成员返回 None。"""
+def get_member_role(
+    session: Session,
+    workspace_id: int,
+    user_id: int,
+) -> WorkspaceRole | None:
+    """查询用户在指定工作空间中的角色; 非成员返回 None."""
     # A role column read sees current SQL state even when this Session has
     # an older WorkspaceMember ORM instance in its identity map.
-    role = session.query(WorkspaceMember.role).filter_by(
-        workspace_id=workspace_id, user_id=user_id
-    ).scalar()
+    role = (
+        session.query(WorkspaceMember.role)
+        .filter_by(
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
+        .scalar()
+    )
     return WorkspaceRole(role) if role is not None else None
 
 
 def assert_member(session: Session, workspace_id: int, user_id: int) -> WorkspaceRole:
-    """断言用户为工作空间成员，返回其角色；非成员抛 403。"""
+    """断言用户为工作空间成员, 返回其角色; 非成员抛 403."""
     role = get_member_role(session, workspace_id, user_id)
     if role is None:
-        raise PermissionDeniedError("您不是该工作空间的成员")
+        message = "您不是该工作空间的成员"
+        raise PermissionDeniedError(message)
     return role
 
 
 def assert_can_read(session: Session, workspace_id: int, user_id: int) -> WorkspaceRole:
-    """断言用户有读取权限（任何成员均可读取）。"""
+    """断言用户有读取权限 (任何成员均可读取)."""
     return assert_member(session, workspace_id, user_id)
 
 
 def assert_can_write(session: Session, workspace_id: int, user_id: int) -> None:
-    """断言用户有写入权限（editor 或 admin）。"""
+    """断言用户有写入权限 (editor 或 admin)."""
     role = assert_member(session, workspace_id, user_id)
     if ROLE_LEVEL.get(role.value, 0) < ROLE_LEVEL["editor"]:
-        raise PermissionDeniedError("需要编辑者或管理员权限")
+        message = "需要编辑者或管理员权限"
+        raise PermissionDeniedError(message)
 
 
 def assert_admin(session: Session, workspace_id: int, user_id: int) -> None:
-    """断言用户为工作空间管理员。"""
+    """断言用户为工作空间管理员."""
     role = assert_member(session, workspace_id, user_id)
     if role != WorkspaceRole.admin:
-        raise PermissionDeniedError("需要管理员权限")
+        message = "需要管理员权限"
+        raise PermissionDeniedError(message)
 
 
 def check_role_level(role: str | WorkspaceRole, min_role: str) -> bool:
-    """检查角色是否达到最低要求。"""
+    """检查角色是否达到最低要求."""
     role_value = role.value if isinstance(role, WorkspaceRole) else role
     return ROLE_LEVEL.get(role_value, 0) >= ROLE_LEVEL.get(min_role, 0)
 
 
-def assert_member_locked(session: Session, workspace_id: int, user_id: int) -> WorkspaceRole:
+def assert_member_locked(
+    session: Session,
+    workspace_id: int,
+    user_id: int,
+) -> WorkspaceRole:
     """Hold current membership through the caller's publication transaction."""
-    from app.features.workspace.access_repository import lock_write_identity
     member = lock_write_identity(session, workspace_id, user_id)
     if member is None:
-        raise PermissionDeniedError("您不是该工作空间的成员")
+        message = "您不是该工作空间的成员"
+        raise PermissionDeniedError(message)
     return WorkspaceRole(member.role)
 
 
 def assert_can_write_locked(session: Session, workspace_id: int, user_id: int) -> None:
-    """Hold current edit authorization through the caller's mutation transaction."""
+    """Hold edit authorization through the caller's mutation transaction."""
     role = assert_member_locked(session, workspace_id, user_id)
     if role not in (WorkspaceRole.editor, WorkspaceRole.admin):
-        raise PermissionDeniedError("需要编辑者或管理员权限")
+        message = "需要编辑者或管理员权限"
+        raise PermissionDeniedError(message)

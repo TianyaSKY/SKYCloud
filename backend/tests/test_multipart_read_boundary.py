@@ -18,8 +18,12 @@ def test_chunk_link_is_not_reported_or_assembled(tmp_path):
     destination.write_bytes(b'previous')
     assert multipart_storage.list_chunks(str(chunks)) == []
     with pytest.raises(BusinessRuleError):
-        multipart_storage.assemble(str(chunks), str(destination), total_chunks=1,
-                                   chunk_size=6, total_size=6)
+        multipart_storage.assemble(
+            str(chunks), str(destination),
+            multipart_storage.AssembleParams(
+                total_chunks=1, chunk_size=6, total_size=6,
+            ),
+        )
     assert destination.read_bytes() == b'previous'
     assert private.read_bytes() == b'secret'
 
@@ -31,8 +35,12 @@ def test_non_regular_chunk_does_not_count_or_block_assembly(tmp_path):
     os.mkfifo(chunks / '0.part')
     assert multipart_storage.list_chunks(str(chunks)) == []
     with pytest.raises(BusinessRuleError):
-        multipart_storage.assemble(str(chunks), str(tmp_path / 'assembled'),
-                                   total_chunks=1, chunk_size=3, total_size=3)
+        multipart_storage.assemble(
+            str(chunks), str(tmp_path / 'assembled'),
+            multipart_storage.AssembleParams(
+                total_chunks=1, chunk_size=3, total_size=3,
+            ),
+        )
     assert not (tmp_path / 'assembled').exists()
 
 
@@ -56,7 +64,11 @@ def test_directory_replacement_keeps_assembly_on_opened_directory(tmp_path, monk
 
     monkeypatch.setattr(multipart_storage, '_chunk_source', replace_directory)
     destination = tmp_path / 'assembled'
-    multipart_storage.assemble(str(chunks), str(destination), total_chunks=1,
-                               chunk_size=6, total_size=6, root=str(root))
+    multipart_storage.assemble(
+        str(chunks), str(destination),
+        multipart_storage.AssembleParams(
+            total_chunks=1, chunk_size=6, total_size=6, root=str(root),
+        ),
+    )
     assert destination.read_bytes() == b'safe!!'
     assert (foreign / '0.part').read_bytes() == b'secret'

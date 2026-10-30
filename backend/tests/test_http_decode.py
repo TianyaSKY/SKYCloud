@@ -96,12 +96,12 @@ async def test_gateway_compression_admission_and_owned_release(monkeypatch,kind,
     request=Request({'type':'http','method':'POST' if kind!='ui' else 'GET','path':'/','query_string':b'',
                      'headers':[(b'host',b'runtime.test'),(b'cookie',(ui_tickets.COOKIE+'=opaque').encode())]},receive)
     if kind=='ui':
-        def authorize(*args):return {'expires_at':time.time()+60,'container_id':'a'*64,'origin':'http://runtime.test'}
+        def authorize(*args):return {'expires_at':time.time()+60,'container_id':'a'*64,'origin':'http://runtime.test','user_id':1}
         monkeypatch.setattr(ui_gateway,'authenticate_owned',authorize)
         monkeypatch.setattr(ui_gateway,'reauthenticate',authorize)
         monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',client)
         monkeypatch.setattr(ui_gateway,'MAX_RESPONSE',1024)
-        operation=ui_gateway.relay('event',request,None)
+        operation=ui_gateway.relay(path='event',request=request,session_factory=None)
     else:
         monkeypatch.setattr(model,'upstream_client',client)
         monkeypatch.setattr(model,'_validate_current_credential',lambda *args,**kwargs:{'model':'allowed'})

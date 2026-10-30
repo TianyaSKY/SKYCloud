@@ -29,10 +29,30 @@ def seeded():
         db.add(WorkspaceMember(workspace_id=workspace.id, user_id=user.id, role='admin'))
         runtime = OpenCodeRuntime(workspace_id=workspace.id, user_id=user.id, container_id='a'*64, status='running')
         db.add(runtime); db.flush()
-        conversation = repository.create_conversation(db, workspace.id, user.id, 'expert', 'abort-test')
+        conversation = repository.create_conversation(
+            db,
+            repository.CreateConversationParams(
+                workspace_id=workspace.id,
+                user_id=user.id,
+                mode='expert',
+                title='abort-test',
+            ),
+        )
         conversation.opencode_runtime_id = runtime.id
-        request = repository.create_message(db, conversation, 'user', 'query')
-        response = repository.create_message(db, conversation, 'assistant', '', status='streaming')
+        request = repository.create_message(
+            db,
+            conversation,
+            repository.CreateMessageParams(role='user', content='query'),
+        )
+        response = repository.create_message(
+            db,
+            conversation,
+            repository.CreateMessageParams(
+                role='assistant',
+                content='',
+                status='streaming',
+            ),
+        )
         run = repository.create_run(db, conversation, request, response)
         run.status = 'running'
         run.opencode_session_id = 'captured-session'
@@ -62,13 +82,13 @@ def test_recovery_intent_is_atomic_and_retry_blocks_new_admission(seeded):
     factory, identity = seeded
     user, workspace, runtime, conversation, run_id = identity
     with factory() as db:
-        assert service._recover_abandoned_run(db, db.get(AssistantRun, run_id), commit=False)
+        assert service.recover_abandoned_run(db, db.get(AssistantRun, run_id), commit=False)
         assert abort_repository.pending_for_member(db, workspace, user)
         db.rollback()
     with factory() as db:
         assert db.get(AssistantRuntimeAbort, run_id) is None
         assert db.get(AssistantRun, run_id).status == 'running'
-        assert service._recover_abandoned_run(db, db.get(AssistantRun, run_id))
+        assert service.recover_abandoned_run(db, db.get(AssistantRun, run_id))
     def unavailable(target):
         raise ConnectionError('private-controller-url')
     assert worker.abort_pending_sessions(session_factory=factory, controller_factory=controller(identity), abort_function=unavailable) == 0
@@ -77,7 +97,15 @@ def test_recovery_intent_is_atomic_and_retry_blocks_new_admission(seeded):
         assert intent.attempts == 1 and intent.last_error_type == 'ConnectionError' and intent.completed_at is None
         assert intent.next_attempt_at > utc_now()
         with pytest.raises(ConflictError, match='cleanup'):
-            service.prepare_run(db, db.get(Workspace, workspace), user, conversation, 'new work')
+            service.prepare_run(
+                db,
+                service.PrepareRunParams(
+                    workspace=db.get(Workspace, workspace),
+                    user_id=user,
+                    conversation_id=conversation,
+                    query='new work',
+                ),
+            )
         db.rollback()
         intent.next_attempt_at = utc_now()-timedelta(seconds=1)
         db.get(OpenCodeRuntime, runtime).container_id = 'b'*64
@@ -94,7 +122,7 @@ def test_recovery_intent_is_atomic_and_retry_blocks_new_admission(seeded):
 def test_cleanup_validates_captured_identity_or_proves_container_not_running(seeded, change):
     factory, identity = seeded
     with factory() as db:
-        assert service._recover_abandoned_run(db, db.get(AssistantRun, identity[-1]))
+        assert service.recover_abandoned_run(db, db.get(AssistantRun, identity[-1]))
     calls = []
     completed = worker.abort_pending_sessions(session_factory=factory, controller_factory=controller(identity, change=change), abort_function=calls.append)
     assert not calls
@@ -116,7 +144,7 @@ def test_recovery_uses_original_dispatch_container_after_sql_pointer_changes(see
     with factory() as db:
         db.get(OpenCodeRuntime, identity[2]).container_id = 'b'*64
         db.commit()
-        assert service._recover_abandoned_run(db, db.get(AssistantRun, identity[-1]))
+        assert service.recover_abandoned_run(db, db.get(AssistantRun, identity[-1]))
         assert db.get(AssistantRuntimeAbort, identity[-1]).container_id == 'a'*64
 
 
@@ -128,7 +156,7 @@ def test_lease_without_dispatched_provider_session_still_has_cleanup_intent(seed
         run.runtime_lease_token = 'c'*32
         db.commit()
         assert 'runtime_lease_token' not in run.to_dict()
-        assert service._recover_abandoned_run(db, run)
+        assert service.recover_abandoned_run(db, run)
         intent = db.get(AssistantRuntimeAbort, run.id)
         assert intent.session_id is None and intent.lease_token == 'c'*32
 
@@ -139,8 +167,20 @@ def test_sweep_does_not_starve_dead_run_behind_older_live_run(seeded):
         old = db.get(AssistantRun, identity[-1])
         old.metadata_dict = {'worker_heartbeat_unix': time.time()}
         conversation = db.get(type(old.conversation), identity[3])
-        request = repository.create_message(db, conversation, 'user', 'second')
-        response = repository.create_message(db, conversation, 'assistant', '', status='streaming')
+        request = repository.create_message(
+            db,
+            conversation,
+            repository.CreateMessageParams(role='user', content='second'),
+        )
+        response = repository.create_message(
+            db,
+            conversation,
+            repository.CreateMessageParams(
+                role='assistant',
+                content='',
+                status='streaming',
+            ),
+        )
         old.status = 'failed'
         db.flush()
         new = repository.create_run(db, conversation, request, response)
@@ -150,7 +190,15 @@ def test_sweep_does_not_starve_dead_run_behind_older_live_run(seeded):
         db.commit()
         # SQL uniqueness permits one active run per conversation; give the
         # live predecessor its own conversation for this scan ordering proof.
-        other = repository.create_conversation(db, identity[1], identity[0], 'fast', 'live')
+        other = repository.create_conversation(
+            db,
+            repository.CreateConversationParams(
+                workspace_id=identity[1],
+                user_id=identity[0],
+                mode='fast',
+                title='live',
+            ),
+        )
         old.conversation_id = other.id
         old.status = 'running'
         db.commit()
@@ -220,18 +268,36 @@ def test_explicit_cancel_atomically_stages_remote_cleanup_and_blocks_new_run(see
         db.get(AssistantRun, identity[-1]).status = 'cancelled'
         db.commit()
         with pytest.raises(ConflictError, match='cleanup'):
-            service.prepare_run(db, db.get(Workspace, identity[1]), identity[0], identity[3], 'new work')
+            service.prepare_run(
+                db,
+                service.PrepareRunParams(
+                    workspace=db.get(Workspace, identity[1]),
+                    user_id=identity[0],
+                    conversation_id=identity[3],
+                    query='new work',
+                ),
+            )
 
 
 @pytest.mark.parametrize('status', ['cancelled', 'failed'])
 def test_interrupted_stream_finish_atomically_stages_remote_cleanup(seeded, status):
-    from app.features.assistant.stream_persistence import StreamPersistence
+    from app.features.assistant.stream_persistence import (
+        FinalOutcome,
+        StreamPersistence,
+    )
     from app.models.assistant import AssistantConversation
     factory, identity = seeded
     with factory() as db:
         persistence = StreamPersistence(db, db.get(Workspace, identity[1]), identity[0],
             db.get(AssistantConversation, identity[3]), db.get(AssistantRun, identity[-1]))
-        assert persistence.finish(status, '', {}, {}, [], None) == status
+        assert persistence.finish(FinalOutcome(
+            status=status,
+            content='',
+            metadata={},
+            usage={},
+            events=[],
+            error_code=None,
+        )) == status
     with factory() as db:
         assert db.get(AssistantRun, identity[-1]).status == status
         intent = db.get(AssistantRuntimeAbort, identity[-1])
@@ -239,7 +305,11 @@ def test_interrupted_stream_finish_atomically_stages_remote_cleanup(seeded, stat
 
 
 def test_idle_stream_commits_partial_checkpoint_before_quiet_provider_wait(seeded):
-    from app.features.assistant.stream_persistence import StreamPersistence
+    from app.features.assistant.stream_persistence import (
+        LeasePoll,
+        StreamPersistence,
+        StreamProgress,
+    )
     from app.models.assistant import AssistantConversation, AssistantMessage
     factory, identity = seeded
     with factory() as db:
@@ -247,7 +317,19 @@ def test_idle_stream_commits_partial_checkpoint_before_quiet_provider_wait(seede
         message_id = run.assistant_message_id
         persistence = StreamPersistence(db, db.get(Workspace, identity[1]), identity[0],
             db.get(AssistantConversation, identity[3]), run)
-        assert persistence.checkpoint('partial answer', {}, {}, None, False)
-        assert persistence.poll(False, time.time(), True) == (False, False)
+        assert persistence.checkpoint(
+            StreamProgress(
+                answer_parts=['partial answer'],
+                metadata={},
+                usage={},
+            ),
+            None,
+            commit=False,
+        )
+        assert persistence.poll(LeasePoll(
+            renew_lease=False,
+            now=time.time(),
+            idle=True,
+        )) == (False, False)
         db.rollback()
         assert db.get(AssistantMessage, message_id).content == 'partial answer'

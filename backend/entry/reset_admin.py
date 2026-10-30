@@ -1,36 +1,67 @@
 """Reset an existing administrator password from the deployment terminal."""
 
 import argparse
+import sys
 from getpass import getpass
 
+from app.features.auth.user_service import ChangePasswordParams, change_password
+from app.infra.extensions import SessionLocal
+from app.infra.schema import check_schema
+from app.models.user import User
+from sqlalchemy.orm import Session
 
-def reset_admin(session, username: str, password: str):
-    from app.models.user import User
-    from app.features.auth.user_service import change_password
-    if not 12 <= len(password) <= 128 or password.lower() in {"password1234", "123456789012"}:
-        raise ValueError("Choose a unique password of at least 12 and at most 128 characters")
-    user = session.query(User).filter_by(username=username, role="admin").with_for_update().populate_existing().one_or_none()
+_MIN_PASSWORD_LENGTH = 12
+_MAX_PASSWORD_LENGTH = 128
+_REJECTED_PASSWORDS = frozenset({"password1234", "123456789012"})
+
+
+def reset_admin(session: Session, username: str, password: str) -> None:
+    """Replace the administrator password and revoke previous credentials."""
+    if (
+        not _MIN_PASSWORD_LENGTH <= len(password) <= _MAX_PASSWORD_LENGTH
+        or password.lower() in _REJECTED_PASSWORDS
+    ):
+        message = (
+            "Choose a unique password of at least 12 and at most 128 characters"
+        )
+        raise ValueError(message)
+    user = (
+        session.query(User)
+        .filter_by(username=username, role="admin")
+        .with_for_update()
+        .populate_existing()
+        .one_or_none()
+    )
     if user is None:
-        raise ValueError("Administrator not found")
-    change_password(session, user.id, "admin", user.id, "", password)
+        message = "Administrator not found"
+        raise ValueError(message)
+    change_password(
+        session,
+        ChangePasswordParams(
+            actor_id=user.id,
+            actor_role="admin",
+            user_id=user.id,
+            old_password="",
+            new_password=password,
+        ),
+    )
 
 
-def main():
+def main() -> None:
+    """Parse CLI arguments and reset the administrator password."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--username", required=True)
     args = parser.parse_args()
     password = getpass("New administrator password: ")
     if password != getpass("Repeat password: "):
         parser.error("Passwords do not match")
-    from app.infra.extensions import SessionLocal
-    from app.infra.schema import check_schema
     with SessionLocal() as session:
         check_schema(session.get_bind())
         try:
             reset_admin(session, args.username, password)
         except ValueError as exc:
             parser.error(str(exc))
-    print("Administrator password reset; previous credentials revoked")
+    sys.stdout.write("Administrator password reset; previous credentials revoked\n")
 
 
 if __name__ == "__main__":

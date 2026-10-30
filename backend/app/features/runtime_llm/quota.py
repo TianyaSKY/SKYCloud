@@ -1,12 +1,15 @@
-"""Atomic shared quotas. Reservations survive credential refresh and runtime recreation."""
+"""Atomic shared quotas.
+
+Reservations survive credential refresh and runtime recreation.
+"""
 
 import time
 
 from fastapi import HTTPException
 from redis.exceptions import RedisError
 
+from app.features.runtime_llm.tokens import RuntimeLlmClaims, positive_setting
 from app.infra.extensions import redis_client
-from app.features.runtime_llm.tokens import positive_setting
 
 # Reserve both request and token counters together, or reserve nothing. The
 # conservative token charge uses input bytes + maximum output tokens, so a
@@ -14,7 +17,8 @@ from app.features.runtime_llm.tokens import positive_setting
 RESERVE_SCRIPT = """
 for i = 1, #KEYS, 2 do
     if tonumber(redis.call('GET', KEYS[i]) or '0') + 1 > tonumber(ARGV[1]) or
-       tonumber(redis.call('GET', KEYS[i+1]) or '0') + tonumber(ARGV[2]) > tonumber(ARGV[3]) then
+       tonumber(redis.call('GET', KEYS[i+1]) or '0') + tonumber(ARGV[2])
+       > tonumber(ARGV[3]) then
         return 0
     end
 end
@@ -28,20 +32,35 @@ return 1
 """
 
 
-def reserve(payload: dict, input_bytes: int, output_tokens: int) -> None:
+def reserve(payload: RuntimeLlmClaims, input_bytes: int, output_tokens: int) -> None:
+    """Atomically charge one request and its worst-case tokens to every scope."""
     bucket = int(time.time()) // 3600
-    keys = []
-    for scope in (f"user:{payload['sub']}", f"workspace:{payload['workspace_id']}", f"runtime:{payload['runtime_id']}"):
+    keys: list[str] = []
+    scopes = (
+        f"user:{payload['sub']}",
+        f"workspace:{payload['workspace_id']}",
+        f"runtime:{payload['runtime_id']}",
+    )
+    for scope in scopes:
         prefix = f"runtime-llm-quota:{scope}:{bucket}"
         keys.extend([prefix + ":requests", prefix + ":tokens"])
-    budget = min(payload["quota"], positive_setting("RUNTIME_LLM_HOURLY_TOKEN_BUDGET", 100000))
+    budget = min(
+        payload["quota"],
+        positive_setting("RUNTIME_LLM_HOURLY_TOKEN_BUDGET", 100000),
+    )
     try:
         accepted = redis_client.eval(
-            RESERVE_SCRIPT, len(keys), *keys,
+            RESERVE_SCRIPT,
+            len(keys),
+            *keys,
             positive_setting("RUNTIME_LLM_HOURLY_REQUEST_LIMIT", 60),
-            input_bytes + output_tokens, budget, 7200,
+            input_bytes + output_tokens,
+            budget,
+            7200,
         )
     except RedisError as exc:
-        raise HTTPException(status_code=503, detail="Model quota service unavailable") from exc
+        message = "Model quota service unavailable"
+        raise HTTPException(status_code=503, detail=message) from exc
     if accepted != 1:
-        raise HTTPException(status_code=429, detail="Runtime model quota exceeded")
+        message = "Runtime model quota exceeded"
+        raise HTTPException(status_code=429, detail=message)

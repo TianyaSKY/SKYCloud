@@ -1,77 +1,105 @@
-"""系统字典路由：管理员维护键值配置。业务在 sys_dict_service。"""
+"""系统字典路由:管理员维护键值配置.业务在 sys_dict_service."""
 
-from fastapi import APIRouter, Depends, Response, status
+from collections.abc import Mapping
+from typing import Annotated
 
+from fastapi import APIRouter, Depends, Path, Response, status
+
+from app.api.contracts import SuccessEnvelope, SuccessResponse, success_payload
 from app.api.dependencies import require_admin
-from app.features.sys_dict.schemas import SysDictPayload, SysDictResponse
-from app.infra.extensions import get_session_factory
 from app.features.auth import user_service
 from app.features.sys_dict import service as sys_dict_service
-
-from app.api.contracts import SuccessResponse, success_payload
+from app.features.sys_dict.schemas import SysDictPayload, SysDictResponse
+from app.infra.extensions import SessionFactory, get_session_factory
+from app.models.sys_dict import SysDictDict
+from app.models.user import User
 
 router = APIRouter(tags=["sys_dict"])
 
+SessionFactoryDep = Annotated[SessionFactory, Depends(get_session_factory)]
+AdminUser = Annotated[User, Depends(require_admin)]
 
-@router.post("/sys_dicts", status_code=status.HTTP_201_CREATED, response_model=SuccessResponse[SysDictResponse])
+
+@router.post(
+    "/sys_dicts",
+    status_code=status.HTTP_201_CREATED,
+    response_model=SuccessResponse[SysDictResponse],
+)
 def create_sys_dict(
     payload: SysDictPayload,
-    current_user=Depends(require_admin),
-    session_factory=Depends(get_session_factory),
-):
-    """新增字典项（需管理员）。"""
+    current_user: AdminUser,
+    session_factory: SessionFactoryDep,
+) -> SuccessEnvelope[Mapping[str, object]]:
+    """新增字典项(需管理员)."""
     with session_factory() as session:
         user_service.authorize_account_mutation(session, current_user.id)
-        sys_dict = sys_dict_service.create_sys_dict(session, payload.model_dump())
+        sys_dict = sys_dict_service.create_sys_dict(
+            session,
+            {
+                "key": payload.key,
+                "value": payload.value,
+                "des": payload.des,
+                "enable": payload.enable,
+            },
+        )
         return success_payload(sys_dict.to_dict())
 
 
 @router.get("/sys_dicts/{id}", response_model=SuccessResponse[SysDictResponse])
 def get_sys_dict(
-    id: int,
-    current_user=Depends(require_admin),
-    session_factory=Depends(get_session_factory),
-):
-    """按 ID 查询字典项。"""
+    dict_id: Annotated[int, Path(alias="id")],
+    current_user: AdminUser,
+    session_factory: SessionFactoryDep,
+) -> SuccessEnvelope[Mapping[str, object]]:
+    """按 ID 查询字典项."""
     with session_factory() as session:
         user_service.authorize_account_mutation(session, current_user.id)
-        result = sys_dict_service.get_sys_dict_sync(session, id)
+        result = sys_dict_service.get_sys_dict_sync(session, dict_id)
         return success_payload(result)
 
 
 @router.put("/sys_dicts/{id}", response_model=SuccessResponse[SysDictResponse])
 def update_sys_dict(
-    id: int,
+    dict_id: Annotated[int, Path(alias="id")],
     payload: SysDictPayload,
-    current_user=Depends(require_admin),
-    session_factory=Depends(get_session_factory),
-):
-    """更新字典项。"""
+    current_user: AdminUser,
+    session_factory: SessionFactoryDep,
+) -> SuccessEnvelope[Mapping[str, object]]:
+    """更新字典项."""
     with session_factory() as session:
         user_service.authorize_account_mutation(session, current_user.id)
-        sys_dict = sys_dict_service.update_sys_dict(session, id, payload.model_dump())
+        sys_dict = sys_dict_service.update_sys_dict(
+            session,
+            dict_id,
+            {
+                "key": payload.key,
+                "value": payload.value,
+                "des": payload.des,
+                "enable": payload.enable,
+            },
+        )
         return success_payload(sys_dict.to_dict())
 
 
 @router.delete("/sys_dicts/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_sys_dict(
-    id: int,
-    current_user=Depends(require_admin),
-    session_factory=Depends(get_session_factory),
-):
-    """删除字典项。"""
+    dict_id: Annotated[int, Path(alias="id")],
+    current_user: AdminUser,
+    session_factory: SessionFactoryDep,
+) -> Response:
+    """删除字典项."""
     with session_factory() as session:
         user_service.authorize_account_mutation(session, current_user.id)
-        sys_dict_service.delete_sys_dict(session, id)
+        sys_dict_service.delete_sys_dict(session, dict_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/sys_dicts", response_model=SuccessResponse[list[SysDictResponse]])
 def get_sys_dicts(
-    current_user=Depends(require_admin),
-    session_factory=Depends(get_session_factory),
-):
-    """列出全部字典项。"""
+    current_user: AdminUser,
+    session_factory: SessionFactoryDep,
+) -> SuccessEnvelope[list[SysDictDict]]:
+    """列出全部字典项."""
     with session_factory() as session:
         user_service.authorize_account_mutation(session, current_user.id)
         return success_payload(sys_dict_service.get_sys_dict_all_sync(session))

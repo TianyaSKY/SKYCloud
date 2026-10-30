@@ -11,6 +11,7 @@ import pytest
 
 from app.exceptions import BusinessRuleError, ResourceNotFoundError
 from app.features.share.service import (
+    CreateShareLinkParams,
     cancel_share,
     cancel_share_for_user,
     create_share,
@@ -30,6 +31,9 @@ from app.features.sys_dict.service import (
     update_sys_dict,
 )
 from app.features.token_usage.service import (
+    AdminUsageLogsParams,
+    GetUsageLogsParams,
+    RecordUsageParams,
     get_all_users_daily_stats,
     get_all_users_token_stats,
     get_all_users_usage_logs,
@@ -69,7 +73,7 @@ class TestShareService:
 
     def test_create_share_link_success(self, session, test_user, shared_file):
         """创建分享链接。"""
-        share = create_share_link(session, test_user.id, shared_file.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id))
         assert share.id is not None
         assert share.token is not None
         assert share.file_id == shared_file.id
@@ -78,17 +82,17 @@ class TestShareService:
     def test_create_share_link_file_not_found(self, session, test_user):
         """文件不存在抛 ValueError。"""
         with pytest.raises(ValueError, match="File not found"):
-            create_share_link(session, test_user.id, 99999)
+            create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=99999))
 
     def test_create_share_link_with_expiry(self, session, test_user, shared_file):
         """带过期时间的分享。"""
         exp = beijing_now() + timedelta(days=7)
-        share = create_share_link(session, test_user.id, shared_file.id, expires_at=exp)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id, expires_at=exp))
         assert share.expires_at is not None
 
     def test_get_share_by_token_valid(self, session, test_user, shared_file):
         """有效 token 获取分享。"""
-        share = create_share_link(session, test_user.id, shared_file.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id))
         result = get_share_by_token(session, share.token)
         assert result is not None
         assert result.id == share.id
@@ -100,19 +104,19 @@ class TestShareService:
     def test_get_share_by_token_expired(self, session, test_user, shared_file):
         """过期分享返回 None。"""
         exp = beijing_now() - timedelta(hours=1)
-        share = create_share_link(session, test_user.id, shared_file.id, expires_at=exp)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id, expires_at=exp))
         result = get_share_by_token(session, share.token)
         assert result is None
 
     def test_get_share_by_token_no_expiry(self, session, test_user, shared_file):
         """无过期时间的分享永久有效。"""
-        share = create_share_link(session, test_user.id, shared_file.id, expires_at=None)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id, expires_at=None))
         result = get_share_by_token(session, share.token)
         assert result is not None
 
     def test_get_my_shares(self, session, test_user, shared_file):
         """用户分享列表。"""
-        create_share_link(session, test_user.id, shared_file.id)
+        create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id))
         shares = get_my_shares(session, test_user.id)
         assert len(shares) >= 1
         assert "token" in shares[0]
@@ -125,14 +129,14 @@ class TestShareService:
 
     def test_cancel_share_success(self, session, test_user, shared_file):
         """取消本人分享。"""
-        share = create_share_link(session, test_user.id, shared_file.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id))
         result = cancel_share(session, share.id, test_user.id)
         assert result is True
         assert session.get(Share, share.id) is None
 
     def test_cancel_share_not_owner(self, session, test_user, admin_user, shared_file):
         """非本人取消返回 False。"""
-        share = create_share_link(session, test_user.id, shared_file.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id))
         result = cancel_share(session, share.id, admin_user.id)
         assert result is False
 
@@ -157,13 +161,13 @@ class TestShareService:
 
     def test_cancel_share_for_user_success(self, session, test_user, shared_file):
         """cancel_share_for_user 正常取消。"""
-        share = create_share_link(session, test_user.id, shared_file.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id))
         cancel_share_for_user(session, share.id, test_user.id)
         assert session.get(Share, share.id) is None
 
     def test_cancel_share_for_user_denied(self, session, test_user, admin_user, shared_file):
         """非本人取消抛 ResourceNotFoundError。"""
-        share = create_share_link(session, test_user.id, shared_file.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id))
         with pytest.raises(ResourceNotFoundError):
             cancel_share_for_user(session, share.id, admin_user.id)
 
@@ -175,7 +179,7 @@ class TestShareService:
         with open(abs_path, "w") as f:
             f.write("test content")
         try:
-            share = create_share_link(session, test_user.id, shared_file.id)
+            share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id))
             result = resolve_shared_file(session, share.token)
             assert result.id == shared_file.id
         finally:
@@ -189,7 +193,7 @@ class TestShareService:
 
     def test_resolve_shared_file_disk_missing(self, session, test_user, shared_file):
         """磁盘文件不存在抛 ResourceNotFoundError。"""
-        share = create_share_link(session, test_user.id, shared_file.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=shared_file.id))
         # 确保磁盘文件不存在
         abs_path = shared_file.get_abs_path()
         if os.path.exists(abs_path):
@@ -336,32 +340,26 @@ class TestTokenUsageService:
         # 在测试环境中 SessionLocal 绑定到 PostgreSQL（不可用）
         # 因此此函数会走 except 分支（rollback + log）
         # 验证：不抛异常（容错设计）
-        record_usage(
-            user_id=test_user.id,
-            action="chat",
-            model_name="test-model",
-            prompt_tokens=100,
-            completion_tokens=50,
-        )
+        record_usage(RecordUsageParams(user_id=test_user.id,
+        action="chat",
+        model_name="test-model",
+        prompt_tokens=100,
+        completion_tokens=50,))
 
     def test_record_usage_total_auto_calc(self, session, test_user):
         """total_tokens=0 时自动计算。"""
         # 同上，验证不抛异常
-        record_usage(
-            user_id=test_user.id,
-            action="embedding",
-            prompt_tokens=200,
-            completion_tokens=0,
-            total_tokens=0,
-        )
+        record_usage(RecordUsageParams(user_id=test_user.id,
+        action="embedding",
+        prompt_tokens=200,
+        completion_tokens=0,
+        total_tokens=0,))
 
     def test_record_usage_long_summary_truncated(self, session, test_user):
         """超长 query_summary 截断到 200 字符。"""
-        record_usage(
-            user_id=test_user.id,
-            action="chat",
-            query_summary="x" * 500,
-        )
+        record_usage(RecordUsageParams(user_id=test_user.id,
+        action="chat",
+        query_summary="x" * 500,))
 
     def test_get_user_token_stats(self, session, test_user):
         """用户累计统计。"""
@@ -377,7 +375,7 @@ class TestTokenUsageService:
 
     def test_get_usage_logs_empty(self, session, test_user):
         """无记录时返回空列表。"""
-        result = get_usage_logs(session, test_user.id)
+        result = get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id))
         assert result["total"] == 0
         assert result["items"] == []
 
@@ -390,7 +388,7 @@ class TestTokenUsageService:
             )
             session.add(log)
         session.commit()
-        result = get_usage_logs(session, test_user.id, page=1, page_size=3)
+        result = get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id, page=1, page_size=3))
         assert result["total"] == 5
         assert len(result["items"]) == 3
 
@@ -399,7 +397,7 @@ class TestTokenUsageService:
         session.add(TokenUsageLog(user_id=test_user.id, action="chat", total_tokens=10))
         session.add(TokenUsageLog(user_id=test_user.id, action="embedding", total_tokens=20))
         session.commit()
-        result = get_usage_logs(session, test_user.id, action="chat")
+        result = get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id, action="chat"))
         assert result["total"] == 1
 
     def test_get_usage_logs_filter_date(self, session, test_user):
@@ -407,10 +405,10 @@ class TestTokenUsageService:
         session.add(TokenUsageLog(user_id=test_user.id, action="chat", total_tokens=10))
         session.commit()
         # 使用有效 ISO 日期
-        result = get_usage_logs(session, test_user.id, start_date="2020-01-01T00:00:00")
+        result = get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id, start_date="2020-01-01T00:00:00"))
         assert result["total"] >= 1
         with pytest.raises(BusinessRuleError):
-            get_usage_logs(session, test_user.id, start_date="invalid")
+            get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id, start_date="invalid"))
 
     def test_get_daily_stats(self, session, test_user):
         """每日聚合统计。"""
@@ -443,7 +441,7 @@ class TestTokenUsageService:
         """全站用量明细。"""
         session.add(TokenUsageLog(user_id=test_user.id, action="chat", total_tokens=10))
         session.commit()
-        result = get_all_users_usage_logs(session)
+        result = get_all_users_usage_logs(session, AdminUsageLogsParams())
         assert result["total"] >= 1
         assert "username" in result["items"][0]
 
@@ -452,7 +450,7 @@ class TestTokenUsageService:
         session.add(TokenUsageLog(user_id=test_user.id, action="chat", total_tokens=10))
         session.add(TokenUsageLog(user_id=admin_user.id, action="chat", total_tokens=20))
         session.commit()
-        result = get_all_users_usage_logs(session, user_id=test_user.id)
+        result = get_all_users_usage_logs(session, AdminUsageLogsParams(user_id=test_user.id))
         assert result["total"] == 1
 
     def test_get_all_users_daily_stats(self, session, test_user):

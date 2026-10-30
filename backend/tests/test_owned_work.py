@@ -4,7 +4,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 import anyio
 import pytest
-from app.infra.owned_work import run_owned
+from app.infra.owned_work import run_owned, run_owned_persistent
 
 
 @pytest.mark.parametrize('fault',[False,True])
@@ -32,8 +32,8 @@ async def test_started_work_context_and_cleanup_survive_repeated_cancel(fault):
     assert actor.get() is None
 
 
-@pytest.mark.parametrize('cancel_queued',[True,False])
-async def test_queued_work_policy_on_actual_single_thread_executor(monkeypatch,cancel_queued):
+@pytest.mark.parametrize('persistent',[False,True])
+async def test_queued_work_policy_on_actual_single_thread_executor(monkeypatch,persistent):
     loop=asyncio.get_running_loop();loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
     entered,release=threading.Event(),threading.Event()
     queued=asyncio.Event();calls=[]
@@ -45,7 +45,8 @@ async def test_queued_work_policy_on_actual_single_thread_executor(monkeypatch,c
         queued.set()
         return await actual_to_thread(function,*args,**kwargs)
     monkeypatch.setattr(asyncio,'to_thread',observed)
-    pending=asyncio.create_task(run_owned(lambda:calls.append('effect'),cancel_queued=cancel_queued))
+    worker = run_owned_persistent if persistent else run_owned
+    pending=asyncio.create_task(worker(lambda:calls.append('effect')))
     try:
         await asyncio.wait_for(queued.wait(),1)
         pending.cancel();await asyncio.sleep(.01)
@@ -53,7 +54,7 @@ async def test_queued_work_policy_on_actual_single_thread_executor(monkeypatch,c
     finally:
         release.set();await blocked
         with pytest.raises(asyncio.CancelledError):await asyncio.wait_for(pending,1)
-    assert calls==([] if cancel_queued else ['effect'])
+    assert calls==(['effect'] if persistent else [])
 
 
 async def test_anyio_scope_drains_started_work_before_cancellation_delivery():

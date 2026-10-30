@@ -9,10 +9,20 @@
 """
 import asyncio
 import os
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.security import HTTPAuthorizationCredentials
 import pytest
+from sqlalchemy.orm import sessionmaker
+
+from app.features.share.service import CreateShareLinkParams
+
+
+def _owned_factory(session):
+    return sessionmaker(
+        bind=session.get_bind(), join_transaction_mode="create_savepoint",
+    )
 
 
 class TestAuthService:
@@ -191,14 +201,14 @@ class TestShareService:
                  content_hash="s" * 64, status="success")
         session.add(f)
         session.flush()
-        share = create_share_link(session, test_user.id, f.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=f.id))
         assert share.user_id == test_user.id
         assert share.file_id == f.id
 
     def test_create_share_link_file_not_found(self, session, test_user):
         from app.features.share.service import create_share_link
         with pytest.raises(ValueError, match="File not found"):
-            create_share_link(session, test_user.id, 99999)
+            create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=99999))
 
     def test_get_share_by_token_not_found(self, session):
         from app.features.share.service import get_share_by_token
@@ -213,7 +223,7 @@ class TestShareService:
                  content_hash="t" * 64, status="success")
         session.add(f)
         session.flush()
-        share = create_share_link(session, test_user.id, f.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=f.id))
         result = get_share_by_token(session, share.token)
         assert result is not None
         assert result.id == share.id
@@ -229,7 +239,7 @@ class TestShareService:
         session.add(f)
         session.flush()
         expired = datetime.now() - timedelta(days=1)
-        share = create_share_link(session, test_user.id, f.id, expires_at=expired)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=f.id, expires_at=expired))
         result = get_share_by_token(session, share.token)
         assert result is None
 
@@ -242,7 +252,7 @@ class TestShareService:
                  content_hash="v" * 64, status="success")
         session.add(f)
         session.flush()
-        create_share_link(session, test_user.id, f.id)
+        create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=f.id))
         result = get_my_shares(session, test_user.id)
         assert len(result) >= 1
 
@@ -255,7 +265,7 @@ class TestShareService:
                  content_hash="w" * 64, status="success")
         session.add(f)
         session.flush()
-        share = create_share_link(session, test_user.id, f.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=f.id))
         assert cancel_share(session, share.id, test_user.id) is True
 
     def test_cancel_share_not_found(self, session, test_user):
@@ -431,14 +441,14 @@ class TestDependencies:
         from app.api.dependencies import get_current_user
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(get_current_user(None, session))
+            asyncio.run(get_current_user(credentials=None, session_factory=_owned_factory(session)))
         assert exc_info.value.status_code == 401
 
     def test_get_current_user_invalid_token(self, session):
         from app.api.dependencies import get_current_user
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid.token"), session))
+            asyncio.run(get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid.token"), session_factory=_owned_factory(session)))
         assert exc_info.value.status_code == 401
 
     def test_get_current_user_valid_token(self, session, test_user):
@@ -448,14 +458,14 @@ class TestDependencies:
         mock_creds = MagicMock()
         mock_creds.scheme = "Bearer"
         mock_creds.credentials = token
-        result = asyncio.run(get_current_user(mock_creds, session))
+        result = asyncio.run(get_current_user(credentials=mock_creds, session_factory=_owned_factory(session)))
         assert result.id == test_user.id
 
     def test_get_current_user_header_token(self, session, test_user):
         from app.api.dependencies import get_current_user
         from app.features.auth.service import generate_token
         token = generate_token(test_user.id)
-        result = asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session))
+        result = asyncio.run(get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session_factory=_owned_factory(session)))
         assert result.id == test_user.id
 
     def test_get_current_user_expired(self, session):
@@ -470,7 +480,7 @@ class TestDependencies:
         token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session))
+            asyncio.run(get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session_factory=_owned_factory(session)))
         assert exc_info.value.status_code == 401
 
     def test_get_current_user_mcp_revoked(self, session, test_user):
@@ -480,7 +490,7 @@ class TestDependencies:
         with patch("app.mcp.token_service.get_active_mcp_token", return_value=None):
             from fastapi import HTTPException
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session))
+                asyncio.run(get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session_factory=_owned_factory(session)))
             assert exc_info.value.status_code == 401
 
     def test_get_current_user_no_sub(self, session):
@@ -490,7 +500,7 @@ class TestDependencies:
         token = jwt.encode({}, SECRET_KEY, algorithm="HS256")
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session))
+            asyncio.run(get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session_factory=_owned_factory(session)))
         assert exc_info.value.status_code == 401
 
     def test_get_current_user_user_not_found(self, session, test_user):
@@ -499,7 +509,7 @@ class TestDependencies:
         token = generate_token(99999)
         from fastapi import HTTPException
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(get_current_user(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session))
+            asyncio.run(get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session_factory=_owned_factory(session)))
         assert exc_info.value.status_code == 401
 
     def test_require_admin_admin(self, session, admin_user):

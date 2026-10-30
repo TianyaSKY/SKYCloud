@@ -268,9 +268,25 @@ with Session(engine) as session:
                         assert recovered.state == 'complete' and recovered.candidate_container_id == candidate_id
                 with factory() as db:
                     workspace = db.get(Workspace, ws_id)
-                    conversation = repository.create_conversation(db, ws_id, user_id, 'expert', 'gateway task'); db.commit()
+                    conversation = repository.create_conversation(
+                        db,
+                        repository.CreateConversationParams(
+                            workspace_id=ws_id,
+                            user_id=user_id,
+                            mode='expert',
+                            title='gateway task',
+                        ),
+                    ); db.commit()
                     if permission_response != 'auth-version':
-                        conversation, run, history = service.prepare_run(db, workspace, user_id, conversation.id, '只输出 E2E_GATEWAY_OK，不调用任何工具。')
+                        conversation, run, history = service.prepare_run(
+                            db,
+                            service.PrepareRunParams(
+                                workspace=workspace,
+                                user_id=user_id,
+                                conversation_id=conversation.id,
+                                query='只输出 E2E_GATEWAY_OK，不调用任何工具。',
+                            ),
+                        )
                     if missing_candidate == 'paused-prompt':
                         import signal
                         marker = tmp_path / 'paused-prompt'
@@ -279,7 +295,7 @@ import asyncio,json,sys,os,signal
 from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from app.features.assistant.service import stream_run
+from app.features.assistant.service import StreamRunParams, stream_run
 from app.features.assistant.clients.opencode_client import OpenCodeClient
 settings=json.load(sys.stdin)
 actual=OpenCodeClient.prompt_async
@@ -291,7 +307,14 @@ async def hold(self,*args,**kwargs):
 OpenCodeClient.prompt_async=hold
 engine=create_engine(settings['database'])
 async def run():
-    async for event in stream_run(sessionmaker(bind=engine),settings['workspace'],settings['user'],settings['conversation'],settings['run'],[]):
+    async for event in stream_run(StreamRunParams(
+        session_factory=sessionmaker(bind=engine),
+        workspace_id=settings['workspace'],
+        user_id=settings['user'],
+        conversation_id=settings['conversation'],
+        run_id=settings['run'],
+        history=[],
+    )):
         print(event.type,flush=True)
 asyncio.run(run())
 """
@@ -343,7 +366,7 @@ import asyncio,json,sys,time
 from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from app.features.assistant.service import stream_run
+from app.features.assistant.service import StreamRunParams, stream_run
 from app.features.assistant.engines.expert_engine import ExpertEngine
 from app.infra import extensions
 settings=json.load(sys.stdin)
@@ -365,7 +388,14 @@ else:
     extensions.redis_client.set=hold
 engine=create_engine(settings['database'])
 async def run():
-    async for event in stream_run(sessionmaker(bind=engine),settings['workspace'],settings['user'],settings['conversation'],settings['run'],[]):
+    async for event in stream_run(StreamRunParams(
+        session_factory=sessionmaker(bind=engine),
+        workspace_id=settings['workspace'],
+        user_id=settings['user'],
+        conversation_id=settings['conversation'],
+        run_id=settings['run'],
+        history=[],
+    )):
         print(event.type,flush=True)
 asyncio.run(run())
 """
@@ -417,11 +447,18 @@ asyncio.run(run())
 import asyncio,json,sys
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from app.features.assistant.service import stream_run
+from app.features.assistant.service import StreamRunParams, stream_run
 settings=json.load(sys.stdin)
 engine=create_engine(settings['database'])
 async def run():
-    async for event in stream_run(sessionmaker(bind=engine),settings['workspace'],settings['user'],settings['conversation'],settings['run'],[]):
+    async for event in stream_run(StreamRunParams(
+        session_factory=sessionmaker(bind=engine),
+        workspace_id=settings['workspace'],
+        user_id=settings['user'],
+        conversation_id=settings['conversation'],
+        run_id=settings['run'],
+        history=[],
+    )):
         print(event.type,flush=True)
 asyncio.run(run())
 """
@@ -439,7 +476,17 @@ asyncio.run(run())
                                     restored = responder.get(AssistantRun, run.id)
                                     permission = restored.pending_permission_id
                                     if permission:
-                                        service.respond_permission(responder,responder.get(Workspace,ws_id),user_id,run.id,permission,'once')
+                                        service.respond_permission(
+                                            responder,
+                                            service.RespondPermissionParams(
+                                                workspace=responder.get(
+                                                    Workspace, ws_id),
+                                                user_id=user_id,
+                                                run_id=run.id,
+                                                permission_id=permission,
+                                                response='once',
+                                            ),
+                                        )
                                         break
                                 assert time.monotonic() < deadline, 'native worker never requested tool permission'
                                 time.sleep(.05)
@@ -476,7 +523,16 @@ asyncio.run(run())
                             intent = recovery.get(AssistantRuntimeAbort, run.id)
                             assert intent.lease_token and infrastructure['redis'].get(f'assistant:expert:runtime:{intent.runtime_id}') == intent.lease_token
                             with pytest.raises(ConflictError, match='cleanup'):
-                                service.prepare_run(recovery, recovery.get(Workspace, ws_id), user_id, conversation.id, 'new task')
+                                service.prepare_run(
+                                    recovery,
+                                    service.PrepareRunParams(
+                                        workspace=recovery.get(
+                                            Workspace, ws_id),
+                                        user_id=user_id,
+                                        conversation_id=conversation.id,
+                                        query='new task',
+                                    ),
+                                )
                         def unavailable(target):
                             raise ConnectionError('synthetic-control-unavailable')
                         assert abort_pending_sessions(session_factory=factory, abort_function=unavailable) == 0
@@ -579,7 +635,15 @@ asyncio.run(run())
                                 assert independent.scalar(text('SELECT role FROM workspace_members WHERE workspace_id=:ws AND user_id=:id'), {'ws':ws_id,'id':user_id}) == 'admin'
                             assert not any('AUTHORIZED_ONLY' in str(message.get('content','')) for body in requests for message in body['messages'] if message.get('role') == 'tool')
                             return observed
-                        async for event in service.stream_run(factory, ws_id, user_id, conversation.id, run.id, history):
+                        async for event in service.stream_run(
+                            service.StreamRunParams(
+                                session_factory=factory,
+                                workspace_id=ws_id,
+                                user_id=user_id,
+                                conversation_id=conversation.id,
+                                run_id=run.id,
+                                history=history,
+                            )):
                             observed.append(event)
                             if event.type == 'permission_required':
                                 assert permission_response is not None
@@ -592,7 +656,25 @@ asyncio.run(run())
                                             responder.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=:ws AND user_id=:user" if permission_response == 'demote' else "DELETE FROM workspace_members WHERE workspace_id=:ws AND user_id=:user"),{'ws':ws_id,'user':user_id})
                                             responder.commit()
                                         else:
-                                            service.respond_permission(responder, responder.get(Workspace, ws_id), user_id, run.id, event.payload['permission_id'], 'once' if permission_response == 'unconfirmed' else permission_response)
+                                            service.respond_permission(
+                                                responder,
+                                                service.RespondPermissionParams(
+                                                    workspace=responder.get(
+                                                        Workspace, ws_id),
+                                                    user_id=user_id,
+                                                    run_id=run.id,
+                                                    permission_id=(
+                                                        event.payload[
+                                                            'permission_id']
+                                                    ),
+                                                    response=(
+                                                        'once'
+                                                        if permission_response
+                                                        == 'unconfirmed'
+                                                        else permission_response
+                                                    ),
+                                                ),
+                                            )
                                 await asyncio.to_thread(respond_from_worker)
                                 if missing_candidate in ('command-lease-loss','command-cancel','command-cancel-retry'):
                                     command_observers.append(asyncio.create_task(interrupt_started_command()))
@@ -619,7 +701,16 @@ asyncio.run(run())
                                 assert intent.session_id == run.opencode_session_id
                                 from app.exceptions import ConflictError
                                 with pytest.raises(ConflictError, match='cleanup'):
-                                    service.prepare_run(reader,reader.get(Workspace,ws_id),user_id,conversation.id,'new work')
+                                    service.prepare_run(
+                                        reader,
+                                        service.PrepareRunParams(
+                                            workspace=reader.get(
+                                                Workspace, ws_id),
+                                            user_id=user_id,
+                                            conversation_id=conversation.id,
+                                            query='new work',
+                                        ),
+                                    )
                             probe = docker('exec',command_state['container'],'cat',f"/proc/{command_state['pids'][0]}/stat",check=False)
                             assert probe.returncode == 0 and probe.stdout.rsplit(')',1)[1].split()[0] != 'Z', 'control outage did not leave a running command to recover'
                             assert abort_pending_sessions(session_factory=factory)==0
@@ -708,7 +799,15 @@ asyncio.run(run())
                         monkeypatch.setattr(OpenCodeClient,'_json',refuse_prompt)
                         # Repeat the same question: content equality cannot
                         # distinguish the old answer from this refused attempt.
-                        conversation, run, history = service.prepare_run(db,workspace,user_id,conversation.id,'只输出 E2E_GATEWAY_OK，不调用任何工具。')
+                        conversation, run, history = service.prepare_run(
+                            db,
+                            service.PrepareRunParams(
+                                workspace=workspace,
+                                user_id=user_id,
+                                conversation_id=conversation.id,
+                                query='只输出 E2E_GATEWAY_OK，不调用任何工具。',
+                            ),
+                        )
                         observed.clear()
                         events = asyncio.run(asyncio.wait_for(collect(),30))
                         db.refresh(run)
@@ -726,7 +825,15 @@ asyncio.run(run())
                         first_generation = db.query(RuntimeOperation).filter_by(state='complete').one().generation
                         docker('rm','-f',first_container)  # Lose actual OpenCode session storage.
                         request_count = len(requests)
-                        conversation, run, history = service.prepare_run(db,workspace,user_id,conversation.id,'续接历史，只输出 E2E_GATEWAY_OK，不调用工具。')
+                        conversation, run, history = service.prepare_run(
+                            db,
+                            service.PrepareRunParams(
+                                workspace=workspace,
+                                user_id=user_id,
+                                conversation_id=conversation.id,
+                                query='续接历史，只输出 E2E_GATEWAY_OK，不调用工具。',
+                            ),
+                        )
                         assert len(history) == 2
                         observed.clear()
                         events = asyncio.run(asyncio.wait_for(collect(),120))

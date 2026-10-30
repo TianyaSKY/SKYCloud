@@ -1,408 +1,562 @@
-"""文件路由：上传/分片、列表检索、下载与索引重试。业务在 file_service。
+"""File routes: uploads, chunks, listing, download and index retry.
 
-注意：``GET /files/{id}`` 必须注册在所有具体路径之后，避免 ``{id}`` 吞掉 list/search 等。
+``GET /files/{id}`` must stay registered after every concrete ``/files/*`` path
+so the ``{id}`` segment cannot swallow ``list`` or ``search``.
 """
 
-from typing import cast
+from typing import TYPE_CHECKING, Annotated, cast
+from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
     Depends,
-    File as FastAPIFile,
     Form,
     HTTPException,
     Query,
     Request,
     Response,
+    UploadFile,
     status,
 )
-from fastapi import UploadFile
+from fastapi import (
+    File as FastAPIFile,
+)
+from fastapi import (
+    Path as PathParam,
+)
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
-from app.infra.owned_work import run_owned
 
-from app.api.contracts import SuccessResponse, success_payload
-from app.api.dependencies import get_current_user, get_current_workspace, require_workspace_role
-from app.models.workspace import Workspace
-from app.features.file.schemas import (
-    FileResponse, DirectoryResponse, FilePageResponse, PreflightResponse,
-    MultipartInitResponse, MultipartStatusResponse, MultipartChunkResponse,
-    AvatarResponse, RebuildResponse, ProcessStatusResponse,
-    BatchDeleteRequest,
-    FilePreflightRequest,
-    FileUpdateRequest,
-    MultipartCompleteRequest,
-    MultipartInitRequest,
-    RetryEmbeddingRequest,
-)
-from app.infra.extensions import get_session_factory
-from app.features.workspace.permissions import assert_member, assert_can_write_locked
-from app.infra.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
-from app.infra.storage import get_storage_client
+from app.api.contracts import SuccessEnvelope, SuccessResponse, success_payload
+from app.api.dependencies import Ctx, get_current_workspace, require_workspace_role
+from app.exceptions import ServiceOperationError
+from app.features.file import search_service
 from app.features.file import service as file_service
 from app.features.file.avatar_upload import upload_avatar_owned
+from app.features.file.multipart_service import (
+    MultipartInitData,
+    SaveMultipartChunkParams,
+)
+from app.features.file.schemas import (
+    AvatarResponse,
+    BatchDeleteRequest,
+    DirectoryResponse,
+    FileListQuery,
+    FilePageResponse,
+    FilePreflightRequest,
+    FileResponse,
+    FileSearchQuery,
+    FileUpdateRequest,
+    MultipartChunkResponse,
+    MultipartCompleteRequest,
+    MultipartInitRequest,
+    MultipartInitResponse,
+    MultipartStatusResponse,
+    PreflightResponse,
+    ProcessStatusResponse,
+    RebuildResponse,
+    RetryEmbeddingRequest,
+)
+from app.features.file.search_service import SearchFilesParams
+from app.features.file.service import (
+    BatchDeleteItemData,
+    FileUpdateData,
+    GetFilesAndFoldersParams,
+)
+from app.features.workspace.permissions import (
+    assert_can_write_locked,
+    assert_member,
+)
+from app.infra.owned_work import run_owned
+from app.infra.storage import get_storage_client
+from app.infra.upload_adapter import FastAPIUploadAdapter
+from app.models.file import FileDict
+from app.models.workspace import Workspace
+
+if TYPE_CHECKING:
+    from app.features.file.upload_service import PreflightData, UploadSource
 
 router = APIRouter(tags=["file"])
 
 
-@router.post("/files", response_model=SuccessResponse[FileResponse], status_code=status.HTTP_201_CREATED)
+def _update_data(payload: FileUpdateRequest) -> FileUpdateData:
+    """Translate the request model into the present metadata fields."""
+    data: FileUpdateData = {}
+    if payload.name is not None:
+        data["name"] = payload.name
+    if payload.status is not None:
+        data["status"] = payload.status
+    if payload.parent_id is not None:
+        data["parent_id"] = payload.parent_id
+    return data
+
+
+@router.post(
+    "/files",
+    response_model=SuccessResponse[FileResponse],
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_file(
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(require_workspace_role("editor")),
-        file: UploadFile = FastAPIFile(...),
-        parent_id: int | None = Form(default=None),
-        session_factory=Depends(get_session_factory),
-):
-    """单文件上传；未指定 parent_id 时落到工作空间根目录。"""
-    def upload():
-        with session_factory() as session:
-            assert_can_write_locked(session, workspace.id, current_user.id)
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
+    file: Annotated[UploadFile, FastAPIFile(...)],
+    parent_id: Annotated[int | None, Form()] = None,
+) -> SuccessEnvelope[FileDict]:
+    """Upload one file; without parent_id it lands in the workspace root."""
+
+    def upload() -> SuccessEnvelope[FileDict]:
+        with ctx.session_factory() as session:
+            assert_can_write_locked(session, workspace.id, ctx.user.id)
             new_file = file_service.create_uploaded_file(
-                session, workspace.id, current_user.id, FastAPIUploadAdapter(file), parent_id
+                session,
+                workspace.id,
+                ctx.user.id,
+                FastAPIUploadAdapter(file),
+                parent_id,
             )
             return success_payload(new_file.to_dict())
 
     return await run_owned(upload)
 
 
-@router.post("/files/batch", response_model=SuccessResponse[list[FileResponse]], status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/files/batch",
+    response_model=SuccessResponse[list[FileResponse]],
+    status_code=status.HTTP_201_CREATED,
+)
 async def batch_upload_files(
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(require_workspace_role("editor")),
-        files: list[UploadFile] | None = FastAPIFile(default=None),
-        parent_id: int | None = Form(default=None),
-        session_factory=Depends(get_session_factory),
-):
-    """批量上传；未指定 parent_id 时落到工作空间根目录。"""
-    def upload():
-        with session_factory() as session:
-            assert_can_write_locked(session, workspace.id, current_user.id)
-            adapters = [FastAPIUploadAdapter(file) for file in (files or []) if file]
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
+    files: Annotated[list[UploadFile] | None, FastAPIFile()] = None,
+    parent_id: Annotated[int | None, Form()] = None,
+) -> SuccessEnvelope[list[FileDict]]:
+    """Upload several files; without parent_id they land in the workspace root."""
+
+    def upload() -> SuccessEnvelope[list[FileDict]]:
+        with ctx.session_factory() as session:
+            assert_can_write_locked(session, workspace.id, ctx.user.id)
+            adapters: list[UploadSource] = [
+                FastAPIUploadAdapter(file) for file in (files or []) if file
+            ]
             new_files = file_service.create_uploaded_files(
-                session, workspace.id, current_user.id, adapters, parent_id
+                session, workspace.id, ctx.user.id, adapters, parent_id,
             )
-            return success_payload([f.to_dict() for f in new_files])
+            return success_payload([file.to_dict() for file in new_files])
 
     return await run_owned(upload)
 
 
 @router.post("/files/preflight", response_model=SuccessResponse[PreflightResponse])
 def preflight_file_upload(
-        payload: FilePreflightRequest,
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(require_workspace_role("editor")),
-        session_factory=Depends(get_session_factory),
-):
-    """上传前校验（哈希秒传、配额等），避免无效分片开销。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
-        return success_payload(file_service.preflight_file_upload(
-            session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
-        ))
+    payload: FilePreflightRequest,
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
+) -> SuccessEnvelope[dict[str, object]]:
+    """Check the hash and quota before any chunk transfer is started."""
+    data: PreflightData = {
+        "filename": payload.filename,
+        "total_size": payload.total_size,
+        "content_hash": payload.content_hash,
+    }
+    if payload.parent_id is not None:
+        data["parent_id"] = payload.parent_id
+    if payload.mime_type is not None:
+        data["mime_type"] = payload.mime_type
+    with ctx.session_factory() as session:
+        assert_can_write_locked(session, workspace.id, ctx.user.id)
+        return success_payload(
+            file_service.preflight_file_upload(
+                session, workspace.id, ctx.user.id, data,
+            ),
+        )
 
 
-@router.post("/files/multipart/init", response_model=SuccessResponse[MultipartInitResponse])
+@router.post(
+    "/files/multipart/init", response_model=SuccessResponse[MultipartInitResponse],
+)
 def init_multipart_upload(
-        payload: MultipartInitRequest,
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(require_workspace_role("editor")),
-        session_factory=Depends(get_session_factory),
-):
-    """初始化分片上传会话。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
-        return success_payload(file_service.init_multipart_upload(
-            session, workspace.id, current_user.id, payload.model_dump(exclude_none=True)
-        ))
+    payload: MultipartInitRequest,
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
+) -> SuccessEnvelope[dict[str, object]]:
+    """Open the multipart session that will receive the chunks."""
+    data: MultipartInitData = {
+        "filename": payload.filename,
+        "total_size": payload.total_size,
+    }
+    if payload.chunk_size is not None:
+        data["chunk_size"] = payload.chunk_size
+    if payload.parent_id is not None:
+        data["parent_id"] = payload.parent_id
+    if payload.mime_type is not None:
+        data["mime_type"] = payload.mime_type
+    if payload.content_hash is not None:
+        data["content_hash"] = payload.content_hash
+    if payload.upload_id is not None:
+        data["upload_id"] = payload.upload_id
+    with ctx.session_factory() as session:
+        assert_can_write_locked(session, workspace.id, ctx.user.id)
+        return success_payload(
+            file_service.init_multipart_upload(
+                session, workspace.id, ctx.user.id, data,
+            ),
+        )
 
 
-@router.post("/files/multipart/chunk", response_model=SuccessResponse[MultipartChunkResponse])
+@router.post(
+    "/files/multipart/chunk", response_model=SuccessResponse[MultipartChunkResponse],
+)
 async def upload_multipart_chunk(
-        upload_id: str = Form(...),
-        chunk_index: int = Form(...),
-        chunk: UploadFile = FastAPIFile(...),
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(require_workspace_role("editor")),
-        session_factory=Depends(get_session_factory),
-):
-    """写入单个分片。"""
-    def upload():
-        with session_factory() as session:
-            assert_can_write_locked(session, workspace.id, current_user.id)
+    upload_id: Annotated[str, Form()],
+    chunk_index: Annotated[int, Form()],
+    chunk: Annotated[UploadFile, FastAPIFile(...)],
+    workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
+    ctx: Ctx,
+) -> SuccessEnvelope[dict[str, object]]:
+    """Store one chunk of an open multipart session."""
+
+    def upload() -> SuccessEnvelope[dict[str, object]]:
+        with ctx.session_factory() as session:
+            assert_can_write_locked(session, workspace.id, ctx.user.id)
             if not chunk.filename:
+                message = "No chunk provided"
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST, detail="No chunk provided"
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=message,
                 )
 
-            return success_payload(file_service.save_multipart_chunk(
-                session,
-                current_user.id,
-                workspace.id,
-                upload_id,
-                chunk_index,
-                FastAPIUploadAdapter(chunk),
-            ))
+            return success_payload(
+                file_service.save_multipart_chunk(
+                    session,
+                    SaveMultipartChunkParams(
+                        uploader_id=ctx.user.id,
+                        workspace_id=workspace.id,
+                        upload_id=upload_id,
+                        chunk_index=chunk_index,
+                        chunk=FastAPIUploadAdapter(chunk),
+                    ),
+                ),
+            )
 
     return await run_owned(upload)
 
 
-@router.post("/files/multipart/complete", response_model=SuccessResponse[FileResponse], status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/files/multipart/complete",
+    response_model=SuccessResponse[FileResponse],
+    status_code=status.HTTP_201_CREATED,
+)
 def complete_multipart_upload(
-        payload: MultipartCompleteRequest,
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(require_workspace_role("editor")),
-        session_factory=Depends(get_session_factory),
-):
-    """合并分片并落库，触发后续索引任务。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
+    payload: MultipartCompleteRequest,
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
+) -> SuccessEnvelope[FileDict]:
+    """Assemble the chunks, persist the file and queue its indexing."""
+    with ctx.session_factory() as session:
+        assert_can_write_locked(session, workspace.id, ctx.user.id)
         new_file = file_service.complete_multipart_upload(
-            session, workspace.id, current_user.id, payload.upload_id
+            session, workspace.id, ctx.user.id, payload.upload_id,
         )
         return success_payload(new_file.to_dict())
 
 
-@router.get("/files/multipart/{upload_id}", response_model=SuccessResponse[MultipartStatusResponse])
+@router.get(
+    "/files/multipart/{upload_id}",
+    response_model=SuccessResponse[MultipartStatusResponse],
+)
 def get_multipart_upload_status(
-        upload_id: str,
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(get_current_workspace),
-        session_factory=Depends(get_session_factory),
-):
-    """查询分片上传进度（已收分片等）。"""
-    with session_factory() as session:
-        assert_member(session, workspace.id, current_user.id)
-        return success_payload(file_service.get_multipart_upload_status(session, workspace.id, current_user.id, upload_id))
+    upload_id: str,
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(get_current_workspace)],
+) -> SuccessEnvelope[dict[str, object]]:
+    """Report the chunks already received by the session."""
+    with ctx.session_factory() as session:
+        assert_member(session, workspace.id, ctx.user.id)
+        return success_payload(
+            file_service.get_multipart_upload_status(
+                session, workspace.id, ctx.user.id, upload_id,
+            ),
+        )
 
 
-@router.delete("/files/multipart/{upload_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+@router.delete(
+    "/files/multipart/{upload_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
 def abort_multipart_upload(
-        upload_id: str,
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(require_workspace_role("editor")),
-        session_factory=Depends(get_session_factory),
-):
-    """中止并清理未完成的分片会话。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
-        file_service.abort_multipart_upload(session, workspace.id, current_user.id, upload_id)
+    upload_id: str,
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
+) -> Response:
+    """Abort the session and delete its unfinished chunk directory."""
+    with ctx.session_factory() as session:
+        assert_can_write_locked(session, workspace.id, ctx.user.id)
+        file_service.abort_multipart_upload(
+            session, workspace.id, ctx.user.id, upload_id,
+        )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/files/list", response_model=SuccessResponse[DirectoryResponse])
 def list_files(
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(get_current_workspace),
-        parent_id: int | None = Query(default=None, ge=1),
-        page: int = Query(default=1, ge=1),
-        page_size: int = Query(default=10, ge=1, le=100),
-        name: str | None = Query(default=None, max_length=255),
-        sort_by: str = Query(default="created_at", min_length=1, max_length=50),
-        order: str = Query(default="desc", pattern="^(asc|desc)$"),
-        session_factory=Depends(get_session_factory),
-):
-    """目录浏览：文件与子文件夹分页列表。"""
-    with session_factory() as session:
-        assert_member(session, workspace.id, current_user.id)
-        return success_payload(file_service.get_files_and_folders(
-            session, workspace.id, parent_id, page, page_size, name, sort_by, order
-        ))
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(get_current_workspace)],
+    query: Annotated[FileListQuery, Query()],
+) -> SuccessEnvelope[dict[str, object]]:
+    """Browse a directory: folders first, then one page of files."""
+    with ctx.session_factory() as session:
+        assert_member(session, workspace.id, ctx.user.id)
+        return success_payload(
+            file_service.get_files_and_folders(
+                session,
+                GetFilesAndFoldersParams(
+                    workspace_id=workspace.id,
+                    parent_id=query.parent_id,
+                    page=query.page,
+                    page_size=query.page_size,
+                    name=query.name,
+                    sort_by=query.sort_by,
+                    order=query.order,
+                ),
+            ),
+        )
 
 
 @router.get("/files/search", response_model=SuccessResponse[FilePageResponse])
 async def search_files(
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(get_current_workspace),
-        q: str = Query(default="", max_length=255),
-        page: int = Query(default=1, ge=1),
-        page_size: int = Query(default=10, ge=1, le=100),
-        type: str = Query(default="fuzzy", pattern="^(fuzzy|semantic)$"),
-        session_factory=Depends(get_session_factory),
-):
-    """文件名模糊或语义检索；空查询直接返回空页避免全表扫描。"""
-    if not q:
-        return success_payload({"items": [], "total": 0, "page": page, "page_size": page_size})
-    result = await file_service.search_files(None, workspace.id, q, page, page_size, type,
-                                             session_factory=session_factory, user_id=current_user.id)
-    if result.get('error'):
-        from app.exceptions import ServiceOperationError
-        raise ServiceOperationError('File search unavailable')
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(get_current_workspace)],
+    query: Annotated[FileSearchQuery, Query()],
+) -> SuccessEnvelope[dict[str, object]]:
+    """Search by name or embedding; an empty term returns an empty page."""
+    if not query.q:
+        return success_payload(
+            {
+                "items": [],
+                "total": 0,
+                "page": query.page,
+                "page_size": query.page_size,
+            },
+        )
+    result = await search_service.search_files(
+        None,
+        workspace.id,
+        SearchFilesParams(
+            query=query.q,
+            page=query.page,
+            page_size=query.page_size,
+            search_type=query.search_type,
+        ),
+        session_factory=ctx.session_factory,
+        user_id=ctx.user.id,
+    )
+    if result.get("error"):
+        message = "File search unavailable"
+        raise ServiceOperationError(message)
     return success_payload(result)
 
 
 @router.put("/files/{id}", response_model=SuccessResponse[FileResponse])
 def update_file(
-        id: int,
-        payload: FileUpdateRequest,
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(require_workspace_role("editor")),
-        session_factory=Depends(get_session_factory),
-):
-    """重命名/移动文件等元数据更新。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
-        file_service.get_authorized_file(session, workspace.id, current_user.id, id)
-        file_obj = file_service.update_file(session, id, payload.model_dump(exclude_none=True))
+    file_id: Annotated[int, PathParam(alias="id")],
+    payload: FileUpdateRequest,
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
+) -> SuccessEnvelope[FileDict]:
+    """Rename, move or re-status one file."""
+    with ctx.session_factory() as session:
+        assert_can_write_locked(session, workspace.id, ctx.user.id)
+        file_service.get_authorized_file(
+            session, workspace.id, ctx.user.id, file_id,
+        )
+        file_obj = file_service.update_file(session, file_id, _update_data(payload))
         return success_payload(file_obj.to_dict())
 
 
-@router.delete("/files/{id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+@router.delete(
+    "/files/{id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response,
+)
 def delete_file(
-        id: int,
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(require_workspace_role("editor")),
-        session_factory=Depends(get_session_factory),
-):
-    """删除单个文件。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
-        file_service.get_authorized_file(session, workspace.id, current_user.id, id)
-        file_service.delete_file(session, id)
+    file_id: Annotated[int, PathParam(alias="id")],
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
+) -> Response:
+    """Delete one file record and stage its object cleanup."""
+    with ctx.session_factory() as session:
+        assert_can_write_locked(session, workspace.id, ctx.user.id)
+        file_service.get_authorized_file(
+            session, workspace.id, ctx.user.id, file_id,
+        )
+        file_service.delete_file(session, file_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/files/{id}/download", response_class=StreamingResponse, responses={200: {'description': 'Authenticated original file bytes'}})
+@router.get(
+    "/files/{id}/download",
+    response_class=StreamingResponse,
+    responses={200: {"description": "Authenticated original file bytes"}},
+)
 def download_file(
-        id: int,
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(get_current_workspace),
-        session_factory=Depends(get_session_factory),
-):
-    """鉴权后以附件形式下载原始文件（从 MinIO 流式读取）。"""
-    with session_factory() as session:
-        assert_member(session, workspace.id, current_user.id)
+    file_id: Annotated[int, PathParam(alias="id")],
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(get_current_workspace)],
+) -> StreamingResponse:
+    """Stream the original object as an attachment after authorization."""
+    with ctx.session_factory() as session:
+        assert_member(session, workspace.id, ctx.user.id)
         file_obj = file_service.get_downloadable_file(
-            session, workspace.id, current_user.id, id
+            session, workspace.id, ctx.user.id, file_id,
         )
         storage = get_storage_client()
-        object_name = cast(str, file_obj.file_path)
-        file_stream = storage.get_file_stream(object_name)
+        file_stream = storage.get_file_stream(file_obj.file_path)
 
-        from urllib.parse import quote
-        filename = cast(str | None, file_obj.name) or "download"
+        filename = file_obj.name or "download"
         encoded_filename = quote(filename)
 
+        disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
         return StreamingResponse(
             file_stream,
-            media_type=cast(str | None, file_obj.mime_type) or "application/octet-stream",
-            headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
-            },
+            media_type=file_obj.mime_type or "application/octet-stream",
+            headers={"Content-Disposition": disposition},
             background=BackgroundTask(storage.close_file_stream, file_stream),
         )
 
 
-@router.post("/files/upload/avatar/{id}", response_model=SuccessResponse[AvatarResponse])
+@router.post(
+    "/files/upload/avatar/{id}", response_model=SuccessResponse[AvatarResponse],
+)
 async def upload_avatar(
-        id: int,
-        request: Request,
-        avatar: UploadFile | None = FastAPIFile(default=None),
-        avatar_base64: str | None = Form(default=None),
-        current_user=Depends(get_current_user),
-        session_factory=Depends(get_session_factory),
-):
-    """上传用户头像；兼容 multipart 文件、form base64 与 JSON body。"""
-    avatar_text = None
+    user_id: Annotated[int, PathParam(alias="id")],
+    request: Request,
+    ctx: Ctx,
+    avatar: Annotated[UploadFile | None, FastAPIFile()] = None,
+    avatar_base64: Annotated[str | None, Form()] = None,
+) -> SuccessEnvelope[dict[str, object]]:
+    """Upload an avatar from a multipart file, form base64 or JSON body."""
+    avatar_text: str | None = None
     if avatar is not None:
         if not avatar.filename:
+            message = "No avatar file"
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="No avatar file"
+                status_code=status.HTTP_400_BAD_REQUEST, detail=message,
             )
     else:
         avatar_text = (avatar_base64 or "").strip()
         if not avatar_text and request.headers.get("content-type", "").startswith(
-                "application/json"
+            "application/json",
         ):
             try:
-                payload = await request.json()
-                if isinstance(payload, dict):
-                    avatar_text = str(payload.get("avatar") or "").strip()
+                raw: object = await request.json()
+                if isinstance(raw, dict):
+                    body = cast("dict[str, object]", raw)
+                    avatar_text = str(body.get("avatar") or "").strip()
             except Exception:
                 avatar_text = ""
 
         if not avatar_text:
+            message = "No avatar data"
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="No avatar data"
+                status_code=status.HTTP_400_BAD_REQUEST, detail=message,
             )
 
     result = await run_owned(
-        upload_avatar_owned, session_factory, current_user.id, id,
-        upload=avatar, encoded=avatar_text
+        upload_avatar_owned,
+        ctx.session_factory,
+        ctx.user.id,
+        user_id,
+        upload=avatar,
+        encoded=avatar_text,
     )
-    # 兼容旧前端字段名 avatar
+    # Keep the legacy avatar field name for older clients.
     if result.get("avatar_url") and "avatar" not in result:
         result["avatar"] = result["avatar_url"]
     return success_payload(result)
 
 
-@router.post("/files/batch-delete", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+@router.post(
+    "/files/batch-delete",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
 def batch_delete_files(
-        payload: BatchDeleteRequest,
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(require_workspace_role("editor")),
-        session_factory=Depends(get_session_factory),
-):
-    """批量删除文件与/或文件夹。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
-        items = [item.model_dump() for item in payload.items]
-        file_service.batch_delete_items(session, workspace.id, current_user.id, items)
+    payload: BatchDeleteRequest,
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
+) -> Response:
+    """Delete the listed files and folders."""
+    with ctx.session_factory() as session:
+        assert_can_write_locked(session, workspace.id, ctx.user.id)
+        items: list[BatchDeleteItemData] = [
+            {"id": item.id, "is_folder": item.is_folder}
+            for item in payload.items
+        ]
+        file_service.batch_delete_items(session, workspace.id, ctx.user.id, items)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/files/retry_embedding", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+@router.post(
+    "/files/retry_embedding",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
 def retry_embedding(
-        payload: RetryEmbeddingRequest,
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(get_current_workspace),
-        session_factory=Depends(get_session_factory),
-):
-    """对单个失败文件重新入队索引。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
+    payload: RetryEmbeddingRequest,
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(get_current_workspace)],
+) -> Response:
+    """Re-queue one failed file for indexing."""
+    with ctx.session_factory() as session:
+        assert_can_write_locked(session, workspace.id, ctx.user.id)
         file_obj = file_service.get_authorized_file(
-            session, workspace.id, current_user.id, payload.file_id
+            session, workspace.id, ctx.user.id, payload.file_id,
         )
-        file_service.retry_embedding(session, cast(int, file_obj.id))
+        file_service.retry_embedding(session, file_obj.id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/files/rebuild_failed_indexes", response_model=SuccessResponse[RebuildResponse])
+@router.post(
+    "/files/rebuild_failed_indexes", response_model=SuccessResponse[RebuildResponse],
+)
 def rebuild_failed_indexes(
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(get_current_workspace),
-        session_factory=Depends(get_session_factory),
-):
-    """批量重试当前工作空间所有失败索引。"""
-    with session_factory() as session:
-        assert_can_write_locked(session, workspace.id, current_user.id)
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(get_current_workspace)],
+) -> SuccessEnvelope[dict[str, int]]:
+    """Re-queue every failed index of the current workspace."""
+    with ctx.session_factory() as session:
+        assert_can_write_locked(session, workspace.id, ctx.user.id)
         count = file_service.rebuild_failed_indexes(session, workspace.id)
         return success_payload({"count": count})
 
 
-@router.get("/files/process_status", response_model=SuccessResponse[ProcessStatusResponse])
+@router.get(
+    "/files/process_status", response_model=SuccessResponse[ProcessStatusResponse],
+)
 async def process_status(
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(get_current_workspace),
-        session_factory=Depends(get_session_factory),
-):
-    """查询当前工作空间文件处理状态汇总（pending/processing 等）。"""
-    return success_payload(await file_service.process_status(None, workspace.id,
-                           session_factory=session_factory, user_id=current_user.id))
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(get_current_workspace)],
+) -> SuccessEnvelope[dict[str, int]]:
+    """Aggregate the file processing status of the current workspace."""
+    return success_payload(
+        await file_service.process_status(
+            None,
+            workspace.id,
+            session_factory=ctx.session_factory,
+            user_id=ctx.user.id,
+        ),
+    )
 
 
-# 必须放在所有 /files/* 具体路由之后，避免 {id} 匹配 list、search 等路径段
+# Must stay after every concrete /files/* route so {id} cannot match them.
 @router.get("/files/{id}", response_model=SuccessResponse[FileResponse])
 def get_file(
-        id: int,
-        current_user=Depends(get_current_user),
-        workspace: Workspace = Depends(get_current_workspace),
-        session_factory=Depends(get_session_factory),
-):
-    """获取单文件元数据（含权限校验）。"""
-    with session_factory() as session:
-        assert_member(session, workspace.id, current_user.id)
+    file_id: Annotated[int, PathParam(alias="id")],
+    ctx: Ctx,
+    workspace: Annotated[Workspace, Depends(get_current_workspace)],
+) -> SuccessEnvelope[FileDict]:
+    """Return one file's metadata after checking membership."""
+    with ctx.session_factory() as session:
+        assert_member(session, workspace.id, ctx.user.id)
         file_obj = file_service.get_authorized_file(
-            session, workspace.id, current_user.id, id
+            session, workspace.id, ctx.user.id, file_id,
         )
         return success_payload(file_obj.to_dict())

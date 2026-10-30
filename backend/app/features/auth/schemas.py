@@ -1,4 +1,4 @@
-"""认证与用户相关请求体。"""
+"""认证与用户相关请求体."""
 
 from typing import Literal
 
@@ -6,20 +6,20 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoginRequest(BaseModel):
-    """用户名密码登录。"""
+    """用户名密码登录."""
 
     username: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=1, max_length=128)
 
 
 class RegisterRequest(LoginRequest):
-    """注册：在登录字段上可选头像。"""
+    """注册:在登录字段上可选头像."""
 
     avatar: str | None = None
 
 
 class UserCreateRequest(BaseModel):
-    """创建用户。"""
+    """创建用户."""
 
     username: str = Field(min_length=1, max_length=80)
     password: str = Field(min_length=1, max_length=128)
@@ -27,7 +27,7 @@ class UserCreateRequest(BaseModel):
 
 
 class UserUpdateRequest(BaseModel):
-    """用户资料局部更新；密码只能通过专用改密接口修改。"""
+    """用户资料局部更新;密码只能通过专用改密接口修改."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -36,7 +36,7 @@ class UserUpdateRequest(BaseModel):
 
 
 class UserPasswordUpdateRequest(BaseModel):
-    """改密：普通用户须提供 old_password。"""
+    """改密:普通用户须提供 old_password."""
 
     old_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=1, max_length=128)
@@ -44,6 +44,8 @@ class UserPasswordUpdateRequest(BaseModel):
 
 # Public response models whitelist fields independently of ORM/cache payloads.
 class SessionUser(BaseModel):
+    """Public account projection embedded in session responses."""
+
     id: int = Field(gt=0)
     username: str
     role: Literal["admin", "common"]
@@ -51,6 +53,8 @@ class SessionUser(BaseModel):
 
 
 class UserResponse(SessionUser):
+    """Public account profile with accumulated token totals."""
+
     created_at: str | None
     total_prompt_tokens: int = Field(ge=0)
     total_completion_tokens: int = Field(ge=0)
@@ -59,6 +63,8 @@ class UserResponse(SessionUser):
 
 
 class BrowserSessionResponse(BaseModel):
+    """Access session returned after login or refresh."""
+
     token: str = Field(min_length=1)
     user_id: int = Field(gt=0)
     role: Literal["admin", "common"]
@@ -67,18 +73,26 @@ class BrowserSessionResponse(BaseModel):
 
 
 class LoginResponse(BrowserSessionResponse):
+    """Login response adds a human-readable status message."""
+
     message: str
 
 
 class MessageResponse(BaseModel):
+    """Single human-readable status message."""
+
     message: str
 
 
 class RegistrationResponse(MessageResponse):
+    """Registration response adds the created account profile."""
+
     user: UserResponse
 
 
 class McpTokenMetadata(BaseModel):
+    """Public MCP token metadata without the raw credential."""
+
     id: int = Field(gt=0)
     user_id: int = Field(gt=0)
     name: str | None
@@ -92,12 +106,19 @@ class McpTokenMetadata(BaseModel):
 
 
 class McpTokenResponse(BaseModel):
+    """Query response; the metadata may be absent before first issuance."""
+
     token: McpTokenMetadata | None
     user_id: int = Field(gt=0)
     expires_in_days: int = Field(gt=0)
     usage: str
 
 
-class McpTokenIssueResponse(McpTokenResponse):
+class McpTokenIssueResponse(BaseModel):
+    """Issue response keeps the credential and its metadata mandatory."""
+
     token: McpTokenMetadata
+    user_id: int = Field(gt=0)
+    expires_in_days: int = Field(gt=0)
+    usage: str
     mcp_token: str = Field(min_length=1)

@@ -33,7 +33,7 @@ def object_context(postgres,minio_storage,monkeypatch,tmp_path):
     payload.write_bytes(b'abc')
     minio_storage.upload_file(str(payload),'shared')
     monkeypatch.setattr(service,'get_storage_client',lambda:minio_storage)
-    monkeypatch.setattr(service.change_log_service,'log_event',lambda **kwargs:None)
+    monkeypatch.setattr(service.change_log_service,'log_event',lambda _params:None)
     factory = sessionmaker(bind=postgres)
     return postgres,minio_storage,factory
 
@@ -137,8 +137,8 @@ def test_stale_instant_source_cannot_recreate_missing_object_metadata(object_con
         delete_source(object_context)
         assert clean(object_context) == 1
         with pytest.raises(ConflictError,match='no longer available'):
-            service._clone_existing_file(session,source,filename='clone',workspace_id=1,uploader_id=1,
-                parent_id=None,mime_type=None,content_hash=digest)
+            service._clone_existing_file(session, service.CloneSourceParams(source_file=source, filename='clone',workspace_id=1,uploader_id=1,
+                parent_id=None,mime_type=None,content_hash=digest))
     assert not storage.file_exists('shared')
     with db.connect() as connection:
         assert connection.scalar(text('SELECT count(*) FROM files')) == 0
@@ -157,8 +157,8 @@ def test_instant_clone_refuses_foreign_source_and_committed_scope_change(object_
             connection.execute(text('UPDATE files SET workspace_id=2 WHERE id=1'))
         source = source if source is not None else session.get(File, 1)
         with pytest.raises(PermissionDeniedError):
-            service._clone_existing_file(session, source, filename='forbidden', workspace_id=1, uploader_id=1,
-                parent_id=None, mime_type=None, content_hash=source.content_hash)
+            service._clone_existing_file(session, service.CloneSourceParams(source_file=source, filename='forbidden', workspace_id=1, uploader_id=1,
+                parent_id=None, mime_type=None, content_hash=source.content_hash))
     with db.connect() as connection:
         assert connection.execute(text('SELECT id,workspace_id FROM files')).all() == [(1, 2)]
         assert connection.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
@@ -183,8 +183,8 @@ def test_cleaner_waits_for_clone_commit_and_retains_its_shared_object(object_con
     def clone():
         with factory() as session:
             source = session.get(File,1)
-            new = service._clone_existing_file(session,source,filename='clone',workspace_id=1,uploader_id=1,
-                parent_id=None,mime_type=None,content_hash=source.content_hash)
+            new = service._clone_existing_file(session, service.CloneSourceParams(source_file=source, filename='clone',workspace_id=1,uploader_id=1,
+                parent_id=None,mime_type=None,content_hash=source.content_hash))
             return new.id
     with ThreadPoolExecutor(max_workers=2) as pool:
         clone_task = pool.submit(clone)

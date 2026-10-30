@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI,HTTPException
 from fastapi.testclient import TestClient
 from minio.error import S3Error
+from urllib3.response import HTTPResponse
 from app.exceptions import register_exception_handlers,ServiceOperationError
 from app.infra.storage import MinIOStorageClient
 from tests.test_llm_safe_diagnostics import logs,assert_safe,PRIVATE
@@ -38,6 +39,55 @@ def test_download_cleanup_returns_connection_even_when_close_fails(logs):
     assert_safe(logs,'error_type=RuntimeError')
 
 
+def test_read_file_prefix_preserves_bytes_when_connection_release_fails(
+    tmp_path, monkeypatch, logs,
+):
+    payload = tmp_path / "object.bin"
+    payload.write_bytes(b"downloaded payload")
+    storage = MinIOStorageClient.__new__(MinIOStorageClient)
+    storage._bucket = "test-bucket"
+    with payload.open("rb") as body:
+        response = HTTPResponse(body=body, preload_content=False)
+        storage._client = Mock()
+        storage._client.get_object.return_value = response
+
+        def fail_release():
+            raise RuntimeError(PRIVATE)
+
+        monkeypatch.setattr(response, "release_conn", fail_release)
+        assert storage.read_file_prefix("object.bin", 10) == b"downloaded"
+        assert body.closed
+    assert_safe(logs, "error_type=RuntimeError")
+
+
+def test_read_file_prefix_preserves_read_failure_when_connection_release_fails(
+    tmp_path, monkeypatch, logs,
+):
+    payload = tmp_path / "object.bin"
+    payload.write_bytes(b"downloaded payload")
+    storage = MinIOStorageClient.__new__(MinIOStorageClient)
+    storage._bucket = "test-bucket"
+    original = LookupError(PRIVATE)
+    with payload.open("rb") as body:
+        response = HTTPResponse(body=body, preload_content=False)
+        storage._client = Mock()
+        storage._client.get_object.return_value = response
+
+        def fail_read(*args, **kwargs):
+            raise original
+
+        def fail_release():
+            raise RuntimeError(PRIVATE)
+
+        monkeypatch.setattr(body, "read", fail_read)
+        monkeypatch.setattr(response, "release_conn", fail_release)
+        with pytest.raises(LookupError) as caught:
+            storage.read_file_prefix("object.bin", 10)
+        assert caught.value is original
+        assert body.closed
+    assert_safe(logs, "error_type=RuntimeError")
+
+
 def test_stdlib_exception_record_omits_message_and_traceback_but_keeps_normal_messages(logs):
     from app.infra.logging_setup import InterceptHandler
     library=logging.getLogger('private-test-library')
@@ -65,8 +115,31 @@ def test_global_500_response_and_log_diagnostics_are_safe(logs,kind):
     assert_safe(logs,'status=502' if kind=='http' else 'error_type=')
 
 async def test_file_embedding_failure_returns_empty_vector_with_private_exception_removed(monkeypatch,logs):
-    from app.features.file import service
-    from app.infra.llm import client
-    monkeypatch.setattr(client,'embed_texts',AsyncMock(side_effect=RuntimeError(PRIVATE)))
-    assert await service.embedding_desc(PRIVATE,{'api':'unused','key':PRIVATE})==[]
+    from app.features.file import search_service
+    monkeypatch.setattr(search_service,'embed_texts',AsyncMock(side_effect=RuntimeError(PRIVATE)))
+    assert await search_service.embedding_desc(PRIVATE,{'api':'unused','key':PRIVATE})==[]
     assert_safe(logs,'error_type=RuntimeError')
+
+
+@pytest.mark.parametrize("invalidation_fails", [False, True])
+def test_upload_rollback_cleanup_preserves_original_failure(
+    logs, invalidation_fails,
+):
+    from app.features.file.upload_recovery import compensate_failed_uploads
+
+    session = Mock()
+    session.rollback.side_effect = RuntimeError(PRIVATE)
+    if invalidation_fails:
+        session.invalidate.side_effect = RuntimeError(PRIVATE)
+    storage = Mock()
+    original = LookupError("upload failed")
+    with pytest.raises(LookupError) as caught:
+        try:
+            raise original
+        except LookupError:
+            compensate_failed_uploads(session, 1, 1, [], storage)
+            raise
+    assert caught.value is original
+    session.invalidate.assert_called_once_with()
+    storage.delete_file.assert_not_called()
+    assert_safe(logs, "error_type=RuntimeError")

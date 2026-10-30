@@ -1,14 +1,18 @@
 """MCP call audit recording without retaining tokens or file contents."""
 
 import asyncio
-from app.infra.owned_work import run_owned
-from app.exceptions import DomainError
 import json
 import time
+from collections.abc import Awaitable, Callable
 from functools import wraps
-from typing import Any, Callable
+from typing import ParamSpec, TypeVar, cast
 
+from loguru import logger
+
+from app.exceptions import DomainError
 from app.infra.extensions import SessionLocal
+from app.infra.owned_work import run_owned_persistent
+from app.mcp.audit_payload import AuditArguments, summarize_call
 from app.mcp.context import (
     McpPermissionError,
     get_optional_mcp_context,
@@ -16,15 +20,17 @@ from app.mcp.context import (
     is_mcp_request_active,
 )
 from app.models.mcp_audit_log import McpAuditLog
-from app.mcp.audit_payload import AuditArguments, summarize_call
 
-from loguru import logger
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+_SERVER_ERROR_STATUS = 500
+_UNAVAILABLE_MESSAGE = "Service temporarily unavailable"
 
 
-def _returned_error_type(result: Any) -> str | None:
+def _returned_error_type(result: object) -> str | None:
     """Recognize structured tool errors that were returned instead of raised."""
-
-    payload = result
+    payload: object = result
     if isinstance(result, str):
         try:
             payload = json.loads(result)
@@ -32,21 +38,23 @@ def _returned_error_type(result: Any) -> str | None:
             return None
     if not isinstance(payload, dict):
         return None
-    if "error" in payload:
+    mapping = cast("dict[str, object]", payload)
+    if "error" in mapping:
         return "tool_error"
-    if payload.get("errors"):
+    if mapping.get("errors"):
         return "partial_tool_error"
     return None
 
 
 def record_mcp_call(
-        *,
-        tool_name: str,
-        arguments: AuditArguments,
-        success: bool,
-        error_type: str | None,
-        duration_ms: int,
+    *,
+    tool_name: str,
+    arguments: AuditArguments,
+    success: bool,
+    error_type: str | None,
+    duration_ms: int,
 ) -> None:
+    """Persist one bounded audit row; failures never surface to the caller."""
     context = get_optional_mcp_context()
     if not context or not is_mcp_request_active():
         return
@@ -67,31 +75,47 @@ def record_mcp_call(
                 success=success,
                 error_type=error_type,
                 duration_ms=duration_ms,
-            )
+            ),
         )
         session.commit()
     except Exception as exc:
-        logger.error("MCP audit persistence failed: error_type={}", type(exc).__name__)
+        # Factory/SQL/driver failures must never replace a tool outcome. Preserve
+        # rollback and close attempts and log only the exception's class.
+        logger.error(
+            "MCP audit persistence failed: error_type={}", type(exc).__name__,
+        )
         if session is not None:
             try:
                 session.rollback()
             except Exception as cleanup_exc:
-                logger.error("MCP audit rollback failed: error_type={}", type(cleanup_exc).__name__)
+                # Rollback can invoke driver/pool callbacks; failure cannot
+                # replace the tool result and must not prevent close below.
+                logger.error(
+                    "MCP audit rollback failed: error_type={}",
+                    type(cleanup_exc).__name__,
+                )
     finally:
         if session is not None:
             try:
                 session.close()
             except Exception as cleanup_exc:
-                logger.error("MCP audit close failed: error_type={}", type(cleanup_exc).__name__)
+                # A driver/pool close failure remains isolated from the tool,
+                # including when audit persistence or rollback already failed.
+                logger.error(
+                    "MCP audit close failed: error_type={}",
+                    type(cleanup_exc).__name__,
+                )
 
 
-def audited_tool(tool_name: str) -> Callable:
+def audited_tool(
+    tool_name: str,
+) -> Callable[[Callable[_P, Awaitable[_R]]], Callable[_P, Awaitable[_R]]]:
     """Decorate an async MCP tool with non-sensitive audit metadata."""
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[_R]]:
         @wraps(func)
-        async def wrapped(*args, **kwargs):
-            arguments = summarize_call(func, args, kwargs)
+        async def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            arguments = summarize_call(func, *args, **kwargs)
             started = time.perf_counter()
             success = True
             raised = False
@@ -102,7 +126,6 @@ def audited_tool(tool_name: str) -> Callable:
                 if returned_error:
                     success = False
                     error_type = returned_error
-                return result
             except Exception as exc:
                 # FastMCP includes str(exc) in protocol errors. Keep internal
                 # database/storage details out of that transport boundary.
@@ -110,22 +133,27 @@ def audited_tool(tool_name: str) -> Callable:
                 success = False
                 error_type = type(exc).__name__
                 if isinstance(exc, McpPermissionError) or (
-                    isinstance(exc, DomainError) and exc.status_code < 500
+                    isinstance(exc, DomainError)
+                    and exc.status_code < _SERVER_ERROR_STATUS
                 ):
                     raise
-                logger.error("MCP tool failed: tool={} error_type={}", tool_name, error_type)
-                raise RuntimeError("Service temporarily unavailable") from None
+                logger.error(
+                    "MCP tool failed: tool={} error_type={}", tool_name, error_type,
+                )
+                raise RuntimeError(_UNAVAILABLE_MESSAGE) from None
             except BaseException as exc:
                 raised = True
                 success = False
                 error_type = type(exc).__name__
                 raise
+            else:
+                return result
             finally:
                 duration_ms = int((time.perf_counter() - started) * 1000)
                 # Do not make a user-facing tool depend on audit persistence.
                 try:
-                    await run_owned(
-                        record_mcp_call, cancel_queued=False,
+                    await run_owned_persistent(
+                        record_mcp_call,
                         tool_name=tool_name,
                         arguments=arguments,
                         success=success,

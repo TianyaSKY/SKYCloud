@@ -1,18 +1,19 @@
 """Assistant persistence, event mapping, and security regression tests."""
 
 import asyncio
-from contextlib import nullcontext
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import jwt
 from fastapi.security import HTTPAuthorizationCredentials
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 from app.exceptions import BusinessRuleError, ConflictError, ResourceNotFoundError
 from app.features.assistant import repository, service
 from app.features.assistant.clients.opencode_auth import server_password
 from app.features.assistant.clients.opencode_events import map_opencode_event
+from app.features.assistant.engines.base import EngineRequest
 from app.features.assistant.engines.fast_engine import FastEngine
 from app.features.assistant.engines.expert_engine import _text_from_messages
 from app.features.assistant.event_protocol import AssistantEvent
@@ -32,11 +33,27 @@ from app.models.workspace import WorkspaceMember
 
 def test_assistant_repository_persists_mode_specific_records(session, test_user, test_workspace):
     conversation = repository.create_conversation(
-        session, test_workspace.id, test_user.id, "fast", "资料查询"
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode="fast",
+            title="资料查询",
+        ),
     )
-    user_message = repository.create_message(session, conversation, "user", "查找退款规则")
+    user_message = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(role="user", content="查找退款规则"),
+    )
     assistant_message = repository.create_message(
-        session, conversation, "assistant", "", status="pending"
+        session,
+        conversation,
+        repository.CreateMessageParams(
+            role="assistant",
+            content="",
+            status="pending",
+        ),
     )
     run = repository.create_run(session, conversation, user_message, assistant_message)
     repository.update_run_status(run, "running")
@@ -60,19 +77,23 @@ def test_user_can_rename_archive_restore_and_delete_own_conversation(
 
     renamed = service.update_conversation(
         session,
-        test_workspace,
-        test_user.id,
-        conversation.id,
-        title="  项目资料  ",
+        service.UpdateConversationParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            title="  项目资料  ",
+        ),
     )
     assert renamed.title == "项目资料"
 
     archived = service.update_conversation(
         session,
-        test_workspace,
-        test_user.id,
-        conversation.id,
-        status="archived",
+        service.UpdateConversationParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            status="archived",
+        ),
     )
     assert archived.status == "archived"
     assert conversation not in service.list_user_conversations(
@@ -84,10 +105,12 @@ def test_user_can_rename_archive_restore_and_delete_own_conversation(
 
     restored = service.update_conversation(
         session,
-        test_workspace,
-        test_user.id,
-        conversation.id,
-        status="active",
+        service.UpdateConversationParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            status="active",
+        ),
     )
     assert restored.status == "active"
     assert conversation in service.list_user_conversations(
@@ -108,48 +131,58 @@ def test_conversation_management_validates_state_and_blocks_active_run(
     )
     _, run, _ = service.prepare_run(
         session,
-        test_workspace,
-        test_user.id,
-        conversation.id,
-        "保持运行",
-        request_id="req-management-active",
+        service.PrepareRunParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            query="保持运行",
+            request_id="req-management-active",
+        ),
     )
 
     with pytest.raises(ConflictError, match="先停止任务"):
         service.update_conversation(
             session,
-            test_workspace,
-            test_user.id,
-            conversation.id,
-            status="archived",
+            service.UpdateConversationParams(
+                workspace=test_workspace,
+                user_id=test_user.id,
+                conversation_id=conversation.id,
+                status="archived",
+            ),
         )
     with pytest.raises(ConflictError, match="先停止任务"):
         service.delete_conversation(session, test_workspace, test_user.id, conversation.id)
     with pytest.raises(BusinessRuleError, match="状态无效"):
         service.update_conversation(
             session,
-            test_workspace,
-            test_user.id,
-            conversation.id,
-            status="deleted",
+            service.UpdateConversationParams(
+                workspace=test_workspace,
+                user_id=test_user.id,
+                conversation_id=conversation.id,
+                status="deleted",
+            ),
         )
 
     repository.update_run_status(run, "cancelled")
     session.commit()
     service.update_conversation(
         session,
-        test_workspace,
-        test_user.id,
-        conversation.id,
-        status="archived",
+        service.UpdateConversationParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            status="archived",
+        ),
     )
     with pytest.raises(ConflictError, match="先恢复后再发送"):
         service.prepare_run(
             session,
-            test_workspace,
-            test_user.id,
-            conversation.id,
-            "归档会话不能发送",
+            service.PrepareRunParams(
+                workspace=test_workspace,
+                user_id=test_user.id,
+                conversation_id=conversation.id,
+                query="归档会话不能发送",
+            ),
         )
     service.delete_conversation(session, test_workspace, test_user.id, conversation.id)
 
@@ -177,10 +210,12 @@ def test_conversation_management_does_not_cross_user_boundary(
     with pytest.raises(ResourceNotFoundError):
         service.update_conversation(
             session,
-            test_workspace,
-            test_user.id,
-            conversation.id,
-            title="越权修改",
+            service.UpdateConversationParams(
+                workspace=test_workspace,
+                user_id=test_user.id,
+                conversation_id=conversation.id,
+                title="越权修改",
+            ),
         )
     with pytest.raises(ResourceNotFoundError):
         service.delete_conversation(session, test_workspace, test_user.id, conversation.id)
@@ -192,35 +227,39 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
     conversation = service.create_conversation(
         session, test_workspace, test_user.id, "fast", "HTTP 会话"
     )
+    session_factory = sessionmaker(
+        bind=session.get_bind(),
+        join_transaction_mode="create_savepoint",
+    )
 
     updated = (
         update_assistant_conversation(
-            conversation.id,
-            AssistantConversationUpdate(title="接口重命名"),
+            conversation_id=conversation.id,
+            payload=AssistantConversationUpdate(title="接口重命名"),
             current_user=test_user,
             workspace=test_workspace,
-            session_factory=lambda: nullcontext(session),
+            session_factory=session_factory,
         )
     )
     assert updated["data"]["title"] == "接口重命名"
 
     active_run = (
         get_active_assistant_run_for_conversation(
-            conversation.id,
+            conversation_id=conversation.id,
             current_user=test_user,
             workspace=test_workspace,
-            session_factory=lambda: nullcontext(session),
+            session_factory=session_factory,
         )
     )
     assert active_run == {"success":True,"data":None}
 
     (
         update_assistant_conversation(
-            conversation.id,
-            AssistantConversationUpdate(status="archived"),
+            conversation_id=conversation.id,
+            payload=AssistantConversationUpdate(status="archived"),
             current_user=test_user,
             workspace=test_workspace,
-            session_factory=lambda: nullcontext(session),
+            session_factory=session_factory,
         )
     )
     active_only = (
@@ -229,7 +268,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             include_archived=False,
             current_user=test_user,
             workspace=test_workspace,
-            session_factory=lambda: nullcontext(session),
+            session_factory=session_factory,
         )
     )
     all_sessions = (
@@ -238,7 +277,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
             include_archived=True,
             current_user=test_user,
             workspace=test_workspace,
-            session_factory=lambda: nullcontext(session),
+            session_factory=session_factory,
         )
     )
     assert conversation.id not in {item["id"] for item in active_only["data"]["conversations"]}
@@ -246,10 +285,10 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
 
     assert (
         delete_assistant_conversation(
-            conversation.id,
+            conversation_id=conversation.id,
             current_user=test_user,
             workspace=test_workspace,
-            session_factory=lambda: nullcontext(session),
+            session_factory=session_factory,
         )
     ) is None
     assert repository.get_conversation(
@@ -259,11 +298,27 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
 
 def test_permission_response_is_durable_and_single_use(session, test_user, test_workspace):
     conversation = repository.create_conversation(
-        session, test_workspace.id, test_user.id, "expert", "权限测试"
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode="expert",
+            title="权限测试",
+        ),
     )
-    user_message = repository.create_message(session, conversation, "user", "运行检查")
+    user_message = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(role="user", content="运行检查"),
+    )
     assistant_message = repository.create_message(
-        session, conversation, "assistant", "", status="pending"
+        session,
+        conversation,
+        repository.CreateMessageParams(
+            role="assistant",
+            content="",
+            status="pending",
+        ),
     )
     run = repository.create_run(session, conversation, user_message, assistant_message)
     repository.update_run_status(run, "waiting_permission")
@@ -279,20 +334,35 @@ def test_permission_response_is_durable_and_single_use(session, test_user, test_
 @pytest.mark.parametrize("engine_cancelled", [False, True])
 def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_workspace, engine_cancelled):
     conversation = repository.create_conversation(
-        session, test_workspace.id, test_user.id, "fast", "快速 Run 测试"
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode="fast",
+            title="快速 Run 测试",
+        ),
     )
     session.commit()
     conversation, run, history = service.prepare_run(
         session,
-        test_workspace,
-        test_user.id,
-        conversation.id,
-        "检查资料",
-        request_id="req-test-1",
+        service.PrepareRunParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            query="检查资料",
+            request_id="req-test-1",
+        ),
     )
 
     class FakeFastEngine:
-        async def stream(self, **_kwargs):
+        async def stream(self, request):
+            assert isinstance(request, EngineRequest)
+            assert request.run_id == run.id
+            assert request.user_id == test_user.id
+            assert request.workspace_id == test_workspace.id
+            assert request.query == "检查资料"
+            assert request.history == history
+            assert request.controller is not None
             yield AssistantEvent("token", {"content": "已找到"})
             if engine_cancelled:
                 yield AssistantEvent("cancelled", {"status": "cancelled"})
@@ -301,16 +371,21 @@ def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_wo
         return [
             event
             async for event in service.stream_prepared_run(
-                session,
-                test_workspace,
-                test_user.id,
-                conversation,
-                run,
-                history,
+                service.StreamPreparedRunParams(
+                    session=session,
+                    workspace=test_workspace,
+                    user_id=test_user.id,
+                    conversation=conversation,
+                    run=run,
+                    history=history,
+                )
             )
         ]
 
-    with patch("app.features.assistant.service.FastEngine", FakeFastEngine):
+    with patch(
+        "app.features.assistant.engines.fast_engine.FastEngine",
+        FakeFastEngine,
+    ):
         events = asyncio.run(collect())
 
     terminal = "cancelled" if engine_cancelled else "completed"
@@ -325,27 +400,37 @@ def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_wo
 
 def test_prepare_run_recovers_abandoned_stream(session, test_user, test_workspace):
     conversation = repository.create_conversation(
-        session, test_workspace.id, test_user.id, "fast", "恢复测试"
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode="fast",
+            title="恢复测试",
+        ),
     )
     session.commit()
     conversation, abandoned_run, _ = service.prepare_run(
         session,
-        test_workspace,
-        test_user.id,
-        conversation.id,
-        "第一次请求",
-        request_id="req-abandoned-1",
+        service.PrepareRunParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            query="第一次请求",
+            request_id="req-abandoned-1",
+        ),
     )
     abandoned_run.started_at = beijing_now() - timedelta(minutes=5)
     session.commit()
 
     _, replacement_run, _ = service.prepare_run(
         session,
-        test_workspace,
-        test_user.id,
-        conversation.id,
-        "重新发送",
-        request_id="req-abandoned-2",
+        service.PrepareRunParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            query="重新发送",
+            request_id="req-abandoned-2",
+        ),
     )
 
     session.refresh(abandoned_run)
@@ -361,13 +446,27 @@ def test_prepare_run_recovers_abandoned_expert_run_from_another_conversation(
     session, test_user, test_workspace
 ):
     old_conversation = repository.create_conversation(
-        session, test_workspace.id, test_user.id, "expert", "旧专家会话"
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode="expert",
+            title="旧专家会话",
+        ),
     )
     old_user_message = repository.create_message(
-        session, old_conversation, "user", "旧请求"
+        session,
+        old_conversation,
+        repository.CreateMessageParams(role="user", content="旧请求"),
     )
     old_assistant_message = repository.create_message(
-        session, old_conversation, "assistant", "", status="streaming"
+        session,
+        old_conversation,
+        repository.CreateMessageParams(
+            role="assistant",
+            content="",
+            status="streaming",
+        ),
     )
     abandoned_run = repository.create_run(
         session,
@@ -379,17 +478,25 @@ def test_prepare_run_recovers_abandoned_expert_run_from_another_conversation(
     abandoned_run.started_at = beijing_now() - timedelta(minutes=5)
 
     new_conversation = repository.create_conversation(
-        session, test_workspace.id, test_user.id, "expert", "新专家会话"
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode="expert",
+            title="新专家会话",
+        ),
     )
     session.commit()
 
     _, replacement_run, _ = service.prepare_run(
         session,
-        test_workspace,
-        test_user.id,
-        new_conversation.id,
-        "新请求",
-        request_id="req-after-abandoned-expert",
+        service.PrepareRunParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=new_conversation.id,
+            query="新请求",
+            request_id="req-after-abandoned-expert",
+        ),
     )
 
     session.refresh(abandoned_run)
@@ -410,8 +517,24 @@ def test_viewer_unfiltered_list_hides_expert_metadata(session, test_user, test_w
             role="viewer",
         )
     )
-    repository.create_conversation(session, test_workspace.id, viewer.id, "fast", "资料")
-    repository.create_conversation(session, test_workspace.id, viewer.id, "expert", "专家")
+    repository.create_conversation(
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=viewer.id,
+            mode="fast",
+            title="资料",
+        ),
+    )
+    repository.create_conversation(
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=viewer.id,
+            mode="expert",
+            title="专家",
+        ),
+    )
     session.commit()
 
     visible = service.list_user_conversations(session, test_workspace, viewer.id)
@@ -427,11 +550,13 @@ def test_fast_engine_adapts_legacy_sse_to_internal_events():
         return [
             event
             async for event in FastEngine().stream(
-                run_id=7,
-                user_id=1,
-                workspace_id=2,
-                query="退款",
-                history=[],
+                EngineRequest(
+                    run_id=7,
+                    user_id=1,
+                    workspace_id=2,
+                    query="退款",
+                    history=[],
+                )
             )
         ]
 
@@ -609,7 +734,7 @@ async def test_runtime_token_cannot_call_rest_user_dependency(session, test_user
         algorithm="HS256",
     )
     try:
-        await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session=session)
+        await get_current_user(credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials=token), session_factory=MagicMock())
     except HTTPException as exc:
         assert exc.status_code == 403
     else:
@@ -617,14 +742,36 @@ async def test_runtime_token_cannot_call_rest_user_dependency(session, test_user
 
 
 def test_handoff_creates_separate_expert_conversation(session, test_user, test_workspace):
-    fast = repository.create_conversation(session, test_workspace.id, test_user.id, "fast", "查询")
-    user_message = repository.create_message(session, fast, "user", "继续分析")
+    fast = repository.create_conversation(
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode="fast",
+            title="查询",
+        ),
+    )
+    user_message = repository.create_message(
+        session,
+        fast,
+        repository.CreateMessageParams(role="user", content="继续分析"),
+    )
     assistant_message = repository.create_message(
         session,
         fast,
-        "assistant",
-        "建议检查导入日志",
-        metadata={"sources": [{"file_id": 3, "file_name": "import.md", "page_number": 2}]},
+        repository.CreateMessageParams(
+            role="assistant",
+            content="建议检查导入日志",
+            metadata={
+                "sources": [
+                    {
+                        "file_id": 3,
+                        "file_name": "import.md",
+                        "page_number": 2,
+                    }
+                ]
+            },
+        ),
     )
     session.commit()
     target = service.handoff_to_expert(
@@ -638,9 +785,29 @@ def test_handoff_creates_separate_expert_conversation(session, test_user, test_w
 
 def test_pending_permission_is_durable_bounded_and_response_gated(session, test_user, test_workspace):
     from sqlalchemy.orm import Session
-    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'expert', 'task')
-    user = repository.create_message(session, conversation, 'user', 'patch')
-    assistant = repository.create_message(session, conversation, 'assistant', '', status='pending')
+    conversation = repository.create_conversation(
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode='expert',
+            title='task',
+        ),
+    )
+    user = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(role='user', content='patch'),
+    )
+    assistant = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(
+            role='assistant',
+            content='',
+            status='pending',
+        ),
+    )
     run = repository.create_run(session, conversation, user, assistant)
     repository.set_pending_permission(run, {'permission_id': 'p1', 'title': 'Patch a.txt', 'tool': 'apply_patch a.txt', 'provider_secret': 'never-persist'})
     session.commit()
@@ -657,9 +824,29 @@ def test_pending_permission_is_durable_bounded_and_response_gated(session, test_
 
 @pytest.mark.parametrize('state', ['running', 'completed', 'failed', 'cancelled', 'cancel_requested', 'mismatched', 'legacy'])
 def test_pending_permission_is_not_recovered_outside_matching_wait(session, test_user, test_workspace, state):
-    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'expert', 'task')
-    user = repository.create_message(session, conversation, 'user', 'patch')
-    assistant = repository.create_message(session, conversation, 'assistant', '', status='pending')
+    conversation = repository.create_conversation(
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode='expert',
+            title='task',
+        ),
+    )
+    user = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(role='user', content='patch'),
+    )
+    assistant = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(
+            role='assistant',
+            content='',
+            status='pending',
+        ),
+    )
     run = repository.create_run(session, conversation, user, assistant)
     repository.set_pending_permission(run, {'permission_id': 'p1', 'title': 'Patch a.txt'})
     if state == 'cancel_requested':
@@ -677,64 +864,140 @@ def test_pending_permission_is_not_recovered_outside_matching_wait(session, test
 
 
 def test_permission_wait_survives_heartbeat_and_status_events(session, test_user, test_workspace):
-    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'fast', 'heartbeat')
+    conversation = repository.create_conversation(
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode='fast',
+            title='heartbeat',
+        ),
+    )
     session.commit()
-    conversation, run, history = service.prepare_run(session, test_workspace, test_user.id, conversation.id, 'check')
+    conversation, run, history = service.prepare_run(
+        session,
+        service.PrepareRunParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            query='check',
+        ),
+    )
 
     class WaitingEngine:
-        async def stream(self, **kwargs):
+        async def stream(self, request):
             yield AssistantEvent('permission_required', {'permission_id': 'p1', 'title': 'Patch a.txt'})
             yield AssistantEvent('heartbeat', {})
             yield AssistantEvent('status', {'content': 'still waiting'})
 
     async def collect():
-        async for event in service.stream_prepared_run(session, test_workspace, test_user.id, conversation, run, history):
+        params = service.StreamPreparedRunParams(
+            session=session,
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation=conversation,
+            run=run,
+            history=history,
+        )
+        async for event in service.stream_prepared_run(params):
             if event.type in {'permission_required', 'heartbeat', 'status'}:
                 assert run.status == 'waiting_permission'
                 assert run.to_dict()['pending_permission']['permission_id'] == 'p1'
         assert run.status == 'completed'
         assert run.to_dict()['pending_permission'] is None
 
-    with patch('app.features.assistant.service.FastEngine', WaitingEngine):
+    with patch(
+        'app.features.assistant.engines.fast_engine.FastEngine',
+        WaitingEngine,
+    ):
         asyncio.run(collect())
 
 
 @pytest.mark.parametrize('heartbeat', [None, False, 'now', float('nan'), 10**20])
 def test_invalid_heartbeat_does_not_pin_an_abandoned_run(session, test_user, test_workspace, heartbeat):
-    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'expert', 'task')
-    user = repository.create_message(session, conversation, 'user', 'patch')
-    assistant = repository.create_message(session, conversation, 'assistant', '', status='pending')
+    conversation = repository.create_conversation(
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode='expert',
+            title='task',
+        ),
+    )
+    user = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(role='user', content='patch'),
+    )
+    assistant = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(
+            role='assistant',
+            content='',
+            status='pending',
+        ),
+    )
     run = repository.create_run(session, conversation, user, assistant)
     repository.update_run_status(run, 'running')
     run.started_at = beijing_now() - timedelta(minutes=5)
     run.metadata_dict = {'worker_heartbeat_unix': heartbeat}
     session.commit()
-    assert service._recover_abandoned_run(session, run)
+    assert service.recover_abandoned_run(session, run)
     assert run.status == 'failed'
 
 
 def test_cancel_return_closes_engine_producer_before_stream_returns(session, test_user, test_workspace):
-    conversation = repository.create_conversation(session, test_workspace.id, test_user.id, 'fast', 'cancel')
+    conversation = repository.create_conversation(
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode='fast',
+            title='cancel',
+        ),
+    )
     session.commit()
-    conversation, run, history = service.prepare_run(session, test_workspace, test_user.id, conversation.id, 'check')
+    conversation, run, history = service.prepare_run(
+        session,
+        service.PrepareRunParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            query='check',
+        ),
+    )
     closed = asyncio.Event()
 
     class WaitingEngine:
-        async def stream(self, **kwargs):
+        async def stream(self, request):
             try:
-                kwargs['controller'].cancel_event.set()
+                request.controller.cancel_event.set()
                 yield AssistantEvent('status', {'content': 'wait'})
                 await asyncio.Event().wait()
             finally:
                 closed.set()
 
     async def collect():
-        events = [event async for event in service.stream_prepared_run(session, test_workspace, test_user.id, conversation, run, history)]
+        params = service.StreamPreparedRunParams(
+            session=session,
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation=conversation,
+            run=run,
+            history=history,
+        )
+        events = [
+            event async for event in service.stream_prepared_run(params)
+        ]
         assert events[-1].type == 'cancelled'
         assert closed.is_set()
         assert service.run_registry.get(run.id) is None
 
-    with patch('app.features.assistant.service.FastEngine', WaitingEngine):
+    with patch(
+        'app.features.assistant.engines.fast_engine.FastEngine',
+        WaitingEngine,
+    ):
         asyncio.run(collect())
 
 
@@ -743,7 +1006,7 @@ def test_current_permission_contract_displays_command_instead_of_tool_pointer():
                   'metadata': {'command': "printf 'marker'", 'description': 'Print'},
                   'tool': {'messageID': 'message-pointer', 'callID': 'call-pointer'}}
     event = map_opencode_event({'type': 'permission.asked', 'properties': properties}, 's1', {})[0]
-    assert event.payload['title'] == '请求权限：bash'
+    assert event.payload['title'] == '请求权限:bash'
     assert event.payload['tool'] == "bash: printf 'marker'"
     properties['metadata'] = {}
     assert "printf 'marker'" in map_opencode_event({'type': 'permission.asked', 'properties': properties}, 's1', {})[0].payload['tool']
@@ -754,7 +1017,7 @@ def test_current_permission_contract_displays_command_instead_of_tool_pointer():
 def test_permission_display_marks_truncation_explicitly():
     event = map_opencode_event({'type': 'permission.asked', 'properties': {'id': 'p1', 'sessionID': 's1', 'permission': 'bash', 'metadata': {'command': 'a' * 5000}}}, 's1', {})[0]
     assert len(event.payload['tool']) == 4000
-    assert event.payload['tool'].endswith('（内容已截断）')
+    assert event.payload['tool'].endswith('(内容已截断)')
 
 
 def test_opencode_permission_transport_is_strictly_one_shot():
@@ -767,6 +1030,7 @@ def test_opencode_permission_transport_is_strictly_one_shot():
                 request.assert_awaited_once_with('POST', '/session/s1/permissions/p1', json={'response': 'once'})
                 for response, remember in [('always', False), ('once', True)]:
                     with pytest.raises(ValueError, match='one-shot'):
-                        await client.respond_permission('s1', 'p1', response, remember)
+                        await client.respond_permission(
+                            's1', 'p1', response, remember=remember)
                 assert request.await_count == 1
     asyncio.run(exercise())

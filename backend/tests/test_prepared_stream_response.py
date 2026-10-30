@@ -12,7 +12,15 @@ from app.models.assistant import AssistantMessage
 @pytest.mark.parametrize('state', ['unclaimed', 'leased', 'completed', 'foreign-user', 'foreign-workspace', 'foreign-conversation'])
 def test_only_exact_unclaimed_run_cancelled(session, test_user, test_workspace, state):
     conversation = service.create_conversation(session, test_workspace, test_user.id, 'fast', 'test')
-    _, run, _ = service.prepare_run(session, test_workspace, test_user.id, conversation.id, 'question')
+    _, run, _ = service.prepare_run(
+        session,
+        service.PrepareRunParams(
+            workspace=test_workspace,
+            user_id=test_user.id,
+            conversation_id=conversation.id,
+            query='question',
+        ),
+    )
     scope = [test_workspace.id, test_user.id, conversation.id, run.id]
     if state == 'leased':
         repository.touch_run_lease(session, run.id, 1)
@@ -194,8 +202,16 @@ def test_prepare_captures_id_before_commit_failure(session, test_user, test_work
     def fail(): raise RuntimeError('commit failure')
     monkeypatch.setattr(session, 'commit', fail)
     with pytest.raises(RuntimeError, match='commit failure'):
-        service.prepare_run(session, test_workspace, test_user.id, conversation.id, 'question',
-                            on_run_created=captured.append)
+        service.prepare_run(
+            session,
+            service.PrepareRunParams(
+                workspace=test_workspace,
+                user_id=test_user.id,
+                conversation_id=conversation.id,
+                query='question',
+                on_run_created=captured.append,
+            ),
+        )
     assert len(captured) == 1
     workspace_id, user_id, conversation_id, run_id = captured[0]
     assert (workspace_id, user_id, conversation_id) == (test_workspace.id, test_user.id, conversation.id)

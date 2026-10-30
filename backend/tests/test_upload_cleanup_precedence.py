@@ -16,7 +16,6 @@ def rejected_remove(monkeypatch):
     logs = []
     sink = logger.add(lambda message: logs.append(str(message)))
     def reject(*args, **kwargs): raise PermissionError('private-cleanup-path-and-password')
-    monkeypatch.setattr(upload_adapter.os, 'remove', reject)
     monkeypatch.setattr(multipart_storage.os, 'unlink', reject)
     try:
         yield logs
@@ -54,9 +53,9 @@ def test_atomic_publication_keeps_primary_exception_and_previous_bytes(tmp_path,
         if operation == 'metadata':
             multipart_storage.write_metadata(str(destination), {'name': 'private-name'})
         elif operation == 'chunk':
-            multipart_storage.save_chunk(str(tmp_path), 0, FileStorage(stream=BytesIO(b'abc')), 3, 3)
+            multipart_storage.save_chunk(str(tmp_path), multipart_storage.SaveChunkParams(index=0, upload=FileStorage(stream=BytesIO(b'abc')), expected_size=3, max_size=3))
         else:
-            multipart_storage.assemble(str(chunks), str(destination), total_chunks=1, chunk_size=3, total_size=3)
+            multipart_storage.assemble(str(chunks), str(destination), multipart_storage.AssembleParams(total_chunks=1, chunk_size=3, total_size=3))
     assert error.value is primary
     assert destination.read_bytes() == b'previous'
     assert rejected_remove and 'PermissionError' in ''.join(rejected_remove)

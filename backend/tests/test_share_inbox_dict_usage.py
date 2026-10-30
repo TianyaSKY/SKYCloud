@@ -6,6 +6,8 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from app.exceptions import BusinessRuleError, ResourceNotFoundError
+from app.features.share.service import CreateShareLinkParams
+from app.features.token_usage.service import AdminUsageLogsParams, GetUsageLogsParams
 from app.infra.datetime_utils import beijing_now
 from app.models.user import User
 from app.models.file import File
@@ -40,7 +42,7 @@ class TestShareService:
         from app.features.share.service import create_share_link
 
         f = self._create_file(session, test_workspace, test_user)
-        share = create_share_link(session, test_user.id, f.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=f.id))
         assert share.id is not None
         assert share.token is not None
         assert share.file_id == f.id
@@ -49,13 +51,13 @@ class TestShareService:
         from app.features.share.service import create_share_link
 
         with pytest.raises(ValueError):
-            create_share_link(session, test_user.id, 99999)
+            create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=99999))
 
     def test_get_share_by_token_valid(self, session, test_workspace, test_user):
         from app.features.share.service import create_share_link, get_share_by_token
 
         f = self._create_file(session, test_workspace, test_user)
-        share = create_share_link(session, test_user.id, f.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=f.id))
         found = get_share_by_token(session, share.token)
         assert found is not None
         assert found.id == share.id
@@ -84,7 +86,7 @@ class TestShareService:
         from app.features.share.service import create_share_link, get_my_shares
 
         f = self._create_file(session, test_workspace, test_user)
-        create_share_link(session, test_user.id, f.id)
+        create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=f.id))
         shares = get_my_shares(session, test_user.id)
         assert len(shares) >= 1
 
@@ -92,7 +94,7 @@ class TestShareService:
         from app.features.share.service import create_share_link, cancel_share
 
         f = self._create_file(session, test_workspace, test_user)
-        share = create_share_link(session, test_user.id, f.id)
+        share = create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=f.id))
         assert cancel_share(session, share.id, test_user.id) is True
         assert cancel_share(session, share.id, test_user.id) is False
 
@@ -335,7 +337,7 @@ class TestTokenUsageService:
         session.add(log)
         session.flush()
 
-        result = get_usage_logs(session, test_user.id)
+        result = get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id))
         assert result["total"] == 1
         assert result["items"][0]["action"] == "chat"
 
@@ -346,7 +348,7 @@ class TestTokenUsageService:
         session.add(TokenUsageLog(user_id=test_user.id, action="embedding", total_tokens=5))
         session.flush()
 
-        result = get_usage_logs(session, test_user.id, action="chat")
+        result = get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id, action="chat"))
         assert result["total"] == 1
 
     def test_get_daily_stats(self, session, test_user):
@@ -385,7 +387,7 @@ class TestTokenUsageService:
         session.add(TokenUsageLog(user_id=test_user.id, action="chat", total_tokens=10))
         session.flush()
 
-        result = get_all_users_usage_logs(session)
+        result = get_all_users_usage_logs(session, AdminUsageLogsParams())
         assert result["total"] >= 1
         assert "username" in result["items"][0]
 

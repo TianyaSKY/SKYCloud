@@ -18,7 +18,7 @@ async def test_ui_admission_wait_releases_resources(monkeypatch,stage,end):
     def authenticate(*args):
         assert threading.get_ident()!=loop_thread
         if revoked:raise HTTPException(403,'revoked')
-        return {'expires_at':time.time()+60,'container_id':'a'*64,'origin':'http://runtime.test'}
+        return {'user_id':1,'expires_at':time.time()+60,'container_id':'a'*64,'origin':'http://runtime.test'}
     monkeypatch.setattr(ui_gateway,'authenticate_owned',authenticate)
     monkeypatch.setattr(ui_gateway,'reauthenticate',authenticate)
     monkeypatch.setattr(ui_gateway,'HTTP_RECHECK_SECONDS',0.01)
@@ -51,7 +51,8 @@ async def test_ui_admission_wait_releases_resources(monkeypatch,stage,end):
         client=actual_client(transport=httpx.MockTransport(provider),**kwargs)
         clients.append(client);return client
     monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',upstream)
-    pending=asyncio.create_task(ui_gateway.relay('event',request,lambda:None))
+    pending=asyncio.create_task(ui_gateway.relay(
+        path='event',request=request,session_factory=lambda:None))
     await asyncio.wait_for(entered.wait(),1)
     if end=='revoke':revoked=True
     if end=='cancel':

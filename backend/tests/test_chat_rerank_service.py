@@ -2,16 +2,8 @@
 
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
+from langchain_core.documents import Document
 
-
-# langchain_core.documents 被 mock，创建真实 Document 类供测试
-class Document:
-    def __init__(self, page_content="", metadata=None):
-        self.page_content = page_content
-        self.metadata = metadata or {}
-
-    def __eq__(self, other):
-        return self.page_content == other.page_content and self.metadata == other.metadata
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +92,7 @@ class TestExtractRankedIndices:
 class TestRerankDocuments:
     async def test_single_doc_passthrough(self):
         docs = [Document(page_content="a")]
-        with patch("app.features.chat.rerank.Document", Document):
-            result = await rerank_documents("q", docs)
+        result = await rerank_documents("q", docs)
         assert result == docs
 
     async def test_empty_docs(self):

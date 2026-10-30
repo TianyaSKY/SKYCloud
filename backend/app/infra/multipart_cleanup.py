@@ -3,36 +3,47 @@
 SQL ownership and live reservation discovery belong to the caller. POSIX scans
 anchor each directory with a no-follow descriptor, including recursive removal.
 """
-from contextlib import contextmanager
+
 import errno
 import os
 import re
 import shutil
 import stat
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
+from pathlib import Path
 
 from loguru import logger
-
 
 _DESCRIPTORS = os.open in os.supports_dir_fd and shutil.rmtree.avoids_symlink_attacks
 
 
-def _ordinary_directory(info):
-    return stat.S_ISDIR(info.st_mode) and not (
-        getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0))
+def _ordinary_directory(info: os.stat_result) -> bool:
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(info, "st_file_attributes", 0)
+    return stat.S_ISDIR(info.st_mode) and not (attributes & reparse)
 
 
 @contextmanager
-def _directory(name, parent=None):
-    handle = None
+def _directory(
+    name: str, parent: int | str | None = None,
+) -> Generator[int | str | None, None, None]:
+    handle: int | str | None = None
     try:
         try:
             if _DESCRIPTORS:
-                handle = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+                handle = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=parent if isinstance(parent, int) else None,
+                )
             else:
-                path = os.path.join(parent, name) if parent is not None else name
-                if _ordinary_directory(os.stat(path, follow_symlinks=False)):
-                    handle = path
+                path = Path(name)
+                if isinstance(parent, str):
+                    path = Path(parent) / name
+                if _ordinary_directory(path.stat(follow_symlinks=False)):
+                    handle = str(path)
         except OSError as exc:
             if exc.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
                 raise
@@ -42,13 +53,13 @@ def _directory(name, parent=None):
             os.close(handle)
 
 
-def _child_stat(parent, name):
+def _child_stat(parent: int | str, name: str) -> os.stat_result:
     if isinstance(parent, int):
         return os.stat(name, dir_fd=parent, follow_symlinks=False)
-    return os.stat(os.path.join(parent, name), follow_symlinks=False)
+    return (Path(parent) / name).stat(follow_symlinks=False)
 
 
-def _remove_directory(parent, name) -> bool:
+def _remove_directory(parent: int | str, name: str) -> bool:
     try:
         if not _ordinary_directory(_child_stat(parent, name)):
             return False
@@ -57,59 +68,117 @@ def _remove_directory(parent, name) -> bool:
     if isinstance(parent, int):
         shutil.rmtree(name, dir_fd=parent)
     else:
-        shutil.rmtree(os.path.join(parent, name))
+        shutil.rmtree(Path(parent) / name)
     return True
 
 
-def remove_multipart_upload(root: str, workspace_id: int, upload_id: str) -> bool:
+def remove_multipart_upload(
+    root: str, workspace_id: int, upload_id: str,
+) -> bool:
     """Remove only a validated owned upload; propagate failures for retry."""
-    if workspace_id <= 0 or not re.fullmatch(r'[A-Za-z0-9_-]{8,128}', upload_id):
-        raise ValueError('Invalid multipart cleanup identity')
+    if workspace_id <= 0 or not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", upload_id):
+        message = "Invalid multipart cleanup identity"
+        raise ValueError(message)
     with _directory(root) as root_handle:
         if root_handle is None:
             return False
         with _directory(str(workspace_id), root_handle) as workspace_handle:
-            return _remove_directory(workspace_handle, upload_id) if workspace_handle is not None else False
+            if workspace_handle is None:
+                return False
+            return _remove_directory(workspace_handle, upload_id)
 
 
-def remove_multipart_upload_safely(root: str, workspace_id: int, upload_id: str) -> None:
+def remove_multipart_upload_safely(
+    root: str, workspace_id: int, upload_id: str,
+) -> None:
     """Best-effort filesystem cleanup after publication or cancellation."""
     try:
         remove_multipart_upload(root, workspace_id, upload_id)
     except OSError as exc:
-        logger.warning('Multipart upload cleanup deferred: error_type={}', type(exc).__name__)
+        logger.warning(
+            "Multipart upload cleanup deferred: error_type={}", type(exc).__name__,
+        )
 
 
-def cleanup_legacy_multipart(root: str, max_age_seconds: float,
-                             active_ids: set[tuple[str, str]]) -> int:
+def _list_names(handle: int | str) -> list[str]:
+    if isinstance(handle, int):
+        with os.scandir(handle) as entries:
+            return [entry.name for entry in entries]
+    return [entry.name for entry in Path(handle).iterdir()]
+
+
+def _remove_workspace_if_empty(
+    root_handle: int | str, workspace_handle: int | str, workspace: str,
+) -> None:
+    if _list_names(workspace_handle):
+        return
+    if isinstance(root_handle, int):
+        os.rmdir(workspace, dir_fd=root_handle)
+    else:
+        (Path(root_handle) / workspace).rmdir()
+
+
+def _cleanup_uploads(
+    workspace_handle: int | str,
+    workspace: str,
+    cutoff: float,
+    active_ids: set[tuple[str, str]],
+) -> int:
+    removed = 0
+    for upload in _list_names(workspace_handle):
+        if (workspace, upload) in active_ids:
+            continue
+        try:
+            info = _child_stat(workspace_handle, upload)
+            if not _ordinary_directory(info) or info.st_mtime >= cutoff:
+                continue
+            removed += int(_remove_directory(workspace_handle, upload))
+        except OSError as exc:
+            logger.warning(
+                "Expired upload cleanup deferred: error_type={}",
+                type(exc).__name__,
+            )
+    return removed
+
+
+def _cleanup_workspaces(
+    root_handle: int | str | None,
+    cutoff: float,
+    active_ids: set[tuple[str, str]],
+) -> int:
+    if root_handle is None:
+        return 0
+    removed = 0
+    for workspace in _list_names(root_handle):
+        try:
+            with _directory(workspace, root_handle) as workspace_handle:
+                if workspace_handle is None:
+                    continue
+                removed += _cleanup_uploads(
+                    workspace_handle, workspace, cutoff, active_ids,
+                )
+                _remove_workspace_if_empty(
+                    root_handle, workspace_handle, workspace,
+                )
+        except OSError as exc:
+            logger.warning(
+                "Multipart workspace cleanup deferred: error_type={}",
+                type(exc).__name__,
+            )
+    return removed
+
+
+def cleanup_legacy_multipart(
+    root: str, max_age_seconds: float, active_ids: set[tuple[str, str]],
+) -> int:
+    """Remove expired legacy workspace/upload directories below ``root``."""
     cutoff = time.time() - max_age_seconds
     removed = 0
     try:
         with _directory(root) as root_handle:
-            if root_handle is None:
-                return 0
-            for workspace in os.listdir(root_handle):
-                try:
-                    with _directory(workspace, root_handle) as workspace_handle:
-                        if workspace_handle is None:
-                            continue
-                        for upload in os.listdir(workspace_handle):
-                            if (workspace, upload) in active_ids:
-                                continue
-                            try:
-                                info = _child_stat(workspace_handle, upload)
-                                if not _ordinary_directory(info) or info.st_mtime >= cutoff:
-                                    continue
-                                removed += int(_remove_directory(workspace_handle, upload))
-                            except OSError as exc:
-                                logger.warning('Expired upload cleanup deferred: error_type={}', type(exc).__name__)
-                        if not os.listdir(workspace_handle):
-                            if isinstance(root_handle, int):
-                                os.rmdir(workspace, dir_fd=root_handle)
-                            else:
-                                os.rmdir(os.path.join(root_handle, workspace))
-                except OSError as exc:
-                    logger.warning('Multipart workspace cleanup deferred: error_type={}', type(exc).__name__)
+            removed = _cleanup_workspaces(root_handle, cutoff, active_ids)
     except OSError as exc:
-        logger.warning('Multipart root cleanup deferred: error_type={}', type(exc).__name__)
+        logger.warning(
+            "Multipart root cleanup deferred: error_type={}", type(exc).__name__,
+        )
     return removed

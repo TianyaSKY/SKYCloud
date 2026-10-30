@@ -7,6 +7,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from app.api.dependencies import get_current_user
+from app.infra.extensions import get_session_factory
+from app.features.file.multipart_service import SaveMultipartChunkParams
 from app.features.file import avatar_upload, router
 from app.infra.upload_adapter import FastAPIUploadAdapter
 
@@ -35,7 +38,9 @@ async def test_cancelled_multipart_request_drains_worker_before_form_close(monke
         for arg in args:
             if isinstance(arg, list):
                 adapters.extend(arg)
-        streams.extend(adapter._upload_file.file for adapter in adapters)
+            elif isinstance(arg, SaveMultipartChunkParams):
+                adapters.append(arg.chunk)
+        streams.extend(adapter.upload_file.file for adapter in adapters)
         entered.set()
         try:
             assert release.wait(5)
@@ -55,8 +60,8 @@ async def test_cancelled_multipart_request_drains_worker_before_form_close(monke
         monkeypatch.setattr(router.file_service, name, upload)
     app = FastAPI()
     app.include_router(router.router)
-    app.dependency_overrides[router.get_current_user] = lambda: SimpleNamespace(id=1)
-    app.dependency_overrides[router.get_session_factory] = lambda: Session
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_session_factory] = lambda: Session
     for route in router.router.routes:
         if hasattr(route, 'dependant'):
             for dependency in route.dependant.dependencies:

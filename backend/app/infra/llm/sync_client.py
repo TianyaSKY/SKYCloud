@@ -8,16 +8,19 @@ are synchronous and do not have an event-loop lifetime to manage.
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING, Any, Iterable, cast
-
-from openai import OpenAI
-
-if TYPE_CHECKING:
-    from openai.types.chat import ChatCompletionMessageParam
-
-from app.infra.llm.usage import safe_record as _safe_record
+from typing import TYPE_CHECKING
 
 from loguru import logger
+from openai import OpenAI
+
+from app.infra.llm.usage import TokenUsage
+from app.infra.llm.usage import safe_record as _safe_record
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from openai.types import CreateEmbeddingResponse
+    from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
 _client_cache: dict[tuple[str, str], OpenAI] = {}
 _client_lock = threading.Lock()
@@ -44,39 +47,38 @@ def close_sync_clients() -> None:
         try:
             client.close()
         except Exception as exc:
-            logger.warning("Failed to close sync LLM client (error_type={})", type(exc).__name__)
+            # Shutdown cleanup must attempt every client; the SDK transport can
+            # raise an unbounded set, so one failure cannot abort the loop.
+            logger.warning(
+                "Failed to close sync LLM client (error_type={})",
+                type(exc).__name__,
+            )
 
 
 def chat_completion(
     *,
-    messages: list[dict[str, Any]],
+    messages: Iterable[ChatCompletionMessageParam],
     config: dict[str, str],
     user_id: int = 0,
     action: str = "chat",
     query_summary: str | None = None,
-    **kwargs: Any,
-) -> Any:
+) -> ChatCompletion:
     """Create a synchronous chat completion and record returned usage."""
     client = _get_client(config["api"], config["key"])
     model = config.get("model", "")
-    response = client.chat.completions.create(
-        model=model,
-        # The SDK types messages as strict TypedDicts; callers build the same
-        # JSON payloads from dynamic text/vision content, so pin the shape here.
-        messages=cast("Iterable[ChatCompletionMessageParam]", messages),
-        **kwargs,
-    )
+    response = client.chat.completions.create(model=model, messages=messages)
 
-    usage = getattr(response, "usage", None)
-    if usage:
+    if response.usage:
         _safe_record(
-            user_id=user_id,
-            action=action,
-            model_name=model,
-            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-            total_tokens=getattr(usage, "total_tokens", 0) or 0,
-            query_summary=query_summary,
+            TokenUsage(
+                user_id=user_id,
+                action=action,
+                model_name=model,
+                prompt_tokens=response.usage.prompt_tokens or 0,
+                completion_tokens=response.usage.completion_tokens or 0,
+                total_tokens=response.usage.total_tokens or 0,
+                query_summary=query_summary,
+            ),
         )
     return response
 
@@ -96,44 +98,32 @@ def embed_texts(
 
     client = _get_client(config["api"], config["key"])
     model = config.get("model", "Qwen/Qwen3-Embedding-8B")
-    response = client.embeddings.create(model=model, input=texts)
+    response: CreateEmbeddingResponse = client.embeddings.create(
+        model=model,
+        input=texts,
+    )
     sorted_data = sorted(response.data, key=lambda item: item.index)
     vectors = [item.embedding[:1024] for item in sorted_data]
 
-    usage = getattr(response, "usage", None)
-    total_tokens = getattr(usage, "total_tokens", 0) if usage else 0
-    if total_tokens:
+    usage = response.usage
+    total_tokens = usage.total_tokens if usage else 0
+    if usage and total_tokens:
         _safe_record(
-            user_id=user_id,
-            action="embedding",
-            model_name=model,
-            prompt_tokens=(getattr(usage, "prompt_tokens", 0) or total_tokens),
-            completion_tokens=0,
-            total_tokens=total_tokens,
-            query_summary=query_summary,
+            TokenUsage(
+                user_id=user_id,
+                action="embedding",
+                model_name=model,
+                prompt_tokens=usage.prompt_tokens or total_tokens,
+                completion_tokens=0,
+                total_tokens=total_tokens,
+                query_summary=query_summary,
+            ),
         )
     return vectors
 
 
-def record_llm_usage(
-    *,
-    user_id: int,
-    action: str,
-    model_name: str | None = None,
-    prompt_tokens: int = 0,
-    completion_tokens: int = 0,
-    total_tokens: int = 0,
-    query_summary: str | None = None,
-) -> None:
+def record_llm_usage(*, usage: TokenUsage) -> None:
     """Record usage from synchronous LangChain worker flows."""
-    if total_tokens <= 0 and prompt_tokens <= 0:
+    if usage.total_tokens <= 0 and usage.prompt_tokens <= 0:
         return
-    _safe_record(
-        user_id=user_id,
-        action=action,
-        model_name=model_name,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        total_tokens=total_tokens,
-        query_summary=query_summary,
-    )
+    _safe_record(usage)

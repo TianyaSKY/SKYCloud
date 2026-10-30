@@ -45,7 +45,8 @@ def test_conversation_crud_and_empty_run(contract):
 def test_run_messages_cancel_handoff(contract,monkeypatch):
     client,db,user,workspace=contract
     cid=create(client)['id']
-    _,run,_=assistant.service.prepare_run(db,workspace,user.id,cid,'Question')
+    _,run,_=assistant.service.prepare_run(db,assistant.service.PrepareRunParams(
+        workspace=workspace,user_id=user.id,conversation_id=cid,query='Question'))
     payload=data(client.get(f'/assistant/runs/{run.id}'))
     assert payload['status']=='running' and payload['pending_permission'] is None
     assert data(client.get(f'/assistant/conversations/{cid}/active-run'))['id']==run.id
@@ -63,7 +64,8 @@ def test_run_messages_cancel_handoff(contract,monkeypatch):
 def test_permission_once_response(contract):
     client,db,user,workspace=contract
     cid=create(client,'expert')['id']
-    _,run,_=assistant.service.prepare_run(db,workspace,user.id,cid,'Operate')
+    _,run,_=assistant.service.prepare_run(db,assistant.service.PrepareRunParams(
+        workspace=workspace,user_id=user.id,conversation_id=cid,query='Operate'))
     run.status='waiting_permission';run.pending_permission_id='p1'
     run.metadata_dict={'pending_permission':{'permission_id':'p1','title':'Read file'}}
     db.commit()

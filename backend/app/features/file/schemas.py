@@ -1,40 +1,65 @@
-"""文件相关请求体：更新、批量删除、分片上传与预检。"""
+"""File request bodies, query filters and response models."""
 
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
+
 from app.features.folder.schemas import FolderResponse
 
 
 class FileUpdateRequest(BaseModel):
-    """文件元数据局部更新。"""
+    """Partial file metadata update."""
 
     name: str | None = Field(default=None, min_length=1, max_length=255)
     status: str | None = Field(default=None, max_length=50)
     parent_id: int | None = Field(default=None, ge=1)
 
 
+class FileListQuery(BaseModel):
+    """Directory browsing filters; bounds mirror the previous query arguments."""
+
+    parent_id: int | None = Field(default=None, ge=1)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=10, ge=1, le=100)
+    name: str | None = Field(default=None, max_length=255)
+    sort_by: str = Field(default="created_at", min_length=1, max_length=50)
+    order: str = Field(default="desc", pattern="^(asc|desc)$")
+
+
+class FileSearchQuery(BaseModel):
+    """Name/semantic search filters; ``type`` keeps its legacy query name."""
+
+    q: str = Field(default="", max_length=255)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=10, ge=1, le=100)
+    search_type: str = Field(
+        default="fuzzy", alias="type", pattern="^(fuzzy|semantic)$",
+    )
+
+
 class BatchDeleteItem(BaseModel):
-    """批量删除中的单项（文件或文件夹）。"""
+    """One file or folder referenced by a batch delete."""
 
     id: int = Field(ge=1)
     is_folder: bool = False
 
 
 class BatchDeleteRequest(BaseModel):
-    """批量删除列表，至少一项。"""
+    """Batch delete list holding at least one item."""
 
-    items: list[BatchDeleteItem] = Field(default_factory=list, min_length=1)
+    items: list[BatchDeleteItem] = Field(
+        default_factory=list[BatchDeleteItem], min_length=1,
+    )
 
 
 class RetryEmbeddingRequest(BaseModel):
-    """单文件重新入队索引。"""
+    """Single file re-queued for indexing."""
 
     file_id: int = Field(ge=1)
 
 
 class MultipartInitRequest(BaseModel):
-    """分片上传初始化；content_hash 用于秒传判断。"""
+    """Multipart session start; content_hash enables instant upload."""
 
     filename: str = Field(min_length=1, max_length=255)
     total_size: int = Field(gt=0)
@@ -46,13 +71,13 @@ class MultipartInitRequest(BaseModel):
 
 
 class MultipartCompleteRequest(BaseModel):
-    """合并分片并完成上传。"""
+    """Chunk assembly request."""
 
     upload_id: str = Field(min_length=1, max_length=128)
 
 
 class FilePreflightRequest(BaseModel):
-    """上传前预检；content_hash 必填以支持秒传。"""
+    """Upload preflight; content_hash is required to support instant upload."""
 
     filename: str = Field(min_length=1, max_length=255)
     total_size: int = Field(gt=0)
@@ -62,6 +87,8 @@ class FilePreflightRequest(BaseModel):
 
 
 class FileResponse(BaseModel):
+    """Public file metadata returned by every file endpoint."""
+
     id: int = Field(gt=0)
     name: str
     status: str | None
@@ -76,6 +103,8 @@ class FileResponse(BaseModel):
 
 
 class FilePageResponse(BaseModel):
+    """One page of files."""
+
     items: list[FileResponse]
     total: int = Field(ge=0)
     page: int = Field(ge=1)
@@ -83,29 +112,41 @@ class FilePageResponse(BaseModel):
 
 
 class DirectoryFilePageResponse(FilePageResponse):
+    """File page embedded in a directory listing."""
+
     pages: int = Field(ge=0)
 
 
 class DirectoryResponse(BaseModel):
+    """Directory listing with its subfolders and file page."""
+
     folders: list[FolderResponse]
     files: DirectoryFilePageResponse
 
 
 class PreflightMissResponse(BaseModel):
+    """Preflight result when no reusable object exists."""
+
     instant_upload: Literal[False]
     exists: Literal[False]
 
 
 class PreflightHitResponse(BaseModel):
+    """Preflight result when the hash is already stored."""
+
     instant_upload: Literal[True]
     exists: Literal[True]
     file: FileResponse
 
 
-PreflightResponse = Annotated[PreflightMissResponse | PreflightHitResponse, Field(discriminator='instant_upload')]
+PreflightResponse = Annotated[
+    PreflightMissResponse | PreflightHitResponse, Field(discriminator="instant_upload"),
+]
 
 
 class MultipartStatusResponse(BaseModel):
+    """Progress of an open multipart session."""
+
     upload_id: str = Field(min_length=1)
     chunk_size: int = Field(gt=0)
     total_chunks: int = Field(gt=0)
@@ -113,10 +154,14 @@ class MultipartStatusResponse(BaseModel):
 
 
 class MultipartPendingResponse(MultipartStatusResponse):
+    """Multipart session that still has to receive chunks."""
+
     instant_upload: Literal[False]
 
 
 class MultipartInstantResponse(BaseModel):
+    """Multipart start satisfied by an existing object."""
+
     upload_id: None
     chunk_size: int = Field(gt=0)
     total_chunks: int = Field(gt=0)
@@ -125,25 +170,36 @@ class MultipartInstantResponse(BaseModel):
     file: FileResponse
 
 
-MultipartInitResponse = Annotated[MultipartPendingResponse | MultipartInstantResponse, Field(discriminator='instant_upload')]
+MultipartInitResponse = Annotated[
+    MultipartPendingResponse | MultipartInstantResponse,
+    Field(discriminator="instant_upload"),
+]
 
 
 class MultipartChunkResponse(BaseModel):
+    """Result of storing one uploaded chunk."""
+
     upload_id: str = Field(min_length=1)
     chunk_index: int = Field(ge=0)
     uploaded_chunks: list[Annotated[int, Field(ge=0)]]
 
 
 class AvatarResponse(FileResponse):
+    """Stored avatar file plus its share URL."""
+
     avatar_url: str
     avatar: str
 
 
 class RebuildResponse(BaseModel):
+    """Number of files re-queued by a rebuild request."""
+
     count: int = Field(ge=0)
 
 
 class ProcessStatusResponse(BaseModel):
-    processing: int = Field(alias='处理中', ge=0)
-    success: int = Field(alias='成功', ge=0)
-    failed: int = Field(alias='失败', ge=0)
+    """Aggregated indexing status for the current workspace."""
+
+    processing: int = Field(alias="处理中", ge=0)
+    success: int = Field(alias="成功", ge=0)
+    failed: int = Field(alias="失败", ge=0)

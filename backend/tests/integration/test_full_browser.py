@@ -60,7 +60,7 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
     from app.infra import storage
     from app.features.file import service as upload_service
     from app.features.folder import change_log
-    monkeypatch.setattr(storage, '_storage_client', minio_storage)
+    monkeypatch.setattr(storage._holder, 'client', minio_storage)
     monkeypatch.setattr(upload_service, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
     monkeypatch.setattr(upload_service, 'MULTIPART_ROOT', str(tmp_path / 'parts'))
     monkeypatch.setattr(change_log, 'SessionLocal', factory)

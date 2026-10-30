@@ -1,24 +1,26 @@
-"""基于 Redis 的文件访问 Bloom 过滤器：在查库前快速否定无权/不存在请求。
+"""Redis-backed file access Bloom filter that rejects before touching SQL.
 
-假阳性安全（可能误判为存在，再走 DB）；构建时用分布式锁 + 临时 key rename 保证原子切换。
+False positives are safe: they fall through to the database. Rebuilds write a
+temporary key under a distributed lock, then rename both keys atomically.
 """
 
 import hashlib
 import os
 import time
 import uuid
-from typing import Iterable
+from collections.abc import Iterable
+
+from loguru import logger
+from sqlalchemy import select
 
 from app.infra.extensions import SessionLocal, redis_client
 from app.models.file import File
-
-from loguru import logger
 
 BLOOM_BITS_PER_ITEM = max(8, int(os.getenv("FILE_ACCESS_BLOOM_BITS_PER_ITEM", "12")))
 BLOOM_HASH_COUNT = max(2, int(os.getenv("FILE_ACCESS_BLOOM_HASH_COUNT", "7")))
 BLOOM_MIN_BITS = max(1024, int(os.getenv("FILE_ACCESS_BLOOM_MIN_BITS", "4096")))
 BLOOM_BUILD_LOCK_SECONDS = max(
-    5, int(os.getenv("FILE_ACCESS_BLOOM_BUILD_LOCK_SECONDS", "30"))
+    5, int(os.getenv("FILE_ACCESS_BLOOM_BUILD_LOCK_SECONDS", "30")),
 )
 
 
@@ -53,22 +55,24 @@ def _hash_positions(file_id: int, bitmap_size: int, hash_count: int) -> list[int
 def _iter_file_ids(user_id: int | None) -> Iterable[int]:
     session = SessionLocal()
     try:
-        query = session.query(File.id)
+        query = select(File.id)
         if user_id is not None:
-            query = query.filter(File.uploader_id == user_id)
-        return [int(file_id) for (file_id,) in query.all()]
+            query = query.where(File.uploader_id == user_id)
+        return list(session.scalars(query))
     finally:
         session.close()
 
 
 def _build_filter(user_id: int | None) -> bool:
-    """重建指定 scope 的 Bloom；抢不到锁则返回 False，由调用方降级为「可能存在」。"""
+    """Rebuild one scope; a lost lock returns False and callers fall back to SQL."""
     scope = _scope_name(user_id)
     token = uuid.uuid4().hex
     lock_key = _lock_key(user_id)
 
     try:
-        if not redis_client.set(lock_key, token, nx=True, ex=BLOOM_BUILD_LOCK_SECONDS):
+        if not redis_client.set(
+            lock_key, token, nx=True, ex=BLOOM_BUILD_LOCK_SECONDS,
+        ):
             return False
 
         file_ids = list(_iter_file_ids(user_id))
@@ -79,7 +83,9 @@ def _build_filter(user_id: int | None) -> bool:
         pipe = redis_client.pipeline()
         pipe.setbit(temp_bits_key, 0, 0)
         for file_id in file_ids:
-            for position in _hash_positions(file_id, bitmap_size, BLOOM_HASH_COUNT):
+            for position in _hash_positions(
+                file_id, bitmap_size, BLOOM_HASH_COUNT,
+            ):
                 pipe.setbit(temp_bits_key, position, 1)
         pipe.hset(
             temp_meta_key,
@@ -93,13 +99,13 @@ def _build_filter(user_id: int | None) -> bool:
         )
         pipe.execute()
 
-        # 先写临时 key 再 rename，避免重建过程中读到半成品
+        # Write the temporary keys first, then rename, so readers never see a
+        # half-built bitmap.
         pipe = redis_client.pipeline()
         pipe.delete(_bits_key(user_id), _meta_key(user_id))
         pipe.rename(temp_bits_key, _bits_key(user_id))
         pipe.rename(temp_meta_key, _meta_key(user_id))
         pipe.execute()
-        return True
     except Exception as exc:
         logger.warning("Failed to build file access bloom for {}: {}", scope, exc)
         return False
@@ -109,6 +115,7 @@ def _build_filter(user_id: int | None) -> bool:
                 redis_client.delete(lock_key)
         except Exception:
             logger.debug("Failed to release bloom build lock for {}", scope)
+    return True
 
 
 def _ensure_filter_ready(user_id: int | None) -> bool:
@@ -118,12 +125,14 @@ def _ensure_filter_ready(user_id: int | None) -> bool:
             return True
         return _build_filter(user_id)
     except Exception as exc:
-        logger.warning("Failed to prepare bloom filter for {}: {}", _scope_name(user_id), exc)
+        logger.warning(
+            "Failed to prepare bloom filter for {}: {}", _scope_name(user_id), exc,
+        )
         return False
 
 
 def _maybe_contains(user_id: int | None, file_id: int) -> bool:
-    # 过滤器不可用时返回 True，走完整 DB 鉴权，避免误拒
+    # An unavailable filter answers True so the database still authorizes.
     if not _ensure_filter_ready(user_id):
         return True
 
@@ -142,12 +151,14 @@ def _maybe_contains(user_id: int | None, file_id: int) -> bool:
         bits = pipe.execute()
         return all(bit == 1 for bit in bits)
     except Exception as exc:
-        logger.warning("Failed bloom membership check for {}: {}", _scope_name(user_id), exc)
+        logger.warning(
+            "Failed bloom membership check for {}: {}", _scope_name(user_id), exc,
+        )
         return True
 
 
 def add_file(file_id: int, user_id: int | None) -> None:
-    """增量写入；同时更新用户 scope 与全局 scope（若 user_id 非空）。"""
+    """Add one id to the user scope and to the global scope when present."""
     scopes: list[int | None] = [None]
     if user_id is not None:
         scopes.append(user_id)
@@ -169,7 +180,7 @@ def add_file(file_id: int, user_id: int | None) -> None:
             pipe.execute()
         except Exception as exc:
             logger.warning(
-                "Failed to add file %s into bloom scope %s: %s",
+                "Failed to add file {} into bloom scope {}: {}",
                 file_id,
                 _scope_name(scope_user_id),
                 exc,
@@ -177,10 +188,10 @@ def add_file(file_id: int, user_id: int | None) -> None:
 
 
 def maybe_user_can_access_file(user_id: int, file_id: int) -> bool:
-    """快速判断用户是否「可能」拥有该文件；False 可安全拒绝。"""
+    """Return whether the user may own the file; False is safe to reject."""
     return _maybe_contains(user_id, file_id)
 
 
 def maybe_file_exists(file_id: int) -> bool:
-    """快速判断文件是否「可能」存在；False 可安全当 404。"""
+    """Return whether the file may exist; False is safe to answer 404."""
     return _maybe_contains(None, file_id)

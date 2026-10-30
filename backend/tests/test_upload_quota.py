@@ -20,15 +20,15 @@ def adapter(data):
 def test_capacity_includes_pending_and_stored_files(session, test_workspace, test_user, monkeypatch):
     uid, wid = test_user.id, test_workspace.id
     monkeypatch.setattr(quota, 'USER_CAPACITY', 10)
-    reservation = quota.reserve(session, wid, uid, 6)
+    reservation = quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=6))
     with pytest.raises(BusinessRuleError, match='capacity'):
-        quota.reserve(session, wid, uid, 5)
-    quota.cancel(session, wid, uid, reservation.id)
+        quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=5))
+    quota.cancel(session, quota.CancelParams(workspace_id=wid, user_id=uid, reservation_id=reservation.id))
     record = File(name='x', file_path='x', file_size=7, workspace_id=wid, uploader_id=uid)
     session.add(record)
     session.commit()
     with pytest.raises(BusinessRuleError, match='capacity'):
-        quota.reserve(session, wid, uid, 4)
+        quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=4))
 
 
 def test_workspace_capacity_shared_between_members(session, test_workspace, test_user, monkeypatch):
@@ -37,18 +37,18 @@ def test_workspace_capacity_shared_between_members(session, test_workspace, test
     other = User(username='other-quota', password_hash='x')
     session.add(other)
     session.commit()
-    quota.reserve(session, wid, uid, 6)
+    quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=6))
     with pytest.raises(BusinessRuleError, match='capacity'):
-        quota.reserve(session, wid, other.id, 5)
+        quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=other.id, size=5))
 
 
 def test_abort_does_not_refund_daily_admission(session, test_workspace, test_user, monkeypatch):
     monkeypatch.setattr(quota, 'DAILY_ATTEMPTS', 1)
     uid, wid = test_user.id, test_workspace.id
-    reservation_id = quota.reserve(session, wid, uid, 5).id
-    quota.cancel(session, wid, uid, reservation_id)
+    reservation_id = quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=5)).id
+    quota.cancel(session, quota.CancelParams(workspace_id=wid, user_id=uid, reservation_id=reservation_id))
     with pytest.raises(BusinessRuleError, match='Daily'):
-        quota.reserve(session, wid, uid, 1)
+        quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=1))
     usage = session.get(UploadDailyUsage, (uid, quota.utc_now().date()))
     assert (usage.attempts, usage.bytes) == (1, 5)
 
@@ -57,18 +57,18 @@ def test_daily_bytes_and_concurrency(session, test_workspace, test_user, monkeyp
     uid, wid = test_user.id, test_workspace.id
     monkeypatch.setattr(quota, 'DAILY_BYTES', 10)
     monkeypatch.setattr(quota, 'USER_CONCURRENCY', 1)
-    reservation_id = quota.reserve(session, wid, uid, 7).id
+    reservation_id = quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=7)).id
     with pytest.raises(ConflictError, match='active'):
-        quota.reserve(session, wid, uid, 1)
-    quota.cancel(session, wid, uid, reservation_id)
+        quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=1))
+    quota.cancel(session, quota.CancelParams(workspace_id=wid, user_id=uid, reservation_id=reservation_id))
     with pytest.raises(BusinessRuleError, match='Daily'):
-        quota.reserve(session, wid, uid, 4)
+        quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=4))
 
 
 def test_expiration_reclaims_capacity_and_disk(session, test_workspace, test_user, tmp_path, monkeypatch):
     uid, wid = test_user.id, test_workspace.id
     monkeypatch.setattr(quota, 'USER_CAPACITY', 10)
-    row = quota.reserve(session, wid, uid, 10, kind='multipart')
+    row = quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=10, kind='multipart'))
     rid = row.id
     row.expires_at = quota.utc_now() - timedelta(seconds=1)
     session.commit()
@@ -80,7 +80,7 @@ def test_expiration_reclaims_capacity_and_disk(session, test_workspace, test_use
     assert quota.cleanup(session, str(tmp_path)) == 1
     assert not directory.exists()
     assert session.get(UploadReservation, rid).status == 'expired'
-    assert quota.reserve(session, wid, uid, 10).size == 10
+    assert quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=10)).size == 10
 
 
 def test_multipart_ownership_resume_and_once_only_completion(session, test_workspace, test_user, tmp_path, monkeypatch):
@@ -102,13 +102,13 @@ def test_multipart_ownership_resume_and_once_only_completion(session, test_works
     for operation in [
         lambda: service.init_multipart_upload(session, wid, oid, {**data, 'upload_id': rid}),
         lambda: service.get_multipart_upload_status(session, wid, oid, rid),
-        lambda: service.save_multipart_chunk(session, oid, wid, rid, 0, adapter(b'12345')),
+        lambda: service.save_multipart_chunk(session, service.SaveMultipartChunkParams(uploader_id=oid, workspace_id=wid, upload_id=rid, chunk_index=0, chunk=adapter(b'12345'))),
         lambda: service.complete_multipart_upload(session, wid, oid, rid),
         lambda: service.abort_multipart_upload(session, wid, oid, rid),
     ]:
         with pytest.raises(PermissionDeniedError):
             operation()
-    service.save_multipart_chunk(session, uid, wid, rid, 0, adapter(b'12345'))
+    service.save_multipart_chunk(session, service.SaveMultipartChunkParams(uploader_id=uid, workspace_id=wid, upload_id=rid, chunk_index=0, chunk=adapter(b'12345')))
     file = service.complete_multipart_upload(session, wid, uid, rid)
     assert file.file_size == 5
     assert session.get(UploadReservation, rid).status == 'completed'
@@ -135,7 +135,7 @@ def test_hash_mismatch_releases_reservation_without_stored_object(session, test_
     monkeypatch.setattr(service, 'MULTIPART_ROOT', str(tmp_path / 'parts'))
     monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
     rid = service.init_multipart_upload(session, wid, uid, {'filename': 'x', 'total_size': 5, 'content_hash': 'a' * 64})['upload_id']
-    service.save_multipart_chunk(session, uid, wid, rid, 0, adapter(b'12345'))
+    service.save_multipart_chunk(session, service.SaveMultipartChunkParams(uploader_id=uid, workspace_id=wid, upload_id=rid, chunk_index=0, chunk=adapter(b'12345')))
     with pytest.raises(BusinessRuleError, match='hash'):
         service.complete_multipart_upload(session, wid, uid, rid)
     assert session.get(UploadReservation, rid).status == 'cancelled'
@@ -153,7 +153,7 @@ def test_batch_capacity_failure_cleans_objects_and_releases_all_reservations(ses
     assert session.query(File).count() == 0
     assert session.query(UploadReservation).filter_by(status='active').count() == 0
     assert list(tmp_path.iterdir()) == []
-    assert quota.reserve(session, wid, uid, 10).size == 10
+    assert quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=10)).size == 10
 
 
 def test_daily_allowance_rolls_at_utc_midnight(session, test_workspace, test_user, monkeypatch):
@@ -161,10 +161,10 @@ def test_daily_allowance_rolls_at_utc_midnight(session, test_workspace, test_use
     uid, wid = test_user.id, test_workspace.id
     monkeypatch.setattr(quota, 'DAILY_ATTEMPTS', 1)
     monkeypatch.setattr(quota, 'utc_now', lambda: datetime(2026, 1, 1, 23, 59))
-    rid = quota.reserve(session, wid, uid, 5).id
-    quota.cancel(session, wid, uid, rid)
+    rid = quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=5)).id
+    quota.cancel(session, quota.CancelParams(workspace_id=wid, user_id=uid, reservation_id=rid))
     monkeypatch.setattr(quota, 'utc_now', lambda: datetime(2026, 1, 2, 0, 1))
-    quota.reserve(session, wid, uid, 5)
+    quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=5))
     assert session.query(UploadDailyUsage).count() == 2
     assert sum(row.attempts for row in session.query(UploadDailyUsage).all()) == 2
 
@@ -172,9 +172,9 @@ def test_daily_allowance_rolls_at_utc_midnight(session, test_workspace, test_use
 def test_object_cleanup_is_retryable_and_preserves_referenced_files(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage):
     uid, wid = test_user.id, test_workspace.id
     mock_object_storage.objects['orphan-object'] = b'orphan'
-    row = quota.reserve(session, wid, uid, 6, details={'object_name': 'orphan-object'})
+    row = quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=6, details={'object_name': 'orphan-object'}))
     rid = row.id
-    quota.cancel(session, wid, uid, rid)
+    quota.cancel(session, quota.CancelParams(workspace_id=wid, user_id=uid, reservation_id=rid))
     broken = MagicMock()
     broken.delete_file.side_effect = RuntimeError('storage unavailable')
     quota.cleanup(session, str(tmp_path), storage_factory=lambda: broken)
@@ -184,7 +184,7 @@ def test_object_cleanup_is_retryable_and_preserves_referenced_files(session, tes
     assert not mock_object_storage.file_exists('orphan-object')
     assert session.get(UploadReservation, rid).cleaned_at is not None
     mock_object_storage.objects['referenced-object'] = b'keep'
-    rid = quota.reserve(session, wid, uid, 4, details={'object_name': 'referenced-object'}).id
+    rid = quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=4, details={'object_name': 'referenced-object'})).id
     quota.consume(session, wid, uid, rid, 4)
     session.add(File(name='keep', file_path='referenced-object', file_size=4, workspace_id=wid, uploader_id=uid))
     session.commit()
@@ -196,7 +196,7 @@ def test_expired_reservation_of_live_object_writer_is_not_cleaned(session, test_
     from app.infra.upload_staging import StagedUpload
     uid, wid = test_user.id, test_workspace.id
     stage = StagedUpload(tmp_path)
-    rid = quota.reserve(session, wid, uid, 5, details={'object_name': 'in-flight', 'stage_id': stage.directory.name}).id
+    rid = quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=5, details={'object_name': 'in-flight', 'stage_id': stage.directory.name})).id
     row = session.get(UploadReservation, rid)
     row.expires_at = quota.utc_now() - timedelta(seconds=1)
     session.commit()
@@ -212,12 +212,12 @@ def test_expired_reservation_of_live_object_writer_is_not_cleaned(session, test_
 def test_uncertain_objects_keep_capacity_reserved_until_cleanup_succeeds(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage):
     uid, wid = test_user.id, test_workspace.id
     monkeypatch.setattr(quota, 'USER_CAPACITY', 10)
-    rid = quota.reserve(session, wid, uid, 10, details={'object_name': 'uncertain'}).id
-    quota.cancel(session, wid, uid, rid)
+    rid = quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=10, details={'object_name': 'uncertain'})).id
+    quota.cancel(session, quota.CancelParams(workspace_id=wid, user_id=uid, reservation_id=rid))
     with pytest.raises(BusinessRuleError, match='capacity'):
-        quota.reserve(session, wid, uid, 1)
+        quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=1))
     quota.cleanup(session, str(tmp_path), storage_factory=lambda: mock_object_storage)
-    assert quota.reserve(session, wid, uid, 10).size == 10
+    assert quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=10)).size == 10
 
 
 def test_lost_upload_success_response_still_deletes_object(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage):
@@ -254,9 +254,9 @@ def test_workspace_concurrency_applies_across_users(session, test_workspace, tes
     other = User(username='concurrent-member', password_hash='x')
     session.add(other)
     session.commit()
-    quota.reserve(session, wid, uid, 1)
+    quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=1))
     with pytest.raises(ConflictError, match='active'):
-        quota.reserve(session, wid, other.id, 1)
+        quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=other.id, size=1))
 
 
 @pytest.mark.parametrize('failure_point', ['filename', 'staging', 'record'])
@@ -291,12 +291,12 @@ def test_batch_preparation_failure_compensates_previous_uploads(session, test_wo
     if delete_failure:
         assert len(mock_object_storage.objects) == expected_attempts
         with pytest.raises(BusinessRuleError, match='capacity'):
-            quota.reserve(session, wid, uid, 10)
+            quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=10))
         session.rollback()
         monkeypatch.setattr(mock_object_storage, 'delete_file', delete)
         quota.cleanup(session, str(tmp_path / 'parts'), upload_root=str(tmp_path), storage_factory=lambda:mock_object_storage)
     assert mock_object_storage.objects == {}
-    assert quota.reserve(session, wid, uid, 10).size == 10
+    assert quota.reserve(session, quota.ReserveParams(workspace_id=wid, user_id=uid, size=10)).size == 10
 
 
 @pytest.mark.parametrize('kind', ['single', 'batch', 'multipart'])
@@ -330,7 +330,7 @@ def test_upload_commit_ack_failure_preserves_committed_objects(session, test_wor
             service.batch_create_files(session, [adapter(b'12345'), adapter(b'67890')], {'workspace_id':wid,'uploader_id':uid})
         else:
             rid = service.init_multipart_upload(session, wid, uid, {'filename':'x','total_size':5})['upload_id']
-            service.save_multipart_chunk(session, uid, wid, rid, 0, adapter(b'12345'))
+            service.save_multipart_chunk(session, service.SaveMultipartChunkParams(uploader_id=uid, workspace_id=wid, upload_id=rid, chunk_index=0, chunk=adapter(b'12345')))
             service.complete_multipart_upload(session, wid, uid, rid)
     expected = 2 if kind == 'batch' else 1
     session.expire_all()

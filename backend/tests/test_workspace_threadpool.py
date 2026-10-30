@@ -16,7 +16,10 @@ from sqlalchemy.orm import sessionmaker
 
 
 @pytest.mark.parametrize('boundary', ['create', 'workspace', 'role', 'profile', 'mcp', 'assistant_list', 'assistant_cancel'])
-async def test_slow_sync_boundary_allows_concurrent_http_request(monkeypatch, boundary):
+async def test_slow_sync_boundary_allows_concurrent_http_request(monkeypatch, session, boundary):
+    factory = sessionmaker(
+        bind=session.get_bind(), join_transaction_mode='create_savepoint',
+    )
     loop_thread = threading.get_ident()
     entered, release = threading.Event(), threading.Event()
     user = SimpleNamespace(id=1)
@@ -80,17 +83,19 @@ async def test_slow_sync_boundary_allows_concurrent_http_request(monkeypatch, bo
         from fastapi.security import HTTPAuthorizationCredentials
         from app.infra.extensions import SECRET_KEY
         monkeypatch.setattr('app.mcp.token_service.get_active_mcp_token', slow(object()))
-        monkeypatch.setattr(user_service, '_get_user_data', lambda *args: {'id':1})
+        monkeypatch.setattr(user_service, 'get_user_data', lambda *args: {'id':1})
         monkeypatch.setattr('app.features.auth.account_repository.current_role', lambda *args: 'common')
         credentials = HTTPAuthorizationCredentials(scheme='Bearer',
             credentials=jwt.encode({'sub': '1', 'type': 'mcp'}, SECRET_KEY, algorithm='HS256'))
         @app.get('/slow')
         async def read_mcp_user():
-            value = await get_current_user(credentials, session)
+            value = await get_current_user(
+                credentials=credentials, session_factory=factory,
+            )
             return {'id': value.id}
         method, path, kwargs = 'GET', '/slow', {}
     else:
-        monkeypatch.setattr(user_service, '_get_user_data', slow({'id': 1}))
+        monkeypatch.setattr(user_service, 'get_user_data', slow({'id': 1}))
         monkeypatch.setattr(user_service.User, 'from_cache', lambda data: user)
         @app.get('/slow')
         async def read_profile():

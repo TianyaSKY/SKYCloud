@@ -2,7 +2,7 @@
 import asyncio
 import pytest
 from app.features.assistant import stream_response
-from app.features.workspace import ui_stream
+from app.infra import http_stream as ui_stream
 from app.features.chat import stream_authorization
 from app.features.runtime_llm import router
 
@@ -33,7 +33,7 @@ async def test_cleanup_cancellation_ignores_handled_caller_exception(monkeypatch
         from starlette.requests import Request
         from app.features.workspace import ui_gateway,ui_tickets
         def authorize(*args):
-            return {'expires_at':time.time()+60,'container_id':'a'*64,'origin':'http://runtime.test'}
+            return {'expires_at':time.time()+60,'container_id':'a'*64,'origin':'http://runtime.test','user_id':1}
         monkeypatch.setattr(ui_gateway,'authenticate_owned',authorize)
         monkeypatch.setattr(ui_gateway,'reauthenticate',authorize)
         real_client=httpx.AsyncClient
@@ -50,7 +50,7 @@ async def test_cleanup_cancellation_ignores_handled_caller_exception(monkeypatch
             await asyncio.Event().wait()
         request=Request({'type':'http','method':'GET','path':'/runtime-ui/event','query_string':b'',
                          'headers':[(b'host',b'runtime.test'),(b'cookie',(ui_tickets.COOKIE+'=opaque').encode())]},read_request)
-        response=await ui_gateway.relay('event',request,None)
+        response=await ui_gateway.relay(path='event',request=request,session_factory=None)
     async def caller():
         try:raise ValueError('already-handled-caller-error')
         except ValueError:

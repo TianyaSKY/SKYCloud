@@ -1,37 +1,48 @@
-"""用户 MCP Token 生命周期：保证「有且只有一个」有效 Token，并支持鉴权校验与旧接口兼容。"""
+"""用户 MCP Token 生命周期: 保证「有且只有一个」有效 Token, 支持鉴权校验与旧接口兼容."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy.orm import Session
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.exceptions import ServiceOperationError
+from app.exceptions import ResourceNotFoundError, ServiceOperationError
+from app.features.auth import service as auth_service
 from app.infra.datetime_utils import utc_now
 from app.models.mcp_token import McpToken
+from app.models.user import User
+
+_TOKEN_TTL_DAYS = 365
+_GENERATION_FAILED_MESSAGE = "Failed to generate MCP token"
+_USER_NOT_FOUND_MESSAGE = "User not found"
 
 
 def _issue_jwt(user_id: int, expires_at: datetime) -> str:
-    from app.features.auth.service import generate_mcp_token
-
-    token = generate_mcp_token(user_id, expires_at)
+    token = auth_service.generate_mcp_token(user_id, expires_at)
     if not token:
-        raise ServiceOperationError("Failed to generate MCP token")
+        raise ServiceOperationError(_GENERATION_FAILED_MESSAGE)
     return token
 
 
-def _revoke_all_active(session: Session, user_id: int) -> None:
-    """撤销用户所有未撤销的 Token，保证「有且只有一个」。"""
+def revoke_all_active(session: Session, user_id: int) -> None:
+    """撤销用户所有未撤销的 Token, 保证「有且只有一个」."""
     now = utc_now()
     (
         session.query(McpToken)
-        .filter(McpToken.user_id == user_id, McpToken.revoked_at.is_(None))
+        .filter(
+            McpToken.user_id == user_id,
+            McpToken.revoked_at.is_(None),
+        )
         .update({McpToken.revoked_at: now}, synchronize_session=False)
     )
 
 
 def _create_token_record(
-    session: Session, user_id: int, token: str, expires_at: datetime, name: str = "MCP Token"
+    session: Session,
+    user_id: int,
+    token: str,
+    expires_at: datetime,
+    name: str = "MCP Token",
 ) -> McpToken:
     record = McpToken(
         user_id=user_id,
@@ -45,7 +56,7 @@ def _create_token_record(
 
 
 def get_active_record(session: Session, user_id: int) -> McpToken | None:
-    """返回用户当前有效的 MCP Token（未撤销且未过期）；历史多条时只保留最新。"""
+    """返回用户当前有效的 MCP Token (未撤销且未过期); 历史多条时只保留最新."""
     now = utc_now()
     records = (
         session.query(McpToken)
@@ -59,7 +70,7 @@ def get_active_record(session: Session, user_id: int) -> McpToken | None:
     )
     if not records:
         return None
-    # 历史多 Token：只保留最新一条，其余撤销
+    # 历史多 Token: 只保留最新一条, 其余撤销
     active = records[0]
     if len(records) > 1:
         for extra in records[1:]:
@@ -68,7 +79,10 @@ def get_active_record(session: Session, user_id: int) -> McpToken | None:
     return active
 
 
-def ensure_user_mcp_token(session: Session, user_id: int) -> tuple[McpToken, str | None]:
+def ensure_user_mcp_token(
+    session: Session,
+    user_id: int,
+) -> tuple[McpToken, str | None]:
     """Compatibility issuance helper; existing credentials cannot be recovered."""
     active = get_active_record(session, user_id)
     if active:
@@ -79,16 +93,20 @@ def ensure_user_mcp_token(session: Session, user_id: int) -> tuple[McpToken, str
 
 
 def refresh_user_mcp_token(session: Session, user_id: int) -> tuple[McpToken, str]:
-    """撤销旧 Token 并签发唯一新 Token。"""
-    from app.models.user import User
-    from app.exceptions import ResourceNotFoundError
-    if session.query(User.id).filter(User.id == user_id).with_for_update().one_or_none() is None:
-        raise ResourceNotFoundError("User not found")
-    jwt_expires = datetime.now(timezone.utc) + timedelta(days=365)
-    db_expires = utc_now() + timedelta(days=365)
+    """撤销旧 Token 并签发唯一新 Token."""
+    locked = (
+        session.query(User.id)
+        .filter(User.id == user_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if locked is None:
+        raise ResourceNotFoundError(_USER_NOT_FOUND_MESSAGE)
+    jwt_expires = datetime.now(UTC) + timedelta(days=_TOKEN_TTL_DAYS)
+    db_expires = utc_now() + timedelta(days=_TOKEN_TTL_DAYS)
     token = _issue_jwt(user_id, jwt_expires)
 
-    _revoke_all_active(session, user_id)
+    revoke_all_active(session, user_id)
     record = _create_token_record(session, user_id, token, db_expires)
     session.commit()
     return record, token
@@ -100,23 +118,28 @@ def get_user_mcp_token_payload(session: Session, user_id: int) -> dict[str, Any]
     return {
         "token": record.to_dict() if record else None,
         "user_id": user_id,
-        "expires_in_days": 365,
+        "expires_in_days": _TOKEN_TTL_DAYS,
         "usage": "Set as Authorization header: Bearer <mcp_token>",
     }
 
 
 def is_active_http_token(session: Session, token: str, user_id: int) -> bool:
     """Read-only continued HTTP authorization, bypassing ORM identity state."""
-    return session.scalar(select(McpToken.id).where(
-        McpToken.user_id == user_id,
-        McpToken.token_hash == McpToken.hash_token(token),
-        McpToken.revoked_at.is_(None),
-        McpToken.expires_at > utc_now(),
-    )) is not None
+    return (
+        session.scalar(
+            select(McpToken.id).where(
+                McpToken.user_id == user_id,
+                McpToken.token_hash == McpToken.hash_token(token),
+                McpToken.revoked_at.is_(None),
+                McpToken.expires_at > utc_now(),
+            ),
+        )
+        is not None
+    )
 
 
 def get_active_mcp_token(session: Session, token: str) -> McpToken | None:
-    """按完整 JWT 校验是否为有效 MCP Token（鉴权用）；命中则更新 last_used_at。"""
+    """按完整 JWT 校验是否为有效 MCP Token (鉴权用); 命中则更新 last_used_at."""
     token_record = (
         session.query(McpToken)
         .filter(McpToken.token_hash == McpToken.hash_token(token))
@@ -130,7 +153,7 @@ def get_active_mcp_token(session: Session, token: str) -> McpToken | None:
 
 
 # ---------------------------------------------------------------------------
-# 兼容旧调用（工作区 / 历史接口）
+# 旧接口兼容 - 工作区与历史调用
 # ---------------------------------------------------------------------------
 
 
@@ -141,10 +164,14 @@ def create_mcp_token(
     expires_at: datetime,
     name: str | None,
 ) -> McpToken:
-    """兼容旧签名：创建 Token 前先撤销用户其它有效 Token。"""
-    _revoke_all_active(session, user_id)
+    """兼容旧签名: 创建 Token 前先撤销用户其它有效 Token."""
+    revoke_all_active(session, user_id)
     record = _create_token_record(
-        session, user_id, token, expires_at, name or "MCP Token"
+        session,
+        user_id,
+        token,
+        expires_at,
+        name or "MCP Token",
     )
     session.commit()
     return record

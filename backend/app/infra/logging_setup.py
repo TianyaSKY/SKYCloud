@@ -1,19 +1,25 @@
-"""集中式 Loguru 配置：API / worker / MCP 三个进程共用。
+"""集中式 Loguru 配置: API / worker / MCP 三个进程共用.
 
-标准库 logging 记录（uvicorn、sqlalchemy、httpx 等第三方库）经 InterceptHandler
-转发进 Loguru，实现全站统一输出。"""
+标准库 logging 记录(uvicorn、sqlalchemy、httpx 等第三方库)经 InterceptHandler
+转发进 Loguru, 实现全站统一输出.
+"""
+
 import logging
 import os
 import sys
-from types import FrameType
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
+if TYPE_CHECKING:
+    from types import FrameType
+
 
 class InterceptHandler(logging.Handler):
-    """把标准库 logging 记录转发到 Loguru。"""
+    """把标准库 logging 记录转发到 Loguru."""
 
     def emit(self, record: logging.LogRecord) -> None:
+        """Forward one record, redacting exception messages and traceback chains."""
         level: str | int
         try:
             level = logger.level(record.levelname).name
@@ -27,19 +33,26 @@ class InterceptHandler(logging.Handler):
         if record.exc_info and record.exc_info[1] is not None:
             # Library traceback chains can contain SQL binds, provider bodies
             # and request data, even when diagnose/backtrace are disabled.
-            logger.opt(depth=depth).log(level, "Library failure in {} (error_type={})",
-                                        record.name, type(record.exc_info[1]).__name__)
+            logger.opt(depth=depth).log(
+                level,
+                "Library failure in {} (error_type={})",
+                record.name,
+                type(record.exc_info[1]).__name__,
+            )
         else:
             logger.opt(depth=depth).log(level, record.getMessage())
 
 
 def setup_logging() -> None:
-    """幂等：移除默认 handler，装 stderr handler，并把 stdlib 日志路由到 Loguru。"""
+    """幂等: 移除默认 handler, 装 stderr handler, 并把 stdlib 日志路由到 Loguru."""
     logger.remove()
     logger.add(
         sys.stderr,
         level=os.getenv("LOG_LEVEL", "INFO"),
-        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} - {message}",
+        format=(
+            "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | "
+            "{name}:{function}:{line} - {message}"
+        ),
         enqueue=True,
         backtrace=False,
         diagnose=False,

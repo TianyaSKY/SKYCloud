@@ -1,5 +1,7 @@
 """Failure boundaries that must preserve unacknowledged deliveries."""
 from concurrent.futures import Future
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pika
@@ -7,6 +9,7 @@ import pytest
 
 from app.infra import task_queue, worker_runtime
 from app.infra.indexing import handler
+from tests.test_llm_safe_diagnostics import PRIVATE, assert_safe, logs
 
 
 def test_failed_parking_does_not_ack_until_confirmed(monkeypatch):
@@ -94,3 +97,100 @@ def test_invalid_utf8_is_parked_before_dispatch(monkeypatch):
     dispatch.assert_not_called()
     consumer.park_failed.assert_called_once()
     assert isinstance(consumer.park_failed.call_args.args[1], UnicodeDecodeError)
+
+
+def test_scheduler_failure_preserves_later_actions_and_next_tick(monkeypatch, logs):
+    events = []
+    file_tasks = [11]
+    organize_tasks = [21, 22]
+    delivered = []
+    attempts = 0
+    ticks = 0
+
+    class StopScheduler(BaseException):
+        pass
+
+    def deliver_files():
+        nonlocal attempts
+        attempts += 1
+        events.append("file_attempt")
+        if attempts == 1:
+            raise RuntimeError(PRIVATE)
+        delivered.append(("file", file_tasks.pop(0)))
+
+    def deliver_organize():
+        events.append("organize_delivery")
+        delivered.append(("organize", organize_tasks.pop(0)))
+
+    def maintenance(name):
+        def action():
+            events.append(name)
+        return action
+
+    @contextmanager
+    def session_factory():
+        session = object()
+        events.append("session_open")
+        try:
+            yield session
+        finally:
+            events.append("session_closed")
+
+    def cleanup_uploads(*, max_age_hours, session):
+        assert max_age_hours == 24
+        assert session is not None
+        events.append("uploads_cleaned")
+        return 1
+
+    def advance_tick(seconds):
+        nonlocal ticks
+        assert seconds == 1
+        ticks += 1
+        events.append("tick")
+        if ticks == 2:
+            raise StopScheduler
+
+    monkeypatch.setattr(worker_runtime, "deliver_pending_file_tasks", deliver_files)
+    monkeypatch.setattr(worker_runtime, "deliver_pending_organize_tasks", deliver_organize)
+    for name in (
+        "delete_pending_objects",
+        "delete_pending_containers",
+        "retire_cancelled_operations",
+        "recover_runtime_operations",
+        "recover_abandoned_runs",
+        "abort_pending_sessions",
+    ):
+        monkeypatch.setattr(worker_runtime, name, maintenance(name))
+    monkeypatch.setattr(worker_runtime, "SessionLocal", session_factory)
+    monkeypatch.setattr(worker_runtime, "cleanup_expired_uploads", cleanup_uploads)
+    monkeypatch.setattr(
+        worker_runtime,
+        "time",
+        SimpleNamespace(monotonic=lambda: 0.0, sleep=advance_tick),
+    )
+
+    with pytest.raises(StopScheduler):
+        worker_runtime.run_scheduler()
+
+    maintenance_events = [
+        "file_attempt",
+        "organize_delivery",
+        "delete_pending_objects",
+        "delete_pending_containers",
+        "retire_cancelled_operations",
+        "recover_runtime_operations",
+        "recover_abandoned_runs",
+        "abort_pending_sessions",
+    ]
+    assert events == (
+        maintenance_events
+        + ["session_open", "uploads_cleaned", "session_closed", "tick"]
+        + maintenance_events
+        + ["tick"]
+    )
+    assert delivered == [("organize", 21), ("file", 11), ("organize", 22)]
+    assert file_tasks == organize_tasks == []
+    assert_safe(
+        logs,
+        "Error delivering pending file tasks (error_type=RuntimeError)",
+    )

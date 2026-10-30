@@ -5,6 +5,7 @@ import sys
 import time
 
 from app.infra.upload_staging import StagedUpload, cleanup_staging
+from tests.test_llm_safe_diagnostics import PRIVATE, assert_safe, logs
 
 
 def test_live_old_staging_is_never_cleaned(tmp_path):
@@ -84,3 +85,47 @@ def test_directory_cleanup_fault_still_closes_real_handle(tmp_path,monkeypatch):
     assert stage.handle.closed
     retry=StagedUpload(tmp_path,stage_id='b'*32)
     retry.close()
+
+
+def test_constructor_preserves_initialization_failure_when_handle_close_fails(
+    tmp_path, monkeypatch, logs,
+):
+    import pytest
+    from app.infra import upload_staging
+
+    original = OSError(PRIVATE)
+    fdopen = os.fdopen
+    fstat = os.fstat
+    handles = []
+    lease_fds = set()
+
+    def open_with_failing_close(fd, *args, **kwargs):
+        handle = fdopen(fd, *args, **kwargs)
+        handles.append(handle)
+        lease_fds.add(fd)
+        close = handle.close
+
+        def fail_close():
+            close()
+            raise RuntimeError(PRIVATE)
+
+        patch.setattr(handle, "close", fail_close)
+        return handle
+
+    def fail_initialization(fd):
+        if fd in lease_fds:
+            raise original
+        return fstat(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(upload_staging.os, "fdopen", open_with_failing_close)
+        patch.setattr(upload_staging.os, "fstat", fail_initialization)
+        with pytest.raises(OSError) as caught:
+            StagedUpload(tmp_path, stage_id="c" * 32)
+        assert caught.value is original
+        assert len(handles) == 1 and handles[0].closed
+
+    retry = StagedUpload(tmp_path, stage_id="c" * 32)
+    retry.close()
+    assert list(tmp_path.iterdir()) == []
+    assert_safe(logs, "error_type=RuntimeError")

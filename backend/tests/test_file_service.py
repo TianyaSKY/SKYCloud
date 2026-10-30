@@ -18,16 +18,19 @@ from app.exceptions import (
 from app.models.file import File
 from app.models.folder import Folder
 from app.infra.upload_limits import positive_limit
+from app.features.file.repository import escape_like
+from app.features.file.search_service import SearchFilesParams, search_files
+from app.features.file.multipart_service import SaveMultipartChunkParams
 from app.features.file.service import (
     _generate_unique_filename,
     _resolve_mime_type,
-    _escape_like,
     _normalize_content_hash,
-    _safe_upload_id,
-    _list_uploaded_chunks,
+    safe_upload_id,
+    list_uploaded_chunks,
     get_file,
     get_authorized_file,
     get_files_and_folders,
+    GetFilesAndFoldersParams,
     update_file,
     delete_file,
     preflight_file_upload,
@@ -40,7 +43,6 @@ from app.features.file.service import (
     save_multipart_chunk,
     complete_multipart_upload,
     abort_multipart_upload,
-    search_files,
     get_all_files,
     process_status,
     batch_delete_items,
@@ -75,9 +77,9 @@ class TestUtilFunctions:
         assert result is None
 
     def test_escape_like(self):
-        assert _escape_like("100%") == "100\\%"
-        assert _escape_like("a_b") == "a\\_b"
-        assert _escape_like("c\\d") == "c\\\\d"
+        assert escape_like("100%") == "100\\%"
+        assert escape_like("a_b") == "a\\_b"
+        assert escape_like("c\\d") == "c\\\\d"
 
     def test_normalize_content_hash_valid(self):
         h = "a" * 64
@@ -95,26 +97,26 @@ class TestUtilFunctions:
         assert _normalize_content_hash(None) is None
         assert _normalize_content_hash("") is None
 
-    def test_safe_upload_id_valid(self):
-        assert _safe_upload_id("abc12345") == "abc12345"
+    def testsafe_upload_id_valid(self):
+        assert safe_upload_id("abc12345") == "abc12345"
 
-    def test_safe_upload_id_invalid(self):
+    def testsafe_upload_id_invalid(self):
         with pytest.raises(BusinessRuleError):
-            _safe_upload_id("ab")  # 太短
+            safe_upload_id("ab")  # 太短
         with pytest.raises(BusinessRuleError):
-            _safe_upload_id("")
+            safe_upload_id("")
 
-    def test_list_uploaded_chunks_empty(self, tmp_path):
-        assert _list_uploaded_chunks(str(tmp_path / "nonexist")) == []
+    def testlist_uploaded_chunks_empty(self, tmp_path):
+        assert list_uploaded_chunks(str(tmp_path / "nonexist")) == []
 
-    def test_list_uploaded_chunks(self, tmp_path):
+    def testlist_uploaded_chunks(self, tmp_path):
         chunks_dir = tmp_path / "chunks"
         chunks_dir.mkdir()
         (chunks_dir / "0.part").write_bytes(b"x")
         (chunks_dir / "2.part").write_bytes(b"x")
         (chunks_dir / "1.part").write_bytes(b"x")
         (chunks_dir / "meta.json").write_text("{}")  # 非 .part 忽略
-        result = _list_uploaded_chunks(str(chunks_dir))
+        result = list_uploaded_chunks(str(chunks_dir))
         assert result == [0, 1, 2]
 
     def test_positive_upload_limit(self, monkeypatch):
@@ -171,7 +173,7 @@ class TestUpdateFile:
         session.flush()
 
         with patch("app.features.file.service.change_log_service") as mock_log, \
-             patch("app.features.file.service._clear_search_cache"):
+             patch("app.features.file.service.clear_search_cache"):
             updated = update_file(session, f.id, {"name": "new.txt"})
         assert updated.name == "new.txt"
 
@@ -183,7 +185,7 @@ class TestUpdateFile:
         session.flush()
 
         with patch("app.features.file.service.change_log_service") as mock_log, \
-             patch("app.features.file.service._clear_search_cache"):
+             patch("app.features.file.service.clear_search_cache"):
             updated = update_file(session, f.id, {"parent_id": test_folder.id})
         assert updated.parent_id == test_folder.id
 
@@ -200,8 +202,8 @@ class TestDeleteFile:
         session.flush()
         file_id = f.id
 
-        with patch("app.features.file.service.change_log_service"), \
-             patch("app.features.file.service._clear_search_cache"):
+        with patch("app.features.file.deletion.change_log_service"), \
+             patch("app.features.file.deletion.clear_search_cache"):
             delete_file(session, file_id)
         assert session.get(File, file_id) is None
 
@@ -238,7 +240,7 @@ class TestGetFilesAndFolders:
         session.add(f)
         session.flush()
 
-        result = get_files_and_folders(session, test_workspace.id, root.id)
+        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root.id))
         assert "folders" in result
         assert "files" in result
         assert result["files"]["total"] >= 1
@@ -253,16 +255,14 @@ class TestGetFilesAndFolders:
         session.add(f)
         session.flush()
 
-        result = get_files_and_folders(session, test_workspace.id, root.id, name="report")
+        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root.id, name="report"))
         assert result["files"]["total"] >= 1
 
     def test_sort_by_name(self, session, test_workspace, test_user):
         root = session.query(Folder).filter_by(
             workspace_id=test_workspace.id, parent_id=None
         ).first()
-        result = get_files_and_folders(
-            session, test_workspace.id, root.id, sort_by="name", order="asc"
-        )
+        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root.id, sort_by="name", order="asc"))
         assert result is not None
 
     def test_pagination(self, session, test_workspace, test_user):
@@ -276,7 +276,7 @@ class TestGetFilesAndFolders:
             session.add(f)
         session.flush()
 
-        result = get_files_and_folders(session, test_workspace.id, root.id, page=1, page_size=2)
+        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root.id, page=1, page_size=2))
         assert result["files"]["pages"] >= 3
 
 
@@ -292,11 +292,11 @@ class TestSearchFiles:
         session.add(f)
         session.flush()
 
-        result = await search_files(session, test_workspace.id, "searchable")
+        result = await search_files(session, test_workspace.id, SearchFilesParams(query="searchable"))
         assert result["total"] >= 1
 
     async def test_empty_query(self, session, test_workspace, test_user):
-        result = await search_files(session, test_workspace.id, "")
+        result = await search_files(session, test_workspace.id, SearchFilesParams(query=""))
         assert result["total"] == 0
 
 

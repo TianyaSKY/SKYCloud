@@ -4,13 +4,13 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
+from app.mcp.authorization import get_authenticated_user_id
+from app.mcp.context import current_user_id
 from app.mcp.server import (
-    _get_authenticated_user_id,
     _run_sync,
     _error_json,
     _service_error_json,
     _is_text_file,
-    _current_user_id,
     JWTAuthMiddleware,
     get_mcp_app,
     _TEXT_EXTENSIONS,
@@ -60,19 +60,19 @@ class TestServiceErrorJson:
 
 class TestGetAuthenticatedUserId:
     def test_authenticated(self):
-        token = _current_user_id.set(42)
+        token = current_user_id.set(42)
         try:
-            assert _get_authenticated_user_id() == 42
+            assert get_authenticated_user_id() == 42
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
     def test_not_authenticated(self):
-        token = _current_user_id.set(None)
+        token = current_user_id.set(None)
         try:
             with pytest.raises(PermissionError, match="Unauthorized"):
-                _get_authenticated_user_id()
+                get_authenticated_user_id()
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestRunSync:
@@ -137,7 +137,7 @@ class TestJWTAuthMiddleware:
         await middleware(scope, None, None)
         mock_app.assert_called_once()
         # user_id should be None
-        assert _current_user_id.get() is None
+        assert current_user_id.get() is None
 
     async def test_valid_token(self):
         mock_app = AsyncMock()
@@ -198,7 +198,7 @@ class TestMcpGetCurrentUser:
         mock_session = MagicMock()
         mock_session.get.return_value = mock_user
 
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session):
                 result = await mcp_get_current_user()
@@ -206,40 +206,40 @@ class TestMcpGetCurrentUser:
             assert parsed["username"] == "test"
             assert "password_hash" not in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
     async def test_user_not_found(self):
         mock_session = MagicMock()
         mock_session.get.return_value = None
 
-        token = _current_user_id.set(999)
+        token = current_user_id.set(999)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session):
                 result = await mcp_get_current_user()
             parsed = json.loads(result)
             assert "error" in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestMcpSearchFiles:
     async def test_success(self):
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
-                 patch("app.mcp.server.file_service.search_files", new_callable=AsyncMock, return_value={"items": [], "total": 0}):
+                 patch("app.mcp.server.file_search_service.search_files", new_callable=AsyncMock, return_value={"items": [], "total": 0}):
                 result = await mcp_search_files("test")
             parsed = json.loads(result)
             assert "items" in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestMcpListFiles:
     async def test_success(self):
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.folder_service.get_root_folder_id", return_value=1), \
@@ -248,7 +248,7 @@ class TestMcpListFiles:
             parsed = json.loads(result)
             assert "files" in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestMcpGetFileInfo:
@@ -258,7 +258,7 @@ class TestMcpGetFileInfo:
         mock_file.to_dict.return_value = {"id": 1, "name": "test.txt"}
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file):
@@ -266,14 +266,14 @@ class TestMcpGetFileInfo:
             parsed = json.loads(result)
             assert parsed["name"] == "test.txt"
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
     async def test_permission_denied(self):
         mock_file = MagicMock()
         mock_file.uploader_id = 999  # 不同用户
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file):
@@ -281,7 +281,7 @@ class TestMcpGetFileInfo:
             parsed = json.loads(result)
             assert "error" in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestMcpCreateFolder:
@@ -290,7 +290,7 @@ class TestMcpCreateFolder:
         mock_folder.to_dict.return_value = {"id": 5, "name": "new_folder"}
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.folder_service.get_root_folder_id", return_value=1), \
@@ -299,7 +299,7 @@ class TestMcpCreateFolder:
             parsed = json.loads(result)
             assert parsed["name"] == "new_folder"
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestMcpMoveFile:
@@ -308,7 +308,7 @@ class TestMcpMoveFile:
         mock_file.uploader_id = 1
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file):
@@ -316,7 +316,7 @@ class TestMcpMoveFile:
             parsed = json.loads(result)
             assert "error" in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
     async def test_success(self):
         mock_file = MagicMock()
@@ -325,7 +325,7 @@ class TestMcpMoveFile:
         mock_updated.to_dict.return_value = {"id": 1, "name": "renamed.txt"}
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file), \
@@ -334,7 +334,7 @@ class TestMcpMoveFile:
             parsed = json.loads(result)
             assert parsed["name"] == "renamed.txt"
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
 
 class TestMcpDeleteFile:
@@ -343,7 +343,7 @@ class TestMcpDeleteFile:
         mock_file.uploader_id = 1
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file), \
@@ -352,14 +352,14 @@ class TestMcpDeleteFile:
             parsed = json.loads(result)
             assert parsed["success"] is True
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)
 
     async def test_permission_denied(self):
         mock_file = MagicMock()
         mock_file.uploader_id = 999
 
         mock_session = MagicMock()
-        token = _current_user_id.set(1)
+        token = current_user_id.set(1)
         try:
             with patch("app.mcp.server.SessionLocal", return_value=mock_session), \
                  patch("app.mcp.server.file_service.get_file", return_value=mock_file):
@@ -367,4 +367,4 @@ class TestMcpDeleteFile:
             parsed = json.loads(result)
             assert "error" in parsed
         finally:
-            _current_user_id.reset(token)
+            current_user_id.reset(token)

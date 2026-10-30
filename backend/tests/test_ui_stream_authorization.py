@@ -18,7 +18,7 @@ async def test_ui_response_checks_current_authorization_and_drains_reader(monkey
     def authorize(*args):
         assert threading.get_ident()!=loop_thread
         if revoked:raise HTTPException(403,'revoked')
-        return {'expires_at':time.time()+60,'container_id':'a'*64,'origin':'http://runtime.test'}
+        return {'user_id':1,'expires_at':time.time()+60,'container_id':'a'*64,'origin':'http://runtime.test'}
     monkeypatch.setattr(ui_gateway,'authenticate_owned',authorize)
     monkeypatch.setattr(ui_gateway,'reauthenticate',authorize)
     monkeypatch.setattr(ui_gateway,'HTTP_RECHECK_SECONDS',0.01)
@@ -50,7 +50,7 @@ async def test_ui_response_checks_current_authorization_and_drains_reader(monkey
         await asyncio.Event().wait()
     request=Request({'type':'http','method':'GET','path':'/runtime-ui/event','query_string':b'',
                      'headers':[(b'host',b'runtime.test'),(b'cookie',(ui_tickets.COOKIE+'=opaque').encode())]},receive)
-    response=await ui_gateway.relay('event',request,None)
+    response=await ui_gateway.relay(path='event',request=request,session_factory=None)
     iterator=response.body_iterator
     assert await anext(iterator)==b'allowed'
     pending=asyncio.create_task(anext(iterator))

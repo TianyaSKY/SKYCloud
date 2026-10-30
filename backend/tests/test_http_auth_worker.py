@@ -1,7 +1,6 @@
 """HTTP authentication resolves SQL and cached profile on its owning worker."""
 import asyncio
 import threading
-from unittest.mock import Mock
 import jwt
 import pytest
 from fastapi.security import HTTPAuthorizationCredentials
@@ -31,11 +30,15 @@ async def test_cancelled_http_auth_drains_started_session(monkeypatch, kind, fau
     monkeypatch.setattr(sessions, 'valid_session', valid)
     monkeypatch.setattr(token_service, 'get_active_mcp_token', valid)
     monkeypatch.setattr(authentication.account_repository, 'current_role', lambda *args: 'common')
-    monkeypatch.setattr(authentication.user_service, '_get_user_data', lambda *args: {'id': 1, 'role': 'common'})
+    monkeypatch.setattr(authentication.user_service, 'get_user_data', lambda *args: {'id': 1, 'role': 'common'})
     payload = {'sub': '1', 'ver': 0}
     if kind == 'mcp': payload['type'] = 'mcp'
     credentials = HTTPAuthorizationCredentials(scheme='Bearer', credentials=jwt.encode(payload, SECRET_KEY, algorithm='HS256'))
-    pending = asyncio.create_task(dependencies.get_current_user(credentials, Mock(), session_factory=Owned))
+    pending = asyncio.create_task(
+        dependencies.get_current_user(
+            credentials=credentials, session_factory=Owned,
+        ),
+    )
     try:
         assert await asyncio.to_thread(entered.wait, 2)
         pending.cancel('caller-stop'); await asyncio.sleep(.01)
@@ -77,11 +80,15 @@ async def test_authentication_worker_ownership_and_fresh_role(monkeypatch, kind)
     monkeypatch.setattr(sessions,'valid_session',valid)
     monkeypatch.setattr(token_service,'get_active_mcp_token',valid)
     monkeypatch.setattr(authentication.account_repository,'current_role',role)
-    monkeypatch.setattr(authentication.user_service,'_get_user_data',cached)
+    monkeypatch.setattr(authentication.user_service,'get_user_data',cached)
     payload={'sub':'1','ver':0}
     if kind=='mcp':payload['type']='mcp'
     credential=HTTPAuthorizationCredentials(scheme='Bearer',credentials=jwt.encode(payload,SECRET_KEY,algorithm='HS256'))
-    pending=asyncio.create_task(dependencies.get_current_user(credential,Mock(),session_factory=OwnedSession))
+    pending = asyncio.create_task(
+        dependencies.get_current_user(
+            credentials=credential, session_factory=OwnedSession,
+        ),
+    )
     try:
         assert await asyncio.to_thread(entered.wait,2)
         async def probe():
@@ -91,9 +98,9 @@ async def test_authentication_worker_ownership_and_fresh_role(monkeypatch, kind)
     finally:
         release.set();user=await pending
     assert user.id==1 and user.role=='common'
-    assert user._http_stream_credential.token == credential.credentials
-    assert credential.credentials not in repr(user._http_stream_credential)
-    assert '_http_stream_credential' not in user.to_dict()
+    assert user.http_stream_credential.token == credential.credentials
+    assert credential.credentials not in repr(user.http_stream_credential)
+    assert 'http_stream_credential' not in user.to_dict()
     assert profile == {'id': 1, 'role': 'admin'}
     assert user._sa_instance_state.session is None
     assert profile['role']=='admin'

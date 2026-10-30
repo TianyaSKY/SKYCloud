@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
-from app.features.file.service import _search_files_vector_by_embedding
+from app.features.file.search_service import _search_files_vector_by_embedding
 from app.models.file import File
 from app.models.file_chunk import FileChunk
 from app.models.user import User
@@ -251,7 +251,7 @@ async def test_semantic_search_provider_admission_and_actual_usage(indexed,postg
     monkeypatch.setattr(usage,'SessionLocal',factory)
     async def search():
         if caller=='service':
-            return await search_service.search_files(None,first,'query',search_type='semantic',session_factory=factory,user_id=actor)
+            return await search_service.search_files(None, first, search_service.SearchFilesParams(query='query', search_type='semantic'), session_factory=factory,user_id=actor)
         from app.mcp import server
         from app.mcp.context import McpRequestContext,set_mcp_context,reset_mcp_context
         monkeypatch.setattr(server,'SessionLocal',factory)
@@ -309,7 +309,7 @@ async def test_cancelled_owned_sql_drains_native_lock_before_return(indexed,post
         token=set_mcp_context(McpRequestContext(actor,first,'editor'))
         operation=server.create_folder('accepted-before-cancel',parent_id=root_id)
     elif kind=='search':
-        operation=search_service.search_files(None,first,'unique-native-held-query',session_factory=owned,user_id=actor)
+        operation=search_service.search_files(None, first, search_service.SearchFilesParams(query='unique-native-held-query'), session_factory=owned, user_id=actor)
     else:operation=service.process_status(None,first,session_factory=owned,user_id=actor)
     pending=None
     try:

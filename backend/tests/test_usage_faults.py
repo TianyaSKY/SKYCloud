@@ -25,7 +25,7 @@ def test_record_usage_is_best_effort_through_all_session_phases(monkeypatch, fau
         return session
     monkeypatch.setattr(service, 'SessionLocal', factory)
     monkeypatch.setattr(service.logger, 'error', lambda message,*args: logged.append(message.format(*args)))
-    assert service.record_usage(1, 'chat', prompt_tokens=2, completion_tokens=3, query_summary=private) is None
+    assert service.record_usage(service.RecordUsageParams(user_id=1, action='chat', prompt_tokens=2, completion_tokens=3, query_summary=private)) is None
     assert logged and private not in str(logged)
     if 'factory' in faults:
         assert events == ['factory']
@@ -41,7 +41,7 @@ def test_successful_recording_never_retries_after_close_failure(monkeypatch):
     session = Mock()
     session.close.side_effect = RuntimeError('private-connection-url')
     monkeypatch.setattr(service, 'SessionLocal', lambda: session)
-    assert service.record_usage(1, 'chat', prompt_tokens=2, completion_tokens=3) is None
+    assert service.record_usage(service.RecordUsageParams(user_id=1, action='chat', prompt_tokens=2, completion_tokens=3)) is None
     session.commit.assert_called_once()
     session.execute.assert_called_once()
     session.rollback.assert_not_called()

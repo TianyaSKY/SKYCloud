@@ -42,7 +42,7 @@ async def test_actual_redis_acl_rejection_preserves_cache_fallback(infrastructur
     monkeypatch.setattr(cache, 'redis_client', client)
     try:
         assert client.ping()
-        @cache.cacheable(SECRET, key=lambda value: value)
+        @cache.cacheable(cache.CacheableParams(prefix=SECRET), key=lambda value: value)
         async def read(value):
             return {'result': value}
         @cache.cache_put(SECRET)
@@ -71,7 +71,7 @@ async def test_actual_postgres_audit_rejection_preserves_tool_and_recovers(postg
         uid, wid = user.id, workspace.id
     monkeypatch.setattr(audit, 'SessionLocal', factory)
     context = set_mcp_context(McpRequestContext(user_id=uid, workspace_id=wid, role='viewer'))
-    active = set_mcp_request_active(True)
+    active = set_mcp_request_active(active=True)
     @audit.audited_tool(SECRET * 5)  # PostgreSQL varchar(100) rejects the real INSERT.
     async def rejected():
         return 'business result'
@@ -110,7 +110,7 @@ async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, 
     client = ObservedRedis(**admin.connection_pool.connection_kwargs)
     monkeypatch.setattr(cache, 'redis_client', client)
     business = []
-    decorator = cache.cacheable(prefix=key) if operation == 'read' else cache.cache_put(prefix=key) if operation == 'put' else cache.cache_evict(prefix=key)
+    decorator = cache.cacheable(cache.CacheableParams(prefix=key)) if operation == 'read' else cache.cache_put(prefix=key) if operation == 'put' else cache.cache_evict(prefix=key)
     @decorator
     async def work():
         business.append('accepted')
@@ -145,7 +145,7 @@ async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, 
 
 @pytest.mark.parametrize('mode', ['generic', 'workspace'])
 def test_actual_cache_eviction_is_batched_and_workspace_scoped(infrastructure, monkeypatch, mode):
-    from app.features.file import service as file_service
+    from app.features.file import deletion as file_deletion
     admin = infrastructure['redis']
     prefix = 'large-cache' if mode == 'generic' else 'search:fuzzy:1'
     with admin.pipeline() as pipeline:
@@ -169,7 +169,7 @@ def test_actual_cache_eviction_is_batched_and_workspace_scoped(infrastructure, m
     if mode == 'generic':
         assert cache.evict_cache_pattern(prefix) >= 1001
     else:
-        file_service._clear_search_cache(1)
+        file_deletion.clear_search_cache(1)
     assert not list(admin.scan_iter(match=prefix+':*'))
     assert len(batches) >= 8
     assert len(list(admin.scan_iter(match='search:fuzzy:12:*'))) == 20
@@ -179,7 +179,7 @@ def test_actual_redis_generation_fences_late_search_write(infrastructure, monkey
     import threading
     from concurrent.futures import ThreadPoolExecutor
     from types import SimpleNamespace
-    from app.features.file import service as file_service, search_service
+    from app.features.file import deletion as file_deletion, search_service
     admin = infrastructure['redis']
     monkeypatch.setattr(cache, 'redis_client', admin)
     entered, release = threading.Event(), threading.Event()
@@ -200,7 +200,7 @@ def test_actual_redis_generation_fences_late_search_write(infrastructure, monkey
         try:
             assert entered.wait(1)
             names[0] = 'new-name'
-            file_service._clear_search_cache(1)
+            file_deletion.clear_search_cache(1)
         finally:
             release.set()
         assert old.result()['items'][0]['name'] == 'old-name'
@@ -243,8 +243,8 @@ def test_actual_sql_commit_invalidates_search_without_redis_cleanup(postgres, in
             options.update(username='revision-reader', password='disposable-test')
             client = Redis(**options)
             monkeypatch.setattr(cache, 'redis_client', client)
-            from app.features.file import service as file_service
-            file_service._clear_search_cache(workspace_id)
+            from app.features.file import deletion as file_deletion
+            file_deletion.clear_search_cache(workspace_id)
         with factory() as db:
             assert search_service._search_files_fuzzy(db, workspace_id, 'name', 1, 10)['items'][0]['name'] == 'new-name'
     finally:
@@ -409,7 +409,7 @@ def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructu
         db.add_all([child,item,option]); db.commit()
         uid, wid, root_id, child_id, file_id, option_id = user.id,workspace.id,root.id,child.id,item.id,option.id
     def read(db):
-        if kind == 'profile': return user_service._get_user_data(db,uid)['username']
+        if kind == 'profile': return user_service.get_user_data(db,uid)['username']
         if kind == 'dictionary': return next(row['value'] for row in dictionaries.get_sys_dict_all_sync(db) if row['key']=='transaction-test-option')
         if kind == 'folders': return next(row['name'] for row in folders.get_folders(db,wid) if row['id']==child_id)
         if kind == 'root-files': return folders.get_files_in_root_folder(db,wid)[0]['name']

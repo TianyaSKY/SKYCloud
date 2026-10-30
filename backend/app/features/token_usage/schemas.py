@@ -1,9 +1,13 @@
-"""Public token accounting response contracts."""
-from typing import Generic, TypeVar, Literal
-from pydantic import BaseModel
+"""Public token accounting response contracts and query filters."""
+
+from typing import Generic, Literal, TypeVar
+
+from pydantic import BaseModel, Field
 
 
 class TokenStats(BaseModel):
+    """Accumulated token totals for one account."""
+
     user_id: int
     total_prompt_tokens: int
     total_completion_tokens: int
@@ -12,13 +16,17 @@ class TokenStats(BaseModel):
 
 
 class UserTokenStats(TokenStats):
+    """Account identity plus its accumulated token totals."""
+
     username: str
-    role: Literal['admin', 'common']
+    role: Literal["admin", "common"]
     avatar: str | None
     created_at: str | None
 
 
 class TokenUsageEntry(BaseModel):
+    """One usage audit row."""
+
     id: int
     user_id: int
     action: str
@@ -32,13 +40,17 @@ class TokenUsageEntry(BaseModel):
 
 
 class AdminTokenUsageEntry(TokenUsageEntry):
+    """Usage audit row enriched with the owning account name."""
+
     username: str
 
 
-EntryT = TypeVar('EntryT')
+EntryT = TypeVar("EntryT")
 
 
 class UsagePage(BaseModel, Generic[EntryT]):
+    """One page of usage audit rows."""
+
     total: int
     page: int
     page_size: int
@@ -46,6 +58,8 @@ class UsagePage(BaseModel, Generic[EntryT]):
 
 
 class DailyStats(BaseModel):
+    """One day of aggregated usage."""
+
     date: str
     prompt_tokens: int
     completion_tokens: int
@@ -54,5 +68,38 @@ class DailyStats(BaseModel):
 
 
 class PerUserDailyStats(DailyStats):
+    """One day of aggregated usage for a single account."""
+
     user_id: int
     username: str
+
+
+class MyUsageLogsQuery(BaseModel):
+    """Query filters for the caller's usage audit page."""
+
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    action: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+
+
+class UserUsageLogsQuery(BaseModel):
+    """Query filters for another account's usage audit page."""
+
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    action: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+
+
+class AdminAllLogsQuery(BaseModel):
+    """Query filters for the site-wide usage audit page."""
+
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    action: str | None = None
+    user_id: int | None = None
+    start_date: str | None = None
+    end_date: str | None = None

@@ -1,5 +1,5 @@
 from app.infra import cache
-from app.features.file import service
+from app.features.file import deletion
 
 
 def test_pattern_eviction_deletes_before_consuming_whole_scan(monkeypatch):
@@ -37,8 +37,8 @@ def test_failed_later_batch_preserves_completed_eviction_count(monkeypatch):
 
 def test_file_search_cache_eviction_is_workspace_scoped(monkeypatch):
     calls = []
-    monkeypatch.setattr(service, 'evict_cache_pattern', calls.append)
-    service._clear_search_cache(1)
-    service._clear_search_cache(12)
-    service._clear_search_cache(None)
+    monkeypatch.setattr(deletion, 'evict_cache_pattern', calls.append)
+    deletion.clear_search_cache(1)
+    deletion.clear_search_cache(12)
+    deletion.clear_search_cache(None)
     assert calls == ['search:fuzzy:1', 'search:fuzzy:12']

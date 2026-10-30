@@ -100,6 +100,15 @@ class TestBloomBuild:
             result = _build_filter(None)
         assert result is False
 
+    def test_build_lock_release_failure_preserves_completed_filter(self):
+        redis = MagicMock()
+        redis.set.return_value = True
+        redis.get.side_effect = RuntimeError("lock lookup unavailable")
+        with patch("app.features.file.bloom.redis_client", redis), \
+             patch("app.features.file.bloom._iter_file_ids", return_value=[1]):
+            assert _build_filter(None) is True
+        assert redis.pipeline.return_value.execute.call_count == 2
+
 
 class TestEnsureFilterReady:
     def test_already_ready(self):
@@ -157,6 +166,13 @@ class TestMaybeContains:
              patch("app.features.file.bloom._ensure_filter_ready", return_value=True):
             assert _maybe_contains(None, 42) is True
 
+    def test_lookup_failure_defers_to_database_authorization(self):
+        redis = MagicMock()
+        redis.hgetall.side_effect = RuntimeError("bitmap unavailable")
+        with patch("app.features.file.bloom.redis_client", redis), \
+             patch("app.features.file.bloom._ensure_filter_ready", return_value=True):
+            assert _maybe_contains(7, 42) is True
+
 
 class TestAddFile:
     def test_add_file_not_ready(self):
@@ -174,6 +190,18 @@ class TestAddFile:
         with patch("app.features.file.bloom.redis_client", mock_redis):
             add_file(1, 1)
         assert mock_pipe.execute.called
+
+    def test_failed_scope_update_does_not_prevent_remaining_scope(self):
+        redis = MagicMock()
+        redis.hgetall.return_value = {
+            "ready": "1", "bitmap_size": "4096", "hash_count": "7",
+        }
+        redis.pipeline.side_effect = RuntimeError("bitmap update unavailable")
+        with patch("app.features.file.bloom.redis_client", redis):
+            add_file(42, 7)
+        assert [
+            args.args[0] for args in redis.hgetall.call_args_list
+        ] == [_meta_key(None), _meta_key(7)]
 
 
 class TestPublicAPI:
@@ -245,6 +273,7 @@ class TestSummarizeEvents:
 from app.features.folder.change_log import (
     _build_folder_path,
     _to_payload_text,
+    LogEventParams,
     log_event,
     log_events_batch,
     get_latest_event_id,
@@ -331,11 +360,15 @@ class TestLogEventsBatch:
 class TestLogEvent:
     def test_success(self):
         with patch("app.features.folder.change_log.log_events_batch", return_value=1):
-            assert log_event(workspace_id=1, entity_type="file", entity_id=1, action="create") is True
+            assert log_event(LogEventParams(
+                workspace_id=1, entity_type="file", entity_id=1, action="create",
+            )) is True
 
     def test_failure(self):
         with patch("app.features.folder.change_log.log_events_batch", return_value=0):
-            assert log_event(workspace_id=1, entity_type="file", entity_id=1, action="create") is False
+            assert log_event(LogEventParams(
+                workspace_id=1, entity_type="file", entity_id=1, action="create",
+            )) is False
 
 
 class TestGetLatestEventId:

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import anyio
+from langchain_core.messages import AIMessage
 
 from app.features.chat import repository, service, stream_authorization as guard
 
@@ -130,10 +131,10 @@ async def test_chat_cancellation_drains_accepted_usage(monkeypatch, mode):
     scopes = []
     producer_waiting = asyncio.Event()
 
-    def record(**kwargs):
+    def record(params):
         entered.set()
         assert release.wait(3)
-        receipts.append(kwargs)
+        receipts.append(params)
 
     class Chain:
         def __or__(self, other):
@@ -148,8 +149,8 @@ async def test_chat_cancellation_drains_accepted_usage(monkeypatch, mode):
             return self
 
         async def astream_events(self, *args, **kwargs):
-            yield {'event': 'on_chat_model_end', 'data': {'output': SimpleNamespace(
-                usage_metadata={'input_tokens': 3, 'output_tokens': 2, 'total_tokens': 5})},
+            yield {'event': 'on_chat_model_end', 'data': {'output': AIMessage(
+                content="", usage_metadata={'input_tokens': 3, 'output_tokens': 2, 'total_tokens': 5})},
                 'metadata': {'ls_model_name': 'synthetic-model'}}
             if mode == 'producer':
                 producer_waiting.set()
@@ -196,4 +197,4 @@ async def test_chat_cancellation_drains_accepted_usage(monkeypatch, mode):
                 break
             await asyncio.sleep(.001)
     assert len(receipts) == 1
-    assert receipts[0]['user_id'] == 7 and receipts[0]['total_tokens'] == 5
+    assert receipts[0].user_id == 7 and receipts[0].total_tokens == 5

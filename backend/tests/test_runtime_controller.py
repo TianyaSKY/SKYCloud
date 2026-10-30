@@ -201,6 +201,127 @@ def test_user_snapshot_endpoint_requires_auth_and_positive_identity(settings):
     engine.user_snapshot.assert_called_once_with(3)
 
 
+async def test_reconciliation_scheduler_retries_failed_scan_and_drains_shutdown(settings,monkeypatch):
+    import threading
+    from runtime_controller import app as controller_app
+
+    second_started,leave,exiting=asyncio.Event(),asyncio.Event(),asyncio.Event()
+    release=threading.Event()
+    outcomes=[]
+    loop=asyncio.get_running_loop()
+    def scan():
+        if not outcomes:
+            outcomes.append('failed')
+            raise RuntimeError('private scan failure')
+        loop.call_soon_threadsafe(second_started.set)
+        if not release.wait(5):
+            raise AssertionError('scan was not released')
+        outcomes.append('completed')
+    engine=Mock()
+    engine.reconcile_retired.side_effect=scan
+    monkeypatch.setattr(controller_app,'RECONCILE_INTERVAL_SECONDS',0.001)
+    app=create_app(settings,engine)
+    async def lifecycle():
+        async with app.router.lifespan_context(app):
+            await leave.wait()
+            exiting.set()
+    pending=asyncio.create_task(lifecycle())
+    try:
+        await asyncio.wait_for(second_started.wait(),1)
+        leave.set()
+        await asyncio.wait_for(exiting.wait(),1)
+        assert not pending.done()
+        assert outcomes==['failed']
+    finally:
+        leave.set()
+        release.set()
+        await asyncio.wait_for(pending,1)
+    assert outcomes==['failed','completed']
+
+
+def test_controller_terminal_failure_closes_1011_and_releases_slot(settings,monkeypatch):
+    from runtime_controller import app as controller_app
+    from tests.test_runtime_ui_socket import EchoSocket,TrackingSlots
+    from starlette.websockets import WebSocketDisconnect
+
+    engine=Mock()
+    engine.target.return_value=('http://172.20.0.2:3000',('runtime-user','server-secret'))
+    slots=TrackingSlots(total=1,per_owner=1)
+    monkeypatch.setattr(controller_app,'SocketSlots',lambda:slots)
+    peer=EchoSocket()
+    path='/runtimes/'+'a'*64+'/ws/pty/pty_42/connect'
+    headers={'X-Runtime-Controller-Token':settings.token}
+    with TestClient(create_app(settings,engine)) as client, patch(
+        'runtime_controller.app.direct_connect',
+        side_effect=[RuntimeError('private connection failure'),peer],
+    ):
+        with pytest.raises(WebSocketDisconnect) as error:
+            with client.websocket_connect(path,headers=headers):
+                pass
+        assert error.value.code==1011
+        assert 'private' not in str(error.value)
+        assert slots.released.wait(1)
+        with client.websocket_connect(path,headers=headers) as socket:
+            socket.send_text('slot reused')
+            assert socket.receive_text()=='slot reused'
+
+
+async def test_controller_unexpected_pump_failure_closes_1011_and_drains_tasks(settings,monkeypatch):
+    from runtime_controller import app as controller_app
+
+    reading,closing,release,closed=(
+        asyncio.Event(),asyncio.Event(),asyncio.Event(),asyncio.Event()
+    )
+    cleanup,messages=[],[]
+    class Peer:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):cleanup.append('connection')
+        async def send(self,message):
+            await reading.wait()
+            raise RuntimeError('private pump failure')
+        async def __aiter__(self):
+            reading.set()
+            try:
+                await asyncio.Event().wait()
+                yield 'unreachable'
+            finally:
+                closing.set()
+                await release.wait()
+                cleanup.append('reader')
+    engine=Mock()
+    engine.target.return_value=('http://172.20.0.2:3000',('runtime-user','server-secret'))
+    monkeypatch.setattr(controller_app,'direct_connect',lambda *args:Peer())
+    app=create_app(settings,engine)
+    incoming=asyncio.Queue()
+    incoming.put_nowait({'type':'websocket.connect'})
+    incoming.put_nowait({'type':'websocket.receive','text':'trigger failure'})
+    async def send(message):
+        messages.append(message)
+        if message['type']=='websocket.close':closed.set()
+    scope={
+        'type':'websocket','scheme':'ws','path':'/runtimes/'+'a'*64+'/ws/pty/pty_42/connect',
+        'query_string':b'','root_path':'','subprotocols':[],
+        'headers':[(b'x-runtime-controller-token',settings.token.encode())],
+        'server':('controller',80),'client':('testclient',123),
+    }
+    existing_tasks=asyncio.all_tasks()
+    pending=asyncio.create_task(app(scope,incoming.get,send))
+    try:
+        await asyncio.wait_for(closed.wait(),1)
+        await asyncio.wait_for(closing.wait(),1)
+        assert not pending.done()
+        assert cleanup==[]
+    finally:
+        release.set()
+        await asyncio.wait_for(pending,1)
+    assert messages==[
+        {'type':'websocket.accept','subprotocol':None,'headers':[]},
+        {'type':'websocket.close','code':1011,'reason':''},
+    ]
+    assert cleanup==['reader','connection']
+    assert asyncio.all_tasks()<=existing_tasks
+
+
 def test_controller_socket_auth_and_fixed_target(settings):
     from tests.test_runtime_ui_socket import EchoSocket
     engine = Mock(); engine.target.return_value = ('http://172.20.0.2:3000', ('runtime-user', 'server-secret'))
@@ -477,6 +598,42 @@ def test_retired_scan_preserves_identity_mismatch_and_active_generation(settings
                                          {'Id':'b'*64,'Labels':{'skycloud.generation':'b'*32}}]
     assert Engine(settings,client).reconcile_retired() == 0
     managed_container.remove.assert_not_called()
+
+
+def test_retired_scan_continues_after_failed_candidate_in_same_scan(settings,managed_container):
+    from copy import deepcopy
+    from runtime_controller.generation_journal import GenerationJournal
+    from runtime_controller.policy import generation_name
+
+    first=managed_container
+    first.name=generation_name(2,3,'a'*32)
+    first.attrs['Config']['Labels']['skycloud.generation']='a'*32
+    second=Mock()
+    second.id='b'*64
+    second.name=generation_name(2,3,'b'*32)
+    second.status='running'
+    second.attrs=deepcopy(first.attrs)
+    second.attrs['Config']['Labels']['skycloud.generation']='b'*32
+    journal=GenerationJournal(settings.state_path)
+    for generation,container in [('a'*32,first),('b'*32,second)]:
+        with journal.locked(generation,(2,3,4)) as record:
+            record.ready(container.id)
+            record.retire()
+    removals=[]
+    def fail_first(**kwargs):
+        removals.append('failed')
+        raise RuntimeError('private removal failure')
+    first.remove.side_effect=fail_first
+    second.remove.side_effect=lambda **kwargs:removals.append('removed')
+    client=Mock()
+    client.containers.get.side_effect={first.id:first,second.id:second}.__getitem__
+    client.api.containers.return_value=[
+        {'Id':first.id,'Labels':{'skycloud.generation':'a'*32}},
+        {'Id':second.id,'Labels':{'skycloud.generation':'b'*32}},
+    ]
+    assert Engine(settings,client).reconcile_retired()==1
+    assert removals==['failed','removed']
+    second.remove.assert_called_once_with(force=True,v=True)
 
 
 @pytest.mark.parametrize('payload', [

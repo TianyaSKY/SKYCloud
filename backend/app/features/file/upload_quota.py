@@ -1,53 +1,127 @@
-"""Quota admission is serialized by existing user/workspace rows, not process locks.
+"""Durable upload quota admission, serialized by existing user/workspace rows.
 
 Reservations commit before object IO; consuming a reservation and inserting its
 file share a transaction. Daily admission charges survive aborts and IO failures.
 All deadlines and day boundaries are UTC, stored as UTC instants.
 """
-from datetime import datetime, timedelta, timezone
-import uuid
 
+import re
+import uuid
+from collections.abc import Callable, Mapping
+from contextlib import nullcontext
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import TypeAlias, cast
+
+from loguru import logger
 from sqlalchemy import and_, delete, func, or_, select
-from app.exceptions import BusinessRuleError, ConflictError, PermissionDeniedError, ResourceNotFoundError
+from sqlalchemy.orm import Session
+
+from app.exceptions import (
+    BusinessRuleError,
+    ConflictError,
+    PermissionDeniedError,
+    ResourceNotFoundError,
+)
+from app.infra.multipart_cleanup import remove_multipart_upload
+from app.infra.storage import MinIOStorageClient
 from app.infra.upload_limits import positive_limit
+from app.infra.upload_staging import staging_guard
 from app.models.file import File
+from app.models.upload_reservation import UploadDailyUsage, UploadReservation
 from app.models.user import User
 from app.models.workspace import Workspace
-from app.models.upload_reservation import UploadDailyUsage, UploadReservation
 
-USER_CAPACITY = positive_limit('UPLOAD_USER_CAPACITY', 10 * 1024**3)
-WORKSPACE_CAPACITY = positive_limit('UPLOAD_WORKSPACE_CAPACITY', 50 * 1024**3)
-DAILY_BYTES = positive_limit('UPLOAD_DAILY_BYTES', 5 * 1024**3)
-DAILY_ATTEMPTS = positive_limit('UPLOAD_DAILY_ATTEMPTS', 200)
-USER_CONCURRENCY = positive_limit('UPLOAD_USER_CONCURRENCY', 8)
-WORKSPACE_CONCURRENCY = positive_limit('UPLOAD_WORKSPACE_CONCURRENCY', 32)
-TTL_SECONDS = positive_limit('UPLOAD_RESERVATION_TTL_SECONDS', 3600)
+USER_CAPACITY = positive_limit("UPLOAD_USER_CAPACITY", 10 * 1024**3)
+WORKSPACE_CAPACITY = positive_limit("UPLOAD_WORKSPACE_CAPACITY", 50 * 1024**3)
+DAILY_BYTES = positive_limit("UPLOAD_DAILY_BYTES", 5 * 1024**3)
+DAILY_ATTEMPTS = positive_limit("UPLOAD_DAILY_ATTEMPTS", 200)
+USER_CONCURRENCY = positive_limit("UPLOAD_USER_CONCURRENCY", 8)
+WORKSPACE_CONCURRENCY = positive_limit("UPLOAD_WORKSPACE_CONCURRENCY", 32)
+TTL_SECONDS = positive_limit("UPLOAD_RESERVATION_TTL_SECONDS", 3600)
+
+# Enter result of the no-op guard used when no staging root is configured.
+_GUARD_ACQUIRED = True
+
+StorageFactory: TypeAlias = Callable[[], MinIOStorageClient]
 
 
-def utc_now():
-    return datetime.now(timezone.utc)
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReserveParams:
+    """Admission inputs for one upload reservation."""
+
+    workspace_id: int
+    user_id: int
+    size: int
+    kind: str = "file"
+    reservation_id: str | None = None
+    details: Mapping[str, object] | None = None
 
 
-def find_reservation(session, reservation_id):
-    """Lookup only; callers must apply owned() before replaying upload details."""
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CancelParams:
+    """Cancellation inputs for one reservation."""
+
+    workspace_id: int
+    user_id: int
+    reservation_id: str
+    missing_ok: bool = False
+    object_deleted: bool = False
+
+
+def utc_now() -> datetime:
+    """Return the current UTC instant."""
+    return datetime.now(UTC)
+
+
+def find_reservation(
+    session: Session, reservation_id: str,
+) -> UploadReservation | None:
+    """Look up a reservation without locking; callers must apply owned() first."""
     return session.get(UploadReservation, reservation_id)
 
 
-def active_reservation_ids(session):
-    return {(str(row.workspace_id), row.id) for row in session.query(
-        UploadReservation.workspace_id, UploadReservation.id).filter(
-        UploadReservation.status == 'active', UploadReservation.expires_at > utc_now()).all()}
+def active_reservation_ids(session: Session) -> set[tuple[str, str]]:
+    """Return (workspace_id, reservation_id) pairs that are still active."""
+    rows = session.execute(
+        select(UploadReservation.workspace_id, UploadReservation.id).where(
+            UploadReservation.status == "active",
+            UploadReservation.expires_at > utc_now(),
+        ),
+    )
+    return {
+        (str(workspace_id), reservation_id)
+        for workspace_id, reservation_id in rows
+    }
 
 
-def lock_owners(session, workspace_id, user_id):
-    # Every admission/completion uses this order, including cross-workspace uploads.
-    if session.scalar(select(User.id).where(User.id == user_id).with_for_update()) is None:
-        raise ResourceNotFoundError('Upload owner not found')
-    if session.scalar(select(Workspace.id).where(Workspace.id == workspace_id).with_for_update()) is None:
-        raise ResourceNotFoundError('Workspace not found')
+def lock_owners(session: Session, workspace_id: int, user_id: int) -> None:
+    """Lock the owning user and workspace rows in a single canonical order."""
+    if (
+        session.scalar(select(User.id).where(User.id == user_id).with_for_update())
+        is None
+    ):
+        message = "Upload owner not found"
+        raise ResourceNotFoundError(message)
+    if (
+        session.scalar(
+            select(Workspace.id).where(Workspace.id == workspace_id).with_for_update(),
+        )
+        is None
+    ):
+        message = "Workspace not found"
+        raise ResourceNotFoundError(message)
 
 
-def owned(session, workspace_id, user_id, reservation_id, *, lock=True):
+def owned(
+    session: Session,
+    workspace_id: int,
+    user_id: int,
+    reservation_id: str,
+    *,
+    lock: bool = True,
+) -> UploadReservation:
+    """Return an active reservation owned by the caller, locking it when asked."""
     if lock:
         lock_owners(session, workspace_id, user_id)
     query = select(UploadReservation).where(UploadReservation.id == reservation_id)
@@ -55,138 +129,279 @@ def owned(session, workspace_id, user_id, reservation_id, *, lock=True):
         query = query.with_for_update().execution_options(populate_existing=True)
     row = session.scalar(query)
     if row is None:
-        raise ResourceNotFoundError('Upload session not found')
+        message = "Upload session not found"
+        raise ResourceNotFoundError(message)
     if row.workspace_id != workspace_id or row.user_id != user_id:
-        raise PermissionDeniedError('Upload session belongs to another user or workspace')
-    if row.status != 'active' or row.expires_at <= utc_now():
-        raise ConflictError('Upload session is closed or expired')
+        message = "Upload session belongs to another user or workspace"
+        raise PermissionDeniedError(message)
+    if row.status != "active" or row.expires_at <= utc_now():
+        message = "Upload session is closed or expired"
+        raise ConflictError(message)
     return row
 
 
-def reserve(session, workspace_id, user_id, size, *, kind='file', reservation_id=None, details=None):
-    if size < 0:
-        raise BusinessRuleError('Invalid upload size')
-    lock_owners(session, workspace_id, user_id)
-    reservation_id = reservation_id or uuid.uuid4().hex
+def reserve(session: Session, params: ReserveParams) -> UploadReservation:
+    """Admit one upload against capacity, concurrency and daily allowances."""
+    if params.size < 0:
+        message = "Invalid upload size"
+        raise BusinessRuleError(message)
+    lock_owners(session, params.workspace_id, params.user_id)
+    reservation_id = params.reservation_id or uuid.uuid4().hex
     if session.get(UploadReservation, reservation_id) is not None:
-        raise ConflictError('Upload session already exists')
+        message = "Upload session already exists"
+        raise ConflictError(message)
     now = utc_now()
-    active = [UploadReservation.status == 'active', UploadReservation.expires_at > now]
-    pending_bytes = or_(and_(*active), and_(
-        UploadReservation.kind != 'instant', UploadReservation.status != 'completed',
-        UploadReservation.cleaned_at.is_(None),
-        UploadReservation.details['object_name'].as_string().is_not(None)))
-    for column, owner, capacity, concurrency, file_column in [
-        (UploadReservation.user_id, user_id, USER_CAPACITY, USER_CONCURRENCY, File.uploader_id),
-        (UploadReservation.workspace_id, workspace_id, WORKSPACE_CAPACITY, WORKSPACE_CONCURRENCY, File.workspace_id),
-    ]:
-        stored = session.scalar(select(func.coalesce(func.sum(File.file_size), 0)).where(file_column == owner))
-        pending = session.scalar(select(func.coalesce(func.sum(UploadReservation.size), 0))
-                                 .where(column == owner, pending_bytes))
-        count = session.scalar(select(func.count()).select_from(UploadReservation).where(column == owner, *active))
-        if stored + pending + size > capacity:
-            raise BusinessRuleError('Upload storage capacity exceeded')
+    active = [
+        UploadReservation.status == "active",
+        UploadReservation.expires_at > now,
+    ]
+    pending_bytes = or_(
+        and_(*active),
+        and_(
+            UploadReservation.kind != "instant",
+            UploadReservation.status != "completed",
+            UploadReservation.cleaned_at.is_(None),
+            UploadReservation.details["object_name"].as_string().is_not(None),
+        ),
+    )
+    scopes = [
+        (
+            UploadReservation.user_id,
+            params.user_id,
+            USER_CAPACITY,
+            USER_CONCURRENCY,
+            File.uploader_id,
+        ),
+        (
+            UploadReservation.workspace_id,
+            params.workspace_id,
+            WORKSPACE_CAPACITY,
+            WORKSPACE_CONCURRENCY,
+            File.workspace_id,
+        ),
+    ]
+    for column, owner, capacity, concurrency, file_column in scopes:
+        stored = session.scalar(
+            select(func.coalesce(func.sum(File.file_size), 0)).where(
+                file_column == owner,
+            ),
+        ) or 0
+        pending = session.scalar(
+            select(func.coalesce(func.sum(UploadReservation.size), 0)).where(
+                column == owner, pending_bytes,
+            ),
+        ) or 0
+        count = session.scalar(
+            select(func.count())
+            .select_from(UploadReservation)
+            .where(column == owner, *active),
+        ) or 0
+        if stored + pending + params.size > capacity:
+            message = "Upload storage capacity exceeded"
+            raise BusinessRuleError(message)
         if count >= concurrency:
-            raise ConflictError('Too many active uploads')
-    usage = session.get(UploadDailyUsage, (user_id, now.date()), populate_existing=True)
+            message = "Too many active uploads"
+            raise ConflictError(message)
+    usage = session.get(
+        UploadDailyUsage, (params.user_id, now.date()), populate_existing=True,
+    )
     if usage is None:
-        usage = UploadDailyUsage(user_id=user_id, day=now.date(), attempts=0, bytes=0)
+        usage = UploadDailyUsage(
+            user_id=params.user_id, day=now.date(), attempts=0, bytes=0,
+        )
         session.add(usage)
-    if usage.attempts >= DAILY_ATTEMPTS or usage.bytes + size > DAILY_BYTES:
-        raise BusinessRuleError('Daily upload allowance exceeded')
+    if usage.attempts >= DAILY_ATTEMPTS or usage.bytes + params.size > DAILY_BYTES:
+        message = "Daily upload allowance exceeded"
+        raise BusinessRuleError(message)
     usage.attempts += 1
-    usage.bytes += size
-    row = UploadReservation(id=reservation_id, user_id=user_id, workspace_id=workspace_id,
-                            size=size, kind=kind, status='active', created_at=now,
-                            expires_at=now + timedelta(seconds=TTL_SECONDS), details=details or {})
+    usage.bytes += params.size
+    row = UploadReservation(
+        id=reservation_id,
+        user_id=params.user_id,
+        workspace_id=params.workspace_id,
+        size=params.size,
+        kind=params.kind,
+        status="active",
+        created_at=now,
+        expires_at=now + timedelta(seconds=TTL_SECONDS),
+        details=dict(params.details) if params.details else {},
+    )
     session.add(row)
     session.commit()
     return row
 
 
-def consume(session, workspace_id, user_id, reservation_id, size):
+def consume(
+    session: Session,
+    workspace_id: int,
+    user_id: int,
+    reservation_id: str,
+    size: int,
+) -> UploadReservation:
+    """Mark a reservation completed inside the caller's publication transaction."""
     row = owned(session, workspace_id, user_id, reservation_id)
     if size != row.size:
-        raise BusinessRuleError('Upload size differs from reservation')
-    row.status = 'completed'
+        message = "Upload size differs from reservation"
+        raise BusinessRuleError(message)
+    row.status = "completed"
     # Caller commits this with File; on rollback it stays active.
     return row
 
 
-def lock_for_cancellation(session, workspace_id, user_id, reservation_id, *, missing_ok=False):
+def lock_for_cancellation(
+    session: Session,
+    workspace_id: int,
+    user_id: int,
+    reservation_id: str,
+    *,
+    missing_ok: bool = False,
+) -> UploadReservation | None:
     """Refresh committed state under admission locks before destructive cleanup."""
     lock_owners(session, workspace_id, user_id)
-    row = session.scalar(select(UploadReservation).where(UploadReservation.id == reservation_id)
-                         .with_for_update().execution_options(populate_existing=True))
+    row = session.scalar(
+        select(UploadReservation)
+        .where(UploadReservation.id == reservation_id)
+        .with_for_update()
+        .execution_options(populate_existing=True),
+    )
     if row is None and missing_ok:
         session.rollback()
         return None
     if row is None or row.user_id != user_id or row.workspace_id != workspace_id:
-        raise PermissionDeniedError('Upload session belongs to another user or workspace')
+        message = "Upload session belongs to another user or workspace"
+        raise PermissionDeniedError(message)
     return row
 
 
-def cancel(session, workspace_id, user_id, reservation_id, *, missing_ok=False, object_deleted=False):
-    row = lock_for_cancellation(session, workspace_id, user_id, reservation_id, missing_ok=missing_ok)
+def cancel(session: Session, params: CancelParams) -> None:
+    """Cancel an open reservation and drop its object reference when deleted."""
+    row = lock_for_cancellation(
+        session,
+        params.workspace_id,
+        params.user_id,
+        params.reservation_id,
+        missing_ok=params.missing_ok,
+    )
     if row is None:
         return
-    if row.status == 'active':
-        row.status = 'cancelled'
-    if object_deleted and row.status != 'completed':
-        row.details = {**row.details, 'object_name': None}
+    if row.status == "active":
+        row.status = "cancelled"
+    if params.object_deleted and row.status != "completed":
+        row.details = {**row.details, "object_name": None}
     session.commit()
 
 
-def cleanup(session, multipart_root, *, upload_root=None, storage_factory=None):
+def _reclaim_expired_object(
+    session: Session,
+    reservation_id: str,
+    row: UploadReservation,
+    storage_factory: StorageFactory | None,
+) -> bool:
+    """Delete the unreferenced object of an expired session; False means retry later."""
+    object_name = cast("str | None", row.details.get("object_name"))
+    if not object_name:
+        return True
+    referenced = session.scalar(
+        select(File.id).where(File.file_path == object_name).limit(1),
+    )
+    if referenced is not None:
+        return True
+    if storage_factory is None:
+        return False
+    # Do not acknowledge cleanup until deletion succeeds. A storage outage keeps
+    # this journal eligible for the next Worker retry.
+    try:
+        storage_factory().delete_file(object_name)
+    except Exception:
+        session.rollback()
+        logger.warning(
+            "Upload object cleanup deferred for reservation {}", reservation_id,
+        )
+        return False
+    return True
+
+
+def cleanup(
+    session: Session,
+    multipart_root: str,
+    *,
+    upload_root: str | None = None,
+    storage_factory: StorageFactory | None = None,
+) -> int:
     """Reclaim expired/closed sessions under the same locks as writers."""
-    import re
-    from app.infra.multipart_cleanup import remove_multipart_upload
     now = utc_now()
-    ids = session.execute(select(UploadReservation.id, UploadReservation.workspace_id, UploadReservation.user_id)
-        .where(UploadReservation.cleaned_at.is_(None),
-               or_(UploadReservation.status != 'active', UploadReservation.expires_at <= now))
-        .order_by(UploadReservation.expires_at).limit(1000)).all()
+    rows = session.execute(
+        select(
+            UploadReservation.id,
+            UploadReservation.workspace_id,
+            UploadReservation.user_id,
+        )
+        .where(
+            UploadReservation.cleaned_at.is_(None),
+            or_(
+                UploadReservation.status != "active",
+                UploadReservation.expires_at <= now,
+            ),
+        )
+        .order_by(UploadReservation.expires_at)
+        .limit(1000),
+    ).all()
     removed = 0
-    for reservation_id, workspace_id, user_id in ids:
+    for reservation_id, workspace_id, user_id in rows:
         lock_owners(session, workspace_id, user_id)
-        row = session.scalar(select(UploadReservation).where(UploadReservation.id == reservation_id)
-                             .with_for_update().execution_options(populate_existing=True))
-        if row is None or row.cleaned_at is not None or (row.status == 'active' and row.expires_at > now):
+        row = session.scalar(
+            select(UploadReservation)
+            .where(UploadReservation.id == reservation_id)
+            .with_for_update()
+            .execution_options(populate_existing=True),
+        )
+        if (
+            row is None
+            or row.cleaned_at is not None
+            or (row.status == "active" and row.expires_at > now)
+        ):
             session.rollback()
             continue
-        from app.infra.upload_staging import staging_guard
-        from contextlib import nullcontext
-        guard = staging_guard(upload_root, row.details.get('stage_id')) if upload_root else nullcontext(True)
+        guard = (
+            staging_guard(
+                upload_root, cast("str | None", row.details.get("stage_id")),
+            )
+            if upload_root
+            else nullcontext(_GUARD_ACQUIRED)
+        )
         with guard as acquired:
             if not acquired:
                 session.rollback()
                 continue
-            if row.status == 'active':
-                row.status = 'expired'
-            object_name = row.details.get('object_name')
-            if object_name:
-                referenced = session.scalar(select(File.id).where(File.file_path == object_name).limit(1))
-                if referenced is None:
-                    if storage_factory is None:
-                        session.rollback()
-                        continue
-                    # Do not acknowledge cleanup until deletion succeeds. A storage
-                    # outage keeps this journal eligible for the next Worker retry.
-                    try:
-                        storage_factory().delete_file(object_name)
-                    except Exception:
-                        session.rollback()
-                        from loguru import logger
-                        logger.warning('Upload object cleanup deferred for reservation {}', reservation_id)
-                        continue
+            if row.status == "active":
+                row.status = "expired"
+            if not _reclaim_expired_object(
+                session, reservation_id, row, storage_factory,
+            ):
+                session.rollback()
+                continue
             # Database identity cannot supply paths outside the upload root.
-            if workspace_id > 0 and re.fullmatch(r'[A-Za-z0-9_-]{8,128}', reservation_id):
-                removed += int(remove_multipart_upload(multipart_root, workspace_id, reservation_id))
+            if workspace_id > 0 and re.fullmatch(
+                r"[A-Za-z0-9_-]{8,128}", reservation_id,
+            ):
+                removed += int(
+                    remove_multipart_upload(
+                        multipart_root, workspace_id, reservation_id,
+                    ),
+                )
             row.cleaned_at = now
             session.commit()
     # Retain recent closed-session responses; admission charges outlive the session.
-    session.execute(delete(UploadReservation).where(UploadReservation.cleaned_at.is_not(None),
-                    UploadReservation.expires_at < now - timedelta(days=7)))
-    session.execute(delete(UploadDailyUsage).where(UploadDailyUsage.day < (now - timedelta(days=90)).date()))
+    session.execute(
+        delete(UploadReservation).where(
+            UploadReservation.cleaned_at.is_not(None),
+            UploadReservation.expires_at < now - timedelta(days=7),
+        ),
+    )
+    session.execute(
+        delete(UploadDailyUsage).where(
+            UploadDailyUsage.day < (now - timedelta(days=90)).date(),
+        ),
+    )
     session.commit()
     return removed

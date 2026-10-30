@@ -1,43 +1,82 @@
-"""云盘 RAG 对话：多查询向量召回、RRF 融合、Rerank，经 SSE 流式输出回答。"""
+"""云盘 RAG 对话: 多查询向量召回、RRF 融合、Rerank, 经 SSE 流式输出回答."""
 
-from contextlib import aclosing
+from __future__ import annotations
+
 import os
+from contextlib import aclosing
 from functools import lru_cache
 from operator import itemgetter
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import Runnable, RunnableParallel, RunnableLambda
+from langchain_core.runnables import Runnable, RunnableLambda, RunnableParallel
 from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 
-from app.infra.extensions import SessionLocal
 from app.features.chat import repository
-from app.features.chat.stream_events import stream_chat_events
-from app.infra.llm.config import get_chat_model_config, get_embedding_model_config
-from app.infra.owned_work import closeable_event_stream
 from app.features.chat.query_rewrite import (
+    RewriteKeywordDimensions,
     build_multi_queries,
     build_retrieval_query,
     require_keyword_dimensions,
-    RewriteKeywordDimensions,
 )
 from app.features.chat.rerank import rerank_documents
 from app.features.chat.retrieval_service import (
-    RagRetrievalService, RetrievalSettings, RetrievalOperations, VectorSearch,
+    RagRetrievalService,
+    RetrievalOperations,
+    RetrievalSettings,
+    VectorSearch,
+)
+from app.features.chat.retrieval_service import (
     fuse_docs_with_rrf as _fuse_docs_with_rrf,
 )
+from app.features.chat.stream_events import stream_chat_events
+from app.infra.extensions import SessionLocal
+from app.infra.llm import client as llm_client
+from app.infra.llm.config import get_chat_model_config, get_embedding_model_config
+from app.infra.owned_work import closeable_event_stream
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Callable
+
+    from app.infra.llm.usage import TokenUsage
+
+
+class _StructuredChat(Protocol):
+    """The typed SDK structured-output entry point used by this pipeline."""
+
+    def with_structured_output(
+        self, schema: type[BaseModel], *, strict: bool,
+    ) -> Runnable[Any, Any]:
+        """Bind the supplied Pydantic schema to a structured runnable."""
+        ...
+
+
+class _QuestionPayload(TypedDict, total=False):
+    """Inputs the parallel rewrite branch passes to the embedder."""
+
+    question: str
+    user_id: int
+
+
+class _RetrievalPayload(TypedDict):
+    """Inputs the multi-query retrieval branch joins together."""
+
+    question: str
+    workspace_id: int
+    rewrite_output: object
+    original_vector: list[float] | None
+    user_id: int
 
 
 def _env_int(name: str, default: int) -> int:
     try:
         value = int(os.getenv(name, str(default)))
-        return value if value > 0 else default
     except (TypeError, ValueError):
         return default
+    return value if value > 0 else default
 
 
 RAG_VECTOR_FETCH_K = _env_int("RAG_VECTOR_FETCH_K", 20)
@@ -47,7 +86,8 @@ RAG_FUSION_TOP_K = _env_int("RAG_FUSION_TOP_K", 30)
 
 
 @lru_cache(maxsize=1)
-def get_chat_model():
+def get_chat_model() -> ChatOpenAI:
+    """Return the cached chat model used for rewriting and answering."""
     config = get_chat_model_config()
 
     return ChatOpenAI(
@@ -59,11 +99,11 @@ def get_chat_model():
 
 
 @lru_cache(maxsize=1)
-def get_embeddings_model():
-    from app.infra.llm.client import TrackingOpenAIEmbeddings
+def get_embeddings_model() -> llm_client.TrackingOpenAIEmbeddings:
+    """Return the cached embeddings client that records token usage."""
     config = get_embedding_model_config()
 
-    return TrackingOpenAIEmbeddings(
+    return llm_client.TrackingOpenAIEmbeddings(
         api_key=SecretStr(config["key"]),
         base_url=config["api"],
         model=config["model"],
@@ -77,7 +117,7 @@ def _vector_search_docs(
         limit: int,
         user_id: int,
 ) -> list[Document]:
-    """按已生成的向量查询数据库；由调用方异步请求 embedding。"""
+    """按已生成的向量查询数据库; 由调用方异步请求 embedding."""
     return _db_search_by_vector(query_vector, query_text, workspace_id, limit, user_id)
 
 
@@ -88,13 +128,15 @@ def _db_search_by_vector(
         limit: int,
         user_id: int,
 ) -> list[Document]:
-    """用预计算向量查库；独立 session 保证线程池并发安全。"""
-    results = repository.vector_rows(SessionLocal, query_vector, workspace_id, user_id, limit)
+    """用预计算向量查库; 独立 session 保证线程池并发安全."""
+    results = repository.vector_rows(
+        SessionLocal, query_vector, workspace_id, user_id, limit,
+    )
 
     docs: list[Document] = []
     for rank, row in enumerate(results, start=1):
         content = f"文件名: {row[2]}\n内容: {row[3]}"
-        metadata = {
+        metadata: dict[str, Any] = {
             "id": row[1],
             "retrieval_id": f"chunk:{row[0]}",
             "name": row[2],
@@ -111,55 +153,84 @@ def _db_search_by_vector(
 
 def _retrieval_service(search: VectorSearch) -> RagRetrievalService:
     return RagRetrievalService(
-        RetrievalSettings(RAG_VECTOR_FETCH_K, RAG_MULTI_QUERY_MAX_QUERIES, RAG_RRF_K, RAG_FUSION_TOP_K),
-        RetrievalOperations(get_embeddings_model, search, rerank_documents,
-                            build_multi_queries, build_retrieval_query, _fuse_docs_with_rrf),
+        RetrievalSettings(
+            RAG_VECTOR_FETCH_K, RAG_MULTI_QUERY_MAX_QUERIES,
+            RAG_RRF_K, RAG_FUSION_TOP_K,
+        ),
+        RetrievalOperations(
+            get_embeddings_model, search, rerank_documents,
+            build_multi_queries, build_retrieval_query, _fuse_docs_with_rrf,
+        ),
     )
 
 
-async def custom_db_retriever(query_text: str, workspace_id: int, *, user_id: int):
+async def custom_db_retriever(
+    query_text: str, workspace_id: int, *, user_id: int,
+) -> list[Document]:
     """Single recall/rerank; the SQL port checks current membership."""
-    return await _retrieval_service(_vector_search_docs).single_query(query_text, workspace_id, user_id=user_id)
+    service = _retrieval_service(_vector_search_docs)
+    return await service.single_query(query_text, workspace_id, user_id=user_id)
 
 
-async def multi_query_db_retriever(question: str, workspace_id: int, dimensions: RewriteKeywordDimensions,
-                                 original_vector: list[float] | None = None, *, user_id: int):
+async def multi_query_db_retriever(
+    question: str,
+    workspace_id: int,
+    dimensions: RewriteKeywordDimensions,
+    original_vector: list[float] | None = None,
+    *,
+    user_id: int,
+) -> list[Document]:
     """Parallel recall/fusion/rerank, optionally reusing the original embedding."""
-    return await _retrieval_service(_db_search_by_vector).multi_query(
-        question, workspace_id, dimensions, original_vector, user_id=user_id)
+    service = _retrieval_service(_db_search_by_vector)
+    return await service.multi_query(
+        question, workspace_id, dimensions, original_vector, user_id=user_id,
+    )
 
 
-def format_docs(docs):
-    formatted = []
+def format_docs(docs: list[Document]) -> str:
+    """Render retrieved chunks for the final-answer prompt."""
+    formatted: list[str] = []
     for doc in docs:
         m = doc.metadata
         info = f"[文件: {m['name']} (ID: {m['id']})]\n{doc.page_content}"
         if m.get("page_number"):
-            info = f"[文件: {m['name']} (ID: {m['id']}，第 {m['page_number']} 页)]\n{doc.page_content}"
-        # 图片需提示模型用固定 Markdown 路径引用，前端才能渲染
-        if m.get('mime_type', '').startswith('image/'):
-            info += f"\n(这是一张图片，你可以使用 Markdown 语法展示它: ![图片名](/api/files/{m['id']}/download))"
+            info = (
+                f"[文件: {m['name']} (ID: {m['id']}, 第 {m['page_number']} 页)]"
+                f"\n{doc.page_content}"
+            )
+        # 图片需提示模型用固定 Markdown 路径引用, 前端才能渲染
+        if m.get("mime_type", "").startswith("image/"):
+            info += (
+                "\n(这是一张图片, 你可以使用 Markdown 语法展示它: "
+                f"![图片名](/api/files/{m['id']}/download))"
+            )
         formatted.append(info)
     return "\n\n---\n\n".join(formatted)
 
 
-def format_history(history):
+def format_history(history: list[dict[str, Any]] | str | None) -> str:
+    """Render the chat history for prompt interpolation."""
     if isinstance(history, list):
-        return "\n".join([f"{h.get('role', 'user')}: {h.get('content', '')}" for h in history])
+        return "\n".join([
+            f"{h.get('role', 'user')}: {h.get('content', '')}" for h in history
+        ])
     return str(history) if history else ""
 
 
-async def embed_original_question(payload: dict) -> list[float]:
-    """预计算原问题 embedding，与关键词改写并行以缩短首 token 延迟。"""
+async def embed_original_question(payload: _QuestionPayload) -> list[float]:
+    """预计算原问题 embedding, 与关键词改写并行以缩短首 token 延迟."""
     question = str(payload.get("question", "") or "").strip()
     if not question:
         return []
     embeddings = get_embeddings_model()
-    vector = await embeddings.aembed_query(question, user_id=int(payload.get("user_id") or 0))
+    vector = await embeddings.aembed_query(
+        question, user_id=int(payload.get("user_id") or 0),
+    )
     return vector[:1024]
 
 
-async def retrieve_docs_with_rewrite(payload: dict):
+async def retrieve_docs_with_rewrite(payload: _RetrievalPayload) -> list[Document]:
+    """Run multi-query retrieval for the rewritten keyword dimensions."""
     question = str(payload.get("question", "") or "")
     rewrite_output = payload.get("rewrite_output")
     original_vector = payload.get("original_vector") or None
@@ -172,61 +243,68 @@ async def retrieve_docs_with_rewrite(payload: dict):
     )
 
 
-async def generate_chat_events(user_id: int, workspace_id: int, query: str, history: list):
-    """SSE 异步生成器：关键词 → 检索状态 → 回答 token，并统一记 token 用量。"""
-    from app.infra.llm.client import record_llm_usage
+def _record_chat_usage(usage: TokenUsage) -> None:
+    """Persist one chat usage record through the shared LLM accounting entry."""
+    llm_client.record_llm_usage(usage=usage)
 
+
+async def generate_chat_events(
+    user_id: int, workspace_id: int, query: str, history: list[dict[str, str]],
+) -> AsyncGenerator[str, None]:
+    """SSE 异步生成器: 关键词 -> 检索状态 -> 回答 token, 并统一记 token 用量."""
     llm = get_chat_model()
     formatted_history = format_history(history)
 
-    # 关键词重写：多维度 JSON，便于下游拼接多路查询
+    # 关键词重写: 多维度 JSON, 便于下游拼接多路查询
     rewrite_prompt = ChatPromptTemplate.from_template("""
 请从用户问题中提取检索关键词。
-输出要求：
-1. 主题词（topic_terms）
-2. 实体词（entity_terms）
-3. 时间词（time_terms）
-4. 文件类型词（file_type_terms）
-5. 动作词（action_terms）
-6. 同义扩展词（synonym_terms）
+输出要求:
+1. 主题词(topic_terms)
+2. 实体词(entity_terms)
+3. 时间词(time_terms)
+4. 文件类型词(file_type_terms)
+5. 动作词(action_terms)
+6. 同义扩展词(synonym_terms)
 
-要求：
-1. 使用与用户问题相同的语言输出关键词（中文问题输出中文，英文问题输出英文）。
+要求:
+1. 使用与用户问题相同的语言输出关键词(中文问题输出中文, 英文问题输出英文)。
 2. 在 synonym_terms 中可补充跨语言同义词以提高召回率。
 3. 无内容时返回空数组。
 4. 不要编造无关词。
 
-问题：{question}
+问题:{question}
 """)
-    rewrite_llm = llm.with_structured_output(
+    rewrite_llm = cast("_StructuredChat", llm).with_structured_output(
         RewriteKeywordDimensions, strict=False)
-    rewriter = (rewrite_prompt | rewrite_llm).with_config(
+    rewriter: Runnable[Any, Any] = (rewrite_prompt | rewrite_llm).with_config(
         {"run_name": "keyword_gen"})
 
     answer_prompt = ChatPromptTemplate.from_template("""
 你是一个云盘助手。请根据以下参考信息回答用户问题。
 
-### 指令要求：
+### 指令要求:
 1. 请使用中文回答。
 2. **严禁在回答开头输出搜索关键词。** 直接开始你的回答。
-3. **展示图片：** 如果参考信息中有图片且相关，必须严格按照以下格式展示：
+3. **展示图片:** 如果参考信息中有图片且相关, 必须严格按照以下格式展示:
    `![图片描述](/api/files/文件ID/download)`
-   注意：文件ID 必须替换为参考信息中提供的 ID。
+   注意: 文件ID 必须替换为参考信息中提供的 ID。
 4. 保持回答简洁专业。
 
-### 历史对话：
+### 历史对话:
 {history}
 
-### 参考信息：
+### 参考信息:
 {context}
 
-### 问题：
+### 问题:
 {question}
 """)
 
-    answer_chain = (
+    answer_chain: Runnable[Any, str] = (
             answer_prompt |
-            llm.with_config({"run_name": "final_answer_model", "tags": ["final_answer"]}) |
+            llm.with_config(
+                {"run_name": "final_answer_model", "tags": ["final_answer"]},
+            ) |
             StrOutputParser()
     ).with_config({"run_name": "final_answer_chain"})
 
@@ -234,29 +312,34 @@ async def generate_chat_events(user_id: int, workspace_id: int, query: str, hist
         "context": {
                        "rewrite_output": rewriter,
                        "original_vector": RunnableLambda(
-                           embed_original_question
+                           embed_original_question,
                        ).with_config({"run_name": "embed_original"}),
                        "question": itemgetter("question"),
                        "workspace_id": itemgetter("workspace_id"),
                        "user_id": itemgetter("user_id"),
                    } | RunnableLambda(retrieve_docs_with_rewrite).with_config(
-            {"run_name": "custom_db_retriever"}
+            {"run_name": "custom_db_retriever"},
         ) | format_docs,
         "question": itemgetter("question"),
         "history": itemgetter("history"),
     }
 
-    rag_chain = (
+    rag_chain: Runnable[Any, str] = (
             RunnableParallel(rag_steps)
             | answer_chain
     )
 
     events = stream_chat_events(
         lambda: closeable_event_stream(rag_chain.astream_events(
-            {"question": query, "history": formatted_history, "user_id": user_id, "workspace_id": workspace_id},
+            {
+                "question": query,
+                "history": formatted_history,
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+            },
             version="v2",
         )),
-        user_id=user_id, query=query, record_usage=record_llm_usage,
+        user_id=user_id, query=query, record_usage=_record_chat_usage,
     )
     async with aclosing(events):
         async for event in events:

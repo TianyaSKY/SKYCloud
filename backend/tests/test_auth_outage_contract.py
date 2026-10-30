@@ -31,7 +31,7 @@ async def test_auth_backend_fault_returns_unavailable_without_private_details(mo
     monkeypatch.setattr(sessions, 'valid_session', fault if stage == 'validate' else lambda *args: True)
     monkeypatch.setattr(token_service, 'get_active_mcp_token', fault if stage == 'validate' else lambda *args: True)
     monkeypatch.setattr(authentication.account_repository, 'current_role', fault if stage == 'role' else lambda *args: 'common')
-    monkeypatch.setattr(authentication.user_service, '_get_user_data', fault if stage == 'profile' else lambda *args: {'id': 1, 'role': 'common'})
+    monkeypatch.setattr(authentication.user_service, 'get_user_data', fault if stage == 'profile' else lambda *args: {'id': 1, 'role': 'common'})
     payload = {'sub': '1', 'ver': 0}
     if kind == 'mcp': payload['type'] = 'mcp'
     app = FastAPI()
@@ -56,7 +56,9 @@ async def test_browser_family_store_outage_propagates_unavailable(monkeypatch):
     raw = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
     credentials = dependencies.HTTPAuthorizationCredentials(scheme='Bearer', credentials=raw)
     with pytest.raises(HTTPException) as error:
-        await dependencies.get_current_user(credentials, Mock(), lambda: nullcontext(Mock()))
+        await dependencies.get_current_user(
+            credentials=credentials, session_factory=lambda: nullcontext(Mock()),
+        )
     assert error.value.status_code == 503
 
 
@@ -70,6 +72,8 @@ async def test_invalid_subject_stays_unauthorized_without_store_access(sub, kind
     raw = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
     credentials = dependencies.HTTPAuthorizationCredentials(scheme='Bearer', credentials=raw)
     with pytest.raises(HTTPException) as error:
-        await dependencies.get_current_user(credentials, Mock(), factory)
+        await dependencies.get_current_user(
+            credentials=credentials, session_factory=factory,
+        )
     assert error.value.status_code == 401
     factory.assert_not_called()

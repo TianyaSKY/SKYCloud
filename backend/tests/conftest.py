@@ -6,6 +6,7 @@
 import io
 import os
 import sys
+from tempfile import TemporaryDirectory
 
 # ---------------------------------------------------------------------------
 # 1. 环境变量（必须在 app 包导入前设置）
@@ -28,7 +29,8 @@ os.environ["POSTGRES_HOST"] = "127.0.0.1"
 os.environ["POSTGRES_PORT"] = "5432"
 os.environ["POSTGRES_DB"] = "test"
 os.environ["DEFAULT_MODEL_PWD"] = "test-key"
-os.environ["UPLOAD_FOLDER"] = "E:/PycharmProjects/SKYCloud/.test-tmp/uploads"
+_test_upload_root = TemporaryDirectory(prefix="skycloud-pytest-")
+os.environ["UPLOAD_FOLDER"] = os.path.join(_test_upload_root.name, "uploads")
 # RabbitMQ 快速失败：避免测试中连接重试等待（测试环境无可用 RabbitMQ）
 os.environ["RABBITMQ_RECONNECT_DELAY_SECONDS"] = "0"
 os.environ["RABBITMQ_CONNECTION_ATTEMPTS"] = "1"
@@ -44,6 +46,9 @@ if _backend_dir not in sys.path:
 # 1.5 Mock 重量级第三方库（langchain / openai / docker）避免版本冲突和不必要连接
 # ---------------------------------------------------------------------------
 from unittest.mock import MagicMock
+
+import langchain.agents
+import langchain.tools
 
 
 class _FakeToolWrapper:
@@ -98,25 +103,12 @@ class _FakeFastMCP:
 
 
 _MOCK_MODULES = [
-    "langchain",
-    "langchain.tools",
-    "langchain_core",
-    "langchain_core.exceptions",
-    "langchain_core.documents",
-    "langchain_core.output_parsers",
-    "langchain_core.prompts",
-    "langchain_core.runnables",
     "langchain_openai",
     "langchain_openai.chat_models",
     "langchain_openai.chat_models.base",
     "langchain_openai.chat_models.azure",
     "langchain_openai.embeddings",
-    "langgraph",
-    "langgraph.prebuilt",
-    "mcp",
-    "mcp.server",
     "mcp.server.fastmcp",
-    "openai",
     "docker",
     "cv2",
     "fitz",
@@ -291,7 +283,7 @@ def mock_task_queue():
 def mock_object_storage():
     """所有单元测试使用内存对象存储，避免访问真实 MinIO。"""
     storage = InMemoryStorageClient()
-    with patch("app.infra.storage._storage_client", storage):
+    with patch("app.infra.storage._holder.client", storage):
         yield storage
 
 

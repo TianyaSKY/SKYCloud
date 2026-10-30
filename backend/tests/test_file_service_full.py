@@ -5,6 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.features.file.multipart_service import SaveMultipartChunkParams
+from app.features.file.search_service import SearchFilesParams
+from app.features.file.service import GetFilesAndFoldersParams
+from app.features.file.upload_service import CloneSourceParams
+
 
 class TestFileServiceClone:
     @pytest.fixture(autouse=True)
@@ -27,13 +32,10 @@ class TestFileServiceClone:
         session.add(source)
         session.commit()
 
-        with patch("app.features.file.service._clear_search_cache"):
-            new_file = _clone_existing_file(
-                session, source,
-                filename="b.txt", workspace_id=test_workspace.id,
-                uploader_id=1, parent_id=None,
-                mime_type="text/plain", content_hash="a" * 64,
-            )
+        with patch("app.features.file.service.clear_search_cache"):
+            new_file = _clone_existing_file(session, CloneSourceParams(source_file=source, filename="b.txt", workspace_id=test_workspace.id,
+            uploader_id=1, parent_id=None,
+            mime_type="text/plain", content_hash="a" * 64,))
         assert new_file.name == "b.txt"
         assert new_file.status == "success"
         assert new_file.description == "desc"
@@ -53,13 +55,10 @@ class TestFileServiceClone:
         session.commit()
 
         with patch("app.features.file.service._invalidate_processing_cache") as mock_q, \
-             patch("app.features.file.service._clear_search_cache"):
-            new_file = _clone_existing_file(
-                session, source,
-                filename="c.txt", workspace_id=test_workspace.id,
-                uploader_id=1, parent_id=None,
-                mime_type=None, content_hash="b" * 64,
-            )
+             patch("app.features.file.service.clear_search_cache"):
+            new_file = _clone_existing_file(session, CloneSourceParams(source_file=source, filename="c.txt", workspace_id=test_workspace.id,
+            uploader_id=1, parent_id=None,
+            mime_type=None, content_hash="b" * 64,))
         assert new_file.status == "pending"
         assert new_file.description is None
         mock_q.assert_called_once()
@@ -80,12 +79,9 @@ class TestFileServiceClone:
 
         with patch("app.features.file.service._persist_file_record", side_effect=Exception("DB error")):
             with pytest.raises(ServiceOperationError):
-                _clone_existing_file(
-                    session, source,
-                    filename="d.txt", workspace_id=test_workspace.id,
-                    uploader_id=1, parent_id=None,
-                    mime_type="text/plain", content_hash="c" * 64,
-                )
+                _clone_existing_file(session, CloneSourceParams(source_file=source, filename="d.txt", workspace_id=test_workspace.id,
+                uploader_id=1, parent_id=None,
+                mime_type="text/plain", content_hash="c" * 64,))
 
 
 class TestFileServicePreflight:
@@ -127,7 +123,7 @@ class TestFileServicePreflight:
         session.add(source)
         session.commit()
         mock_object_storage.objects[source.file_path] = b"0123456789"
-        with patch("app.features.file.service._clear_search_cache"):
+        with patch("app.features.file.service.clear_search_cache"):
             result = preflight_file_upload(session, test_workspace.id, 1, {
                 "filename": "new.txt", "total_size": 10, "content_hash": "f" * 64
             })
@@ -238,7 +234,7 @@ class TestFileServiceMultipart:
 
             chunk = MagicMock()
             chunk.save = lambda p: open(p, "wb").write(b"a" * 10)
-            res = save_multipart_chunk(session, 1, test_workspace.id, upload_id, 0, chunk)
+            res = save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=1, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=0, chunk=chunk))
         assert res["chunk_index"] == 0
 
     def test_complete_multipart_upload(self, session, test_workspace, tmp_path):
@@ -254,7 +250,7 @@ class TestFileServiceMultipart:
             for i in range(2):
                 chunk = MagicMock()
                 chunk.save = lambda p, d=b"x" * 10: open(p, "wb").write(d)
-                save_multipart_chunk(session, 1, test_workspace.id, upload_id, i, chunk)
+                save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=1, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=i, chunk=chunk))
             with patch("app.features.file.service._invalidate_processing_cache"):
                 f = complete_multipart_upload(session, test_workspace.id, 1, upload_id)
             assert f.name == "comp.txt"
@@ -277,9 +273,9 @@ class TestFileServiceMultipart:
 
 class TestFileServiceSearch:
     async def test_search_files_vector_no_config(self, session, test_workspace):
-        from app.features.file.service import search_files
+        from app.features.file.search_service import search_files
         with patch("app.features.file.search_service.get_embedding_model_config", side_effect=Exception("No config")):
-            result = await search_files(session, test_workspace.id, "test", 1, 10, "vector")
+            result = await search_files(session, test_workspace.id, SearchFilesParams(query="test", page=1, page_size=10, search_type="vector"))
         assert "error" in result
 
     def test_get_files_and_folders(self, session, test_workspace):
@@ -288,7 +284,7 @@ class TestFileServiceSearch:
         folder = Folder(name="gff", workspace_id=test_workspace.id, parent_id=None)
         session.add(folder)
         session.commit()
-        result = get_files_and_folders(session, test_workspace.id, None, 1, 10)
+        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=None, page=1, page_size=10))
         assert "folders" in result
 
     def test_get_files_and_folders_with_name(self, session, test_workspace):
@@ -298,12 +294,12 @@ class TestFileServiceSearch:
         f2 = Folder(name="beta", workspace_id=test_workspace.id, parent_id=None)
         session.add_all([f1, f2])
         session.commit()
-        result = get_files_and_folders(session, test_workspace.id, None, 1, 10, name="alpha", sort_by="name", order="asc")
+        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=None, page=1, page_size=10, name="alpha", sort_by="name", order="asc"))
         assert len(result["folders"]) == 1
 
     def test_get_files_and_folders_sort_size(self, session, test_workspace):
         from app.features.file.service import get_files_and_folders
-        result = get_files_and_folders(session, test_workspace.id, None, 1, 10, sort_by="size", order="asc")
+        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=None, page=1, page_size=10, sort_by="size", order="asc"))
         assert "folders" in result
 
     def test_get_all_files(self, session, test_workspace):
@@ -312,7 +308,7 @@ class TestFileServiceSearch:
         assert isinstance(result, list)
 
     async def test_embedding_desc(self):
-        from app.features.file.service import embedding_desc
+        from app.features.file.search_service import embedding_desc
         with patch("app.infra.llm.client._get_client") as mock_gc:
             mock_client = MagicMock()
             mock_resp = MagicMock()
@@ -324,7 +320,7 @@ class TestFileServiceSearch:
         assert result == [0.1, 0.2]
 
     async def test_embedding_desc_error(self):
-        from app.features.file.service import embedding_desc
+        from app.features.file.search_service import embedding_desc
         with patch("app.infra.llm.client._get_client", side_effect=Exception("fail")):
             result = await embedding_desc("test", {"api": "x", "key": "y", "model": "z"})
         assert result == []
@@ -416,7 +412,7 @@ class TestFileServiceSearch:
         upload.save = lambda p: open(p, "w").write("x")
         with patch("app.features.file.service._invalidate_processing_cache"), \
              patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)), \
-             patch("app.features.file.service._clear_search_cache"):
+             patch("app.features.file.service.clear_search_cache"):
             f = create_file(session, upload, {"workspace_id": test_workspace.id, "uploader_id": 1})
             updated = update_file(session, f.id, {"name": "renamed.txt"})
         assert updated.name == "renamed.txt"
@@ -433,13 +429,13 @@ class TestFileServiceSearch:
         session.commit()
         with patch("app.features.file.service._invalidate_processing_cache"), \
              patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)), \
-             patch("app.features.file.service._clear_search_cache"):
+             patch("app.features.file.service.clear_search_cache"):
             f = create_file(session, upload, {"workspace_id": test_workspace.id, "uploader_id": 1})
             updated = update_file(session, f.id, {"parent_id": folder.id})
         assert updated.parent_id == folder.id
 
     def test_search_files_empty_query(self, session, test_workspace):
-        from app.features.file.service import search_files
+        from app.features.file.search_service import search_files
         import asyncio
-        result = asyncio.run(search_files(session, test_workspace.id, "", 1, 10, "fuzzy"))
+        result = asyncio.run(search_files(session, test_workspace.id, SearchFilesParams(query="", page=1, page_size=10, search_type="fuzzy")))
         assert result["total"] == 0

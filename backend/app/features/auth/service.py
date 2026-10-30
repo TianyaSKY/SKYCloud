@@ -1,98 +1,133 @@
-"""认证与会话：JWT 签发/解析、登录注册，以及 MCP Token 与登录生命周期联动。"""
+"""认证与会话:JWT 签发/解析、登录注册,以及 MCP Token 与登录生命周期联动."""
 
-import datetime as _dt
+import datetime as dt
 import uuid
+from collections.abc import Mapping
+from typing import TypedDict, cast
 
 import jwt
 from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.exceptions import AuthenticationError, BusinessRuleError, ServiceOperationError
+from app.features.auth import sessions as auth_sessions
+from app.features.auth import user_service
+from app.features.auth.legacy_admin import LEGACY_ADMIN_HASH
 from app.infra.extensions import SECRET_KEY
-from app.models.user import User
+from app.mcp import runtime_token_service
 from app.mcp import token_service as mcp_token_service
-from app.features.auth.user_service import create_user
+from app.models.user import User
 
 
-def generate_token(user_id, auth_version: int = 0, *, session_id: str | None = None):
-    """签发十五分钟访问 JWT；浏览器会话额外绑定可撤销的刷新会话。"""
+def generate_token(
+    user_id: int, auth_version: int = 0, *, session_id: str | None = None,
+) -> str | None:
+    """签发十五分钟访问 JWT;浏览器会话额外绑定可撤销的刷新会话."""
     try:
         payload = {
-            "exp": _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(minutes=15),
-            "iat": _dt.datetime.now(_dt.timezone.utc),
+            "exp": dt.datetime.now(dt.UTC) + dt.timedelta(minutes=15),
+            "iat": dt.datetime.now(dt.UTC),
             "sub": str(user_id),
             "ver": auth_version,
         }
         if session_id is not None:
-            payload['sid'] = session_id
+            payload["sid"] = session_id
         return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
-
     except Exception as e:
+        # JWT signing crosses the configured cryptographic backend. Preserve the
+        # no-token fallback and log only the error class, never signing details.
         logger.error("Access token generation failed: error_type={}", type(e).__name__)
         return None
 
 
 def generate_mcp_token(
-        user_id: int, expires_at: _dt.datetime | None = None
+    user_id: int, expires_at: dt.datetime | None = None,
 ) -> str | None:
-    """签发 MCP 专用长效 JWT（默认 365 天），带 jti 以便服务端撤销。
+    """签发 MCP 专用长效 JWT(默认 365 天),带 jti 以便服务端撤销.
 
-    供 Claude Desktop、Cursor 等 MCP 客户端长期配置，与会话 Token 分离。
+    供 Claude Desktop、Cursor 等 MCP 客户端长期配置,与会话 Token 分离.
     """
     try:
-        expires_at = expires_at or (
-                _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365)
-        )
+        expiry = expires_at or (dt.datetime.now(dt.UTC) + dt.timedelta(days=365))
         payload = {
-            "exp": expires_at,
-            "iat": _dt.datetime.now(_dt.timezone.utc),
+            "exp": expiry,
+            "iat": dt.datetime.now(dt.UTC),
             "sub": str(user_id),
             "type": "mcp",
             "jti": str(uuid.uuid4()),
         }
         return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
     except Exception as e:
+        # Long-lived signing has the same backend failure boundary as access
+        # tokens; clients must not receive raw key or provider error details.
         logger.error("MCP token generation failed: error_type={}", type(e).__name__)
         return None
 
 
-def decode_token(session: Session, token):
-    """解析 JWT；MCP 类型额外查库校验是否已撤销或过期。
+def decode_token(session: Session, token: str) -> str:
+    """解析 JWT;MCP 类型额外查库校验是否已撤销或过期.
 
-    成功返回 sub（用户 ID 字符串），失败返回可展示的错误文案。
+    成功返回 sub(用户 ID 字符串),失败返回可展示的错误文案.
     """
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        if payload.get("type") == "mcp":
-            from app.mcp import token_service as mcp_token_service
-
-            if not mcp_token_service.get_active_mcp_token(session, token):
-                return "MCP token revoked or expired. Please create a new token."
-        elif payload.get("type") == "mcp_runtime":
-            from app.mcp import runtime_token_service
-
-            if not runtime_token_service.validate_runtime_token(session, token):
-                return (
-                    "MCP runtime token revoked, expired, stopped, or unbound. "
-                    "Please restart the runtime."
-                )
-        if payload.get("type") not in {None, "mcp", "mcp_runtime"}:
-            return "Invalid token scope. Please log in again."
-        if payload.get("type") is None:
-            from app.features.auth.sessions import valid_session
-            if not valid_session(session, payload):
-                return "Session revoked. Please log in again."
-        return payload["sub"]
+        subject = _decoded_subject(session, token)
     except jwt.ExpiredSignatureError:
         return "Token expired. Please log in again."
     except jwt.InvalidTokenError:
         return "Invalid token. Please log in again."
+    else:
+        return subject
 
 
-def authenticate_user(session: Session, username, password):
-    """校验用户名密码；成功返回 (token, role, user_id)，失败返回 (None, "common", None)。"""
+def _decoded_subject(session: Session, token: str) -> str:
+    """Decode and authorize the token within the caller's JWT error boundary."""
+    payload: Mapping[str, object] = jwt.decode(
+        token, SECRET_KEY, algorithms=["HS256"],
+    )
+    rejection = _token_rejection(session, token, payload)
+    if rejection is not None:
+        return rejection
+    # Tokens minted by this service always carry the subject claim.
+    return cast("str", payload["sub"])
+
+
+def _token_rejection(
+    session: Session, token: str, payload: Mapping[str, object],
+) -> str | None:
+    """Return the user-facing rejection for an otherwise valid JWT, if any."""
+    claim_scope = payload.get("type")
+    if claim_scope == "mcp" and not mcp_token_service.get_active_mcp_token(
+        session,
+        token,
+    ):
+        return "MCP token revoked or expired. Please create a new token."
+    if claim_scope == "mcp_runtime" and not (
+        runtime_token_service.validate_runtime_token(session, token)
+    ):
+        return (
+            "MCP runtime token revoked, expired, stopped, or unbound. "
+            "Please restart the runtime."
+        )
+    if claim_scope not in {None, "mcp", "mcp_runtime"}:
+        return "Invalid token scope. Please log in again."
+    if claim_scope is None and not auth_sessions.valid_session(session, payload):
+        return "Session revoked. Please log in again."
+    return None
+
+
+class LoginResult(TypedDict):
+    """Credential check outcome returned before the browser session exists."""
+
+    token: str
+    role: str | None
+    user_id: int | None
+
+
+def authenticate_user(
+    session: Session, username: str, password: str,
+) -> tuple[str | None, str | None, int | None]:
+    """校验用户名密码;失败返回 (None, "common", None)."""
     user = session.query(User).filter_by(username=username).first()
-    from app.features.auth.legacy_admin import LEGACY_ADMIN_HASH
     if user and user.role == "admin" and user.password_hash == LEGACY_ADMIN_HASH:
         return None, "common", None
     if user and user.check_password(password):
@@ -100,39 +135,49 @@ def authenticate_user(session: Session, username, password):
     return None, "common", None
 
 
-def login(session: Session, username: str, password: str) -> dict:
-    """验证凭据并组装登录响应，不自动签发外部 MCP 凭据。"""
+def login(session: Session, username: str, password: str) -> LoginResult:
+    """验证凭据并组装登录响应,不自动签发外部 MCP 凭据."""
     if not username or not password:
-        raise BusinessRuleError("Missing username or password")
+        message = "Missing username or password"
+        raise BusinessRuleError(message)
     token, role, user_id = authenticate_user(session, username, password)
     if not token:
-        raise AuthenticationError("Invalid username or password")
+        message = "Invalid username or password"
+        raise AuthenticationError(message)
     return {"token": token, "role": role, "user_id": user_id}
 
 
-def register_user(session: Session, username: str, password: str, avatar: str | None = None) -> User:
-    """注册用户；外部 MCP 凭据由显式签发接口创建。"""
+def register_user(
+    session: Session, username: str, password: str, avatar: str | None = None,
+) -> User:
+    """注册用户;外部 MCP 凭据由显式签发接口创建."""
     if not username or not password:
-        raise BusinessRuleError("Missing username or password")
+        message = "Missing username or password"
+        raise BusinessRuleError(message)
     existing = session.query(User).filter_by(username=username).first()
     if existing:
-        raise BusinessRuleError(f"Username '{username}' already exists")
+        message = f"Username '{username}' already exists"
+        raise BusinessRuleError(message)
     try:
-        user = create_user(session, {"username": username, "password": password, "avatar": avatar})
-        return user
+        user = user_service.create_user(
+            session, {"username": username, "password": password, "avatar": avatar},
+        )
     except Exception as exc:
         session.rollback()
         logger.error("User registration failed: error_type={}", type(exc).__name__)
-        raise ServiceOperationError("User registration failed") from exc
+        message = "User registration failed"
+        raise ServiceOperationError(message) from exc
+    else:
+        return user
 
 
-def get_mcp_token(session: Session, user_id: int) -> dict:
-    """获取用户 MCP Token 元数据；不签发或返回原始凭据。"""
+def get_mcp_token(session: Session, user_id: int) -> Mapping[str, object]:
+    """获取用户 MCP Token 元数据;不签发或返回原始凭据."""
     return mcp_token_service.get_user_mcp_token_payload(session, user_id)
 
 
-def refresh_mcp_token(session: Session, user_id: int) -> dict:
-    """刷新用户唯一 MCP Token。"""
+def refresh_mcp_token(session: Session, user_id: int) -> Mapping[str, object]:
+    """刷新用户唯一 MCP Token."""
     record, raw = mcp_token_service.refresh_user_mcp_token(session, user_id)
     return {
         "mcp_token": raw,
@@ -143,7 +188,6 @@ def refresh_mcp_token(session: Session, user_id: int) -> dict:
     }
 
 
-# 保留旧名兼容（内部若有引用）
-def issue_mcp_token(session: Session, user_id: int, name: str | None = None) -> dict:
-    """兼容旧接口：等价于 refresh（保证有且只有一个）。"""
+def issue_mcp_token(session: Session, user_id: int) -> Mapping[str, object]:
+    """兼容旧接口:等价于 refresh(保证有且只有一个)."""
     return refresh_mcp_token(session, user_id)

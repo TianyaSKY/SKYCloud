@@ -30,24 +30,25 @@ from app.exceptions import (
     ResourceNotFoundError,
     ServiceOperationError,
 )
+from app.features.file.deletion import clear_search_cache
+from app.features.file.repository import escape_like
+from app.features.file.search_service import _search_files_fuzzy
+from app.features.file.multipart_service import SaveMultipartChunkParams
 from app.features.file.service import (
     UPLOAD_FOLDER,
     _calculate_file_hash,
-    _clear_search_cache,
-    _escape_like,
     _generate_unique_filename,
     _get_reusable_source_file,
-    _list_uploaded_chunks,
-    _load_multipart_meta,
+    list_uploaded_chunks,
+    load_multipart_meta,
     _log_file_created,
-    _multipart_chunks_dir,
-    _multipart_meta_path,
-    _multipart_upload_dir,
+    multipart_chunks_dir,
+    multipart_meta_path,
+    multipart_upload_dir,
     _normalize_content_hash,
     _invalidate_processing_cache,
     _resolve_mime_type,
-    _safe_upload_id,
-    _search_files_fuzzy,
+    safe_upload_id,
     _write_multipart_meta,
     abort_multipart_upload,
     batch_create_files,
@@ -62,6 +63,7 @@ from app.features.file.service import (
     get_downloadable_file,
     get_file,
     get_files_and_folders,
+    GetFilesAndFoldersParams,
     get_multipart_upload_status,
     get_root_file_id,
     init_multipart_upload,
@@ -290,9 +292,9 @@ class TestFileServiceUtils:
 
     def test_escape_like(self):
         """转义 LIKE 通配符。"""
-        assert _escape_like("100%") == "100\\%"
-        assert _escape_like("a_b") == "a\\_b"
-        assert _escape_like("c\\d") == "c\\\\d"
+        assert escape_like("100%") == "100\\%"
+        assert escape_like("a_b") == "a\\_b"
+        assert escape_like("c\\d") == "c\\\\d"
 
     def test_normalize_content_hash_valid(self):
         """有效 SHA-256 哈希。"""
@@ -310,25 +312,25 @@ class TestFileServiceUtils:
         with pytest.raises(BusinessRuleError, match="Invalid content_hash"):
             _normalize_content_hash("tooshort")
 
-    def test_safe_upload_id_valid(self):
+    def testsafe_upload_id_valid(self):
         """有效 upload_id。"""
-        assert _safe_upload_id("abc12345") == "abc12345"
-        assert _safe_upload_id("A-b_C" * 4) == "A-b_C" * 4
+        assert safe_upload_id("abc12345") == "abc12345"
+        assert safe_upload_id("A-b_C" * 4) == "A-b_C" * 4
 
-    def test_safe_upload_id_invalid(self):
+    def testsafe_upload_id_invalid(self):
         """无效 upload_id。"""
         with pytest.raises(BusinessRuleError, match="Invalid upload_id"):
-            _safe_upload_id("")
+            safe_upload_id("")
         with pytest.raises(BusinessRuleError, match="Invalid upload_id"):
-            _safe_upload_id("ab")  # 太短
+            safe_upload_id("ab")  # 太短
         with pytest.raises(BusinessRuleError, match="Invalid upload_id"):
-            _safe_upload_id("has space")
+            safe_upload_id("has space")
 
-    def test_list_uploaded_chunks_empty(self, tmp_path):
+    def testlist_uploaded_chunks_empty(self, tmp_path):
         """空目录返回空列表。"""
-        assert _list_uploaded_chunks(str(tmp_path / "nonexist")) == []
+        assert list_uploaded_chunks(str(tmp_path / "nonexist")) == []
 
-    def test_list_uploaded_chunks(self, tmp_path):
+    def testlist_uploaded_chunks(self, tmp_path):
         """列出已上传分片。"""
         chunks_dir = tmp_path / "chunks"
         chunks_dir.mkdir()
@@ -336,7 +338,7 @@ class TestFileServiceUtils:
         (chunks_dir / "2.part").write_text("x")
         (chunks_dir / "1.part").write_text("x")
         (chunks_dir / "meta.json").write_text("{}")  # 非 .part 文件忽略
-        result = _list_uploaded_chunks(str(chunks_dir))
+        result = list_uploaded_chunks(str(chunks_dir))
         assert result == [0, 1, 2]
 
     def test_calculate_file_hash(self, tmp_path):
@@ -508,7 +510,7 @@ class TestFileServiceSearch:
             session.add(File(name=f"file{i}.txt", file_path=f"f{i}.txt", file_size=i * 10,
                              workspace_id=test_workspace.id, parent_id=root_id))
         session.commit()
-        result = get_files_and_folders(session, test_workspace.id, root_id, page=1, page_size=10)
+        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, page=1, page_size=10))
         assert "folders" in result
         assert "files" in result
         assert result["files"]["total"] >= 3
@@ -516,7 +518,7 @@ class TestFileServiceSearch:
     def test_get_files_and_folders_page_correction(self, session, test_workspace):
         """page < 1 时修正为 1。"""
         root_id = get_root_folder_id(session, test_workspace.id)
-        result = get_files_and_folders(session, test_workspace.id, root_id, page=0)
+        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, page=0))
         assert result["files"]["page"] == 1
 
     def test_get_files_and_folders_sort_by_name(self, session, test_workspace, test_user):
@@ -527,8 +529,7 @@ class TestFileServiceSearch:
         session.add(File(name="aaa.txt", file_path="a.txt", file_size=1,
                          workspace_id=test_workspace.id, parent_id=root_id))
         session.commit()
-        result = get_files_and_folders(session, test_workspace.id, root_id,
-                                       sort_by="name", order="asc")
+        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, sort_by="name", order="asc"))
         names = [f["name"] for f in result["files"]["items"]]
         if len(names) >= 2:
             assert names[0] <= names[1]
@@ -539,7 +540,7 @@ class TestFileServiceSearch:
         session.add(File(name="unique_xyz.txt", file_path="ux.txt", file_size=1,
                          workspace_id=test_workspace.id, parent_id=root_id))
         session.commit()
-        result = get_files_and_folders(session, test_workspace.id, root_id, name="unique_xyz")
+        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, name="unique_xyz"))
         assert result["files"]["total"] >= 1
 
     def test_search_files_fuzzy(self, session, test_workspace, test_user):
@@ -610,27 +611,27 @@ class TestMultipartUpload:
             loaded = json.load(f)
         assert loaded["upload_id"] == "test123"
 
-    def test_load_multipart_meta_not_found(self, tmp_path, monkeypatch):
+    def testload_multipart_meta_not_found(self, tmp_path, monkeypatch):
         """元数据不存在抛 404。"""
         monkeypatch.setattr("app.features.file.service.MULTIPART_ROOT", str(tmp_path))
         with pytest.raises(ResourceNotFoundError, match="not found"):
-            _load_multipart_meta(1, "nonexist_upload_id_12345678")
+            load_multipart_meta(1, "nonexist_upload_id_12345678")
 
-    def test_load_multipart_meta_wrong_workspace(self, tmp_path, monkeypatch):
+    def testload_multipart_meta_wrong_workspace(self, tmp_path, monkeypatch):
         """workspace_id 不匹配抛 PermissionDeniedError。"""
         monkeypatch.setattr("app.features.file.service.MULTIPART_ROOT", str(tmp_path))
-        upload_dir = _multipart_upload_dir(1, "valid_upload_id_12345678")
+        upload_dir = multipart_upload_dir(1, "valid_upload_id_12345678")
         os.makedirs(upload_dir, exist_ok=True)
-        meta_path = _multipart_meta_path(upload_dir)
+        meta_path = multipart_meta_path(upload_dir)
         _write_multipart_meta(meta_path, {"workspace_id": 999, "upload_id": "valid_upload_id_12345678"})
         with pytest.raises(PermissionDeniedError):
-            _load_multipart_meta(1, "valid_upload_id_12345678")
+            load_multipart_meta(1, "valid_upload_id_12345678")
 
     def test_abort_multipart_upload(self, session, test_workspace, test_user, tmp_path, monkeypatch):
         monkeypatch.setattr("app.features.file.service.MULTIPART_ROOT", str(tmp_path))
         result = init_multipart_upload(session, test_workspace.id, test_user.id,
                                       {"filename": "x", "total_size": 5})
-        upload_dir = _multipart_upload_dir(test_workspace.id, result["upload_id"])
+        upload_dir = multipart_upload_dir(test_workspace.id, result["upload_id"])
         abort_multipart_upload(session, test_workspace.id, test_user.id, result["upload_id"])
         assert not os.path.exists(upload_dir)
 
@@ -639,7 +640,7 @@ class TestMultipartUpload:
         result = init_multipart_upload(session, test_workspace.id, test_user.id,
                                       {"filename": "x", "total_size": 3072, "chunk_size": 1024})
         upload_id = result["upload_id"]
-        chunks_dir = _multipart_chunks_dir(_multipart_upload_dir(test_workspace.id, upload_id))
+        chunks_dir = multipart_chunks_dir(multipart_upload_dir(test_workspace.id, upload_id))
         open(os.path.join(chunks_dir, "0.part"), "w").close()
         open(os.path.join(chunks_dir, "1.part"), "w").close()
         result = get_multipart_upload_status(session, test_workspace.id, test_user.id, upload_id)
@@ -773,7 +774,7 @@ class TestFileServiceMaintenance:
 class TestMultipartUploadDeep:
     """分片上传边界与异常分支。"""
 
-    def test_load_multipart_meta_corrupted(self, tmp_path, monkeypatch):
+    def testload_multipart_meta_corrupted(self, tmp_path, monkeypatch):
         """元数据 JSON 损坏抛 ServiceOperationError（lines 299-301）。"""
         monkeypatch.setattr("app.features.file.service.MULTIPART_ROOT", str(tmp_path))
         upload_dir = tmp_path / "1" / "corrupt_meta_id_123456"
@@ -781,7 +782,7 @@ class TestMultipartUploadDeep:
         meta_path = upload_dir / "meta.json"
         meta_path.write_text("{invalid json!!!", encoding="utf-8")
         with pytest.raises(ServiceOperationError, match="corrupted"):
-            _load_multipart_meta(1, "corrupt_meta_id_123456")
+            load_multipart_meta(1, "corrupt_meta_id_123456")
 
     def test_init_multipart_upload_too_large(self, session, test_workspace, test_user, monkeypatch):
         """文件超过 MAX_UPLOAD_SIZE 抛 PayloadTooLargeError（line 450）。"""
@@ -866,7 +867,7 @@ class TestMultipartUploadDeep:
                     f.write(b"x" * 100)
 
         with pytest.raises(BusinessRuleError, match="Invalid chunk_index"):
-            save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, "not_a_number", FakeChunk())
+            save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index="not_a_number", chunk=FakeChunk()))
 
     def test_save_multipart_chunk_out_of_range(self, session, test_workspace, test_user, tmp_path, monkeypatch):
         """分片索引越界（line 562）。"""
@@ -882,7 +883,7 @@ class TestMultipartUploadDeep:
                     f.write(b"x" * 100)
 
         with pytest.raises(BusinessRuleError, match="out of range"):
-            save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 5, FakeChunk())
+            save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=5, chunk=FakeChunk()))
 
     def test_save_multipart_chunk_wrong_size(self, session, test_workspace, test_user, tmp_path, monkeypatch):
         """分片大小不匹配（lines 584-585）。"""
@@ -898,7 +899,7 @@ class TestMultipartUploadDeep:
                     f.write(b"x" * 50)  # 应该是 100 字节
 
         with pytest.raises(BusinessRuleError, match="Invalid chunk size"):
-            save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 0, WrongSizeChunk())
+            save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=0, chunk=WrongSizeChunk()))
 
     def test_complete_multipart_upload_missing_chunks(self, session, test_workspace, test_user, tmp_path, monkeypatch):
         """缺少分片时抛 BusinessRuleError（lines 615-616）。"""
@@ -958,8 +959,8 @@ class TestMultipartUploadDeep:
                 with open(path, "wb") as f:
                     f.write(content_part1)
 
-        save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 0, Chunk0())
-        save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 1, Chunk1())
+        save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=0, chunk=Chunk0()))
+        save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=1, chunk=Chunk1()))
         file_obj = complete_multipart_upload(session, test_workspace.id, test_user.id, upload_id)
         assert file_obj.name == "complete.bin"
         assert file_obj.file_size == total_size
@@ -1147,7 +1148,7 @@ class TestFileServiceDeepBranches:
                 with open(path, "wb") as f:
                     f.write(b"x" * 100)
 
-        res = save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 0, Chunk())
+        res = save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=0, chunk=Chunk()))
         assert res["chunk_index"] == 0
         assert 0 in res["uploaded_chunks"]
 
@@ -1178,7 +1179,7 @@ class TestFileServiceDeepBranches:
                     f.write(b"x" * 100)  # 写入 chunk_size 大小
 
         # expected_size 回退到 chunk_size=100，实际写入 100，应该成功
-        res = save_multipart_chunk(session, test_user.id, test_workspace.id, upload_id, 0, Chunk())
+        res = save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=0, chunk=Chunk()))
         assert res["chunk_index"] == 0
 
     def test_complete_multipart_upload_tmp_final_exists(self, session, test_workspace, test_user, tmp_path, monkeypatch):
@@ -1442,7 +1443,7 @@ class TestFileServiceExternalDeps:
        - 当前处理：RabbitMQ 不可用时函数自然抛异常，已验证容错路径
 
     2. Embedding API（OpenAI 兼容接口）—— 需要网络与有效 API Key
-       - 影响函数：_search_files_vector (L902-925)
+       - 影响函数: search_service.search_files 的向量分支
        - 原因：embedding_desc() 调用远程 AI 服务生成向量
        - 当前处理：标记 skip
 
@@ -1466,9 +1467,15 @@ class TestFileServiceExternalDeps:
 
         外部依赖：Embedding API (OpenAI 兼容接口)
         原因：embedding_desc() 调用远程 AI 服务生成查询向量
-        影响分支：_search_files_vector 的完整执行路径
+        影响分支: search_service.search_files 的向量分支
         环境变量：TEST_AI_API=1 启用
         """
-        from app.features.file.service import _search_files_vector
-        result = _search_files_vector(session, test_workspace.id, "测试查询", 1, 10)
+        import asyncio
+        from app.features.file.search_service import SearchFilesParams, search_files
+
+        result = asyncio.run(search_files(
+            session,
+            test_workspace.id,
+            SearchFilesParams(query="测试查询", search_type="vector"),
+        ))
         assert "items" in result

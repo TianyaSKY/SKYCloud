@@ -46,15 +46,25 @@ async def test_cache_failures_preserve_fallback_and_private_keys(monkeypatch, di
         else:
             assert cache.evict_cache_pattern(SECRET) == 0
     else:
-        decorator = cache.cache_put if operation == 'put' else cache.cache_evict if operation in {'delete', 'scan'} else cache.cacheable
-        options = {'all_entries': True} if operation == 'scan' else {}
+        if operation == 'put':
+            decorator = cache.cache_put(prefix=SECRET, key=lambda value: value)
+        elif operation in {'delete', 'scan'}:
+            decorator = cache.cache_evict(
+                prefix=SECRET,
+                key=lambda value: value,
+                all_entries=operation == 'scan',
+            )
+        else:
+            decorator = cache.cacheable(
+                cache.CacheableParams(prefix=SECRET), key=lambda value: value,
+            )
         if asynchronous:
-            @decorator(prefix=SECRET, key=lambda value: value, **options)
+            @decorator
             async def work(value):
                 return {'business': value}
             assert await work(SECRET) == {'business': SECRET}
         else:
-            @decorator(prefix=SECRET, key=lambda value: value, **options)
+            @decorator
             def work(value):
                 return {'business': value}
             assert work(SECRET) == {'business': SECRET}
@@ -77,7 +87,7 @@ async def test_audit_failures_do_not_replace_tool_result(monkeypatch, diagnostic
             session.rollback.side_effect = RuntimeError(SECRET)
     monkeypatch.setattr(audit, 'SessionLocal', factory)
     context = set_mcp_context(McpRequestContext(user_id=1, workspace_id=2, role='viewer'))
-    active = set_mcp_request_active(True)
+    active = set_mcp_request_active(active=True)
     original = BusinessRuleError('original tool failure')
     @audit.audited_tool('known_tool')
     async def tool():
@@ -112,9 +122,21 @@ def test_registration_sql_failure_is_sanitized(monkeypatch, diagnostic_capture):
     session = MagicMock()
     session.query.return_value.filter_by.return_value.first.return_value = None
     error = StatementError(SECRET, 'INSERT users', {'password': SECRET}, RuntimeError(SECRET))
-    monkeypatch.setattr(auth, 'create_user', MagicMock(side_effect=error))
+    monkeypatch.setattr(auth.user_service, 'create_user', MagicMock(side_effect=error))
     from app.exceptions import ServiceOperationError
     with pytest.raises(ServiceOperationError):
         auth.register_user(session, SECRET, SECRET)
     session.rollback.assert_called_once()
+    assert_safe(diagnostic_capture)
+
+
+def test_generation_invalidation_failure_preserves_business_outcome(
+    monkeypatch, diagnostic_capture,
+):
+    redis = MagicMock()
+    redis.set.side_effect = RuntimeError(SECRET)
+    monkeypatch.setattr(cache, 'redis_client', redis)
+
+    assert cache.invalidate_cache_generation(SECRET) is None
+    redis.set.assert_called_once()
     assert_safe(diagnostic_capture)
