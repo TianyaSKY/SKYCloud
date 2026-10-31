@@ -1,11 +1,22 @@
-# Python 3.11 matches the tested dependency locks
-FROM python:3.11-slim-bookworm@sha256:2333bd330d12de02514770b3585cad313644316047cdee24a7acfdece6de6efb
+# Python 3.11 matches requires-python and the single locked uv project.
+# Build context is the repository root:
+#   docker build -f backend/Dockerfile .
+ARG PYTHON_BASE=python:3.11-slim-bookworm@sha256:2333bd330d12de02514770b3585cad313644316047cdee24a7acfdece6de6efb
+FROM ghcr.io/astral-sh/uv:0.13.0 AS uv
+FROM ${PYTHON_BASE}
 
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
-    TZ=Asia/Shanghai
+    TZ=Asia/Shanghai \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0 \
+    VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
+
+COPY --from=uv /uv /uvx /bin/
 
 # 设置工作目录
 WORKDIR /app
@@ -29,13 +40,13 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Production includes only hashed runtime dependencies; test tools are separate.
-COPY requirements.lock .
-RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements.lock \
-    --index-url https://pypi.org/simple
+# Production includes only hashed runtime dependencies from the root uv project;
+# dev/test/quality groups stay out of the image.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --no-install-project
 
-# 复制项目代码
-COPY . .
+# 复制项目代码（镜像内路径保持 /app，入口不变）
+COPY backend/ ./
 
 # 创建上传目录并设置权限
 RUN mkdir -p /data/uploads && chmod 777 /data/uploads

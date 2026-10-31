@@ -4,13 +4,15 @@ This document covers first-time deployment, administrator and secret configurati
 
 ## Prerequisites and Image Builds
 
-> Requirements: Python 3.11+, Docker + Docker Compose; arm64 or amd64 runtime host.
+> Requirements: uv 0.13.0 (Python 3.11), Docker + Docker Compose; arm64 or amd64 runtime host.
+
+Python dependencies live in one place: `pyproject.toml` declares them and `uv.lock` locks them, and host scripts need only the standard library and run through `uv run --no-project python`. Backend and Controller images install with `uv sync --locked --no-dev` and `uv sync --locked --no-default-groups --only-group controller` respectively; there are no separate requirements lockfiles.
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
-python3 scripts/generate-env.py
-python3 scripts/build-runtime-image.py --env-file .env
-python3 scripts/build-minio-image.py --env-file .env
+uv run --no-project python scripts/generate-env.py
+uv run --no-project python scripts/build-runtime-image.py --env-file .env
+uv run --no-project python scripts/build-minio-image.py --env-file .env
 # Edit .env and at least configure API_URL / API_KEY / MODEL for the Chat and Embedding models (CHAT_* / EMB_*)
 docker compose up -d --build
 docker compose exec backend-api python -m entry.bootstrap_admin --username admin
@@ -49,13 +51,12 @@ docker compose run --rm migrate
 docker compose up -d
 ```
 
-For host development, set `DATABASE_URL` and run `python -m entry.migrate` from `backend`. Upgrades adopt unversioned databases, preserve account and file data, repair known missing columns and vector indexes, and roll back on failure. Do not manually stamp revisions. The baseline rejects destructive downgrades; verify backup restoration before rolling back a deployment. See [time and time zones](operations.md) for timestamp semantics.
+For host development, set `DATABASE_URL` and run `uv run --locked python -m entry.migrate` from `backend`. Upgrades adopt unversioned databases, preserve account and file data, repair known missing columns and vector indexes, and roll back on failure. Do not manually stamp revisions. The baseline rejects destructive downgrades; verify backup restoration before rolling back a deployment. See [time and time zones](operations.md) for timestamp semantics.
 
 Real migration tests create and clean up isolated PostgreSQL containers:
 
 ```bash
-cd backend
-RUN_MIGRATION_TESTS=1 python -m pytest tests/integration/test_migrations.py
+RUN_MIGRATION_TESTS=1 uv run --locked pytest backend/tests/integration/test_migrations.py
 ```
 
 ## Password and Session Changes

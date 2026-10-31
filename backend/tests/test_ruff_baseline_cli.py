@@ -8,7 +8,7 @@ import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts/check-ruff-baseline.py"
+SCRIPT = ROOT / "scripts/check_ruff_baseline.py"
 S104_MESSAGE = "Possible binding to all interfaces"
 
 

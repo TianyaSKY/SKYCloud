@@ -110,8 +110,6 @@ _MOCK_MODULES = [
     "langchain_openai.embeddings",
     "mcp.server.fastmcp",
     "docker",
-    "cv2",
-    "fitz",
     "docx",
     "pdf2image",
 ]

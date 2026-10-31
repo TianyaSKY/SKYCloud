@@ -72,8 +72,8 @@ services:
 
   migrate:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     command: python -m entry.migrate
     restart: "no"
     environment:
@@ -86,8 +86,8 @@ services:
 
   backend-api:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: skycloud-backend-api
     restart: always
     command: python -m entry.api
@@ -136,8 +136,8 @@ services:
 
   backend-worker:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: skycloud-backend-consumer
     restart: always
     command: python -m entry.worker
@@ -179,8 +179,8 @@ services:
 
   backend-mcp:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: skycloud-backend-mcp
     restart: always
     command: python -m entry.mcp_run
@@ -224,8 +224,8 @@ services:
 
   runtime-controller:
     build:
-      context: ./backend
-      dockerfile: runtime_controller/Dockerfile
+      context: .
+      dockerfile: backend/runtime_controller/Dockerfile
     container_name: skycloud-runtime-controller
     restart: unless-stopped
     read_only: true
@@ -263,8 +263,8 @@ services:
 
   llm-gateway:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: skycloud-llm-gateway
     restart: always
     command: python -m entry.llm_gateway

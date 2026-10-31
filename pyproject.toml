@@ -1,0 +1,93 @@
+[project]
+name = "skycloud"
+version = "0.1.0"
+description = "SKYCloud backend and runtime controller"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "fastapi==0.142.2",
+    "uvicorn[standard]==0.54.0",
+    "python-multipart==0.0.32",
+    "PyJWT==2.15.1",
+    "mcp[cli]>=1.30,<2.0",
+    "langchain==1.4.3",
+    "langgraph==1.2.12",
+    "openai>=2.26,<3.0",
+    "langchain-openai==1.6.7",
+    "SQLAlchemy==2.0.45",
+    "psycopg2-binary==2.9.11",
+    "PyMySQL==1.1.2",
+    "pgvector==0.4.2",
+    "alembic==1.15.1",
+    "fastapi-cache2==0.2.2",
+    "redis==7.1.0",
+    "pika==1.3.2",
+    "numpy==2.2.6",
+    "pandas==2.3.3",
+    "opencv-python==4.12.0.88",
+    "PyMuPDF==1.26.7",
+    "python-docx==1.2.0",
+    "pdf2image==1.17.0",
+    "python-dotenv==1.2.4",
+    "minio>=7.2,<8.0",
+    "werkzeug==3.1.9",
+    "httpx>=0.27",
+    "loguru>=0.7,<1.0",
+    "docker>=7.0",
+    "websockets==15.0.1",
+]
+
+[dependency-groups]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-asyncio>=0.24",
+    "fakeredis[lua]==2.39.0",
+]
+quality = [
+    "ruff==0.14.10",
+    "pyright==1.1.414",
+    "mypy==2.4.0",
+    "types-docker==7.2.0.20261006",
+    "types-pika==1.2.0b1",
+    "pandas-stubs==3.0.5.260914",
+]
+dev = [{include-group = "test"}, {include-group = "quality"}]
+controller = [
+    "fastapi==0.142.2",
+    "uvicorn==0.54.0",
+    "docker==7.1.0",
+    "httpx==0.28.1",
+    "websockets==15.0.1",
+]
+
+[tool.uv]
+package = false
+required-version = "==0.13.0"
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["ALL"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["backend"]
+asyncio_mode = "auto"
+addopts = "--tb=short -q"
+
+[tool.pyright]
+include = ["backend/app", "backend/entry", "backend/runtime_controller"]
+extraPaths = ["backend"]
+stubPath = "backend/typings"
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "$MYPY_CONFIG_FILE_DIR/backend/typings:$MYPY_CONFIG_FILE_DIR/backend"
+files = ["backend/app", "backend/entry", "backend/runtime_controller"]
+check_untyped_defs = true
+show_error_codes = true
+pretty = false
+warn_unused_configs = true

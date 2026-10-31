@@ -534,10 +534,15 @@ def test_journal_failure_prevents_any_docker_creation(settings,tmp_path):
 
 def test_controller_journal_committed_intent_survives_process_exit(tmp_path):
     import subprocess,sys
+    from pathlib import Path
     from runtime_controller.generation_journal import GenerationJournal
     directory = str(tmp_path/'journal')
     code = "from runtime_controller.generation_journal import GenerationJournal; import os,sys\nwith GenerationJournal(sys.argv[1]).locked('a'*32,(2,3,4)) as record:\n os._exit(17)\n"
-    assert subprocess.run([sys.executable,'-c',code,directory],check=False).returncode == 17
+    assert subprocess.run(
+        [sys.executable, '-c', code, directory],
+        cwd=Path(__file__).resolve().parents[1],
+        check=False,
+    ).returncode == 17
     with GenerationJournal(directory).locked('a'*32,(2,3,4)) as record:
         assert record.read()['state'] == 'preparing'
         record.retire()

@@ -1,0 +1,40 @@
+# Root build context serves the Python images only:
+#   backend/Dockerfile                 (docker build -f backend/Dockerfile .)
+#   backend/runtime_controller/Dockerfile
+# It must keep pyproject.toml, uv.lock and backend/; everything else only
+# inflates the context. The frontend image keeps its own ./frontend context and
+# frontend/.dockerignore, and the runtime/MinIO images build from staged
+# temporary contexts.
+.git
+.github
+.agents
+.vscode
+.idea
+
+.env
+.env.*
+.venv
+venv
+env
+
+**/__pycache__
+**/*.py[cod]
+**/*.so
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+*.log
+
+frontend
+docs
+images
+data
+.test-tmp
+validation
+backend/tests
+README.md
+README_EN.md
+docker-compose.yml
+docker-compose.dev.yml

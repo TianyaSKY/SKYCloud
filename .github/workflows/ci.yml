@@ -25,26 +25,24 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
-          cache: pip
-          cache-dependency-path: |
-            backend/requirements-test.lock
-            backend/requirements-quality.lock
+      - name: Bootstrap uv 0.13.0
+        run: python -m pip install --disable-pip-version-check uv==0.13.0
+      - name: Install the locked development environment
+        run: uv sync --locked
       - name: Native libraries for real OpenCV imports
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
-      - run: 'python -m pip install --require-hashes --only-binary=:all: -r backend/requirements-test.lock'
-      - run: 'python -m pip install --require-hashes --only-binary=:all: -r backend/requirements-quality.lock'
       - name: Compile production Python
-        run: python -m compileall -q backend/app backend/entry backend/runtime_controller
+        run: uv run --locked python -m compileall -q backend/app backend/entry backend/runtime_controller
       - name: Lint production Python
         run: >-
-          python -m ruff check backend/app backend/entry backend/runtime_controller
-          --config backend/ruff.toml --output-format json --exit-zero
+          uv run --locked ruff check backend/app backend/entry backend/runtime_controller
+          --output-format json --exit-zero
           --output-file "$RUNNER_TEMP/ruff-all.json"
       - name: Enforce reviewed Ruff baseline
         run: >-
-          python scripts/check-ruff-baseline.py
+          uv run --locked python scripts/check_ruff_baseline.py
           --report "$RUNNER_TEMP/ruff-all.json"
           --baseline backend/ruff-baseline.json
       - name: Upload the complete Ruff diagnostics
@@ -55,13 +53,13 @@ jobs:
           path: ${{ runner.temp }}/ruff-all.json
           if-no-files-found: error
       - name: Strict Pyright checks
-        run: python -m pyright --project pyrightconfig.json
+        run: uv run --locked pyright --project pyproject.toml
       - name: Check Ruff baseline comparator
         run: |
-          python -m pyright --project pyrightconfig.json scripts/check-ruff-baseline.py
-          python -m ruff check scripts/check-ruff-baseline.py --config backend/ruff.toml
+          uv run --locked pyright --project pyproject.toml scripts/check_ruff_baseline.py
+          uv run --locked ruff check scripts/check_ruff_baseline.py
       - name: Type-check production Python
-        run: python -m mypy --config-file backend/mypy.ini
+        run: uv run --locked mypy --config-file pyproject.toml
       - name: Validate GitHub Actions workflow
         run: |
           curl --fail --location --retry 3 \
@@ -72,10 +70,9 @@ jobs:
             "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" .github/workflows/ci.yml
-      - run: python scripts/check-python-runtime.py
+      - run: uv run --locked python scripts/check-python-runtime.py
       - name: Regular backend suite
-        working-directory: backend
-        run: python -m pytest -o addopts='' --ignore=tests/real -q
+        run: uv run --locked pytest -o addopts='' --ignore=backend/tests/real -q
 
   frontend:
     name: Frontend checks
@@ -117,12 +114,13 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
-          cache: pip
-          cache-dependency-path: backend/requirements-test.lock
-      - run: 'python -m pip install --require-hashes --only-binary=:all: -r backend/requirements-test.lock'
+      - name: Bootstrap uv 0.13.0
+        run: python -m pip install --disable-pip-version-check uv==0.13.0
+      - name: Install the locked test environment
+        run: uv sync --locked --no-default-groups --group test
       - name: Build checksum-locked MinIO fixture
         run: |
-          python - <<'PY'
+          uv run --locked python - <<'PY'
           import os, runpy
           reference = runpy.run_path("scripts/build-minio-image.py")["build"]()
           with open(os.environ["GITHUB_ENV"], "a") as environment:
@@ -134,7 +132,7 @@ jobs:
           docker pull rabbitmq:3.13-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
       - name: Build Controller and pin disposable cleanup fixture
         run: |
-          docker build -t skycloud-ci-cleanup-controller -f backend/runtime_controller/Dockerfile backend
+          docker build -t skycloud-ci-cleanup-controller -f backend/runtime_controller/Dockerfile .
           fixture='redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499'
           docker pull "$fixture"
           reference=$(docker image inspect "$fixture" --format '{{.Id}}')
@@ -166,7 +164,7 @@ jobs:
           RUN_CONTROLLER_DIAGNOSTICS: '1'
           RUN_RUNTIME_LIFECYCLE_TESTS: '1'
         run: >-
-          python -m pytest -o addopts='' -q
+          uv run --locked pytest -o addopts='' -q
           tests/integration/test_migrations.py
           tests/integration/test_runtime_lifecycle_sql.py
           tests/integration/test_runtime_security.py::test_postgresql_has_no_seeded_admin_and_bootstraps_once
@@ -203,13 +201,13 @@ jobs:
           RUN_INDEXING_PIPELINE_TESTS: '1'
           RUN_ORGANIZE_PIPELINE_TESTS: '1'
         run: >-
-          python -m pytest -o addopts='' -q
+          uv run --locked pytest -o addopts='' -q
           tests/integration/test_upload_storage.py
           tests/integration/test_indexing_pipeline.py
           tests/integration/test_organize_pipeline.py
       - name: Build locked OpenCode and gateway bridge fixture
         run: |
-          python - <<'PY'
+          uv run --locked python - <<'PY'
           import os, runpy
           reference = runpy.run_path("scripts/build-runtime-image.py")["build"]()
           with open(os.environ["GITHUB_ENV"], "a") as environment:
@@ -227,7 +225,7 @@ jobs:
           RUN_RUNTIME_UI_TESTS: '1'
           RUN_REFRESH_SESSION_TESTS: '1'
         run: >-
-          python -m pytest -o addopts='' -q
+          uv run --locked pytest -o addopts='' -q
           tests/integration/test_generation_retirement.py
           tests/integration/test_runtime_security.py::test_real_opencode_sandbox_boots_and_reloads_configuration
           tests/integration/test_expert_gateway.py
@@ -247,19 +245,24 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Bootstrap uv 0.13.0
+        run: python -m pip install --disable-pip-version-check uv==0.13.0
       - name: Build and verify image
         env:
           IMAGE: ${{ matrix.image }}
         run: |
           case "$IMAGE" in
             backend)
-              docker build -t skycloud-ci-backend backend
+              docker build -t skycloud-ci-backend -f backend/Dockerfile .
               docker run --rm --network none \
                 -v "$PWD/scripts/check-python-runtime.py:/app/scripts/check-python-runtime.py:ro" \
                 skycloud-ci-backend python /app/scripts/check-python-runtime.py
               ;;
             controller)
-              docker build -t skycloud-ci-controller -f backend/runtime_controller/Dockerfile backend
+              docker build -t skycloud-ci-controller -f backend/runtime_controller/Dockerfile .
               docker run --rm --network none \
                 -e PYTHONPYCACHEPREFIX=/tmp/pycache \
                 skycloud-ci-controller python -m compileall -q runtime_controller
@@ -268,8 +271,8 @@ jobs:
               docker build -t skycloud-ci-frontend frontend
               docker run --rm --network none skycloud-ci-frontend nginx -t
               ;;
-            runtime) python3 scripts/build-runtime-image.py ;;
-            minio) python3 scripts/build-minio-image.py ;;
+            runtime) uv run --no-project python scripts/build-runtime-image.py ;;
+            minio) uv run --no-project python scripts/build-minio-image.py ;;
             *) exit 1 ;;
           esac
 

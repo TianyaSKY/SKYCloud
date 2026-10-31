@@ -2,7 +2,7 @@
   <h1>SKYCLOUD</h1>
   <p><strong>AI 驱动的云文件管理平台</strong></p>
   <p>
-    <img src="https://img.shields.io/badge/Python-3.11%2B-blue" alt="Python">
+    <img src="https://img.shields.io/badge/Python-3.11-blue" alt="Python">
     <img src="https://img.shields.io/badge/Vue.js-3.x-4FC08D" alt="Vue">
     <img src="https://img.shields.io/badge/FastAPI-0.115-009688" alt="FastAPI">
     <img src="https://img.shields.io/badge/PostgreSQL-15-336791" alt="PostgreSQL">
@@ -53,13 +53,13 @@ SKYCloud 把云盘、检索问答和可自主执行的 AI 放在同一套系统�
 
 ## 快速开始
 
-需要 Python 3.11+、Docker 与 Docker Compose，运行时支持 amd64 和 arm64。
+需要 uv 0.13.0（使用 Python 3.11）、Docker 与 Docker Compose，运行时支持 amd64 和 arm64。
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
-python3 scripts/generate-env.py
-python3 scripts/build-runtime-image.py --env-file .env
-python3 scripts/build-minio-image.py --env-file .env
+uv run --no-project python scripts/generate-env.py
+uv run --no-project python scripts/build-runtime-image.py --env-file .env
+uv run --no-project python scripts/build-minio-image.py --env-file .env
 # 编辑 .env，至少填写 Chat 和 Embedding 的 API_URL / API_KEY / MODEL（CHAT_* / EMB_*）
 docker compose up -d --build
 docker compose exec backend-api python -m entry.bootstrap_admin --username admin
@@ -67,7 +67,7 @@ docker compose exec backend-api python -m entry.bootstrap_admin --username admin
 
 启动后访问 `http://app.skycloud.localhost`（默认端口 80）。管理员由上面的命令在终端交互式创建。
 
-两个构建脚本会校验锁定产物、生成本机不可变镜像 ID 并写回 `.env`，换 Docker 主机后需重新执行。密钥、数据库升级、停机清理等部署细节见[部署与运维](docs/deployment.md)。
+Python 依赖由根目录 `pyproject.toml` 声明、`uv.lock` 锁定；部署脚本只依赖标准库，以 `uv run --no-project python` 运行。两个构建脚本会校验锁定产物、生成本机不可变镜像 ID 并写回 `.env`，换 Docker 主机后需重新执行。密钥、数据库升级、停机清理等部署细节见[部署与运维](docs/deployment.md)。
 
 ## 文档
 
@@ -77,7 +77,7 @@ docker compose exec backend-api python -m entry.bootstrap_admin --username admin
 | [安全模型](docs/security.md)        | 运行时隔离、认证与会话、权限模型、MCP 凭据与审计      |
 | [AI 能力](docs/ai.md)             | RAG 检索、双模式助手、MCP 接入、全能工作区       |
 | [运行约定](docs/operations.md)      | 上传与配额、后台任务与清理、时间与时区、接口与日志约定     |
-| [本地开发](docs/development.md)     | 本地运行、测试、依赖锁定与 CI                |
+| [本地开发](docs/development.md)     | 本地运行、测试、依赖管理与 CI                |
 
 英文文档：[README_EN.md](README_EN.md)、[docs/en/](docs/en/)。
 
@@ -99,8 +99,10 @@ SKYCloud/
 │   ├── runtime_image/          # 专家 Runtime 沙箱镜像
 │   └── tests/                  # 单元与集成测试
 ├── frontend/src/               # Vue 3 应用（api / components / views / stores / router）
-├── scripts/                    # 环境生成、镜像构建、依赖锁定
+├── scripts/                    # 环境生成、镜像构建
 ├── docs/                       # 详细文档
+├── pyproject.toml              # Python 依赖、依赖组与工具配置
+├── uv.lock                     # 唯一的 Python 锁文件
 ├── docker-compose.yml
 └── .env.example
 ```

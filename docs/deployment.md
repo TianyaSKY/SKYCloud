@@ -4,15 +4,17 @@
 
 ## 前置条件与镜像构建
 
-> 环境要求：Python 3.11+、Docker + Docker Compose；运行时支持 arm64 和 amd64。
+> 环境要求：uv 0.13.0（Python 3.11）、Docker + Docker Compose；运行时支持 arm64 和 amd64。
+
+Python 依赖只在根目录维护一份：`pyproject.toml` 声明、`uv.lock` 锁定，宿主机脚本只依赖标准库，通过 `uv run --no-project python` 运行。后端与 Controller 镜像构建时分别执行 `uv sync --locked --no-dev` 和 `uv sync --locked --no-default-groups --only-group controller`，不再使用独立的 requirements 锁文件。
 
 完整的首次部署命令：
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
-python3 scripts/generate-env.py
-python3 scripts/build-runtime-image.py --env-file .env
-python3 scripts/build-minio-image.py --env-file .env
+uv run --no-project python scripts/generate-env.py
+uv run --no-project python scripts/build-runtime-image.py --env-file .env
+uv run --no-project python scripts/build-minio-image.py --env-file .env
 # 编辑 .env，至少填写 Chat 和 Embedding 的 API_URL / API_KEY / MODEL（CHAT_* / EMB_*）
 docker compose up -d --build
 docker compose exec backend-api python -m entry.bootstrap_admin --username admin
@@ -51,13 +53,12 @@ docker compose run --rm migrate
 docker compose up -d
 ```
 
-宿主机开发先设置 `DATABASE_URL`，在 `backend` 中执行 `python -m entry.migrate`。迁移兼容未版本化数据库，保留账号和文件数据，补齐历史缺失列并修复向量索引。迁移失败会回滚并阻止应用启动；不要手动 stamp 版本。初始版本禁止删除数据的降级，回退部署前应验证数据库备份恢复流程；时间列语义见[时间与时区](./operations.md)。
+宿主机开发先设置 `DATABASE_URL`，在 `backend` 中执行 `uv run --locked python -m entry.migrate`。迁移兼容未版本化数据库，保留账号和文件数据，补齐历史缺失列并修复向量索引。迁移失败会回滚并阻止应用启动；不要手动 stamp 版本。初始版本禁止删除数据的降级，回退部署前应验证数据库备份恢复流程；时间列语义见[时间与时区](./operations.md)。
 
 真实迁移测试会创建并清理独立 PostgreSQL 容器：
 
 ```bash
-cd backend
-RUN_MIGRATION_TESTS=1 python -m pytest tests/integration/test_migrations.py
+RUN_MIGRATION_TESTS=1 uv run --locked pytest backend/tests/integration/test_migrations.py
 ```
 
 ## 密码与会话变更

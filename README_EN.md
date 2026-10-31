@@ -2,7 +2,7 @@
   <h1>SKYCLOUD</h1>
   <p><strong>AI-powered cloud file management platform</strong></p>
   <p>
-    <img src="https://img.shields.io/badge/Python-3.11%2B-blue" alt="Python">
+    <img src="https://img.shields.io/badge/Python-3.11-blue" alt="Python">
     <img src="https://img.shields.io/badge/Vue.js-3.x-4FC08D" alt="Vue">
     <img src="https://img.shields.io/badge/FastAPI-0.115-009688" alt="FastAPI">
     <img src="https://img.shields.io/badge/PostgreSQL-15-336791" alt="PostgreSQL">
@@ -59,13 +59,13 @@ search your data in natural language, let AI organize the drive, and run code in
 
 ## Quick Start
 
-Requires Python 3.11+, Docker and Docker Compose; runtime hosts may be amd64 or arm64.
+Requires uv 0.13.0 (using Python 3.11), Docker and Docker Compose; runtime hosts may be amd64 or arm64.
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
-python3 scripts/generate-env.py
-python3 scripts/build-runtime-image.py --env-file .env
-python3 scripts/build-minio-image.py --env-file .env
+uv run --no-project python scripts/generate-env.py
+uv run --no-project python scripts/build-runtime-image.py --env-file .env
+uv run --no-project python scripts/build-minio-image.py --env-file .env
 # Edit .env and at least configure API_URL / API_KEY / MODEL for the Chat and Embedding models (CHAT_* / EMB_*)
 docker compose up -d --build
 docker compose exec backend-api python -m entry.bootstrap_admin --username admin
@@ -74,9 +74,10 @@ docker compose exec backend-api python -m entry.bootstrap_admin --username admin
 Then open `http://app.skycloud.localhost` (default port 80). The administrator is created interactively by the command
 above.
 
-Both build scripts verify locked artifacts, produce host-local immutable image IDs and write them back to `.env`; rerun
-them when moving to another Docker host. See [deployment](docs/en/deployment.md) for secrets, database upgrades and
-shutdown.
+Python dependencies are declared in the root `pyproject.toml` and locked by `uv.lock`; the deployment scripts need only
+the standard library and run through `uv run --no-project python`. Both build scripts verify locked artifacts, produce
+host-local immutable image IDs and write them back to `.env`; rerun them when moving to another Docker host. See
+[deployment](docs/en/deployment.md) for secrets, database upgrades and shutdown.
 
 ## Documentation
 
@@ -86,7 +87,7 @@ shutdown.
 | [Security model](docs/en/security.md)                       | Runtime isolation, auth and sessions, permissions, MCP credentials |
 | [AI capabilities](docs/en/ai.md)                            | RAG retrieval, dual-mode assistant, MCP access, workspaces    |
 | [Operating conventions](docs/en/operations.md)              | Uploads and quotas, background jobs, time zones, API and logging |
-| [Local development](docs/en/development.md)                 | Running locally, tests, dependency locks and CI               |
+| [Local development](docs/en/development.md)                 | Running locally, tests, dependency management and CI               |
 
 Chinese documentation: [README.md](README.md) and [docs/](docs/).
 
@@ -108,8 +109,10 @@ SKYCloud/
 │   ├── runtime_image/          # Expert Runtime sandbox image
 │   └── tests/                  # Unit and integration tests
 ├── frontend/src/               # Vue 3 app (api / components / views / stores / router)
-├── scripts/                    # Env generation, image builds, dependency locking
+├── scripts/                    # Env generation, image builds
 ├── docs/                       # Chinese documentation (docs/en for English)
+├── pyproject.toml              # Python dependencies, dependency groups and tool config
+├── uv.lock                     # The single Python lockfile
 ├── docker-compose.yml
 └── .env.example
 ```
