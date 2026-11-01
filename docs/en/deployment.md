@@ -39,11 +39,11 @@ This command resets an existing administrator without creating accounts or eleva
 
 The generator creates independent secrets, writes with mode 0600 and refuses to overwrite existing configuration. Startup requires independent master secrets and explicit infrastructure passwords of at least 12 characters, without defaults. Changing `.env` does not rotate passwords stored in existing PostgreSQL/RabbitMQ volumes: use trusted infrastructure administration tools to rotate those passwords, then update configuration.
 
-## Database Upgrades
+## Database Initialization and Rebuild
 
-The current schema head is `0019_sql_cache_revisions`. API, Worker, MCP and model gateway startup only reads the Alembic revision; Compose starts them after the `migrate` service succeeds, and missing or mismatched versions prevent startup.
+The only schema revision is `0001_rebuild`. API, Worker, MCP and model gateway startup only reads the Alembic revision and never creates tables; missing or mismatched versions prevent startup. This immutable SQL baseline initializes an empty PostgreSQL database only.
 
-Back up existing databases, then run:
+For a new deployment or an explicitly authorized full rebuild, configure an isolated empty database first:
 
 ```bash
 docker compose build
@@ -51,7 +51,7 @@ docker compose run --rm migrate
 docker compose up -d
 ```
 
-For host development, set `DATABASE_URL` and run `uv run --locked python -m entry.migrate` from `backend`. Upgrades adopt unversioned databases, preserve account and file data, repair known missing columns and vector indexes, and roll back on failure. Do not manually stamp revisions. The baseline rejects destructive downgrades; verify backup restoration before rolling back a deployment. See [time and time zones](operations.md) for timestamp semantics.
+For host development, set `DATABASE_URL` and run `uv run --locked python -m entry.migrate` from `backend`. Existing revisions and any unversioned tables are rejected; there is no old-schema upgrade, column repair, stamp, or historical business-data conversion. Before switching an existing deployment, stop every old writer, verify backup restoration, and rebuild the database and associated files/objects only within the explicitly authorized project scope; preserve deployment configuration and external credentials separately. The baseline rejects downgrades; rollback requires a verified full backup.
 
 Real migration tests create and clean up isolated PostgreSQL containers:
 
@@ -61,7 +61,7 @@ RUN_MIGRATION_TESTS=1 uv run --locked pytest backend/tests/integration/test_migr
 
 ## Password and Session Changes
 
-Password changes, including administrator resets, atomically advance the target account's session version and revoke its previous Web sessions, external MCP tokens and Runtime credentials. The frontend signs out after a password change; other browsers receive 401 on their next request. Reissue and configure external MCP tokens, and restart Runtimes to obtain new credentials. Upgrading the session-version migration invalidates historical Web tokens and requires a new login.
+Password changes, including administrator resets, atomically advance the target account's session version and revoke its previous Web sessions, external MCP tokens and Runtime credentials. The frontend signs out after a password change; other browsers receive 401 on their next request. Reissue and configure external MCP tokens, and restart Runtimes to obtain new credentials. Enabling session-version checks invalidates historical Web tokens and requires a new login.
 
 ## Stopping Services (including SKYcode workspaces)
 

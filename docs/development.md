@@ -36,7 +36,7 @@ uv run --locked pytest --ignore=backend/tests/real
 在仓库根目录运行。Ruff、Pyright、Mypy 的配置全部位于根 `pyproject.toml`（`[tool.ruff]`、`[tool.pyright]`、`[tool.mypy]`），没有独立配置文件，命令直接指向它：
 
 ```bash
-uv run --locked ruff check backend/app backend/entry backend/runtime_controller --output-format json --exit-zero --output-file /tmp/skycloud-ruff-all.json
+uv run --locked ruff check backend/app backend/entry backend/runtime_controller backend/runtime_common --output-format json --exit-zero --output-file /tmp/skycloud-ruff-all.json
 uv run --locked python scripts/check_ruff_baseline.py --report /tmp/skycloud-ruff-all.json --baseline backend/ruff-baseline.json
 uv run --locked pyright --project pyproject.toml
 uv run --locked mypy --config-file pyproject.toml
@@ -44,7 +44,7 @@ uv run --locked mypy --config-file pyproject.toml
 
 Pyright 使用 `typeCheckingMode: strict`；Ruff 没有 `strict` 模式，使用 `lint.select = ["ALL"]` 启用全部稳定规则，不设置忽略项。互斥的文档字符串规则由 Ruff 自动择一并给出警告。Ruff 的完整报告包括经逐项审查并精确记录的例外；比较器会展示所有诊断，遇到新诊断或过期条目即失败。`--exit-zero` 只用于生成完整报告，不能跳过后续比较。两项检查覆盖生产代码，与 CI 一致；现有 mypy 检查保留。
 
-缓存装饰器的 `CacheableParams` 保存前缀、过期时间和 `None` 策略；`key`、`generation_key` 和 `cache_allowed` 作为 `cacheable` 的关键字参数传入，必须与被装饰函数的参数签名兼容。`cache_evict` 和 `cache_put` 的 `key` 回调遵循同一约束。
+`cacheable` 是唯一的缓存写入装饰器：先读 Redis，未命中再执行函数并写入。缓存失效依靠键回调而非删除无后缀键——`key`、`generation_key` 把条目绑定到 SQL revision 或旋转后的命名空间，`cache_allowed` 拒绝可能回滚的写事务。三者作为 `cacheable` 的关键字参数传入，必须与被装饰函数的参数签名兼容。`CacheableParams` 保存前缀、过期时间和 `None` 策略。
 
 ## 依赖管理与 CI
 

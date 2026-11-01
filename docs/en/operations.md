@@ -22,13 +22,13 @@ File indexing uses a database outbox: the file record (single, batch, multipart 
 
 AI organization tasks also persist in the database: the API checks current write permission inside a transaction, at most one queued/running task exists per workspace, execution holds a workspace-level advisory lock and rotates credentials per execution so an old executor cannot keep modifying data, and terminal state commits together with the inbox notification; duplicate messages for finished tasks are skipped. Office conversions required by organization run in their own process group with a 120-second timeout that terminates the whole group and logs only a fixed failure type.
 
-Physical object and container cleanup is asynchronous and performed by the Worker: deleting files, workspaces or accounts commits cleanup intents in the same transaction as the business data (PostgreSQL triggers plus migrations `0011`-`0014`), and the Worker performs idempotent deletes after confirming that no references remain, retrying with 2-300 second backoff. Capacity is released only after the physical object is deleted; failed or uncertain deletions stay reserved for the next retry.
+Physical object and container cleanup is asynchronous and performed by the Worker: PostgreSQL triggers commit cleanup intents in the same transaction as file, workspace or account deletion; the Worker performs idempotent deletes after confirming that no references remain, retrying with 2-300 second backoff. Capacity is released only after the physical object is deleted; failed or uncertain deletions stay reserved for the next retry.
 
 ## Time and Time Zones
 
 Time API output carries an explicit UTC offset (`+00:00`); business clocks, token deadlines, assistant recovery, share expiry, runtime activity, checkpoints and usage records are stored in UTC, and shares expire exactly at their deadline. The frontend formats public dates and conversation lists in `Asia/Shanghai` and labels notification times explicitly; daily upload quotas use UTC days while usage views group by Beijing time, independent of the database session time zone.
 
-Historical timezone-naive columns are converted to PostgreSQL TIMESTAMPTZ by migration `0009_utc_timestamps`: original Beijing columns use `Asia/Shanghai`, original upload reservations use UTC, and already-aware columns keep their instant. The migration takes table locks and may rewrite data, so stop old API/Worker/MCP/model-gateway processes, back up, and run it in a maintenance window; any failure rolls back atomically, and downgrades that drop timezone semantics are rejected.
+The baseline stores UTC instants in PostgreSQL `TIMESTAMPTZ` from table creation; UTC daily upload quotas, share-expiry boundaries and API `+00:00` output semantics remain unchanged. It does not convert timezone-naive columns in an existing database; use the authorized full-rebuild process in the [deployment guide](deployment.md).
 
 ## API and Logging Conventions
 

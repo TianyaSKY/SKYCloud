@@ -41,11 +41,11 @@ docker compose up -d
 
 配置生成脚本独立生成各项密钥，以权限 0600 写入，并拒绝覆盖已有文件。应用启动会检查三个主密钥互不相同、基础设施密码至少 12 字符且不为默认值。已有 PostgreSQL/RabbitMQ 数据卷中的密码不会随 `.env` 自动改变：先通过基础设施的受信管理工具轮换实际密码，再同步配置。
 
-## 数据库升级
+## 数据库初始化与重建
 
-当前 schema head 为 `0019_sql_cache_revisions`。API、Worker、MCP 和模型网关启动时只读取 Alembic 版本，不建表、不补列；Compose 的 `migrate` 服务成功后才启动它们，版本缺失或不匹配时拒绝启动。
+唯一 schema revision 为 `0001_rebuild`。API、Worker、MCP 和模型网关启动时只读取 Alembic 版本，不建表；版本缺失或不匹配时拒绝启动。该静态基线只初始化空 PostgreSQL 数据库。
 
-已有部署先备份数据库，再执行：
+新部署或已明确授权的全量重建，先配置隔离的空数据库，再执行：
 
 ```bash
 docker compose build
@@ -53,7 +53,7 @@ docker compose run --rm migrate
 docker compose up -d
 ```
 
-宿主机开发先设置 `DATABASE_URL`，在 `backend` 中执行 `uv run --locked python -m entry.migrate`。迁移兼容未版本化数据库，保留账号和文件数据，补齐历史缺失列并修复向量索引。迁移失败会回滚并阻止应用启动；不要手动 stamp 版本。初始版本禁止删除数据的降级，回退部署前应验证数据库备份恢复流程；时间列语义见[时间与时区](./operations.md)。
+宿主机开发先设置 `DATABASE_URL`，在 `backend` 中执行 `uv run --locked python -m entry.migrate`。既有 revision 或任何未版本化现存表都会被拒绝；不升级旧 schema、不修补旧列、不 stamp，也不转换历史业务数据。切换既有部署前必须停止所有旧写入方，验证备份恢复流程，并只在明确授权的项目范围重建数据库及关联文件/对象；部署配置与外部凭据另行保留。schema 基线禁止 downgrade，回退依赖经验证的整套备份。
 
 真实迁移测试会创建并清理独立 PostgreSQL 容器：
 
@@ -63,7 +63,7 @@ RUN_MIGRATION_TESTS=1 uv run --locked pytest backend/tests/integration/test_migr
 
 ## 密码与会话变更
 
-修改密码（含管理员代改）会在同一事务中递增目标账户的认证版本，撤销其旧 Web 会话、外部 MCP Token 和 Runtime 凭据。本人改密后前端退出登录；其他浏览器会在下一次请求收到 401。外部 MCP 客户端需生成并重新配置 Token，Runtime 需重新启动以获取新凭据。升级认证版本迁移后，历史 Web Token 一律失效，需要重新登录。
+修改密码（含管理员代改）会在同一事务中递增目标账户的认证版本，撤销其旧 Web 会话、外部 MCP Token 和 Runtime 凭据。本人改密后前端退出登录；其他浏览器会在下一次请求收到 401。外部 MCP 客户端需生成并重新配置 Token，Runtime 需重新启动以获取新凭据。启用认证版本检查后，历史 Web Token 一律失效，需要重新登录。
 
 ## 停止服务（含 SKYcode 工作区）
 

@@ -36,7 +36,7 @@ Integration cases that need real infrastructure are opt-in through `RUN_*` envir
 Run from the repository root. Ruff, Pyright and Mypy are configured entirely in the root `pyproject.toml` (`[tool.ruff]`, `[tool.pyright]`, `[tool.mypy]`); there are no separate configuration files and the commands point at that file directly:
 
 ```bash
-uv run --locked ruff check backend/app backend/entry backend/runtime_controller --output-format json --exit-zero --output-file /tmp/skycloud-ruff-all.json
+uv run --locked ruff check backend/app backend/entry backend/runtime_controller backend/runtime_common --output-format json --exit-zero --output-file /tmp/skycloud-ruff-all.json
 uv run --locked python scripts/check_ruff_baseline.py --report /tmp/skycloud-ruff-all.json --baseline backend/ruff-baseline.json
 uv run --locked pyright --project pyproject.toml
 uv run --locked mypy --config-file pyproject.toml
@@ -44,7 +44,7 @@ uv run --locked mypy --config-file pyproject.toml
 
 Pyright uses `typeCheckingMode: strict`. Ruff has no `strict` mode; `lint.select = ["ALL"]` enables all stable rules without configured ignores. Ruff automatically resolves mutually exclusive docstring rules and emits warnings. The complete Ruff report includes individually reviewed, exact baseline entries; the comparator displays every diagnostic and fails on new or stale entries. `--exit-zero` only produces the complete report and does not replace the subsequent comparison. Both checks cover production code and run in CI; the existing mypy check remains.
 
-For cache decorators, `CacheableParams` holds the prefix, expiry and `None` policy; pass `key`, `generation_key` and `cache_allowed` as `cacheable` keyword arguments matching the decorated function's signature. The `key` callbacks of `cache_evict` and `cache_put` follow the same constraint.
+`cacheable` is the only cache-writing decorator: it reads Redis first and only runs the function on a miss. Invalidation comes from key callbacks instead of deleting unsuffixed keys: `key` and `generation_key` bind entries to a SQL revision or a rotated namespace, and `cache_allowed` rejects transactions whose writes may roll back. Pass them as `cacheable` keyword arguments matching the decorated function's signature. `CacheableParams` holds the prefix, expiry and `None` policy.
 
 ## Dependencies and CI
 

@@ -48,8 +48,8 @@ Write paths (REST, MCP, uploads, organization, assistant and runtime) re-read an
 
 ## MCP Access: Credentials and Audit
 
-The backend stores only the MCP token's SHA-256 hash and fingerprint, and GET returns metadata. The hash-storage migration revokes historical external tokens; issue and configure new credentials after upgrading.
+The backend stores only the MCP token's SHA-256 hash and fingerprint, and GET returns metadata. Regenerating a token revokes that account's older active credentials, so update client configuration accordingly.
 
-Audit records keep bounded metadata only (string lengths, set counts) and never filenames, search text, credentials or content; migration `0010_redact_mcp_audit` cleared historical argument summaries. Membership and roles are rechecked on every tool call, so caches cannot bypass a committed demotion, removal or account deletion.
+Audit records keep bounded metadata only (string lengths, set counts) and never filenames, search text, credentials or content. Membership and roles are rechecked on every tool call, so caches cannot bypass a committed demotion, removal or account deletion.
 
 [← Back to README](../../README_EN.md)
