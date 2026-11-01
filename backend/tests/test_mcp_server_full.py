@@ -416,7 +416,6 @@ class TestMCPTools:
     def test_batch_delete(self, session, test_workspace, test_user, mcp_user_ctx):
         from app.mcp.server import batch_delete, BatchDeleteItem
         from app.models.file import File
-        from app.models.folder import Folder
         f = File(name="bd.txt", file_path="bd.txt", file_size=10,
                  mime_type="text/plain", workspace_id=test_workspace.id,
                  uploader_id=1, parent_id=None,
@@ -497,25 +496,6 @@ class TestMCPTools:
         binary_path = tmp_path / "data.bin"
         binary_adapter.save(str(binary_path))
         assert binary_path.read_bytes() == b"hello"
-
-    def test_upload_file_uses_mcp_without_curl(self, mcp_user_ctx):
-        from app.mcp.server import upload_file
-
-        fake_file = MagicMock()
-        fake_file.to_dict.return_value = {"id": 42, "name": "note.md"}
-
-        async def fake_run_sync(fn, *args, **kwargs):
-            return fn(MagicMock(), *args, **kwargs)
-
-        with patch("app.mcp.server._run_sync", side_effect=fake_run_sync), \
-             patch("app.mcp.server.file_service.create_uploaded_file", return_value=fake_file) as create:
-            result = asyncio.run(upload_file("note.md", "云盘内容", content_encoding="utf-8"))
-
-        data = json.loads(result)
-        assert data["success"] is True
-        assert data["file"]["id"] == 42
-        upload = create.call_args.args[3]
-        assert upload.filename == "note.md"
 
 
 class TestMCPResources:

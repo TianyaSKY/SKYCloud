@@ -4,7 +4,7 @@ No cache, storage, model provider, task publisher or independent Session is used
 Returned rows remain attached to the caller Session and must be serialized there.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -51,7 +51,6 @@ class FileRecordSpec:
     status: str = "pending"
     description: str | None = None
     vector_info: VectorValue | None = None
-    before_commit: Callable[[File], None] | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

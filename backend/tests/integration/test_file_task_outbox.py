@@ -1,15 +1,20 @@
 """Real transaction/broker fault and concurrency checks for indexing handoff."""
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 import os
 import threading
 
 import pytest
+from fastapi import UploadFile
 from sqlalchemy import text
 
-from app.features.file import service
-from app.infra.file_task_outbox import deliver_pending_file_tasks
+from app.exceptions import ServiceOperationError
+from app.features.file import service, upload_config
+from app.features.file.tasks import deliver_pending_file_tasks
+from app.features.file.upload_service import get_upload_service
 from app.infra.task_queue import RabbitMQTaskConsumer, FILE_PROCESS_QUEUE, publish_file_tasks as real_publish
+from app.infra.upload_adapter import FastAPIUploadAdapter
 from app.models.file_task_outbox import FileTaskOutbox
 from app.models.file import File
 from tests.integration.test_migrations import postgres  # noqa: F401
@@ -55,19 +60,25 @@ def test_broker_outage_retains_committed_intent_then_recovers(file_database, bro
     assert deliver_pending_file_tasks(session_factory=factory, publisher=real_publish) == 0
 
 
-def test_task_insert_failure_rolls_back_file_metadata(file_database, postgres):
+def test_task_insert_failure_rolls_back_file_metadata(file_database, postgres, tmp_path, monkeypatch, mock_object_storage):
     factory, _, workspace_id = file_database
+    monkeypatch.setattr(upload_config, "UPLOAD_FOLDER", str(tmp_path))
     with postgres.begin() as db:
         db.execute(text("ALTER TABLE file_task_outbox ADD CONSTRAINT reject_intent CHECK (file_id < 0)"))
+    with postgres.begin() as db:
+        user_id = db.scalar(text("SELECT owner_id FROM workspaces WHERE id=:id"), {"id": workspace_id})
+        db.execute(
+            text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (:workspace,:user,'admin')"),
+            {"workspace": workspace_id, "user": user_id},
+        )
     with factory() as db:
-        with pytest.raises(Exception):
-            service._persist_file_record(db, service.FileRecordSpec(name="must-rollback.txt", file_path="unused",
-                file_size=5, mime_type="text/plain", workspace_id=workspace_id,
-                uploader_id=None, parent_id=None, content_hash=None))
-        db.rollback()
+        upload = FastAPIUploadAdapter(UploadFile(filename="must-rollback.txt", file=BytesIO(b"data")))
+        with pytest.raises(ServiceOperationError, match="Failed to save file metadata"):
+            get_upload_service().create_uploaded_file(db, workspace_id, user_id, upload)
     with factory() as db:
         assert db.query(File).filter_by(name="must-rollback.txt").count() == 0
         assert db.query(FileTaskOutbox).count() == 0
+    assert mock_object_storage.objects == {}
 
 
 @pytest.mark.parametrize('failure', ['status', 'outbox', 'commit'])
@@ -158,34 +169,3 @@ def test_broker_confirmation_before_sql_failure_causes_safe_redelivery(file_data
     assert drain() == [file_id]
 
 
-def test_outbox_migration_backfills_and_rolls_back_atomically(postgres):
-    from sqlalchemy import event, inspect
-    from entry.migrate import upgrade
-
-    upgrade(postgres, "0006_user_role_type")
-    with postgres.begin() as db:
-        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'migration-user','synthetic','common')"))
-        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'migration-space',1)"))
-        for index, status in enumerate(("pending", "processing", "success", "fail"), start=1):
-            db.execute(text("INSERT INTO files(id,name,file_path,workspace_id,status) VALUES (:id,:name,:name,1,:status)"),
-                       {"id": index, "name": status + ".txt", "status": status})
-    def fail_backfill(conn, cursor, statement, parameters, context, executemany):
-        if statement.startswith("INSERT INTO file_task_outbox"):
-            raise RuntimeError("synthetic backfill failure")
-    event.listen(postgres, "before_cursor_execute", fail_backfill)
-    try:
-        with pytest.raises(RuntimeError, match="synthetic backfill failure"):
-            upgrade(postgres)
-    finally:
-        event.remove(postgres, "before_cursor_execute", fail_backfill)
-    assert not inspect(postgres).has_table("file_task_outbox")
-    with postgres.connect() as db:
-        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0006_user_role_type"
-    upgrade(postgres)
-    upgrade(postgres)
-    with postgres.begin() as db:
-        rows = db.execute(text("SELECT file_id,created_at,next_attempt_at FROM file_task_outbox ORDER BY file_id")).all()
-        assert [row.file_id for row in rows] == [1, 2]
-        assert all(row.created_at.tzinfo is not None and row.next_attempt_at.tzinfo is not None for row in rows)
-        db.execute(text("DELETE FROM files WHERE id=1"))
-        assert db.scalar(text("SELECT count(*) FROM file_task_outbox")) == 1

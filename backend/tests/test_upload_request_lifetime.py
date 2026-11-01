@@ -31,7 +31,7 @@ async def test_cancelled_multipart_request_drains_worker_before_form_close(monke
             assert threading.get_ident() == self.owner
             closed.append('session')
 
-    def upload(*args):
+    def upload(*args, outcome='single'):
         db = args[0]
         assert threading.get_ident() == db.owner
         adapters = [arg for arg in args if isinstance(arg, FastAPIUploadAdapter)]
@@ -50,14 +50,29 @@ async def test_cancelled_multipart_request_drains_worker_before_form_close(monke
                 consumed.append(destination.read_bytes())
             if fault:
                 raise RuntimeError('worker-storage-error')
+            if outcome == 'batch':
+                return [SimpleNamespace(to_dict=lambda: {}) for _ in adapters]
+            if outcome == 'avatar':
+                return {'avatar_url': '/api/share/owned'}
+            if outcome == 'chunk':
+                return {'upload_id': 'owned-upload', 'chunk_index': 0, 'uploaded_chunks': [0]}
             return SimpleNamespace(to_dict=lambda: {})
         finally:
             finished.set()
 
+    upload_service = SimpleNamespace(
+        create_uploaded_file=upload,
+        create_uploaded_files=lambda *args: upload(*args, outcome='batch'),
+    )
+    multipart_service = SimpleNamespace(
+        save_multipart_chunk=lambda db, params: upload(db, params, outcome='chunk'),
+    )
+
     monkeypatch.setattr(router, 'assert_can_write_locked', lambda *args: None)
+    monkeypatch.setattr(router, 'get_upload_service', lambda: upload_service)
+    monkeypatch.setattr(router, 'get_multipart_service', lambda: multipart_service)
+    monkeypatch.setattr(avatar_upload, 'upload_avatar_for_user', lambda *args: upload(*args, outcome='avatar'))
     monkeypatch.setattr(avatar_upload.account_repository, 'current_role', lambda *args: 'common')
-    for name in ('create_uploaded_file', 'create_uploaded_files', 'save_multipart_chunk', 'upload_avatar_for_user'):
-        monkeypatch.setattr(router.file_service, name, upload)
     app = FastAPI()
     app.include_router(router.router)
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)

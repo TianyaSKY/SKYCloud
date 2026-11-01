@@ -1,72 +1,53 @@
-"""Avatar publication across account, folder, share and file upload boundaries.
-
-The caller owns the Session. The upload operation commits the file, share and
-account URL together; this service never opens another Session or client.
-"""
+"""Avatar publication across account, folder, share and file use cases."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy.orm import Session
 
-from app.exceptions import ResourceNotFoundError
-from app.features.file import repository
-from app.features.file.upload_service import UploadData, UploadSource
+from app.exceptions import (
+    DomainError,
+    PermissionDeniedError,
+    ResourceNotFoundError,
+    ServiceOperationError,
+)
+from app.features.auth import account_repository, user_service
+from app.features.file import repository, upload_authorization
+from app.features.file.deletion import clear_search_cache
+from app.features.file.publication import (
+    record_created,
+    reserve_and_store,
+    stage_record,
+    stage_source,
+)
+from app.features.file.upload_config import UploadSettings, upload_settings
+from app.features.file.upload_recovery import compensate_failed_uploads
+from app.features.file.upload_types import (
+    StoredUpload,
+    UploadScope,
+    UploadSource,
+    UploadStorage,
+)
+from app.features.folder import service as folder_service
+from app.features.share import service as share_service
 from app.features.share.service import CreateShareLinkParams
-from app.models.file import File
-from app.models.folder import Folder
-from app.models.share import Share
-
-if TYPE_CHECKING:
-    from app.features.folder.service import FolderCreateData
-
-
-class ShareCreator(Protocol):
-    """Create the share link that publishes an avatar file."""
-
-    def __call__(
-        self, session: Session, params: CreateShareLinkParams,
-    ) -> Share:
-        """Create the share link of the given file and return it."""
-        ...
-
-
-class FileUploader(Protocol):
-    """Publish one uploaded object as a file row inside the caller Session."""
-
-    def __call__(
-        self,
-        session: Session,
-        file_obj: UploadSource,
-        data: UploadData,
-        *,
-        before_commit: Callable[[File], None] | None = None,
-        authorize_upload: Callable[[], None] | None = None,
-    ) -> File:
-        """Store the upload and return the published file row."""
-        ...
-
-
-@dataclass(frozen=True, slots=True)
-class AvatarOperations:
-    """Account, folder, share and file ports used by one avatar upload."""
-
-    authorize_account: Callable[[Session, int, int], str]
-    create_folder: Callable[[Session, "FolderCreateData"], Folder]
-    create_share: ShareCreator
-    set_avatar: Callable[[Session, int, str], bool]
-    upload_file: FileUploader
-    evict_profile: Callable[[int], None]
+from app.infra.storage import get_storage_client
+from app.infra.upload_limits import AVATAR_LIMIT
 
 
 class AvatarUploadService:
-    """Publish an avatar object and point the account profile at it."""
+    """Publish an avatar object and point the account profile at its URL."""
 
-    def __init__(self, max_bytes: int, operations: AvatarOperations) -> None:
-        """Store the byte ceiling and the publication ports."""
+    def __init__(
+        self,
+        settings: UploadSettings,
+        *,
+        storage_factory: Callable[[], UploadStorage] = get_storage_client,
+        max_bytes: int = AVATAR_LIMIT,
+    ) -> None:
+        """Bind bounded staging settings and the minimal object-store boundary."""
+        self.settings = settings
+        self.storage_factory = storage_factory
         self.max_bytes = max_bytes
-        self.operations = operations
 
     def upload(
         self,
@@ -76,63 +57,110 @@ class AvatarUploadService:
         *,
         actor_id: int | None = None,
     ) -> dict[str, object]:
-        """Store the avatar in the personal workspace and publish its URL."""
+        """Store the avatar and commit its file, share and account URL together."""
         authorizing_id = user_id if actor_id is None else actor_id
+        user_service.authorize_account_mutation(session, authorizing_id, user_id)
 
-        def authorize_avatar() -> None:
-            self.operations.authorize_account(session, authorizing_id, user_id)
-
-        # Identity locks precede workspace and upload reservation locks.
-        authorize_avatar()
         workspace = repository.find_owned_workspace(session, user_id)
         if workspace is None:
             message = "Personal workspace not found"
             raise ResourceNotFoundError(message)
-        root = repository.find_child_folder(session, workspace.id, None)
+        workspace_id = workspace.id
+        root = repository.find_child_folder(session, workspace_id, None)
         root_id = root.id if root else None
         folder = repository.find_child_folder(
-            session, workspace.id, root_id, "所有用户头像",
+            session, workspace_id, root_id, "所有用户头像",
         )
         if folder is None:
-            folder = self.operations.create_folder(
+            folder = folder_service.create_folder(
                 session,
                 {
                     "name": "所有用户头像",
                     "parent_id": root_id,
-                    "workspace_id": workspace.id,
+                    "workspace_id": workspace_id,
                 },
             )
 
-        avatar_url: str | None = None
-
-        def publish_metadata(avatar: File) -> None:
-            nonlocal avatar_url
-            share = self.operations.create_share(
-                session,
-                CreateShareLinkParams(user_id=user_id, file_id=avatar.id, commit=False),
-            )
-            avatar_url = f"/api/share/{share.token}"
-            if not self.operations.set_avatar(session, user_id, avatar_url):
-                message = "User not found"
-                raise ResourceNotFoundError(message)
-
+        scope = UploadScope(
+            workspace_id=workspace_id,
+            uploader_id=user_id,
+            parent_id=folder.id,
+        )
+        storage = self.storage_factory()
+        stored: StoredUpload | None = None
         try:
-            avatar = self.operations.upload_file(
-                session,
-                upload,
-                {
-                    "workspace_id": workspace.id,
-                    "uploader_id": user_id,
-                    "parent_id": folder.id,
-                    "max_bytes": self.max_bytes,
-                },
-                before_commit=publish_metadata,
-                authorize_upload=authorize_avatar,
-            )
-        finally:
-            # A lost commit acknowledgement can still leave a new SQL URL.
-            self.operations.evict_profile(user_id)
+            with stage_source(
+                upload, self.settings, max_bytes=self.max_bytes,
+            ) as staged:
+                # Keep identity authorization ahead of reservation/workspace locks.
+                user_service.authorize_account_mutation(
+                    session, authorizing_id, user_id,
+                )
+                stored = reserve_and_store(session, staged, scope, storage)
+                try:
+                    user_service.authorize_account_mutation(
+                        session, authorizing_id, user_id,
+                    )
+                    upload_authorization.consume(
+                        session,
+                        workspace_id,
+                        user_id,
+                        stored.reservation_id,
+                        stored.spec.file_size,
+                    )
+                    avatar = stage_record(session, stored.spec)
+                    share = share_service.create_share_link(
+                        session,
+                        CreateShareLinkParams(
+                            user_id=user_id, file_id=avatar.id, commit=False,
+                        ),
+                    )
+                    avatar_url = f"/api/share/{share.token}"
+                    _set_avatar_or_raise(session, user_id, avatar_url)
 
+                    session.commit()
+                except Exception:
+                    compensate_failed_uploads(
+                        session,
+                        workspace_id,
+                        user_id,
+                        [(stored.reservation_id, stored.spec.file_path)],
+                        storage,
+                    )
+                    raise
+        except Exception as exc:
+            if isinstance(exc, DomainError):
+                raise
+            message = "Failed to save file metadata"
+            raise ServiceOperationError(message) from exc
+
+        record_created(avatar)
+        clear_search_cache(workspace_id)
         result: dict[str, object] = dict(avatar.to_dict())
         result["avatar_url"] = avatar_url
         return result
+
+
+def _set_avatar_or_raise(
+    session: Session, user_id: int, avatar_url: str,
+) -> None:
+    """Update an existing account avatar or report a missing account."""
+    if not account_repository.set_avatar(session, user_id, avatar_url):
+        message = "User not found"
+        raise ResourceNotFoundError(message)
+
+
+def upload_avatar_for_user(
+    session: Session,
+    actor_id: int,
+    actor_role: str,
+    user_id: int,
+    upload: UploadSource,
+) -> dict[str, object]:
+    """Reject unauthorized actors before staging, then publish transactionally."""
+    if actor_id != user_id and actor_role != "admin":
+        message = "Permission denied"
+        raise PermissionDeniedError(message)
+    return AvatarUploadService(upload_settings()).upload(
+        session, upload, user_id, actor_id=actor_id,
+    )

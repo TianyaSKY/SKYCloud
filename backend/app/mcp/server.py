@@ -28,6 +28,7 @@ from starlette.types import ASGIApp
 from app.exceptions import DomainError
 from app.features.file import search_service as file_search_service
 from app.features.file import service as file_service
+from app.features.file.upload_service import get_upload_service
 from app.features.folder import service as folder_service
 from app.features.share import service as share_service
 from app.features.workspace import insights as workspace_insights
@@ -946,7 +947,7 @@ async def upload_file(
     def _work(session: Session) -> dict[str, Any]:
         try:
             assert_current_write_permission(session, context)
-            file_obj = file_service.create_uploaded_file(
+            file_obj = get_upload_service().create_uploaded_file(
                 session,
                 context.workspace_id,
                 context.user_id,

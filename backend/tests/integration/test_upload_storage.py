@@ -26,7 +26,7 @@ from tests.integration.test_runtime_security import docker
 from entry.migrate import upgrade
 from app.api.factory import create_fastapi_app
 from app.features.auth.service import generate_token
-from app.features.file import service, upload_quota
+from app.features.file import service, upload_config, upload_quota
 from app.infra.extensions import get_db, get_session_factory
 from app.infra.storage import MinIOStorageClient
 from app.infra.upload_adapter import FastAPIUploadAdapter
@@ -87,6 +87,10 @@ async def test_mcp_text_read_uses_bounded_minio_range(upload_api, postgres, mini
         assert requests == reads == released == []
 
 
+
+
+
+
 @pytest.mark.parametrize('alias', ['root', 'workspace', 'upload', 'chunks'])
 @pytest.mark.parametrize('phase', ['init', 'chunk'])
 def test_multipart_writes_do_not_follow_parent_aliases(upload_api, postgres, minio_storage, alias, phase):
@@ -96,7 +100,7 @@ def test_multipart_writes_do_not_follow_parent_aliases(upload_api, postgres, min
         admitted = client.post('/api/files/multipart/init', headers=headers,
                                json={'filename': 'safe.txt', 'total_size': 3, 'upload_id': rid})
         assert admitted.status_code == 200
-    parts = root / 'parts'
+    parts = root / 'uploads' / '.multipart'
     relative = ['1', rid, 'chunks']
     level = ['root', 'workspace', 'upload', 'chunks'].index(alias)
     original = parts.joinpath(*relative[:level])
@@ -150,7 +154,7 @@ def test_multipart_alias_cannot_publish_foreign_bytes(upload_api, postgres, mini
                         data={'upload_id': rid, 'chunk_index': '0'},
                         files={'chunk': ('piece', b'safe!!', 'application/octet-stream')})
     assert saved.status_code == 200
-    chunks = root / 'parts' / '1' / rid / 'chunks'
+    chunks = root / 'uploads' / '.multipart' / '1' / rid / 'chunks'
     foreign = root / 'foreign'
     foreign.mkdir()
     if alias == 'chunk':
@@ -161,7 +165,7 @@ def test_multipart_alias_cannot_publish_foreign_bytes(upload_api, postgres, mini
         target = foreign / 'chunks'
         target.mkdir()
     else:
-        original = root / 'parts' / '1'
+        original = root / 'uploads' / '.multipart' / '1'
         target = foreign / 'workspace'
         (target / rid / 'chunks').mkdir(parents=True)
     private = target if alias == 'chunk' else target / ('0.part' if alias == 'chunks' else rid + '/chunks/0.part')
@@ -208,9 +212,11 @@ def minio_storage():
                 time.sleep(.1)
         else:
             raise AssertionError('Isolated MinIO did not start')
-        client = MinIOStorageClient(endpoint, access, secret, 'upload-test-' + uuid.uuid4().hex[:12])
+        bucket = 'upload-test-' + uuid.uuid4().hex[:12]
+        client = MinIOStorageClient(endpoint, access, secret, bucket)
         client.integration_endpoint = endpoint
         client.integration_auth = (access, secret)
+        client.integration_bucket = bucket
         yield client
     finally:
         docker('rm', '-f', name, check=False)
@@ -229,8 +235,7 @@ def upload_api(postgres, minio_storage, monkeypatch, tmp_path):
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(change_log, 'SessionLocal', factory)
     monkeypatch.setattr(storage._holder, 'client', minio_storage)
-    monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
-    monkeypatch.setattr(service, 'MULTIPART_ROOT', str(tmp_path / 'parts'))
+    monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
     app = create_fastapi_app()
     def database():
         with factory() as session:
@@ -247,24 +252,31 @@ def test_authenticated_upload_download_multipart_owner_and_limits(upload_api, po
     client, headers, root = upload_api
     response = client.post('/api/files', headers=headers, files={'file': ('small.txt', b'hello', 'text/plain')})
     assert response.status_code == 201, response.text
-    record = response.json()["data"]
+    payload = response.json()
+    assert payload['success'] is True
+    record = payload['data']
     assert record['file_size'] == 5
+    assert 'file_path' not in record and 'vector_info' not in record
     assert client.get(f"/api/files/{record['id']}/download",
                       params={'token': generate_token(1)},
                       headers={'X-Workspace-Id': '1'}).status_code == 401
     response = client.get(f"/api/files/{record['id']}/download", headers=headers)
     assert response.status_code == 200 and response.content == b'hello'
-    monkeypatch.setattr(service, 'MAX_UPLOAD_SIZE', 5)
+    monkeypatch.setattr(upload_config, 'MAX_UPLOAD_SIZE', 5)
     response = client.post('/api/files', headers=headers, files={'file': ('large.txt', b'too large', 'text/plain')})
     assert response.status_code == 413
     assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == 1
-    monkeypatch.setattr(service, 'MAX_UPLOAD_SIZE', 1024)
+    monkeypatch.setattr(upload_config, 'MAX_UPLOAD_SIZE', 1024)
     body = b'12345678'
     response = client.post('/api/files/multipart/init', headers=headers, json={
         'filename': 'multipart.txt', 'total_size': len(body), 'chunk_size': 4,
         'content_hash': hashlib.sha256(body).hexdigest()})
     assert response.status_code == 200, response.text
-    rid = response.json()['data']['upload_id']
+    multipart_payload = response.json()
+    assert multipart_payload['success'] is True
+    multipart_data = multipart_payload['data']
+    assert 'object_name' not in multipart_data and 'stage_id' not in multipart_data
+    rid = multipart_data['upload_id']
     other = {**headers, 'authorization': 'Bearer ' + generate_token(2)}
     assert client.get('/api/files/multipart/' + rid, headers=other).status_code == 403
     response = client.post('/api/files/multipart/chunk', headers=other,
@@ -274,9 +286,21 @@ def test_authenticated_upload_download_multipart_owner_and_limits(upload_api, po
         response = client.post('/api/files/multipart/chunk', headers=headers,
             data={'upload_id': rid, 'chunk_index': index}, files={'chunk': ('part', body[index*4:(index+1)*4])})
         assert response.status_code == 200, response.text
+    status = client.get('/api/files/multipart/' + rid, headers=headers)
+    assert status.status_code == 200, status.text
+    assert status.json()['success'] is True
+    assert status.json()['data'] == {
+        'upload_id': rid,
+        'chunk_size': 4,
+        'total_chunks': 2,
+        'uploaded_chunks': [0, 1],
+    }
     response = client.post('/api/files/multipart/complete', headers=headers, json={'upload_id': rid})
     assert response.status_code == 201, response.text
-    assert client.get(f"/api/files/{response.json()['data']['id']}/download", headers=headers).content == body
+    completed_data = response.json()['data']
+    assert response.json()['success'] is True
+    assert 'file_path' not in completed_data and 'vector_info' not in completed_data
+    assert client.get(f"/api/files/{completed_data['id']}/download", headers=headers).content == body
     assert client.post('/api/files/multipart/complete', headers=headers, json={'upload_id': rid}).status_code == 409
     with postgres.connect() as conn:
         assert conn.scalar(text('SELECT count(*) FROM files')) == 2
@@ -285,6 +309,36 @@ def test_authenticated_upload_download_multipart_owner_and_limits(upload_api, po
         assert conn.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
     assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == 2
     assert not (root / 'uploads' / '.staging').exists()
+
+
+def test_batch_upload_http_response_filters_storage_metadata(upload_api, postgres, minio_storage):
+    client, headers, _ = upload_api
+    response = client.post(
+        '/api/files/batch',
+        headers=headers,
+        files=[
+            ('files', ('first.txt', b'first')),
+            ('files', ('second.txt', b'second')),
+        ],
+    )
+
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload['success'] is True
+    records = payload['data']
+    assert [item['name'] for item in records] == ['first.txt', 'second.txt']
+    assert [item['file_size'] for item in records] == [5, 6]
+    assert all('file_path' not in item and 'vector_info' not in item for item in records)
+    for item, body in zip(records, [b'first', b'second']):
+        downloaded = client.get(
+            f"/api/files/{item['id']}/download", headers=headers,
+        )
+        assert downloaded.status_code == 200
+        assert downloaded.content == body
+    with postgres.connect() as db:
+        assert db.scalar(text('SELECT count(*) FROM files')) == 2
+        assert db.scalar(text('SELECT count(*) FROM file_task_outbox')) == 2
+    assert len(list(minio_storage._client.list_objects(minio_storage._bucket))) == 2
 
 
 def test_worker_reconciles_real_orphan_object_and_retains_committed_object(upload_api, postgres, minio_storage):
@@ -305,7 +359,7 @@ def test_worker_reconciles_real_orphan_object_and_retains_committed_object(uploa
 
 @pytest.mark.parametrize('link_level', ['root', 'workspace'])
 @pytest.mark.parametrize('operation', ['worker', 'abort'])
-def test_closed_reservation_cleanup_does_not_follow_directory_aliases(upload_api, postgres, monkeypatch, link_level, operation):
+def test_closed_reservation_cleanup_does_not_follow_directory_aliases(upload_api, postgres, link_level, operation):
     client, headers, root = upload_api
     outside = root / 'outside'
     upload_id = 'closed-upload-123'
@@ -313,13 +367,13 @@ def test_closed_reservation_cleanup_does_not_follow_directory_aliases(upload_api
     directory.mkdir(parents=True)
     payload = directory / 'part'
     payload.write_bytes(b'outside-reservation-tree')
-    multipart = root / 'aliases'
+    multipart = root / 'uploads' / '.multipart'
+    multipart.parent.mkdir(parents=True, exist_ok=True)
     if link_level == 'root':
         multipart.symlink_to(outside, target_is_directory=True)
     else:
         multipart.mkdir()
         (multipart / '1').symlink_to(outside / '1', target_is_directory=True)
-    monkeypatch.setattr(service, 'MULTIPART_ROOT', str(multipart))
     with postgres.begin() as db:
         db.execute(text("""INSERT INTO upload_reservations(id,user_id,workspace_id,size,status,kind,details,created_at,expires_at)
             VALUES (:id,1,1,10,'cancelled','multipart','{}',now()-interval '2 hours',now()-interval '1 hour')"""), {'id': upload_id})
@@ -327,7 +381,8 @@ def test_closed_reservation_cleanup_does_not_follow_directory_aliases(upload_api
         with sessionmaker(bind=postgres)() as db:
             assert service.cleanup_expired_uploads(session=db) == 0
     else:
-        assert client.delete('/api/files/multipart/' + upload_id, headers=headers).status_code == 204
+        aborted = client.delete('/api/files/multipart/' + upload_id, headers=headers)
+        assert aborted.status_code == 204 and aborted.content == b''
     assert payload.read_bytes() == b'outside-reservation-tree'
 
 
@@ -350,7 +405,9 @@ def test_instant_upload_never_reuses_foreign_workspace_record(upload_api, postgr
         'filename': 'claimed.txt', 'total_size': len(content), 'chunk_size': len(content),
         'content_hash': content_hash})
     assert response.status_code == 200, response.text
-    payload = response.json()['data']
+    response_payload = response.json()
+    assert response_payload['success'] is True
+    payload = response_payload['data']
     assert payload['instant_upload'] is local_source
     assert 'private-derived-note' not in response.text and 'private-name' not in response.text
     with postgres.connect() as db:
@@ -428,7 +485,7 @@ def test_chunk_cleanup_failure_preserves_public_validation_and_retry(upload_api,
     assert failed.json()['error']['code'] == ('BUSINESS_RULE_VIOLATION' if status == 400 else 'PAYLOAD_TOO_LARGE')
     assert 'private-cleanup' not in failed.text + ''.join(logs)
     assert 'PermissionError' in ''.join(logs)
-    chunks = root / 'parts' / '1' / upload_id / 'chunks'
+    chunks = root / 'uploads' / '.multipart' / '1' / upload_id / 'chunks'
     assert (chunks / '0.part').read_bytes() == b'abc'
     assert list(chunks.glob('*.tmp'))
     assert client.post(path, headers=headers, data=data, files={'chunk': ('part', b'xyz')}).status_code == 200
@@ -561,27 +618,32 @@ def test_real_storage_rejection_holds_capacity_until_reconciliation(upload_api, 
 
 def test_process_crash_after_real_put_is_reconciled(upload_api, postgres, minio_storage):
     from datetime import timedelta
-    client, headers, root = upload_api
+    _, _, root = upload_api
     script = """
 import os
 from io import BytesIO
 saved_environment = dict(os.environ)
 import tests.conftest  # Only optional AI/Docker libraries are stubbed.
+from fastapi import UploadFile
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from werkzeug.datastructures import FileStorage
-from app.features.file import service
+from app.features.file import upload_config, upload_service
+from app.features.file.upload_service import FileUploadService
 from app.infra.storage import MinIOStorageClient
+from app.infra.upload_adapter import FastAPIUploadAdapter
 engine = create_engine(saved_environment['DATABASE_URL'])
-service.UPLOAD_FOLDER = saved_environment['UPLOAD_FOLDER']
+upload_config.UPLOAD_FOLDER = saved_environment['UPLOAD_FOLDER']
 storage = MinIOStorageClient(saved_environment['MINIO_ENDPOINT'], saved_environment['MINIO_ACCESS_KEY'],
     saved_environment['MINIO_SECRET_KEY'], saved_environment['MINIO_BUCKET'])
-service.get_storage_client = lambda: storage
-service._persist_file_record = lambda *args, **kwargs: os._exit(31)
+uploads = FileUploadService(upload_config.upload_settings(), storage_factory=lambda: storage)
+upload_service.stage_stored_files = lambda *args, **kwargs: os._exit(31)
 with Session(engine) as session:
-    service.create_file(session, FileStorage(stream=BytesIO(b'crashed upload'), filename='crash.txt'),
-                        {'workspace_id': 1, 'uploader_id': 1})
+    uploads.create_uploaded_file(
+        session, 1, 1,
+        FastAPIUploadAdapter(UploadFile(filename='crash.txt', file=BytesIO(b'crashed upload'))),
+    )
 """
+
     result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).resolve().parents[2],
         env={**os.environ, 'DATABASE_URL': postgres.url.render_as_string(hide_password=False),
              'UPLOAD_FOLDER': str(root / 'uploads'), 'MINIO_ENDPOINT': minio_storage.integration_endpoint,
@@ -610,88 +672,121 @@ with Session(engine) as session:
 
 @pytest.mark.parametrize('delete_failure', [False, True])
 def test_real_batch_staging_failure_compensation_and_worker_recovery(upload_api, postgres, minio_storage, monkeypatch, delete_failure):
-    """Explicit second-stage allocation fault; actual PG/MinIO compensation."""
+    """An input stream failure compensates earlier object writes and quota."""
     from io import BytesIO
     from fastapi import UploadFile
     from app.exceptions import BusinessRuleError, ServiceOperationError
+    from app.features.file.upload_service import get_upload_service
     from app.infra.upload_adapter import FastAPIUploadAdapter
     from minio import Minio
-    client, headers, root = upload_api
+
+    _, _, root = upload_api
     monkeypatch.setattr(upload_quota, 'USER_CAPACITY', 10)
-    original_stage = service.StagedUpload
     healthy_client = minio_storage._client
+    original_save = FastAPIUploadAdapter.save
     calls = 0
-    def stage(*args, **kwargs):
+
+    def fail_second(adapter, destination, max_bytes):
         nonlocal calls
         calls += 1
         if calls == 2:
             if delete_failure:
-                minio_storage._client = Minio(minio_storage.integration_endpoint, access_key='invalid', secret_key='invalid-secret', secure=False)
+                minio_storage._client = Minio(
+                    minio_storage.integration_endpoint,
+                    access_key='invalid',
+                    secret_key='invalid-secret',
+                    secure=False,
+                )
+            original_save(adapter, destination, max_bytes)
             raise OSError('private-staging-allocation-fault')
-        return original_stage(*args, **kwargs)
-    monkeypatch.setattr(service, 'StagedUpload', stage)
-    uploads = [FastAPIUploadAdapter(UploadFile(filename=name, file=BytesIO(b'12345'))) for name in ['one.txt','two.txt']]
+        original_save(adapter, destination, max_bytes)
+
+    monkeypatch.setattr(FastAPIUploadAdapter, 'save', fail_second)
+    uploads = [
+        FastAPIUploadAdapter(UploadFile(filename=name, file=BytesIO(b'12345')))
+        for name in ['one.txt', 'two.txt']
+    ]
     try:
         with Session(postgres) as db:
             with pytest.raises(ServiceOperationError, match='Failed to upload file'):
-                service.batch_create_files(db, uploads, {'workspace_id':1,'uploader_id':1})
+                get_upload_service().create_uploaded_files(db, 1, 1, uploads)
             assert db.scalar(text('SELECT count(*) FROM files')) == 0
             assert db.scalar(text('SELECT count(*) FROM file_task_outbox')) == 0
             assert db.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
             assert db.scalar(text('SELECT sum(attempts) FROM upload_daily_usage')) == 1
             if delete_failure:
                 with pytest.raises(BusinessRuleError, match='capacity'):
-                    upload_quota.reserve(db, upload_quota.ReserveParams(workspace_id=1, user_id=1, size=10))
+                    upload_quota.reserve(
+                        db,
+                        upload_quota.ReserveParams(
+                            workspace_id=1, user_id=1, size=10,
+                        ),
+                    )
                 db.rollback()
             minio_storage._client = healthy_client
             assert len(list(healthy_client.list_objects(minio_storage._bucket))) == int(delete_failure)
             service.cleanup_expired_uploads(session=db)
             assert db.scalar(text('SELECT count(*) FROM upload_reservations WHERE cleaned_at IS NULL')) == 0
-            assert upload_quota.reserve(db, upload_quota.ReserveParams(workspace_id=1, user_id=1, size=10)).size == 10
+            assert upload_quota.reserve(
+                db,
+                upload_quota.ReserveParams(workspace_id=1, user_id=1, size=10),
+            ).size == 10
         assert list(healthy_client.list_objects(minio_storage._bucket)) == []
         assert not (root / 'uploads' / '.staging').exists()
     finally:
         minio_storage._client = healthy_client
 
-
 @pytest.mark.parametrize('kind', ['single', 'batch', 'multipart'])
-def test_real_upload_committed_before_ack_failure_keeps_downloadable_objects(upload_api, postgres, minio_storage, monkeypatch, kind):
-    """Explicit post-COMMIT acknowledgement fault seam; actual SQL and objects."""
+def test_real_upload_committed_before_ack_failure_keeps_downloadable_objects(upload_api, postgres, minio_storage, kind):
+    """Committed publication survives a lost acknowledgement on each upload seam."""
     from io import BytesIO
     from fastapi import UploadFile
     from app.exceptions import ServiceOperationError
+    from app.models.file import File
+    from app.features.file.multipart_service import SaveMultipartChunkParams, get_multipart_service
+    from app.features.file.upload_service import get_upload_service
     from app.infra.upload_adapter import FastAPIUploadAdapter
+
+    class AckSession(Session):
+        def commit(self):
+            publication_committed = any(
+                isinstance(row, File)
+                for row in (*self.new, *self.identity_map.values())
+            )
+            super().commit()
+            if publication_committed and not self.info.get('upload_ack_dropped', False):
+                self.info['upload_ack_dropped'] = True
+                raise OSError('private-commit-acknowledgement-fault')
     client, headers, root = upload_api
-    attribute = 'insert_files' if kind == 'batch' else 'insert_file'
-    insert = getattr(service.repository, attribute)
-    fail = False
-    def persist(*args, **kwargs):
-        nonlocal fail
-        result = insert(*args, **kwargs)
-        fail = True
-        return result
-    monkeypatch.setattr(service.repository, attribute, persist)
+
     def upload(body):
         return FastAPIUploadAdapter(UploadFile(filename='x.txt', file=BytesIO(body)))
-    with Session(postgres) as db:
-        commit = db.commit
-        def acknowledged_commit():
-            nonlocal fail
-            committed_file = fail
-            fail = False
-            commit()
-            if committed_file:
-                raise OSError('private-commit-acknowledgement-fault')
-        monkeypatch.setattr(db, 'commit', acknowledged_commit)
+
+    with AckSession(postgres) as db:
         with pytest.raises(ServiceOperationError):
             if kind == 'single':
-                service.create_file(db, upload(b'12345'), {'workspace_id':1,'uploader_id':1})
+                get_upload_service().create_uploaded_file(db, 1, 1, upload(b'12345'))
             elif kind == 'batch':
-                service.batch_create_files(db, [upload(b'12345'),upload(b'67890')], {'workspace_id':1,'uploader_id':1})
+                get_upload_service().create_uploaded_files(
+                    db, 1, 1, [upload(b'12345'), upload(b'67890')],
+                )
             else:
-                rid = service.init_multipart_upload(db, 1, 1, {'filename':'x.txt','total_size':5})['upload_id']
-                service.save_multipart_chunk(db, service.SaveMultipartChunkParams(uploader_id=1, workspace_id=1, upload_id=rid, chunk_index=0, chunk=upload(b'12345')))
-                service.complete_multipart_upload(db, 1, 1, rid)
+                multipart = get_multipart_service()
+                rid = multipart.init_multipart_upload(
+                    db, 1, 1, {'filename': 'x.txt', 'total_size': 5},
+                )['upload_id']
+                multipart.save_multipart_chunk(
+                    db,
+                    SaveMultipartChunkParams(
+                        uploader_id=1,
+                        workspace_id=1,
+                        upload_id=rid,
+                        chunk_index=0,
+                        chunk=upload(b'12345'),
+                    ),
+                )
+                multipart.complete_multipart_upload(db, 1, 1, rid)
+
     expected = 2 if kind == 'batch' else 1
     with Session(postgres) as observer:
         files = observer.execute(text('SELECT id,file_path FROM files ORDER BY id')).all()
@@ -704,68 +799,86 @@ def test_real_upload_committed_before_ack_failure_keeps_downloadable_objects(upl
     for file in files:
         response = client.get(f'/api/files/{file.id}/download', headers=headers)
         assert response.status_code == 200
-        assert response.content in [b'12345',b'67890']
+        assert response.content in [b'12345', b'67890']
     assert not (root / 'uploads' / '.staging').exists()
 
 
 @pytest.mark.parametrize('rollback_fault', [False, True])
 def test_real_batch_cancel_sql_rejection_preserves_error_and_recovers_remaining_entries(upload_api, postgres, minio_storage, monkeypatch, rollback_fault):
-    """Actual PG cancellation constraint rejection; optional rollback fault seam."""
+    """PostgreSQL cancellation rejection preserves the input error and recovery state."""
     from io import BytesIO
     from fastapi import UploadFile
     from app.exceptions import BusinessRuleError
+    from types import SimpleNamespace
+    from app.infra import upload_staging
+    from app.features.file.upload_service import get_upload_service
     from app.infra.upload_adapter import FastAPIUploadAdapter
-    client, headers, root = upload_api
+
+    _, _, root = upload_api
     monkeypatch.setattr(upload_quota, 'USER_CAPACITY', 10)
-    save = service.save_bounded
+    original_save = FastAPIUploadAdapter.save
     original = BusinessRuleError('original upload failure')
     calls = 0
     first_id = 'a' * 32
     with postgres.begin() as sql:
         sql.execute(text("ALTER TABLE upload_reservations ADD CONSTRAINT reject_first_cancel CHECK (id <> 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' OR status <> 'cancelled')"))
-    stage = service.StagedUpload
-    stages = 0
-    def fixed_stage(*args, **kwargs):
-        nonlocal stages
-        stages += 1
-        return stage(*args, stage_id=chr(96 + stages) * 32, **kwargs)
-    monkeypatch.setattr(service, 'StagedUpload', fixed_stage)
-    def save_then_fail(*args, **kwargs):
+    stage_ids = iter((first_id, 'b' * 32, 'c' * 32))
+    monkeypatch.setattr(
+        upload_staging,
+        'uuid',
+        SimpleNamespace(uuid4=lambda: SimpleNamespace(hex=next(stage_ids))),
+    )
+
+    def save_then_fail(adapter, destination, max_bytes):
         nonlocal calls
         calls += 1
         if calls == 3:
             raise original
-        return save(*args, **kwargs)
-    monkeypatch.setattr(service, 'save_bounded', save_then_fail)
+        original_save(adapter, destination, max_bytes)
+
+    monkeypatch.setattr(FastAPIUploadAdapter, 'save', save_then_fail)
     with Session(postgres) as db:
         rollback = db.rollback
         failed = False
+
         def reset():
             nonlocal failed
             if rollback_fault and not failed:
                 failed = True
                 raise OSError('private-rollback-fault')
             return rollback()
+
         monkeypatch.setattr(db, 'rollback', reset)
-        uploads = [FastAPIUploadAdapter(UploadFile(filename='x.txt', file=BytesIO(b'12345'))) for _ in range(3)]
+        uploads = [
+            FastAPIUploadAdapter(
+                UploadFile(filename='x.txt', file=BytesIO(b'12345')),
+            )
+            for _ in range(3)
+        ]
         with pytest.raises(BusinessRuleError) as caught:
-            service.batch_create_files(db, uploads, {'workspace_id':1,'uploader_id':1})
+            get_upload_service().create_uploaded_files(db, 1, 1, uploads)
         assert caught.value is original
     with Session(postgres) as observer:
         rows = observer.execute(text('SELECT id,status FROM upload_reservations')).all()
         assert len(rows) == 2
-        assert {r.status for r in rows} == {'active','cancelled'}
-        assert next(r for r in rows if r.id == first_id).status == 'active'
+        assert {row.status for row in rows} == {'active', 'cancelled'}
+        assert next(row for row in rows if row.id == first_id).status == 'active'
         assert observer.scalar(text('SELECT count(*) FROM files')) == 0
         assert observer.scalar(text('SELECT sum(attempts) FROM upload_daily_usage')) == 2
     assert list(minio_storage._client.list_objects(minio_storage._bucket)) == []
     with postgres.begin() as sql:
         sql.execute(text('ALTER TABLE upload_reservations DROP CONSTRAINT reject_first_cancel'))
-        sql.execute(text("UPDATE upload_reservations SET expires_at=NOW()-INTERVAL '1 second' WHERE id=:id"),{'id':first_id})
+        sql.execute(
+            text("UPDATE upload_reservations SET expires_at=NOW()-INTERVAL '1 second' WHERE id=:id"),
+            {'id': first_id},
+        )
     with Session(postgres) as observer:
         service.cleanup_expired_uploads(session=observer)
         assert observer.scalar(text('SELECT count(*) FROM upload_reservations WHERE cleaned_at IS NULL')) == 0
-        assert upload_quota.reserve(observer, upload_quota.ReserveParams(workspace_id=1, user_id=1, size=10)).size == 10
+        assert upload_quota.reserve(
+            observer,
+            upload_quota.ReserveParams(workspace_id=1, user_id=1, size=10),
+        ).size == 10
     assert not (root / 'uploads' / '.staging').exists()
 
 
@@ -778,7 +891,10 @@ def test_real_avatar_upload_formats_update_account_and_keep_share_bytes(upload_a
     kwargs = {'files':{'avatar':('avatar.png',body,'image/png')}} if format == 'multipart' else ({'data':{'avatar_base64':value}} if format == 'form' else {'json':{'avatar':value}})
     response = client.post('/api/files/upload/avatar/1',headers=headers,**kwargs)
     assert response.status_code == 200,response.text
-    data = response.json()['data']
+    payload = response.json()
+    assert payload['success'] is True
+    data = payload['data']
+    assert 'file_path' not in data and 'vector_info' not in data
     assert data['avatar'] == data['avatar_url']
     with postgres.connect() as sql:
         assert sql.scalar(text('SELECT avatar FROM users WHERE id=1')) == data['avatar_url']
@@ -812,7 +928,7 @@ def test_real_avatar_worker_rejects_stale_admin_role_before_object_put(upload_ap
 
 
 @pytest.mark.parametrize('failure',['share','profile','ack'])
-def test_real_avatar_publication_sql_failure_and_commit_ack_outcome(upload_api,postgres,minio_storage,monkeypatch,failure):
+def test_real_avatar_publication_sql_failure_and_commit_ack_outcome(upload_api,postgres,minio_storage,failure):
     client,headers,root=upload_api
     with postgres.begin() as sql:
         sql.execute(text("UPDATE users SET avatar='/existing-avatar' WHERE id=1"))
@@ -820,18 +936,21 @@ def test_real_avatar_publication_sql_failure_and_commit_ack_outcome(upload_api,p
             sql.execute(text('ALTER TABLE shares ADD CONSTRAINT reject_avatar_share CHECK (file_id < 0)'))
         elif failure=='profile':
             sql.execute(text("ALTER TABLE users ADD CONSTRAINT reject_avatar_url CHECK (avatar NOT LIKE '/api/share/%')"))
-    if failure=='ack':
-        insert=service.repository.insert_file
-        def persist(db,*args,**kwargs):
-            result=insert(db,*args,**kwargs);db.info['fail_avatar_ack']=True
-            return result
+    if failure == 'ack':
+        from app.models.file import File
+
         class AckSession(Session):
             def commit(self):
-                fail=self.info.pop('fail_avatar_ack',False)
+                publication_committed = any(
+                    isinstance(row, File)
+                    for row in (*self.new, *self.identity_map.values())
+                )
                 super().commit()
-                if fail:raise OSError('private-avatar-commit-ack-fault')
-        monkeypatch.setattr(service.repository,'insert_file',persist)
-        client.app.dependency_overrides[get_session_factory]=lambda:sessionmaker(bind=postgres,class_=AckSession)
+                if publication_committed and not self.info.get('avatar_ack_dropped', False):
+                    self.info['avatar_ack_dropped'] = True
+                    raise OSError('private-avatar-commit-ack-fault')
+
+        client.app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres,class_=AckSession)
     response=client.post('/api/files/upload/avatar/1',headers=headers,files={'avatar':('avatar.png',b'avatar-content','image/png')})
     assert response.status_code==500,response.text
     expected=int(failure=='ack')
@@ -856,12 +975,14 @@ def test_real_upload_cleanup_close_fault_does_not_replace_sql_outcome(upload_api
     client,headers,root=upload_api
     if metadata_rejection:
         with postgres.begin() as sql:sql.execute(text("ALTER TABLE files ADD CONSTRAINT reject_close_test CHECK (name <> 'close.txt')"))
-    close=service.StagedUpload.close
-    closed=[]
+    from app.infra.upload_staging import StagedUpload
+    close = StagedUpload.close
+    closed = []
     def fault(stage):
-        close(stage);closed.append(stage.handle.closed)
+        close(stage)
+        closed.append(stage.handle.closed)
         raise OSError('private-close-fault')
-    monkeypatch.setattr(service.StagedUpload,'close',fault)
+    monkeypatch.setattr(StagedUpload, 'close', fault)
     response=client.post('/api/files',headers=headers,files={'file':('close.txt',b'body')})
     assert response.status_code==(500 if metadata_rejection else 201),response.text
     expected=int(not metadata_rejection)
@@ -886,13 +1007,13 @@ def test_upload_publication_rejects_committed_role_loss(upload_api, postgres, mi
             baseline_files = db.scalar(text('SELECT count(*) FROM files'))
             baseline_tasks = db.scalar(text('SELECT count(*) FROM file_task_outbox'))
         baseline_objects = len(list(minio_storage._client.list_objects(minio_storage._bucket)))
-        reserve = service.upload_quota.reserve
+        reserve = upload_quota.reserve
         def reserve_then_demote(*args, **kwargs):
             row = reserve(*args, **kwargs)
             with postgres.begin() as independent:
                 independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
             return row
-        monkeypatch.setattr(service.upload_quota, 'reserve', reserve_then_demote)
+        monkeypatch.setattr(upload_quota, 'reserve', reserve_then_demote)
     else:
         put = minio_storage.upload_file
         puts = 0
@@ -920,9 +1041,10 @@ def test_upload_publication_rejects_committed_role_loss(upload_api, postgres, mi
         # HTTP entry already holds membership through completion. Exercise the
         # shared service boundary directly without that extra request lock.
         from app.exceptions import PermissionDeniedError
+        from app.features.file.multipart_service import get_multipart_service
         with Session(postgres) as db:
             with pytest.raises(PermissionDeniedError):
-                service.complete_multipart_upload(db, 1, 1, upload_id)
+                get_multipart_service().complete_multipart_upload(db, 1, 1, upload_id)
         response = None
     else:
         response = client.post('/api/files/preflight', headers=headers,

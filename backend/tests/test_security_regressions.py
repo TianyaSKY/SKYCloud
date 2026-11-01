@@ -1,6 +1,6 @@
 """Exercise security boundaries through actual HTTP dependency resolution."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -158,7 +158,9 @@ def test_password_endpoint_still_requires_old_password(client, session, test_use
 def test_upload_error_hides_internal_details(client, test_user, test_workspace):
     auth_headers = {**headers(test_user), "X-Workspace-Id": str(test_workspace.id)}
     secret = "/private/storage/internal-path database-password"
-    with patch("app.features.file.service.create_uploaded_file", side_effect=RuntimeError(secret)):
+    service = MagicMock()
+    service.create_uploaded_file.side_effect = RuntimeError(secret)
+    with patch("app.features.file.router.get_upload_service", return_value=service):
         response = client.post("/api/files", headers=auth_headers, files={"file": ("test.txt", b"test")})
     assert response.status_code == 500
     assert secret not in response.text

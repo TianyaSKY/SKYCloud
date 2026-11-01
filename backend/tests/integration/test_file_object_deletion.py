@@ -9,7 +9,6 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
-from app.exceptions import ConflictError
 from app.features.file import service
 from app.infra.file_object_deletion import delete_pending_objects
 from app.models.file import File
@@ -36,6 +35,37 @@ def object_context(postgres,minio_storage,monkeypatch,tmp_path):
     monkeypatch.setattr(service.change_log_service,'log_event',lambda _params:None)
     factory = sessionmaker(bind=postgres)
     return postgres,minio_storage,factory
+
+@pytest.fixture
+def object_http(object_context, monkeypatch, tmp_path):
+    """Expose instant upload through its authenticated HTTP contract."""
+    from fastapi.testclient import TestClient
+    from app.api.factory import create_fastapi_app
+    from app.features.auth.service import generate_token
+    from app.features.file import upload_config
+    from app.infra import storage as storage_module
+    from app.infra.extensions import get_db, get_session_factory
+
+    _, object_store, factory = object_context
+    monkeypatch.setattr(storage_module._holder, "client", object_store)
+    monkeypatch.setattr(upload_config, "UPLOAD_FOLDER", str(tmp_path / "uploads"))
+    app = create_fastapi_app()
+
+    def database():
+        with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = database
+    app.dependency_overrides[get_session_factory] = lambda: factory
+    client = TestClient(app)
+    headers = {
+        "authorization": "Bearer " + generate_token(1),
+        "X-Workspace-Id": "1",
+    }
+    try:
+        yield client, headers
+    finally:
+        client.close()
 
 
 def clean(context,**kwargs):
@@ -129,86 +159,150 @@ def test_two_dispatchers_complete_duplicate_intents_without_losing_state(object_
         assert connection.scalar(text('SELECT count(*) FROM file_object_deletions WHERE completed_at IS NOT NULL')) == 2
 
 
-def test_stale_instant_source_cannot_recreate_missing_object_metadata(object_context):
-    db,storage,factory = object_context
-    with factory() as session:
-        source = session.get(File,1)
-        digest = source.content_hash
-        delete_source(object_context)
-        assert clean(object_context) == 1
-        with pytest.raises(ConflictError,match='no longer available'):
-            service._clone_existing_file(session, service.CloneSourceParams(source_file=source, filename='clone',workspace_id=1,uploader_id=1,
-                parent_id=None,mime_type=None,content_hash=digest))
-    assert not storage.file_exists('shared')
+def test_public_preflight_does_not_clone_object_removed_after_lookup(
+    object_context, object_http, monkeypatch,
+):
+    db, storage, _ = object_context
+    client, headers = object_http
+    original_exists = storage.file_exists
+    original_delete = storage.delete_file
+    probes = 0
+
+    def remove_after_lookup(name):
+        nonlocal probes
+        probes += 1
+        if probes == 1:
+            original_delete(name)
+            return True
+        return original_exists(name)
+
+    monkeypatch.setattr(storage, "file_exists", remove_after_lookup)
+    response = client.post(
+        "/api/files/preflight",
+        headers=headers,
+        json={
+            "filename": "clone",
+            "total_size": 3,
+            "content_hash": hashlib.sha256(b"abc").hexdigest(),
+        },
+    )
+    assert response.status_code == 409, response.text
+    assert not original_exists("shared")
     with db.connect() as connection:
-        assert connection.scalar(text('SELECT count(*) FROM files')) == 0
-        assert connection.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
+        assert connection.execute(
+            text("SELECT id,file_path FROM files"),
+        ).all() == [(1, "shared")]
+        assert connection.scalar(
+            text("SELECT count(*) FROM upload_reservations WHERE status='active'"),
+        ) == 0
 
 
-@pytest.mark.parametrize('phase', ['initial', 'fresh'])
-def test_instant_clone_refuses_foreign_source_and_committed_scope_change(object_context, phase):
+def test_clone_revalidates_source_workspace_after_committed_change(
+    object_context,
+):
     from app.exceptions import PermissionDeniedError
+    from app.features.file.upload_service import CloneSourceParams, get_upload_service
+
     db, storage, factory = object_context
     with db.begin() as connection:
-        connection.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (2,'foreign',1)"))
+        connection.execute(
+            text("INSERT INTO workspaces(id,name,owner_id) VALUES (2,'foreign',1)"),
+        )
     with factory() as session:
-        source = session.get(File, 1) if phase == 'fresh' else None
+        source = session.get(File, 1)
+        assert source is not None
         with db.begin() as connection:
-            connection.execute(text('UPDATE files SET workspace_id=2 WHERE id=1'))
-        source = source if source is not None else session.get(File, 1)
+            connection.execute(
+                text("UPDATE files SET workspace_id=2 WHERE id=1"),
+            )
         with pytest.raises(PermissionDeniedError):
-            service._clone_existing_file(session, service.CloneSourceParams(source_file=source, filename='forbidden', workspace_id=1, uploader_id=1,
-                parent_id=None, mime_type=None, content_hash=source.content_hash))
+            get_upload_service().clone_source(
+                session,
+                CloneSourceParams(
+                    source_file=source,
+                    filename="forbidden",
+                    workspace_id=1,
+                    uploader_id=1,
+                    parent_id=None,
+                    mime_type=None,
+                    content_hash=hashlib.sha256(b"abc").hexdigest(),
+                ),
+            )
     with db.connect() as connection:
-        assert connection.execute(text('SELECT id,workspace_id FROM files')).all() == [(1, 2)]
-        assert connection.scalar(text("SELECT count(*) FROM upload_reservations WHERE status='active'")) == 0
-    assert storage.file_exists('shared')
+        assert connection.execute(
+            text("SELECT id,workspace_id FROM files"),
+        ).all() == [(1, 2)]
+        assert connection.scalar(
+            text("SELECT count(*) FROM upload_reservations WHERE status='active'"),
+        ) == 0
+    assert storage.file_exists("shared")
 
 
-def test_cleaner_waits_for_clone_commit_and_retains_its_shared_object(object_context,monkeypatch):
+def test_cleaner_waits_for_public_clone_commit_and_retains_shared_object(
+    object_context, object_http, monkeypatch,
+):
     from app.models.file_object_deletion import FileObjectDeletion
-    db,storage,factory = object_context
-    # Stage cleanup before the clone starts. File deletion also updates durable
-    # workspace cache revisions and now serializes behind the clone's owner lock.
+
+    db, storage, factory = object_context
+    client, headers = object_http
     with factory() as session:
-        session.add(FileObjectDeletion(object_name='shared'))
+        session.add(FileObjectDeletion(object_name="shared"))
         session.commit()
-    checked,release = Event(),Event()
+    checked, release = Event(), Event()
     original_exists = storage.file_exists
-    def pause_clone_check(name):
-        checked.set()
-        assert release.wait(10), 'clone barrier timed out'
+    probes = 0
+
+    def pause_after_object_lock(name):
+        nonlocal probes
+        probes += 1
+        if probes == 2:
+            checked.set()
+            assert release.wait(10), "clone barrier timed out"
         return original_exists(name)
-    monkeypatch.setattr(storage,'file_exists',pause_clone_check)
+
+    monkeypatch.setattr(storage, "file_exists", pause_after_object_lock)
+    payload = {
+        "filename": "clone",
+        "total_size": 3,
+        "content_hash": hashlib.sha256(b"abc").hexdigest(),
+    }
+
     def clone():
-        with factory() as session:
-            source = session.get(File,1)
-            new = service._clone_existing_file(session, service.CloneSourceParams(source_file=source, filename='clone',workspace_id=1,uploader_id=1,
-                parent_id=None,mime_type=None,content_hash=source.content_hash))
-            return new.id
+        return client.post("/api/files/preflight", headers=headers, json=payload)
+
     with ThreadPoolExecutor(max_workers=2) as pool:
         clone_task = pool.submit(clone)
         try:
             assert checked.wait(5)
-            cleaner = pool.submit(clean,object_context)
-            deadline = time.monotonic()+5
+            cleaner = pool.submit(clean, object_context)
+            deadline = time.monotonic() + 5
             waiting = False
             while time.monotonic() < deadline:
                 with db.connect() as connection:
-                    waiting = connection.scalar(text("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND classid=731948214 AND NOT granted)"))
+                    waiting = connection.scalar(
+                        text(
+                            "SELECT EXISTS(SELECT 1 FROM pg_locks "
+                            "WHERE locktype='advisory' AND classid=731948214 "
+                            "AND NOT granted)",
+                        ),
+                    )
                 if waiting:
                     break
-                time.sleep(.02)
-            assert waiting, 'cleaner must wait on the clone object lock'
+                time.sleep(0.02)
+            assert waiting, "cleaner must wait on the clone object lock"
         finally:
             release.set()
-        new_id = clone_task.result(timeout=10)
+        response = clone_task.result(timeout=10)
+        assert response.status_code == 200, response.text
+        new_id = response.json()["data"]["file"]["id"]
         assert cleaner.result(timeout=10) == 1
     delete_source(object_context)
     assert clean(object_context) == 1
-    assert original_exists('shared')
+    assert original_exists("shared")
     with db.connect() as connection:
-        assert connection.execute(text('SELECT id,file_path FROM files')).all() == [(new_id,'shared')]
+        assert connection.execute(
+            text("SELECT id,file_path FROM files"),
+        ).all() == [(new_id, "shared")]
 
 
 def test_recursive_foreign_child_refuses_deletion_without_losing_real_object(object_context):
@@ -318,10 +412,14 @@ def account_graph(object_context, monkeypatch):
     from app.features.workspace import docker_service
     db, storage, factory = object_context
     removed = []
-    def container(identifier):
-        return SimpleNamespace(id=identifier, remove=lambda **kwargs: removed.append(identifier))
+    def inspect(identifier):
+        return {"id": identifier, "labels": {}}
+    def action(identifier, operation):
+        assert operation == "remove"
+        removed.append(identifier)
     from app.infra import runtime_container_deletion
-    monkeypatch.setattr(runtime_container_deletion, 'controller_client', lambda: SimpleNamespace(containers=SimpleNamespace(get=container)))
+    client = SimpleNamespace(inspect=inspect, action=action)
+    monkeypatch.setattr(runtime_container_deletion, "controller_client", lambda: client)
     monkeypatch.setattr(docker_service, '_client', lambda: pytest.fail('Controller removal before SQL commit'))
     with db.begin() as connection:
         for sql in (
@@ -337,7 +435,7 @@ def account_graph(object_context, monkeypatch):
             "INSERT INTO inbox(user_id,content) VALUES (1,'delete'),(2,'keep')",
             "INSERT INTO token_usage_logs(user_id,action,total_tokens) VALUES (1,'chat',7),(2,'chat',8)",
             "INSERT INTO assistant_conversations(workspace_id,user_id,mode) VALUES (1,2,'fast'),(2,1,'fast'),(2,2,'fast')",
-            "INSERT INTO mcp_audit_logs(request_id,runtime_id,workspace_id,user_id,tool_name,success) VALUES ('retain',1,1,1,'list_files',true)",
+            "INSERT INTO mcp_audit_logs(request_id,runtime_id,workspace_id,user_id,tool_name,success) VALUES ('retain',2,2,1,'list_files',true)",
         ):
             connection.execute(text(sql))
     return removed
@@ -357,7 +455,7 @@ def assert_account_deleted(context, removed):
         assert connection.execute(text('SELECT container_id,status FROM opencode_runtimes')).all() == [('unrelated','running')]
         for table in ('mcp_tokens','mcp_runtime_tokens','inbox','token_usage_logs','assistant_conversations','shares'):
             assert connection.execute(text(f'SELECT user_id FROM {table}')).scalars().all() == [2], table
-        assert connection.execute(text('SELECT user_id,workspace_id,runtime_id FROM mcp_audit_logs')).all() == [(None,None,None)]
+        assert connection.execute(text('SELECT user_id,workspace_id,runtime_id FROM mcp_audit_logs')).all() == [(None,2,None)]
         assert connection.scalar(text('SELECT count(*) FROM file_object_deletions')) == 1
     assert clean(context) == 1 and storage.file_exists('shared')
 

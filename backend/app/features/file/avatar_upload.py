@@ -4,7 +4,7 @@ from fastapi import UploadFile
 
 from app.exceptions import PermissionDeniedError
 from app.features.auth import account_repository
-from app.features.file import service
+from app.features.file.avatar_service import upload_avatar_for_user
 from app.infra.extensions import SessionFactory
 from app.infra.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter
 
@@ -31,6 +31,6 @@ def upload_avatar_owned(
             adapter = FastAPIUploadAdapter(upload)
         else:
             adapter = Base64UploadAdapter(encoded or "")
-        return service.upload_avatar_for_user(
+        return upload_avatar_for_user(
             session, actor_id, role, user_id, adapter,
         )

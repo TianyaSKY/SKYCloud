@@ -36,6 +36,7 @@ from app.features.file.avatar_upload import upload_avatar_owned
 from app.features.file.multipart_service import (
     MultipartInitData,
     SaveMultipartChunkParams,
+    get_multipart_service,
 )
 from app.features.file.schemas import (
     AvatarResponse,
@@ -63,6 +64,7 @@ from app.features.file.service import (
     FileUpdateData,
     GetFilesAndFoldersParams,
 )
+from app.features.file.upload_service import get_upload_service
 from app.features.workspace.permissions import (
     assert_can_write_locked,
     assert_member,
@@ -74,7 +76,7 @@ from app.models.file import FileDict
 from app.models.workspace import Workspace
 
 if TYPE_CHECKING:
-    from app.features.file.upload_service import PreflightData, UploadSource
+    from app.features.file.upload_types import PreflightData, UploadSource
 
 router = APIRouter(tags=["file"])
 
@@ -107,7 +109,7 @@ async def create_file(
     def upload() -> SuccessEnvelope[FileDict]:
         with ctx.session_factory() as session:
             assert_can_write_locked(session, workspace.id, ctx.user.id)
-            new_file = file_service.create_uploaded_file(
+            new_file = get_upload_service().create_uploaded_file(
                 session,
                 workspace.id,
                 ctx.user.id,
@@ -138,7 +140,7 @@ async def batch_upload_files(
             adapters: list[UploadSource] = [
                 FastAPIUploadAdapter(file) for file in (files or []) if file
             ]
-            new_files = file_service.create_uploaded_files(
+            new_files = get_upload_service().create_uploaded_files(
                 session, workspace.id, ctx.user.id, adapters, parent_id,
             )
             return success_payload([file.to_dict() for file in new_files])
@@ -165,7 +167,7 @@ def preflight_file_upload(
     with ctx.session_factory() as session:
         assert_can_write_locked(session, workspace.id, ctx.user.id)
         return success_payload(
-            file_service.preflight_file_upload(
+            get_upload_service().preflight_file_upload(
                 session, workspace.id, ctx.user.id, data,
             ),
         )
@@ -197,7 +199,7 @@ def init_multipart_upload(
     with ctx.session_factory() as session:
         assert_can_write_locked(session, workspace.id, ctx.user.id)
         return success_payload(
-            file_service.init_multipart_upload(
+            get_multipart_service().init_multipart_upload(
                 session, workspace.id, ctx.user.id, data,
             ),
         )
@@ -225,7 +227,7 @@ async def upload_multipart_chunk(
                 )
 
             return success_payload(
-                file_service.save_multipart_chunk(
+                get_multipart_service().save_multipart_chunk(
                     session,
                     SaveMultipartChunkParams(
                         uploader_id=ctx.user.id,
@@ -253,7 +255,7 @@ def complete_multipart_upload(
     """Assemble the chunks, persist the file and queue its indexing."""
     with ctx.session_factory() as session:
         assert_can_write_locked(session, workspace.id, ctx.user.id)
-        new_file = file_service.complete_multipart_upload(
+        new_file = get_multipart_service().complete_multipart_upload(
             session, workspace.id, ctx.user.id, payload.upload_id,
         )
         return success_payload(new_file.to_dict())
@@ -272,7 +274,7 @@ def get_multipart_upload_status(
     with ctx.session_factory() as session:
         assert_member(session, workspace.id, ctx.user.id)
         return success_payload(
-            file_service.get_multipart_upload_status(
+            get_multipart_service().get_multipart_upload_status(
                 session, workspace.id, ctx.user.id, upload_id,
             ),
         )
@@ -291,7 +293,7 @@ def abort_multipart_upload(
     """Abort the session and delete its unfinished chunk directory."""
     with ctx.session_factory() as session:
         assert_can_write_locked(session, workspace.id, ctx.user.id)
-        file_service.abort_multipart_upload(
+        get_multipart_service().abort_multipart_upload(
             session, workspace.id, ctx.user.id, upload_id,
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)

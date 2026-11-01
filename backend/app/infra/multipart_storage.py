@@ -9,7 +9,7 @@ import json
 import os
 import stat
 import uuid
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -244,7 +244,7 @@ def read_metadata(path: str, *, root: str | None = None) -> dict[str, Any]:
 
 
 def write_metadata(
-    path: str, metadata: dict[str, Any], *, root: str | None = None,
+    path: str, metadata: Mapping[str, Any], *, root: str | None = None,
 ) -> None:
     """Write chunk metadata atomically relative to the multipart root."""
     target = Path(path)
@@ -252,7 +252,7 @@ def write_metadata(
         _atomic_owned_target(handle, target.name)
     ) as destination:
         destination.write(
-            json.dumps(metadata, ensure_ascii=False).encode("utf-8"),
+            json.dumps(dict(metadata), ensure_ascii=False).encode("utf-8"),
         )
 
 

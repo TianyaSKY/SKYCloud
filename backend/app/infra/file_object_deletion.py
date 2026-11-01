@@ -8,9 +8,10 @@ from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.features.file.upload_types import UploadStorage
 from app.infra.datetime_utils import utc_now
 from app.infra.extensions import SessionFactory, SessionLocal
-from app.infra.storage import MinIOStorageClient, get_storage_client
+from app.infra.storage import get_storage_client
 from app.models.file import File
 from app.models.file_object_deletion import FileObjectDeletion
 
@@ -40,7 +41,7 @@ def stage_object_deletion_fallback(session: Session, object_name: str) -> None:
 def delete_pending_objects(
     *,
     session_factory: SessionFactory = SessionLocal,
-    storage_factory: Callable[[], MinIOStorageClient] = get_storage_client,
+    storage_factory: Callable[[], UploadStorage] = get_storage_client,
     limit: int = 20,
 ) -> int:
     """Retry idempotent deletes; committed references always protect the object."""

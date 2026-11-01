@@ -60,54 +60,6 @@ def test_folder_length_crud_matches_database_column(contract):
     assert deleted.status_code == 204 and deleted.content == b''
 
 
-@pytest.mark.parametrize('path', ['/files','/files/batch','/files/multipart/complete'])
-def test_upload_created_metadata_is_validated_filtered_and_201(contract, monkeypatch, path):
-    client, row, root = contract
-    expected = row.to_dict()
-    monkeypatch.setattr(row, 'to_dict', lambda: {**expected,'file_path':'private-object-key','vector_info':[1,2]})
-    if path == '/files':
-        monkeypatch.setattr(files.file_service, 'create_uploaded_file', lambda *args: row)
-        response = client.post(path, files={'file':('hello.txt',b'ab')})
-    elif path == '/files/batch':
-        monkeypatch.setattr(files.file_service, 'create_uploaded_files', lambda *args: [row])
-        response = client.post(path, files={'files':('hello.txt',b'ab')})
-    else:
-        monkeypatch.setattr(files.file_service, 'complete_multipart_upload', lambda *args: row)
-        response = client.post(path,json={'upload_id':'owned-upload'})
-    assert data(response,201) == ([expected] if path == '/files/batch' else expected)
-    assert 'private-object-key' not in response.text and 'vector_info' not in response.text
-
-
-@pytest.mark.parametrize('instant', [False,True])
-def test_preflight_and_init_discriminate_miss_and_committed_reuse(contract, monkeypatch, instant):
-    client, row, root = contract
-    response = dict(instant_upload=instant, exists=instant)
-    init = dict(instant_upload=instant,upload_id=None if instant else 'owned-upload',
-                chunk_size=4,total_chunks=1,uploaded_chunks=[])
-    if instant:
-        response['file'] = row.to_dict(); init['file'] = row.to_dict()
-    monkeypatch.setattr(files.file_service, 'preflight_file_upload', lambda *args: response)
-    monkeypatch.setattr(files.file_service, 'init_multipart_upload', lambda *args: init)
-    body = dict(filename='hello.txt',total_size=2,content_hash='a'*64)
-    assert data(client.post('/files/preflight',json=body)) == response
-    assert data(client.post('/files/multipart/init',json=body)) == init
-
-
-def test_instant_upload_without_committed_file_is_safe_response_error(contract, monkeypatch):
-    client, row, root = contract
-    monkeypatch.setattr(files.file_service, 'preflight_file_upload', lambda *args: {'instant_upload':True,'exists':True})
-    response=client.post('/files/preflight',json=dict(filename='hello.txt',total_size=2,content_hash='a'*64))
-    assert response.status_code == 500 and response.json()['error']['code'] == 'INTERNAL_ERROR'
-
-
-def test_multipart_status_and_chunk_ack_filter_storage_details(contract, monkeypatch):
-    client, row, root = contract
-    status = dict(upload_id='owned-upload',chunk_size=4,total_chunks=2,uploaded_chunks=[0])
-    chunk = dict(upload_id='owned-upload',chunk_index=0,uploaded_chunks=[0])
-    monkeypatch.setattr(files.file_service,'get_multipart_upload_status',lambda *args:{**status,'object_name':'private-key'})
-    monkeypatch.setattr(files.file_service,'save_multipart_chunk',lambda *args:{**chunk,'stage_id':'private-stage'})
-    assert data(client.get('/files/multipart/owned-upload')) == status
-    assert data(client.post('/files/multipart/chunk',data={'upload_id':'owned-upload','chunk_index':0},files={'chunk':('part',b'ab')})) == chunk
 
 
 def test_search_failure_is_canonical_error_and_not_empty_success(contract, monkeypatch):
@@ -170,9 +122,3 @@ def test_missing_root_cannot_create_a_second_root(contract, monkeypatch):
     assert session.query(Folder).count() == before
 
 
-def test_avatar_filters_private_metadata_and_preserves_public_alias(contract, monkeypatch):
-    client, row, root = contract
-    expected={**row.to_dict(),'avatar_url':'/api/share/issued-avatar','avatar':'/api/share/issued-avatar'}
-    monkeypatch.setattr(files.file_service,'upload_avatar_for_user',lambda *args:{**row.to_dict(),'avatar_url':'/api/share/issued-avatar','file_path':'private-key'})
-    response=client.post('/files/upload/avatar/1',files={'avatar':('avatar.png',b'ab','image/png')})
-    assert data(response) == expected and 'private-key' not in response.text

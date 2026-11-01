@@ -1,18 +1,14 @@
 """文件服务测试：上传/删除/搜索/分片/秒传等核心逻辑。"""
 
-import json
-import os
-import tempfile
 from io import BytesIO
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
-
+from fastapi import UploadFile
 from app.exceptions import (
     BusinessRuleError,
     PermissionDeniedError,
     ResourceNotFoundError,
-    PayloadTooLargeError,
     ConflictError,
 )
 from app.models.file import File
@@ -20,32 +16,18 @@ from app.models.folder import Folder
 from app.infra.upload_limits import positive_limit
 from app.features.file.repository import escape_like
 from app.features.file.search_service import SearchFilesParams, search_files
-from app.features.file.multipart_service import SaveMultipartChunkParams
+from app.features.file.multipart_service import get_multipart_service
+from app.features.file.upload_service import get_upload_service
+from app.infra.upload_adapter import FastAPIUploadAdapter
 from app.features.file.service import (
-    _generate_unique_filename,
-    _resolve_mime_type,
-    _normalize_content_hash,
-    safe_upload_id,
-    list_uploaded_chunks,
     get_file,
     get_authorized_file,
     get_files_and_folders,
     GetFilesAndFoldersParams,
     update_file,
     delete_file,
-    preflight_file_upload,
-    create_file,
-    create_uploaded_file,
-    batch_create_files,
-    create_uploaded_files,
-    init_multipart_upload,
-    get_multipart_upload_status,
-    save_multipart_chunk,
-    complete_multipart_upload,
-    abort_multipart_upload,
     get_all_files,
     process_status,
-    batch_delete_items,
 )
 
 
@@ -54,70 +36,18 @@ from app.features.file.service import (
 # ---------------------------------------------------------------------------
 
 
+def _upload(filename, payload, mimetype):
+    headers = {"content-type": mimetype} if mimetype else None
+    return FastAPIUploadAdapter(UploadFile(
+        filename=filename, file=BytesIO(payload), headers=headers,
+    ))
+
+
 class TestUtilFunctions:
-    def test_generate_unique_filename(self):
-        result = _generate_unique_filename("report.pdf")
-        assert result.endswith(".pdf")
-        assert "report" in result
-        assert len(result) > len("report.pdf")
-
-    def test_generate_unique_filename_unsafe(self):
-        result = _generate_unique_filename("../../etc/passwd")
-        assert ".." not in result
-
-    def test_resolve_mime_type_provided(self):
-        assert _resolve_mime_type("x.txt", "application/pdf") == "application/pdf"
-
-    def test_resolve_mime_type_guess(self):
-        result = _resolve_mime_type("photo.jpg")
-        assert result == "image/jpeg"
-
-    def test_resolve_mime_type_unknown(self):
-        result = _resolve_mime_type("noext")
-        assert result is None
-
     def test_escape_like(self):
         assert escape_like("100%") == "100\\%"
         assert escape_like("a_b") == "a\\_b"
         assert escape_like("c\\d") == "c\\\\d"
-
-    def test_normalize_content_hash_valid(self):
-        h = "a" * 64
-        assert _normalize_content_hash(h) == h
-
-    def test_normalize_content_hash_uppercase(self):
-        h = "A" * 64
-        assert _normalize_content_hash(h) == h.lower()
-
-    def test_normalize_content_hash_invalid(self):
-        with pytest.raises(BusinessRuleError):
-            _normalize_content_hash("short")
-
-    def test_normalize_content_hash_none(self):
-        assert _normalize_content_hash(None) is None
-        assert _normalize_content_hash("") is None
-
-    def testsafe_upload_id_valid(self):
-        assert safe_upload_id("abc12345") == "abc12345"
-
-    def testsafe_upload_id_invalid(self):
-        with pytest.raises(BusinessRuleError):
-            safe_upload_id("ab")  # 太短
-        with pytest.raises(BusinessRuleError):
-            safe_upload_id("")
-
-    def testlist_uploaded_chunks_empty(self, tmp_path):
-        assert list_uploaded_chunks(str(tmp_path / "nonexist")) == []
-
-    def testlist_uploaded_chunks(self, tmp_path):
-        chunks_dir = tmp_path / "chunks"
-        chunks_dir.mkdir()
-        (chunks_dir / "0.part").write_bytes(b"x")
-        (chunks_dir / "2.part").write_bytes(b"x")
-        (chunks_dir / "1.part").write_bytes(b"x")
-        (chunks_dir / "meta.json").write_text("{}")  # 非 .part 忽略
-        result = list_uploaded_chunks(str(chunks_dir))
-        assert result == [0, 1, 2]
 
     def test_positive_upload_limit(self, monkeypatch):
         monkeypatch.setenv("TEST_INT_VAR", "42")
@@ -172,7 +102,7 @@ class TestUpdateFile:
         session.add(f)
         session.flush()
 
-        with patch("app.features.file.service.change_log_service") as mock_log, \
+        with patch("app.features.file.service.change_log_service"), \
              patch("app.features.file.service.clear_search_cache"):
             updated = update_file(session, f.id, {"name": "new.txt"})
         assert updated.name == "new.txt"
@@ -184,7 +114,7 @@ class TestUpdateFile:
         session.add(f)
         session.flush()
 
-        with patch("app.features.file.service.change_log_service") as mock_log, \
+        with patch("app.features.file.service.change_log_service"), \
              patch("app.features.file.service.clear_search_cache"):
             updated = update_file(session, f.id, {"parent_id": test_folder.id})
         assert updated.parent_id == test_folder.id
@@ -308,18 +238,29 @@ class TestSearchFiles:
 class TestPreflightUpload:
     def test_missing_filename(self, session, test_workspace, test_user):
         with pytest.raises(BusinessRuleError):
-            preflight_file_upload(session, test_workspace.id, test_user.id, {
+            get_upload_service().preflight_file_upload(session, test_workspace.id, test_user.id, {
                 "filename": "", "total_size": 100, "content_hash": "a" * 64
             })
 
     def test_missing_size(self, session, test_workspace, test_user):
         with pytest.raises(BusinessRuleError):
-            preflight_file_upload(session, test_workspace.id, test_user.id, {
+            get_upload_service().preflight_file_upload(session, test_workspace.id, test_user.id, {
                 "filename": "f.txt", "total_size": 0, "content_hash": "a" * 64
             })
 
-    def test_no_match(self, session, test_workspace, test_user):
-        result = preflight_file_upload(session, test_workspace.id, test_user.id, {
+    def test_malformed_content_hash(self, session, test_workspace, test_user):
+        service = get_upload_service()
+        with pytest.raises(BusinessRuleError):
+            service.preflight_file_upload(session, test_workspace.id, test_user.id, {
+                "filename": "f.txt", "total_size": 100, "content_hash": "short"
+            })
+        with pytest.raises(BusinessRuleError):
+            service.preflight_file_upload(session, test_workspace.id, test_user.id, {
+                "filename": "f.txt", "total_size": 100, "content_hash": None
+            })
+
+    def test_no_reusable_source(self, session, test_workspace, test_user):
+        result = get_upload_service().preflight_file_upload(session, test_workspace.id, test_user.id, {
             "filename": "new.txt", "total_size": 100, "content_hash": "b" * 64
         })
         assert result["instant_upload"] is False
@@ -331,27 +272,22 @@ class TestPreflightUpload:
 
 
 class TestMultipartUpload:
-    def test_init_missing_filename(self, session, test_workspace, test_user):
-        with pytest.raises(BusinessRuleError):
-            init_multipart_upload(session, test_workspace.id, test_user.id, {
-                "filename": "", "total_size": 100
-            })
-
-    def test_init_invalid_size(self, session, test_workspace, test_user):
-        with pytest.raises(BusinessRuleError):
-            init_multipart_upload(session, test_workspace.id, test_user.id, {
-                "filename": "f.txt", "total_size": 0
-            })
-
     def test_init_invalid_chunk_size(self, session, test_workspace, test_user):
         with pytest.raises(BusinessRuleError):
-            init_multipart_upload(session, test_workspace.id, test_user.id, {
+            get_multipart_service().init_multipart_upload(session, test_workspace.id, test_user.id, {
                 "filename": "f.txt", "total_size": 100, "chunk_size": -1
             })
 
+    def test_unsafe_upload_id_rejected(self, session, test_workspace, test_user):
+        with pytest.raises(BusinessRuleError):
+            get_multipart_service().init_multipart_upload(session, test_workspace.id, test_user.id, {
+                "filename": "f.txt", "total_size": 100, "upload_id": "invalid/id"
+            })
+
     def test_init_and_status(self, session, test_workspace, test_user, tmp_path):
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path)):
-            result = init_multipart_upload(session, test_workspace.id, test_user.id, {
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
+            service = get_multipart_service()
+            result = service.init_multipart_upload(session, test_workspace.id, test_user.id, {
                 "filename": "big.bin", "total_size": 1024, "chunk_size": 512
             })
             assert result["upload_id"] is not None
@@ -359,19 +295,28 @@ class TestMultipartUpload:
             assert result["instant_upload"] is False
 
             # 查询状态
-            status = get_multipart_upload_status(session, test_workspace.id, 1, result["upload_id"])
-            assert status["total_chunks"] == 2
-            assert status["uploaded_chunks"] == []
+            status = service.get_multipart_upload_status(
+                session, test_workspace.id, test_user.id, result["upload_id"],
+            )
+        assert status["total_chunks"] == 2
+        assert status["uploaded_chunks"] == []
+        assert (tmp_path / ".multipart" / str(test_workspace.id) / result["upload_id"]).is_dir()
 
     def test_abort(self, session, test_workspace, test_user, tmp_path):
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path)):
-            result = init_multipart_upload(session, test_workspace.id, test_user.id, {
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
+            service = get_multipart_service()
+            result = service.init_multipart_upload(session, test_workspace.id, test_user.id, {
                 "filename": "abort.bin", "total_size": 100, "chunk_size": 100
             })
-            abort_multipart_upload(session, test_workspace.id, 1, result["upload_id"])
+            service.abort_multipart_upload(
+                session, test_workspace.id, test_user.id, result["upload_id"],
+            )
             # 中止后查询应报错
             with pytest.raises(ConflictError):
-                get_multipart_upload_status(session, test_workspace.id, 1, result["upload_id"])
+                service.get_multipart_upload_status(
+                    session, test_workspace.id, test_user.id, result["upload_id"],
+                )
+        assert not (tmp_path / ".multipart" / str(test_workspace.id) / result["upload_id"]).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -380,41 +325,69 @@ class TestMultipartUpload:
 
 
 class TestCreateFile:
-    def test_create_file(self, session, test_workspace, test_user, tmp_path):
-        mock_upload = MagicMock()
-        mock_upload.filename = "test.txt"
-        mock_upload.mimetype = "text/plain"
-        mock_upload.save = lambda path: open(path, "wb").write(b"hello")
+    def test_create_file(self, session, test_workspace, test_user, tmp_path, mock_object_storage):
+        upload = _upload("test.txt", b"hello", "text/plain")
 
-        with patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)), \
-             patch("app.features.file.service.change_log_service"), \
-             patch("app.features.file.service._invalidate_processing_cache"):
-            f = create_file(session, mock_upload, {
-                "workspace_id": test_workspace.id,
-                "uploader_id": test_user.id,
-                "parent_id": None,
-            })
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
+            f = get_upload_service().create_uploaded_file(
+                session, test_workspace.id, test_user.id, upload,
+            )
         assert f.id is not None
         assert f.name == "test.txt"
         assert f.file_size == 5
+        assert session.get(File, f.id).name == "test.txt"
+        assert mock_object_storage.objects[f.file_path] == b"hello"
+
+    def test_object_key_sanitizes_filename(self, session, test_workspace, test_user, tmp_path):
+        upload = _upload("../../etc/passwd", b"x", "application/octet-stream")
+
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
+            f = get_upload_service().create_uploaded_file(
+                session, test_workspace.id, test_user.id, upload,
+            )
+        assert ".." not in f.file_path
+        assert "/" not in f.file_path
+        assert f.file_path.endswith("etc_passwd")
+
+    def test_mime_type_guessed_from_extension(self, session, test_workspace, test_user, tmp_path):
+        upload = _upload("photo.jpg", b"jpeg", None)
+
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
+            f = get_upload_service().create_uploaded_file(
+                session, test_workspace.id, test_user.id, upload,
+            )
+        assert f.mime_type == "image/jpeg"
 
     def test_create_uploaded_file_no_filename(self, session, test_workspace, test_user):
-        mock_upload = MagicMock()
-        mock_upload.filename = None
+        upload = FastAPIUploadAdapter(UploadFile(filename=None, file=BytesIO()))
         with pytest.raises(BusinessRuleError):
-            create_uploaded_file(session, test_workspace.id, test_user.id, mock_upload)
+            get_upload_service().create_uploaded_file(
+                session, test_workspace.id, test_user.id, upload,
+            )
 
 
 class TestBatchCreateFiles:
-    def test_batch_empty(self, session, test_workspace, test_user):
-        result = batch_create_files(session, [], {"workspace_id": test_workspace.id})
-        assert result == []
+    def test_create_uploaded_files(self, session, test_workspace, test_user, tmp_path):
+        uploads = [
+            _upload("b1.txt", b"hello", "text/plain"),
+            _upload("b2.txt", b"world", "text/plain"),
+        ]
+
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
+            files = get_upload_service().create_uploaded_files(
+                session, test_workspace.id, test_user.id, uploads,
+            )
+        assert [f.name for f in files] == ["b1.txt", "b2.txt"]
+        assert [f.file_size for f in files] == [5, 5]
+        assert len({f.file_path for f in files}) == 2
+        assert session.get(File, files[0].id).name == "b1.txt"
 
     def test_create_uploaded_files_no_valid(self, session, test_workspace, test_user):
-        mock_upload = MagicMock()
-        mock_upload.filename = None
+        upload = FastAPIUploadAdapter(UploadFile(filename=None, file=BytesIO()))
         with pytest.raises(BusinessRuleError):
-            create_uploaded_files(session, test_workspace.id, test_user.id, [mock_upload])
+            get_upload_service().create_uploaded_files(
+                session, test_workspace.id, test_user.id, [upload],
+            )
 
 
 # ---------------------------------------------------------------------------

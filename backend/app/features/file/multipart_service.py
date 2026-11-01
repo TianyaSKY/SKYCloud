@@ -7,7 +7,7 @@ writes and final publication; compensation preserves existing commit semantics.
 import math
 import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict, cast
@@ -22,14 +22,30 @@ from app.exceptions import (
     PayloadTooLargeError,
     ServiceOperationError,
 )
-from app.features.file import repository, upload_authorization, upload_quota
+from app.features.file import upload_authorization, upload_quota
+from app.features.file.deletion import clear_search_cache
+from app.features.file.publication import (
+    hash_file,
+    mime_type,
+    normalize_hash,
+    object_name,
+    record_created,
+    resolve_parent,
+    stage_record,
+)
+from app.features.file.repository import FileRecordSpec
+from app.features.file.upload_config import MultipartSettings, multipart_settings
 from app.features.file.upload_quota import CancelParams, ReserveParams
 from app.features.file.upload_recovery import compensate_failed_uploads
-from app.features.file.upload_service import CloneSourceParams, UploadSource
+from app.features.file.upload_service import (
+    CloneSourceParams,
+    FileUploadService,
+    get_upload_service,
+)
+from app.features.file.upload_types import UploadSource, UploadStorage
 from app.infra import multipart_storage
-from app.infra.file_task_outbox import stage_file_tasks
 from app.infra.multipart_cleanup import remove_multipart_upload_safely
-from app.infra.storage import MinIOStorageClient
+from app.infra.storage import get_storage_client
 from app.infra.upload_staging import StagedUpload, close_staging_safely
 from app.models.file import File
 from app.models.upload_reservation import UploadReservation
@@ -96,39 +112,6 @@ class SaveMultipartChunkParams:
     chunk: UploadSource
 
 
-@dataclass(frozen=True, slots=True)
-class MultipartSettings:
-    """Filesystem roots and chunk ceilings for multipart uploads."""
-
-    upload_root: str
-    multipart_root: str
-    default_chunk_size: int
-    max_chunk_size: int
-    max_upload_size: int
-    max_total_chunks: int
-
-
-@dataclass(frozen=True, slots=True)
-class MultipartFileOperations:
-    """Shared file admission/publication contracts, independent of HTTP routes."""
-
-    resolve_parent: Callable[[Session, int, int | None], int | None]
-    normalize_hash: Callable[[str | None], str | None]
-    reusable_source: Callable[[Session, str, int, int], File | None]
-    clone_source: Callable[[Session, CloneSourceParams], File]
-    object_name: Callable[[str], str]
-    hash_file: Callable[[str], str]
-    mime_type: Callable[[str, str | None], str | None]
-    created: Callable[[File], None]
-    invalidate: Callable[[list[int], int], None]
-
-
-def _write_metadata(
-    path: str, metadata: Mapping[str, object], root: str | None,
-) -> None:
-    """Persist session metadata through the shared multipart storage helper."""
-    multipart_storage.write_metadata(path, dict(metadata), root=root)
-
 
 def _multipart_metadata(reservation: UploadReservation) -> MultipartMetadata:
     """Project the JSON details this service wrote for the reservation."""
@@ -161,23 +144,19 @@ def _verify_content_hash(actual_hash: str, expected_hash: str | None) -> None:
 
 
 class MultipartUploadService:
-    """Multipart sessions over quota reservations and shared publication ports."""
+    """Multipart sessions over quota reservations and shared publication stages."""
 
     def __init__(
         self,
         settings: MultipartSettings,
-        files: MultipartFileOperations,
+        uploads: FileUploadService,
         *,
-        storage_factory: Callable[[], MinIOStorageClient],
-        write_metadata: Callable[
-            [str, Mapping[str, object], str | None], None,
-        ] = _write_metadata,
+        storage_factory: Callable[[], UploadStorage] = get_storage_client,
     ) -> None:
-        """Store the settings, publication callbacks and metadata writer."""
+        """Bind multipart settings, the upload use case and object storage."""
         self.settings = settings
-        self.files = files
+        self.uploads = uploads
         self.storage_factory = storage_factory
-        self.write_metadata = write_metadata
 
     def directory(self, workspace_id: int, upload_id: str) -> str:
         """Return the chunk directory of the given session."""
@@ -229,12 +208,12 @@ class MultipartUploadService:
         content_hash = publication.content_hash
         if not content_hash:
             return None
-        source_file = self.files.reusable_source(
+        source_file = self.uploads.reusable_source(
             session, content_hash, pending.total_size, publication.workspace_id,
         )
         if not source_file:
             return None
-        new_file = self.files.clone_source(
+        new_file = self.uploads.clone_source(
             session,
             CloneSourceParams(
                 source_file=source_file,
@@ -267,11 +246,11 @@ class MultipartUploadService:
         publication = MultipartPublication(
             workspace_id=workspace_id,
             uploader_id=uploader_id,
-            parent_id=self.files.resolve_parent(
+            parent_id=resolve_parent(
                 session, workspace_id, data.get("parent_id"),
             ),
             mime_type=data.get("mime_type"),
-            content_hash=self.files.normalize_hash(data.get("content_hash")),
+            content_hash=normalize_hash(data.get("content_hash")),
         )
 
         instant = self._try_instant_upload(session, pending, publication)
@@ -298,7 +277,7 @@ class MultipartUploadService:
             object_name=(
                 _multipart_metadata(existing)["object_name"]
                 if existing is not None
-                else self.files.object_name(pending.filename)
+                else object_name(pending.filename)
             ),
             stage_id=(
                 _multipart_metadata(existing)["stage_id"]
@@ -330,8 +309,8 @@ class MultipartUploadService:
                 multipart_storage.prepare_chunks(
                     chunks_dir, root=self.settings.multipart_root,
                 )
-                self.write_metadata(
-                    meta_path, metadata, self.settings.multipart_root,
+                multipart_storage.write_metadata(
+                    meta_path, metadata, root=self.settings.multipart_root,
                 )
             except Exception as exc:
                 compensate_failed_uploads(
@@ -468,26 +447,24 @@ class MultipartUploadService:
         """Publish the merged object, then insert and commit its file row."""
         unique_filename = meta["object_name"]
         total_size = int(meta["total_size"])
-        storage: MinIOStorageClient | None = None
+        storage: UploadStorage | None = None
         try:
             # Publish the merged file to MinIO.
-            actual_hash = self.files.hash_file(staging.path)
+            actual_hash = hash_file(staging.path)
             _verify_content_hash(actual_hash, publication.content_hash)
             storage = self.storage_factory()
             storage.upload_file(staging.path, unique_filename)
 
-            resolved_mime = self.files.mime_type(
-                staging.path, publication.mime_type,
-            )
-            new_file = File(
+            resolved_mime = mime_type(staging.path, publication.mime_type)
+            record = FileRecordSpec(
                 name=meta["filename"],
                 file_path=unique_filename,
                 file_size=total_size,
                 mime_type=resolved_mime,
-                content_hash=actual_hash,
                 workspace_id=publication.workspace_id,
                 uploader_id=publication.uploader_id,
                 parent_id=publication.parent_id,
+                content_hash=actual_hash,
             )
             upload_authorization.consume(
                 session,
@@ -496,11 +473,7 @@ class MultipartUploadService:
                 meta["upload_id"],
                 total_size,
             )
-            new_file.parent_id = self.files.resolve_parent(
-                session, publication.workspace_id, publication.parent_id,
-            )
-            repository.insert_file(session, new_file)
-            stage_file_tasks(session, [new_file.id])
+            new_file = stage_record(session, record)
             session.commit()
         except Exception as exc:
             compensate_failed_uploads(
@@ -526,8 +499,8 @@ class MultipartUploadService:
                 meta["upload_id"],
             )
 
-        self.files.created(new_file)
-        self.files.invalidate([new_file.id], publication.workspace_id)
+        record_created(new_file)
+        clear_search_cache(publication.workspace_id)
         return new_file
 
     def complete_multipart_upload(
@@ -549,11 +522,11 @@ class MultipartUploadService:
         publication = MultipartPublication(
             workspace_id=workspace_id,
             uploader_id=uploader_id,
-            parent_id=self.files.resolve_parent(
+            parent_id=resolve_parent(
                 session, workspace_id, meta.get("parent_id"),
             ),
             mime_type=meta.get("mime_type"),
-            content_hash=self.files.normalize_hash(meta.get("content_hash")),
+            content_hash=normalize_hash(meta.get("content_hash")),
         )
 
         upload_dir = self.directory(workspace_id, safe_upload_id)
@@ -588,3 +561,8 @@ class MultipartUploadService:
         remove_multipart_upload_safely(
             self.settings.multipart_root, workspace_id, safe_upload_id,
         )
+
+
+def get_multipart_service() -> MultipartUploadService:
+    """Build multipart behavior through the sole configuration assembly point."""
+    return MultipartUploadService(multipart_settings(), get_upload_service())

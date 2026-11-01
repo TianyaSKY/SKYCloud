@@ -127,7 +127,7 @@ def real_redis():
     yield _real_redis
     # 清理所有可能产生的缓存键
     try:
-        for pattern in ["user:*", "workspace:*", "sys_dict:*", "search:*", "organize:*"]:
+        for pattern in ["user:*", "workspace:*", "search:*", "organize:*"]:
             keys = list(_real_redis.scan_iter(match=pattern))
             if keys:
                 _real_redis.delete(*keys)

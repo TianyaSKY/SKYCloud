@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from app.features.file.upload_service import FileUploadService
 from app.mcp import server
 from app.mcp.context import McpRequestContext, set_mcp_context, reset_mcp_context
 
@@ -31,14 +32,14 @@ async def test_blocked_adaptation_leaves_loop_free_and_keeps_sql_session_on_work
     def authorize(session, context):
         assert threading.get_ident() == session.owner
         assert context.workspace_id == 2 and context.user_id == 1
-    def upload(session, workspace, user, adapter, parent):
+    def upload(_service, session, workspace, user, adapter, parent):
         assert threading.get_ident() == session.owner
         assert adapter.filename == 'note.txt' and workspace == 2 and user == 1
         return SimpleNamespace(to_dict=lambda: {'id':7})
     monkeypatch.setattr(server, '_inline_upload_adapter', adapt)
     monkeypatch.setattr(server, 'SessionLocal', Session)
     monkeypatch.setattr(server, 'assert_current_write_permission', authorize)
-    monkeypatch.setattr(server.file_service, 'create_uploaded_file', upload)
+    monkeypatch.setattr(FileUploadService, 'create_uploaded_file', upload)
     token = set_mcp_context(McpRequestContext(1,2,'editor'))
     task = asyncio.create_task(server.upload_file('note.txt','hello'))
     try:

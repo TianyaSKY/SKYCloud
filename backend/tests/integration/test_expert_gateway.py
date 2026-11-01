@@ -22,6 +22,7 @@ import uvicorn
 from tests.integration.fixture_paths import FIXTURE_DIR
 from tests.integration.test_runtime_security import infrastructure, controller, docker
 from tests.integration.test_migrations import postgres
+from tests.integration.test_upload_storage import minio_storage
 from entry.migrate import upgrade
 from app.features.assistant import repository, service
 from app.features.runtime_llm import quota
@@ -51,7 +52,7 @@ def serve(app):
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel'),('once',False,'command-crash'),(None,False,'lease-before-sql'),(None,False,'lease-set-reply'),('once',False,'command-cancel-retry'),(None,False,'paused-prompt')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel','command-crash','lease-before-sql','lease-set-reply','command-cancel-retry','paused-prompt'])
+@pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel'),('once',False,'command-crash'),(None,False,'lease-before-sql'),(None,False,'lease-set-reply'),('once',False,'command-cancel-retry'),(None,False,'paused-prompt'),('once',False,'permission-replay')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel','command-crash','lease-before-sql','lease-set-reply','command-cancel-retry','paused-prompt','permission-replay'])
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
@@ -64,6 +65,32 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
                 return False
             return await original_json(client,method,path,**kwargs)
         monkeypatch.setattr(OpenCodeClient,'_json',unconfirmed_permission)
+    permission_dispatches = []
+    if missing_candidate == 'permission-replay':
+        from app.features.assistant.clients.opencode_client import OpenCodeClient
+        actual_events = OpenCodeClient.stream_events
+        actual_respond_permission = OpenCodeClient.respond_permission
+
+        async def replay_permission_event(client):
+            async for event in actual_events(client):
+                yield event
+                if event.get('type') == 'permission.asked':
+                    yield event
+
+        async def record_permission_dispatch(
+            client, session_id, permission_id, response, *, remember=False,
+        ):
+            permission_dispatches.append((session_id, permission_id, response))
+            return await actual_respond_permission(
+                client,
+                session_id,
+                permission_id,
+                response,
+                remember=remember,
+            )
+
+        monkeypatch.setattr(OpenCodeClient, 'stream_events', replay_permission_event)
+        monkeypatch.setattr(OpenCodeClient, 'respond_permission', record_permission_dispatch)
     lease_abort_acks = []
     provider_disconnected = threading.Event()
     replaced_lease_keys = []
@@ -174,6 +201,8 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
     infrastructure['cleanup'].append(bridge)
     process = None
     boot_process = None
+    permission_replay_run_ids = []
+    permission_http_responses = []
     observed = []
     try:
         with serve(provider) as provider_port, serve(gateway) as gateway_port:
@@ -211,17 +240,17 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                         bootstrap.commit()
                         prepared = docker_service._client().prepare(ws_id,user_id,rt_id,old_generation)
                         if missing_candidate == 'switched':
-                            operations.record_candidate(bootstrap,old_generation,prepared.id)
+                            operations.record_candidate(bootstrap,old_generation,prepared["id"])
                             bootstrap.commit()
                             operations.switch_candidate(bootstrap,old_generation)
                             bootstrap.commit()
-                    docker('rm','-f',prepared.id)
+                    docker('rm','-f',prepared["id"])
                     from app.infra.runtime_operations import recover_runtime_operations
                     recover_runtime_operations(session_factory=factory)
                     with factory() as observer:
                         assert observer.get(RuntimeOperation,old_generation).state == 'cancelled'
                         replacement = observer.query(RuntimeOperation).filter_by(workspace_id=ws_id,user_id=user_id,state='complete').one()
-                        assert replacement.generation != old_generation and replacement.candidate_container_id != prepared.id
+                        assert replacement.generation != old_generation and replacement.candidate_container_id != prepared["id"]
                 if crash_before_completion:
                     marker = tmp_path / 'configured-generation'
                     # Interrupt an actual locked-SDK/API process after the
@@ -276,8 +305,10 @@ with Session(engine) as session:
                             mode='expert',
                             title='gateway task',
                         ),
-                    ); db.commit()
-                    if permission_response != 'auth-version':
+                    )
+                    conversation_id = int(conversation.id)
+                    db.commit()
+                    if permission_response != 'auth-version' and missing_candidate != 'permission-replay':
                         conversation, run, history = service.prepare_run(
                             db,
                             service.PrepareRunParams(
@@ -635,12 +666,74 @@ asyncio.run(run())
                                 assert independent.scalar(text('SELECT role FROM workspace_members WHERE workspace_id=:ws AND user_id=:id'), {'ws':ws_id,'id':user_id}) == 'admin'
                             assert not any('AUTHORIZED_ONLY' in str(message.get('content','')) for body in requests for message in body['messages'] if message.get('role') == 'tool')
                             return observed
+                        if missing_candidate == 'permission-replay':
+                            from app.features.assistant import router as assistant_router
+                            from app.models.assistant import AssistantPermission, AssistantRun
+                            from app.features.assistant.event_protocol import AssistantEvent
+                            from app.features.auth.service import generate_token
+                            raw = generate_token(user_id, 0)
+                            app = FastAPI()
+                            app.include_router(assistant_router.router)
+                            app.dependency_overrides[get_db] = lambda: None
+                            app.dependency_overrides[get_session_factory] = lambda: factory
+
+                            async def authenticated_app(scope, receive, send):
+                                async with httpx.AsyncClient(
+                                    transport=httpx.ASGITransport(app=app),
+                                    base_url='http://test',
+                                ) as responder:
+                                    async def observe(message):
+                                        await send(message)
+                                        if message['type'] != 'http.response.body':
+                                            return
+                                        for line in message.get('body', b'').splitlines():
+                                            if not line.startswith(b'data: '):
+                                                continue
+                                            payload = json.loads(line[6:])
+                                            if payload.get('type') != 'permission_required':
+                                                continue
+                                            run_id = int(payload['run_id'])
+                                            permission_id = payload['payload']['permission_id']
+                                            result = await responder.post(
+                                                f'/assistant/runs/{run_id}/permissions/{permission_id}',
+                                                headers={
+                                                    'Authorization': 'Bearer ' + raw,
+                                                    'X-Workspace-Id': str(ws_id),
+                                                },
+                                                json={'response': 'once'},
+                                            )
+                                            permission_http_responses.append(result.status_code)
+                                            assert result.status_code == 200, result.text
+
+                                    await app(scope, receive, observe)
+
+                            async with httpx.AsyncClient(
+                                transport=httpx.ASGITransport(app=authenticated_app),
+                                base_url='http://test',
+                            ) as client:
+                                response = await client.post(
+                                    f'/assistant/conversations/{conversation_id}/messages/stream',
+                                    headers={
+                                        'Authorization': 'Bearer ' + raw,
+                                        'X-Workspace-Id': str(ws_id),
+                                    },
+                                    json={'query': '只输出 E2E_GATEWAY_OK，不调用任何工具。'},
+                                )
+                            assert response.status_code == 200, response.text
+                            assert raw not in response.text
+                            permission_replay_run_ids.append(int(response.headers['X-Assistant-Run-Id']))
+                            observed.extend(
+                                AssistantEvent(**json.loads(line[6:]))
+                                for line in response.text.splitlines()
+                                if line.startswith('data: ')
+                            )
+                            return observed
                         async for event in service.stream_run(
                             service.StreamRunParams(
                                 session_factory=factory,
                                 workspace_id=ws_id,
                                 user_id=user_id,
-                                conversation_id=conversation.id,
+                                conversation_id=conversation_id,
                                 run_id=run.id,
                                 history=history,
                             )):
@@ -683,6 +776,29 @@ asyncio.run(run())
                         return observed
                     events = asyncio.run(asyncio.wait_for(collect(), 120))
                     if permission_response == 'auth-version':
+                        return
+                    if missing_candidate == 'permission-replay':
+                        from app.models.assistant import AssistantPermission, AssistantRun
+                        assert len(permission_replay_run_ids) == 1
+                        assert sum(event.type == 'permission_required' for event in events) == 1
+                        assert permission_http_responses == [200]
+                        assert len(permission_dispatches) == 1
+                        with factory() as replay_session:
+                            replay_run = replay_session.get(
+                                AssistantRun, permission_replay_run_ids[0],
+                            )
+                            assert replay_run.status == 'completed'
+                            permissions = replay_session.query(
+                                AssistantPermission,
+                            ).filter(
+                                AssistantPermission.run_id == replay_run.id,
+                            ).all()
+                            assert len(permissions) == 1
+                            permission = permissions[0]
+                            assert permission.state == 'dispatched'
+                            assert permission.response == 'once'
+                            assert permission.answered_at is not None
+                            assert permission.dispatched_at is not None
                         return
                     db.refresh(run)
                     if missing_candidate in ('command-lease-loss','command-cancel','command-cancel-retry'):
@@ -857,8 +973,7 @@ asyncio.run(run())
                     operation = db.query(RuntimeOperation).filter_by(workspace_id=ws_id,user_id=user_id,state='complete').one()
                     assert operation.state == 'complete' and operation.finished_at is not None
                     assert operation.candidate_container_id == runtime.container_id
-                    container = docker_service._client().containers.get(runtime.container_id)
-                    runtime_config = container.read_config()
+                    runtime_config = docker_service._client().read_config(runtime.container_id)
                     assert provider_key not in json.dumps(runtime_config)
                     raw = runtime_config['provider'][docker_service.OPENCODE_CHAT_PROVIDER_ID]['options']['apiKey']
                     from app.features.runtime_llm import tokens
@@ -882,7 +997,7 @@ asyncio.run(run())
                     assert connected['SKYCLOUD']['status'] == 'connected'
                     # Call the actual MCP search tool over its protocol using
                     # the latest scoped Runtime credential after live refresh.
-                    mcp_headers = container.read_config()['mcp']['SKYCLOUD']['headers']
+                    mcp_headers = docker_service._client().read_config(runtime.container_id)['mcp']['SKYCLOUD']['headers']
                     # Parent unit conftest replaces the MCP package. Run the
                     # locked SDK in an independent process, like the server.
                     client_code = """
@@ -944,3 +1059,265 @@ asyncio.run(main())
             process.terminate()
             try: process.wait(10)
             except subprocess.TimeoutExpired: process.kill(); process.wait(5)
+
+
+def test_mcp_upload_is_scoped_over_streamable_http(
+    infrastructure, postgres, minio_storage, tmp_path,
+):
+    """Exercise upload, readback and role isolation through the real MCP protocol."""
+    upgrade(postgres)
+    factory = sessionmaker(bind=postgres)
+    with factory.begin() as db:
+        writer = User(
+            username='mcp-upload-writer-' + uuid.uuid4().hex[:8],
+            password_hash='synthetic-unused-hash',
+            role='common',
+        )
+        viewer = User(
+            username='mcp-upload-viewer-' + uuid.uuid4().hex[:8],
+            password_hash='synthetic-unused-hash',
+            role='common',
+        )
+        db.add_all([writer, viewer])
+        db.flush()
+        first = Workspace(name='MCP upload first', owner_id=writer.id)
+        second = Workspace(name='MCP upload second', owner_id=writer.id)
+        db.add_all([first, second])
+        db.flush()
+        db.add_all([
+            WorkspaceMember(
+                workspace_id=first.id, user_id=writer.id, role='admin',
+            ),
+            WorkspaceMember(
+                workspace_id=second.id, user_id=writer.id, role='admin',
+            ),
+            WorkspaceMember(
+                workspace_id=first.id, user_id=viewer.id, role='viewer',
+            ),
+        ])
+        db.flush()
+        for workspace_id in (first.id, second.id):
+            db.execute(
+                text(
+                    "INSERT INTO folder (name, workspace_id, parent_id) "
+                    "VALUES ('/', :workspace_id, NULL)",
+                ),
+                {'workspace_id': workspace_id},
+            )
+        writer_id, viewer_id = writer.id, viewer.id
+        first_id, second_id = first.id, second.id
+
+    from app.features.auth.service import generate_token
+
+    writer_token = generate_token(writer_id)
+    viewer_token = generate_token(viewer_id)
+    assert writer_token and viewer_token
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        mcp_port = probe.getsockname()[1]
+    environment = {
+        **os.environ,
+        'DATABASE_URL': postgres.url.render_as_string(hide_password=False),
+        'REDIS_HOST': '127.0.0.1',
+        'REDIS_PORT': str(
+            infrastructure['redis'].connection_pool.connection_kwargs['port'],
+        ),
+        'MCP_PORT': str(mcp_port),
+        'MINIO_ENDPOINT': minio_storage.integration_endpoint,
+        'MINIO_ACCESS_KEY': minio_storage.integration_auth[0],
+        'MINIO_SECRET_KEY': minio_storage.integration_auth[1],
+        'MINIO_BUCKET': minio_storage.integration_bucket,
+        'MINIO_SECURE': 'false',
+        'UPLOAD_FOLDER': str(tmp_path / 'mcp-upload'),
+    }
+    server_url = f'http://127.0.0.1:{mcp_port}/mcp'
+    log_path = tmp_path / 'mcp-upload-server.log'
+    with log_path.open('w') as server_log:
+        process = subprocess.Popen(
+            [sys.executable, '-m', 'entry.mcp_run'],
+            cwd=Path(__file__).resolve().parents[2],
+            env=environment,
+            stdout=server_log,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                assert process.poll() is None, log_path.read_text()[-4000:]
+                try:
+                    if httpx.get(
+                        server_url, timeout=1, trust_env=False,
+                    ).status_code == 406:
+                        break
+                except httpx.HTTPError:
+                    pass
+                time.sleep(0.1)
+            else:
+                raise AssertionError(
+                    'MCP upload subprocess did not start: '
+                    + log_path.read_text()[-4000:],
+                )
+
+            client_code = """
+import asyncio, json, sys, httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+
+settings = json.load(sys.stdin)
+content = 'mcp-upload-proof-你好'
+filename = 'mcp-upload-proof.txt'
+forbidden = 'mcp-viewer-upload-forbidden.txt'
+
+def text_of(result):
+    values = [item.text for item in result.content if getattr(item, 'text', None)]
+    assert values, repr(result)
+    return values[0]
+
+def json_of(result):
+    value = json.loads(text_of(result))
+    assert isinstance(value, dict), value
+    return value
+
+async def in_session(workspace_id, token, operation):
+    headers = {
+        'Authorization': 'Bearer ' + token,
+        'X-SKYCloud-Workspace-Id': str(workspace_id),
+    }
+    async with httpx.AsyncClient(
+        headers=headers, trust_env=False, timeout=20,
+    ) as client:
+        async with streamable_http_client(
+            settings['url'], http_client=client,
+        ) as (reader, writer, _):
+            async with ClientSession(reader, writer) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                names = {tool.name for tool in tools.tools}
+                assert {'upload_file', 'list_files', 'read_file_content'} <= names
+                return await operation(session)
+
+async def main():
+    async def publish_and_read(session):
+        uploaded = await session.call_tool('upload_file', {
+            'filename': filename,
+            'content': content,
+            'content_encoding': 'utf-8',
+        })
+        assert not uploaded.isError, text_of(uploaded)
+        publication = json_of(uploaded)
+        assert publication['success'] is True, publication
+        file = publication['file']
+        file_id = int(file['id'])
+        listing_result = await session.call_tool('list_files', {})
+        assert not listing_result.isError, text_of(listing_result)
+        listing = json_of(listing_result)
+        assert any(
+            int(item['id']) == file_id and item['name'] == filename
+            for item in listing['files']['items']
+        ), listing
+        read_result = await session.call_tool(
+            'read_file_content', {'file_id': file_id},
+        )
+        assert not read_result.isError, text_of(read_result)
+        readback = json_of(read_result)
+        assert readback['content'] == content, readback
+        assert readback['file_size'] == 23, readback
+        assert readback['encoding'] == 'utf-8', readback
+        assert readback['truncated'] is False, readback
+        return file_id, readback
+
+    file_id, readback = await in_session(
+        settings['first_workspace'], settings['writer_token'],
+        publish_and_read,
+    )
+
+    async def reject_cross_workspace_read(session):
+        result = await session.call_tool(
+            'read_file_content', {'file_id': file_id},
+        )
+        payload = json_of(result)
+        assert payload.get('error'), payload
+        assert 'content' not in payload, payload
+        return {'isError': result.isError, 'error': payload['error']}
+
+    workspace_error = await in_session(
+        settings['second_workspace'], settings['writer_token'],
+        reject_cross_workspace_read,
+    )
+
+    async def reject_viewer_upload(session):
+        result = await session.call_tool('upload_file', {
+            'filename': forbidden,
+            'content': 'must-not-publish',
+            'content_encoding': 'utf-8',
+        })
+        text = text_of(result)
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = {'error': text}
+        assert result.isError or payload.get('error'), payload
+        assert payload.get('error'), payload
+        return {'isError': result.isError, 'error': payload['error']}
+
+    viewer_error = await in_session(
+        settings['first_workspace'], settings['viewer_token'],
+        reject_viewer_upload,
+    )
+
+    async def verify_no_forbidden_file(session):
+        result = await session.call_tool('list_files', {})
+        assert not result.isError, text_of(result)
+        listing = json_of(result)
+        names = {
+            item['name'] for item in listing['files']['items']
+        }
+        assert filename in names, names
+        assert forbidden not in names, names
+        return sorted(names)
+
+    visible = await in_session(
+        settings['first_workspace'], settings['writer_token'],
+        verify_no_forbidden_file,
+    )
+    print(json.dumps({
+        'file_id': file_id,
+        'readback': readback,
+        'workspace_error': workspace_error,
+        'viewer_error': viewer_error,
+        'visible': visible,
+    }, ensure_ascii=False))
+
+asyncio.run(main())
+"""
+            checked = subprocess.run(
+                [sys.executable, '-c', client_code],
+                input=json.dumps({
+                    'url': server_url,
+                    'first_workspace': first_id,
+                    'second_workspace': second_id,
+                    'writer_token': writer_token,
+                    'viewer_token': viewer_token,
+                }),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert checked.returncode == 0, (
+                checked.stderr[-4000:] + checked.stdout[-4000:]
+                + log_path.read_text()[-4000:]
+            )
+            result = json.loads(checked.stdout)
+            assert result['readback']['content'] == 'mcp-upload-proof-你好'
+            assert result['readback']['file_size'] == 23
+            assert result['readback']['truncated'] is False
+            assert result['workspace_error']['error']
+            assert result['viewer_error']['error']
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(5)

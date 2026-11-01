@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy.orm import Session
 
+from app.features.file.upload_service import FileUploadService
 from app.mcp import server
 from app.mcp.context import McpRequestContext, set_mcp_context, reset_mcp_context
 from app.models.file import File
@@ -32,7 +33,8 @@ def test_captured_admin_role_cannot_reach_mutation_after_change(
     mutations = []
     for module,name in ((server.folder_service,"create_folder"),(server.folder_service,"update_folder"),
                          (server.folder_service,"delete_folder"),(server.file_service,"update_file"),
-                         (server.file_service,"delete_file"),(server.file_service,"create_uploaded_file")):
+                         (server.file_service,"delete_file"),
+                         (FileUploadService,"create_uploaded_file")):
         forbidden = MagicMock(side_effect=AssertionError("mutation reached after permission change"))
         monkeypatch.setattr(module,name,forbidden)
         mutations.append(forbidden)

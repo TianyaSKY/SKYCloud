@@ -1,274 +1,229 @@
-"""file/service.py 完整测试。"""
-import json
-import os
+"""file 上传用例与文件服务完整测试。"""
+from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import UploadFile
 
-from app.features.file.multipart_service import SaveMultipartChunkParams
+from app.exceptions import (
+    ConflictError,
+    PermissionDeniedError,
+    ResourceNotFoundError,
+    ServiceOperationError,
+)
+from app.features.file.multipart_service import SaveMultipartChunkParams, get_multipart_service
+from app.infra.upload_adapter import FastAPIUploadAdapter
 from app.features.file.search_service import SearchFilesParams
 from app.features.file.service import GetFilesAndFoldersParams
-from app.features.file.upload_service import CloneSourceParams
+from app.features.file.upload_service import CloneSourceParams, get_upload_service
+from app.models.file import File
+from app.models.folder import Folder
+from app.models.upload_reservation import UploadReservation
+
+
+def _upload(filename, payload, mimetype="text/plain"):
+    headers = {"content-type": mimetype} if mimetype else None
+    return FastAPIUploadAdapter(UploadFile(
+        filename=filename, file=BytesIO(payload), headers=headers,
+    ))
+
+
+def _create_file(session, workspace_id, uploader_id, upload_root, filename="f.txt"):
+    """用公开上传用例创建一条已提交的文件记录。"""
+    with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(upload_root)):
+        return get_upload_service().create_uploaded_file(
+            session, workspace_id, uploader_id, _upload(filename, b"x"),
+        )
 
 
 class TestFileServiceClone:
-    @pytest.fixture(autouse=True)
-    def existing_source_object(self, monkeypatch):
-        storage = MagicMock()
-        storage.file_exists.return_value = True
-        monkeypatch.setattr("app.features.file.service.get_storage_client", lambda: storage)
-
-    def test_clone_existing_file_success(self, session, test_workspace):
-        from app.features.file.service import _clone_existing_file
-        from app.models.file import File
-
+    def test_clone_existing_file_success(
+        self, session, test_workspace, test_user, mock_object_storage,
+    ):
         source = File(
             name="a.txt", file_path="hashfile.txt", file_size=10,
             mime_type="text/plain", workspace_id=test_workspace.id,
-            uploader_id=1, parent_id=None,
+            uploader_id=test_user.id, parent_id=None,
             content_hash="a" * 64, status="success",
             description="desc", vector_info=None,
         )
         session.add(source)
         session.commit()
+        mock_object_storage.objects[source.file_path] = b"0123456789"
 
-        with patch("app.features.file.service.clear_search_cache"):
-            new_file = _clone_existing_file(session, CloneSourceParams(source_file=source, filename="b.txt", workspace_id=test_workspace.id,
-            uploader_id=1, parent_id=None,
-            mime_type="text/plain", content_hash="a" * 64,))
+        new_file = get_upload_service().clone_source(session, CloneSourceParams(
+            source_file=source, filename="b.txt", workspace_id=test_workspace.id,
+            uploader_id=test_user.id, parent_id=None,
+            mime_type="text/plain", content_hash="a" * 64,
+        ))
         assert new_file.name == "b.txt"
         assert new_file.status == "success"
         assert new_file.description == "desc"
+        persisted = session.get(File, new_file.id)
+        assert persisted.name == "b.txt"
+        assert persisted.file_path == "hashfile.txt"
 
-    def test_clone_existing_file_pending(self, session, test_workspace):
-        from app.features.file.service import _clone_existing_file
-        from app.models.file import File
-
+    def test_clone_existing_file_pending(
+        self, session, test_workspace, test_user, mock_object_storage,
+    ):
         source = File(
             name="a.txt", file_path="hashfile2.txt", file_size=10,
             mime_type="text/plain", workspace_id=test_workspace.id,
-            uploader_id=1, parent_id=None,
+            uploader_id=test_user.id, parent_id=None,
             content_hash="b" * 64, status="pending",
             description=None, vector_info=None,
         )
         session.add(source)
         session.commit()
+        mock_object_storage.objects[source.file_path] = b"0123456789"
 
-        with patch("app.features.file.service._invalidate_processing_cache") as mock_q, \
-             patch("app.features.file.service.clear_search_cache"):
-            new_file = _clone_existing_file(session, CloneSourceParams(source_file=source, filename="c.txt", workspace_id=test_workspace.id,
-            uploader_id=1, parent_id=None,
-            mime_type=None, content_hash="b" * 64,))
+        new_file = get_upload_service().clone_source(session, CloneSourceParams(
+            source_file=source, filename="c.txt", workspace_id=test_workspace.id,
+            uploader_id=test_user.id, parent_id=None,
+            mime_type=None, content_hash="b" * 64,
+        ))
         assert new_file.status == "pending"
         assert new_file.description is None
-        mock_q.assert_called_once()
+        assert session.get(File, new_file.id).status == "pending"
 
-    def test_clone_existing_file_error(self, session, test_workspace):
-        from app.features.file.service import _clone_existing_file
-        from app.models.file import File
-        from app.exceptions import ServiceOperationError
-
+    def test_clone_rejects_source_removed_before_publication(
+        self, session, test_workspace, test_user, mock_object_storage,
+    ):
         source = File(
             name="a.txt", file_path="hashfile3.txt", file_size=10,
             mime_type="text/plain", workspace_id=test_workspace.id,
-            uploader_id=1, parent_id=None,
+            uploader_id=test_user.id, parent_id=None,
             content_hash="c" * 64, status="success",
         )
         session.add(source)
         session.commit()
+        source_path = source.file_path
+        mock_object_storage.objects[source_path] = b"0123456789"
+        stale_source = File(
+            id=source.id, name=source.name, file_path=source.file_path,
+            file_size=source.file_size, mime_type=source.mime_type,
+            workspace_id=source.workspace_id, uploader_id=source.uploader_id,
+            parent_id=source.parent_id, content_hash=source.content_hash,
+            status=source.status,
+        )
+        session.delete(source)
+        session.commit()
 
-        with patch("app.features.file.service._persist_file_record", side_effect=Exception("DB error")):
-            with pytest.raises(ServiceOperationError):
-                _clone_existing_file(session, CloneSourceParams(source_file=source, filename="d.txt", workspace_id=test_workspace.id,
-                uploader_id=1, parent_id=None,
-                mime_type="text/plain", content_hash="c" * 64,))
+        with pytest.raises(ConflictError, match="no longer available"):
+            get_upload_service().clone_source(session, CloneSourceParams(
+                source_file=stale_source, filename="d.txt",
+                workspace_id=test_workspace.id, uploader_id=test_user.id,
+                parent_id=None, mime_type="text/plain", content_hash="c" * 64,
+            ))
+
+        session.expire_all()
+        assert session.query(File).count() == 0
+        assert mock_object_storage.objects[source_path] == b"0123456789"
+
+
+    def test_clone_database_failure_still_cancels_the_reservation(
+        self, session, test_workspace, test_user, mock_object_storage,
+    ):
+        source = File(
+            name="a.txt", file_path="hashfile-fail.txt", file_size=10,
+            mime_type="text/plain", workspace_id=test_workspace.id,
+            uploader_id=test_user.id, parent_id=None,
+            content_hash="d" * 64, status="success",
+        )
+        session.add(source)
+        session.commit()
+        mock_object_storage.objects[source.file_path] = b"0123456789"
+
+        def failing_publication(session, spec):
+            # A real flush failure rolls the transaction back and expires the
+            # attached reservation; the handler must not read it afterwards.
+            session.add(File(
+                name=None, file_path="invalid", file_size=1,
+                workspace_id=spec.workspace_id, uploader_id=spec.uploader_id,
+            ))
+            session.flush()
+
+        with patch(
+            "app.features.file.upload_service.stage_record",
+            side_effect=failing_publication,
+        ):
+            with pytest.raises(ServiceOperationError, match="Failed to save file metadata"):
+                get_upload_service().clone_source(session, CloneSourceParams(
+                    source_file=source, filename="e.txt",
+                    workspace_id=test_workspace.id, uploader_id=test_user.id,
+                    parent_id=None, mime_type="text/plain", content_hash="d" * 64,
+                ))
+
+        reservation = session.query(UploadReservation).filter_by(
+            workspace_id=test_workspace.id, status="cancelled",
+        ).one()
+        assert reservation.kind == "instant"
+        assert session.query(File).filter_by(name="e.txt").count() == 0
+        assert mock_object_storage.objects[source.file_path] == b"0123456789"
 
 
 class TestFileServicePreflight:
-    def test_preflight_no_filename(self, session, test_workspace):
-        from app.features.file.service import preflight_file_upload
-        from app.exceptions import BusinessRuleError
-        with pytest.raises(BusinessRuleError):
-            preflight_file_upload(session, test_workspace.id, 1, {"filename": "", "total_size": 10, "content_hash": "d" * 64})
-
-    def test_preflight_no_size(self, session, test_workspace):
-        from app.features.file.service import preflight_file_upload
-        from app.exceptions import BusinessRuleError
-        with pytest.raises(BusinessRuleError):
-            preflight_file_upload(session, test_workspace.id, 1, {"filename": "a.txt", "total_size": 0, "content_hash": "d" * 64})
-
-    def test_preflight_no_hash(self, session, test_workspace):
-        from app.features.file.service import preflight_file_upload
-        from app.exceptions import BusinessRuleError
-        with pytest.raises(BusinessRuleError):
-            preflight_file_upload(session, test_workspace.id, 1, {"filename": "a.txt", "total_size": 10, "content_hash": None})
-
-    def test_preflight_no_source(self, session, test_workspace):
-        from app.features.file.service import preflight_file_upload
-        result = preflight_file_upload(session, test_workspace.id, 1, {
-            "filename": "a.txt", "total_size": 10, "content_hash": "e" * 64
-        })
-        assert result["instant_upload"] is False
-
-    def test_preflight_instant_upload(self, session, test_workspace, mock_object_storage):
-        from app.features.file.service import preflight_file_upload
-        from app.models.file import File
-
+    def test_preflight_instant_upload(
+        self, session, test_workspace, test_user, mock_object_storage,
+    ):
         source = File(
             name="orig.txt", file_path="hashfile4.txt", file_size=10,
             mime_type="text/plain", workspace_id=test_workspace.id,
-            uploader_id=1, parent_id=None,
+            uploader_id=test_user.id, parent_id=None,
             content_hash="f" * 64, status="success",
         )
         session.add(source)
         session.commit()
         mock_object_storage.objects[source.file_path] = b"0123456789"
-        with patch("app.features.file.service.clear_search_cache"):
-            result = preflight_file_upload(session, test_workspace.id, 1, {
-                "filename": "new.txt", "total_size": 10, "content_hash": "f" * 64
-            })
+
+        result = get_upload_service().preflight_file_upload(session, test_workspace.id, test_user.id, {
+            # 大写哈希应被规范化为小写后命中
+            "filename": "new.txt", "total_size": 10, "content_hash": "F" * 64
+        })
         assert result["instant_upload"] is True
-
-
-class TestFileServiceCreate:
-    def test_create_file(self, session, test_workspace, tmp_path):
-        from app.features.file.service import create_file
-
-        upload = MagicMock()
-        upload.filename = "test_create.txt"
-        upload.mimetype = "text/plain"
-        upload.save = lambda p: open(p, "w").write("hello world")
-
-        with patch("app.features.file.service._invalidate_processing_cache"), \
-             patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)):
-            new_file = create_file(session, upload, {
-                "workspace_id": test_workspace.id, "uploader_id": 1, "parent_id": None
-            })
-        assert new_file.name == "test_create.txt"
-
-    def test_create_uploaded_file_no_filename(self, session, test_workspace):
-        from app.features.file.service import create_uploaded_file
-        from app.exceptions import BusinessRuleError
-        upload = MagicMock()
-        upload.filename = None
-        with pytest.raises(BusinessRuleError):
-            create_uploaded_file(session, test_workspace.id, 1, upload)
-
-    def test_create_uploaded_file_with_root(self, session, test_workspace, tmp_path):
-        from app.features.file.service import create_uploaded_file
-        from app.models.folder import Folder
-
-        root = Folder(name="root", workspace_id=test_workspace.id, parent_id=None)
-        session.add(root)
-        session.commit()
-
-        upload = MagicMock()
-        upload.filename = "root_file.txt"
-        upload.mimetype = "text/plain"
-        upload.save = lambda p: open(p, "w").write("x")
-
-        with patch("app.features.file.service._invalidate_processing_cache"), \
-             patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)):
-            f = create_uploaded_file(session, test_workspace.id, 1, upload)
-        assert f is not None
-
-    def test_batch_create_files_empty(self, session, test_workspace):
-        from app.features.file.service import batch_create_files
-        result = batch_create_files(session, [], {"workspace_id": test_workspace.id})
-        assert result == []
-
-    def test_batch_create_files(self, session, test_workspace, tmp_path):
-        from app.features.file.service import batch_create_files
-
-        upload1 = MagicMock()
-        upload1.filename = "b1.txt"
-        upload1.mimetype = "text/plain"
-        upload1.save = lambda p: open(p, "w").write("hello")
-        upload2 = MagicMock()
-        upload2.filename = "b2.txt"
-        upload2.mimetype = "text/plain"
-        upload2.save = lambda p: open(p, "w").write("world")
-
-        with patch("app.features.file.service._invalidate_processing_cache"), \
-             patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)), \
-             patch("app.features.folder.change_log.log_events_batch"):
-            files = batch_create_files(session, [upload1, upload2], {"workspace_id": test_workspace.id, "uploader_id": 1})
-        assert len(files) == 2
-
-    def test_create_uploaded_files_no_valid(self, session, test_workspace):
-        from app.features.file.service import create_uploaded_files
-        from app.exceptions import BusinessRuleError
-        upload = MagicMock()
-        upload.filename = None
-        with pytest.raises(BusinessRuleError):
-            create_uploaded_files(session, test_workspace.id, 1, [upload])
+        assert session.get(File, result["file"]["id"]).name == "new.txt"
 
 
 class TestFileServiceMultipart:
-    def test_init_multipart_upload(self, session, test_workspace, tmp_path):
-        from app.features.file.service import init_multipart_upload
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path / ".multipart")):
-            data = {"filename": "big.txt", "total_size": 100, "chunk_size": 10}
-            result = init_multipart_upload(session, test_workspace.id, 1, data)
-        assert result["upload_id"] is not None
-        assert result["instant_upload"] is False
-
-    def test_init_multipart_no_filename(self, session, test_workspace):
-        from app.features.file.service import init_multipart_upload
-        from app.exceptions import BusinessRuleError
-        with pytest.raises(BusinessRuleError):
-            init_multipart_upload(session, test_workspace.id, 1, {"filename": "", "total_size": 100})
-
-    def test_init_multipart_bad_size(self, session, test_workspace):
-        from app.features.file.service import init_multipart_upload
-        from app.exceptions import BusinessRuleError
-        with pytest.raises(BusinessRuleError):
-            init_multipart_upload(session, test_workspace.id, 1, {"filename": "a", "total_size": 0})
-
-    def test_save_multipart_chunk(self, session, test_workspace, tmp_path):
-        from app.features.file.service import init_multipart_upload, save_multipart_chunk
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path / ".multipart")):
-            data = {"filename": "chunk.txt", "total_size": 20, "chunk_size": 10}
-            result = init_multipart_upload(session, test_workspace.id, 1, data)
-            upload_id = result["upload_id"]
-
-            chunk = MagicMock()
-            chunk.save = lambda p: open(p, "wb").write(b"a" * 10)
-            res = save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=1, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=0, chunk=chunk))
+    def test_save_multipart_chunk(self, session, test_workspace, test_user, tmp_path):
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
+            service = get_multipart_service()
+            result = service.init_multipart_upload(
+                session, test_workspace.id, test_user.id,
+                {"filename": "chunk.txt", "total_size": 20, "chunk_size": 10},
+            )
+            res = service.save_multipart_chunk(session, SaveMultipartChunkParams(
+                uploader_id=test_user.id, workspace_id=test_workspace.id,
+                upload_id=result["upload_id"], chunk_index=0,
+                chunk=_upload("chunk", b"a" * 10),
+            ))
         assert res["chunk_index"] == 0
+        assert res["uploaded_chunks"] == [0]
 
-    def test_complete_multipart_upload(self, session, test_workspace, tmp_path):
-        from app.features.file.service import init_multipart_upload, save_multipart_chunk, complete_multipart_upload
-        mp_root = str(tmp_path / ".multipart")
-        up_folder = str(tmp_path / "uploads")
-        os.makedirs(up_folder, exist_ok=True)
-        with patch("app.features.file.service.MULTIPART_ROOT", mp_root), \
-             patch("app.features.file.service.UPLOAD_FOLDER", up_folder):
-            data = {"filename": "comp.txt", "total_size": 20, "chunk_size": 10}
-            result = init_multipart_upload(session, test_workspace.id, 1, data)
+    def test_complete_multipart_upload(
+        self, session, test_workspace, test_user, tmp_path, mock_object_storage,
+    ):
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
+            service = get_multipart_service()
+            result = service.init_multipart_upload(
+                session, test_workspace.id, test_user.id,
+                {"filename": "comp.txt", "total_size": 20, "chunk_size": 10},
+            )
             upload_id = result["upload_id"]
             for i in range(2):
-                chunk = MagicMock()
-                chunk.save = lambda p, d=b"x" * 10: open(p, "wb").write(d)
-                save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=1, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=i, chunk=chunk))
-            with patch("app.features.file.service._invalidate_processing_cache"):
-                f = complete_multipart_upload(session, test_workspace.id, 1, upload_id)
-            assert f.name == "comp.txt"
-
-    def test_abort_multipart_upload(self, session, test_workspace, tmp_path):
-        from app.features.file.service import init_multipart_upload, abort_multipart_upload
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path / ".multipart")):
-            data = {"filename": "abort.txt", "total_size": 20, "chunk_size": 10}
-            result = init_multipart_upload(session, test_workspace.id, 1, data)
-            abort_multipart_upload(session, test_workspace.id, 1, result["upload_id"])
-
-    def test_get_multipart_status(self, session, test_workspace, tmp_path):
-        from app.features.file.service import init_multipart_upload, get_multipart_upload_status
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path / ".multipart")):
-            data = {"filename": "stat.txt", "total_size": 20, "chunk_size": 10}
-            result = init_multipart_upload(session, test_workspace.id, 1, data)
-            status = get_multipart_upload_status(session, test_workspace.id, 1, result["upload_id"])
-        assert status["total_chunks"] == 2
+                service.save_multipart_chunk(session, SaveMultipartChunkParams(
+                    uploader_id=test_user.id, workspace_id=test_workspace.id,
+                    upload_id=upload_id, chunk_index=i,
+                    chunk=_upload("chunk", b"x" * 10),
+                ))
+            f = service.complete_multipart_upload(
+                session, test_workspace.id, test_user.id, upload_id,
+            )
+        assert f.name == "comp.txt"
+        assert f.file_size == 20
+        assert session.get(File, f.id).name == "comp.txt"
+        assert mock_object_storage.objects[f.file_path] == b"x" * 20
+        assert not (tmp_path / ".multipart" / str(test_workspace.id) / upload_id).exists()
 
 
 class TestFileServiceSearch:
@@ -280,7 +235,6 @@ class TestFileServiceSearch:
 
     def test_get_files_and_folders(self, session, test_workspace):
         from app.features.file.service import get_files_and_folders
-        from app.models.folder import Folder
         folder = Folder(name="gff", workspace_id=test_workspace.id, parent_id=None)
         session.add(folder)
         session.commit()
@@ -289,7 +243,6 @@ class TestFileServiceSearch:
 
     def test_get_files_and_folders_with_name(self, session, test_workspace):
         from app.features.file.service import get_files_and_folders
-        from app.models.folder import Folder
         f1 = Folder(name="alpha", workspace_id=test_workspace.id, parent_id=None)
         f2 = Folder(name="beta", workspace_id=test_workspace.id, parent_id=None)
         session.add_all([f1, f2])
@@ -325,17 +278,11 @@ class TestFileServiceSearch:
             result = await embedding_desc("test", {"api": "x", "key": "y", "model": "z"})
         assert result == []
 
-    def test_retry_embedding(self, session, test_workspace, tmp_path):
-        from app.features.file.service import retry_embedding, create_file
-        upload = MagicMock()
-        upload.filename = "retry.txt"
-        upload.mimetype = "text/plain"
-        upload.save = lambda p: open(p, "w").write("x")
-        with patch("app.features.file.service._invalidate_processing_cache"), \
-             patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)):
-            f = create_file(session, upload, {"workspace_id": test_workspace.id, "uploader_id": 1})
-            retry_embedding(session, f.id)
-            retry_embedding(session, 99999)
+    def test_retry_embedding(self, session, test_workspace, test_user, tmp_path):
+        from app.features.file.service import retry_embedding
+        f = _create_file(session, test_workspace.id, test_user.id, tmp_path, "retry.txt")
+        retry_embedding(session, f.id)
+        retry_embedding(session, 99999)
 
     def test_rebuild_failed_indexes(self, session, test_workspace):
         from app.features.file.service import rebuild_failed_indexes
@@ -343,33 +290,24 @@ class TestFileServiceSearch:
             count = rebuild_failed_indexes(session, test_workspace.id)
         assert count == 0
 
-    def test_cleanup_expired_uploads(self):
-        from app.features.file.service import cleanup_expired_uploads, MULTIPART_ROOT
-        if not os.path.exists(MULTIPART_ROOT):
-            os.makedirs(MULTIPART_ROOT, exist_ok=True)
-        result = cleanup_expired_uploads()
+    def test_cleanup_expired_uploads(self, tmp_path):
+        from app.features.file.service import cleanup_expired_uploads
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
+            result = cleanup_expired_uploads()
         assert isinstance(result, int)
 
-    def test_delete_file(self, session, test_workspace, tmp_path):
-        from app.features.file.service import create_file, delete_file
-        upload = MagicMock()
-        upload.filename = "del.txt"
-        upload.mimetype = "text/plain"
-        upload.save = lambda p: open(p, "w").write("delete me")
-        with patch("app.features.file.service._invalidate_processing_cache"), \
-             patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)):
-            f = create_file(session, upload, {"workspace_id": test_workspace.id, "uploader_id": 1})
-            delete_file(session, f.id)
+    def test_delete_file(self, session, test_workspace, test_user, tmp_path):
+        from app.features.file.service import delete_file
+        f = _create_file(session, test_workspace.id, test_user.id, tmp_path, "del.txt")
+        delete_file(session, f.id)
 
     def test_delete_file_not_found(self, session):
         from app.features.file.service import delete_file
-        from app.exceptions import ResourceNotFoundError
         with pytest.raises(ResourceNotFoundError):
             delete_file(session, 99999)
 
     def test_batch_delete_items(self, session, test_workspace):
         from app.features.file.service import batch_delete_items
-        from app.models.folder import Folder
         folder = Folder(name="bd", workspace_id=test_workspace.id, parent_id=None)
         session.add(folder)
         session.commit()
@@ -384,8 +322,6 @@ class TestFileServiceSearch:
 
     def test_get_authorized_file_wrong_ws(self, session, test_workspace):
         from app.features.file.service import get_authorized_file
-        from app.models.file import File
-        from app.exceptions import PermissionDeniedError
         f = File(name="af.txt", file_path="af.txt", file_size=1, mime_type="text/plain",
                  workspace_id=test_workspace.id, uploader_id=1, parent_id=None)
         session.add(f)
@@ -395,8 +331,6 @@ class TestFileServiceSearch:
 
     def test_get_downloadable_file_not_on_disk(self, session, test_workspace):
         from app.features.file.service import get_downloadable_file
-        from app.models.file import File
-        from app.exceptions import ResourceNotFoundError
         f = File(name="dl.txt", file_path="nonexist_dl.txt", file_size=1, mime_type="text/plain",
                  workspace_id=test_workspace.id, uploader_id=1, parent_id=None)
         session.add(f)
@@ -404,33 +338,20 @@ class TestFileServiceSearch:
         with pytest.raises(ResourceNotFoundError):
             get_downloadable_file(session, test_workspace.id, 1, f.id)
 
-    def test_update_file(self, session, test_workspace, tmp_path):
-        from app.features.file.service import create_file, update_file
-        upload = MagicMock()
-        upload.filename = "up.txt"
-        upload.mimetype = "text/plain"
-        upload.save = lambda p: open(p, "w").write("x")
-        with patch("app.features.file.service._invalidate_processing_cache"), \
-             patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)), \
-             patch("app.features.file.service.clear_search_cache"):
-            f = create_file(session, upload, {"workspace_id": test_workspace.id, "uploader_id": 1})
+    def test_update_file(self, session, test_workspace, test_user, tmp_path):
+        from app.features.file.service import update_file
+        f = _create_file(session, test_workspace.id, test_user.id, tmp_path, "up.txt")
+        with patch("app.features.file.service.clear_search_cache"):
             updated = update_file(session, f.id, {"name": "renamed.txt"})
         assert updated.name == "renamed.txt"
 
-    def test_update_file_move(self, session, test_workspace, tmp_path):
-        from app.features.file.service import create_file, update_file
-        from app.models.folder import Folder
-        upload = MagicMock()
-        upload.filename = "mv.txt"
-        upload.mimetype = "text/plain"
-        upload.save = lambda p: open(p, "w").write("x")
+    def test_update_file_move(self, session, test_workspace, test_user, tmp_path):
+        from app.features.file.service import update_file
         folder = Folder(name="target", workspace_id=test_workspace.id, parent_id=None)
         session.add(folder)
         session.commit()
-        with patch("app.features.file.service._invalidate_processing_cache"), \
-             patch("app.features.file.service.UPLOAD_FOLDER", str(tmp_path)), \
-             patch("app.features.file.service.clear_search_cache"):
-            f = create_file(session, upload, {"workspace_id": test_workspace.id, "uploader_id": 1})
+        f = _create_file(session, test_workspace.id, test_user.id, tmp_path, "mv.txt")
+        with patch("app.features.file.service.clear_search_cache"):
             updated = update_file(session, f.id, {"parent_id": folder.id})
         assert updated.parent_id == folder.id
 

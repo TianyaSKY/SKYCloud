@@ -23,8 +23,8 @@ from app.exceptions import (
     PermissionDeniedError,
     ResourceNotFoundError,
 )
+from app.features.file.upload_types import UploadStorage
 from app.infra.multipart_cleanup import remove_multipart_upload
-from app.infra.storage import MinIOStorageClient
 from app.infra.upload_limits import positive_limit
 from app.infra.upload_staging import staging_guard
 from app.models.file import File
@@ -43,7 +43,7 @@ TTL_SECONDS = positive_limit("UPLOAD_RESERVATION_TTL_SECONDS", 3600)
 # Enter result of the no-op guard used when no staging root is configured.
 _GUARD_ACQUIRED = True
 
-StorageFactory: TypeAlias = Callable[[], MinIOStorageClient]
+StorageFactory: TypeAlias = Callable[[], UploadStorage]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

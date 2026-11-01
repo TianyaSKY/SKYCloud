@@ -83,7 +83,7 @@ import json, time
 from app.infra.task_queue import RabbitMQTaskConsumer, FILE_PROCESS_QUEUE
 from app.infra.worker_runtime import WorkerRuntime, worker_step
 from app.infra.llm.sync_client import OpenAI
-from app.infra.file_task_outbox import deliver_pending_file_tasks
+from app.features.file.tasks import deliver_pending_file_tasks
 assert OpenAI.__module__.startswith('openai')
 assert deliver_pending_file_tasks() >= 1
 consumer = RabbitMQTaskConsumer(.02)
@@ -123,8 +123,10 @@ def test_actual_indexing_outcomes(upload_api, postgres, minio_storage, broker, p
     access, secret = minio_storage.integration_auth
     temporary = tmp_path / "worker-tmp"
     temporary.mkdir()
-    env = {
-        **os.environ,
+    env = os.environ.copy()
+    for proxy_key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        env.pop(proxy_key, None)
+    env.update({
         "DATABASE_URL": postgres.url.render_as_string(hide_password=False),
         "MINIO_ENDPOINT": minio_storage.integration_endpoint,
         "MINIO_ACCESS_KEY": access, "MINIO_SECRET_KEY": secret,
@@ -134,7 +136,7 @@ def test_actual_indexing_outcomes(upload_api, postgres, minio_storage, broker, p
         "EMB_API_URL": endpoint, "EMB_API_KEY": "synthetic-pipeline-key",
         "EMB_MODEL_NAME": "pipeline-embedding",
         "TMPDIR": str(temporary),
-    }
+    })
     result = subprocess.run([sys.executable, "-c", PROBE],
                             cwd=Path(__file__).resolve().parents[2], env=env,
                             capture_output=True, text=True, timeout=45)
@@ -147,7 +149,7 @@ def test_actual_indexing_outcomes(upload_api, postgres, minio_storage, broker, p
         chunks = db.execute(text("SELECT content,vector_dims(vector_info) FROM file_chunks WHERE file_id=:id"),
                             {"id": file_id}).all()
         if mode == "success":
-            assert row == ("success", "Synthetic searchable document", 1024)
+            assert row == ("success", "Synthetic searchable document", 1024), result.stderr[-5000:]
             assert len(chunks) == 1 and chunks[0] == (source.decode(), 1024)
             assert sum(path.endswith("/chat/completions") for path, _ in calls) == 2
             assert db.scalar(text("SELECT count(*) FROM token_usage_logs WHERE action='embedding'")) == 4
@@ -155,5 +157,5 @@ def test_actual_indexing_outcomes(upload_api, postgres, minio_storage, broker, p
             assert row.status == "fail"
             assert not chunks
             assert db.scalar(text("SELECT count(*) FROM inbox WHERE title='文件处理失败'")) == 1
-    assert any(path.endswith("/embeddings") for path, _ in calls)
+    assert any(path.endswith("/embeddings") for path, _ in calls), result.stderr[-5000:]
     assert client.get(f"/api/files/{file_id}/download", headers=headers).content == source

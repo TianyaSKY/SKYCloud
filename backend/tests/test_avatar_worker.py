@@ -38,7 +38,7 @@ async def test_avatar_adaptation_and_sql_share_owner_without_blocking_loop(monke
     monkeypatch.setattr(avatar_upload.account_repository,'current_role',role)
     monkeypatch.setattr(avatar_upload,'Base64UploadAdapter',adapt)
     monkeypatch.setattr(avatar_upload,'FastAPIUploadAdapter',adapt)
-    monkeypatch.setattr(avatar_upload.service,'upload_avatar_for_user',upload)
+    monkeypatch.setattr(avatar_upload,'upload_avatar_for_user',upload)
     pending = asyncio.create_task(router.upload_avatar(
         user_id=1,
         request=SimpleNamespace(headers={}),

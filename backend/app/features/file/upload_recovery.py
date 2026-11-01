@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.features.file import repository, upload_quota
 from app.features.file.upload_quota import CancelParams
-from app.infra.storage import MinIOStorageClient
+from app.features.file.upload_types import UploadStorage
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -24,7 +24,7 @@ class ReleaseFailedUploadParams:
 def _release_failed_upload(
     session: Session,
     params: ReleaseFailedUploadParams,
-    storage: MinIOStorageClient | None,
+    storage: UploadStorage | None,
 ) -> None:
     """Release one reservation and delete its object when nothing references it."""
     if params.reservation_id is None:
@@ -92,7 +92,7 @@ def compensate_failed_uploads(
     workspace_id: int,
     uploader_id: int,
     uploads: Iterable[tuple[str | None, str]],
-    storage: MinIOStorageClient | None,
+    storage: UploadStorage | None,
 ) -> None:
     """Preserve the caller's error and continue independent reservation cleanup."""
     if not _reset_failed_transaction(session):

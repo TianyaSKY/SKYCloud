@@ -6,10 +6,12 @@ import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.exceptions import PermissionDeniedError, ResourceNotFoundError, ServiceOperationError
+from app.exceptions import PermissionDeniedError, ServiceOperationError
 from app.models.file import File
 from app.models.folder import Folder
-from app.features.file.deletion import clear_search_cache
+from app.infra import multipart_storage
+from app.features.file import upload_config
+from app.features.file.avatar_service import upload_avatar_for_user
 from app.features.file.search_service import embedding_desc
 from app.features.file.service import (
     retry_embedding,
@@ -17,17 +19,8 @@ from app.features.file.service import (
     cleanup_expired_uploads,
     get_root_file_id,
     batch_delete_items,
-    upload_avatar_for_user,
-    _calculate_file_hash,
-    _get_reusable_source_file,
-    _persist_file_record,
-    _invalidate_processing_cache,
-    multipart_upload_dir,
-    multipart_chunks_dir,
-    multipart_meta_path,
-    load_multipart_meta,
-    _write_multipart_meta,
 )
+from app.features.file.upload_service import get_upload_service
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +91,8 @@ class TestCleanupExpiredUploads:
     @pytest.mark.skipif(os.name != 'posix', reason='Descriptor-anchored POSIX cleanup')
     def test_workspace_replacement_cannot_redirect_recursive_removal(self, tmp_path, monkeypatch):
         import shutil
-        multipart = tmp_path / 'parts'
+        upload_root = tmp_path / 'uploads'
+        multipart = upload_root / '.multipart'
         workspace = multipart / '1'
         upload = workspace / 'expired-upload'
         upload.mkdir(parents=True)
@@ -117,8 +111,7 @@ class TestCleanupExpiredUploads:
             workspace.symlink_to(outside, target_is_directory=True)
             return remove(path, *args, **kwargs)
         monkeypatch.setattr(shutil, 'rmtree', replace_workspace)
-        monkeypatch.setattr('app.features.file.service.UPLOAD_FOLDER', str(tmp_path / 'uploads'))
-        monkeypatch.setattr('app.features.file.service.MULTIPART_ROOT', str(multipart))
+        monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(upload_root))
         assert cleanup_expired_uploads(max_age_hours=1) == 1
         assert not (retired / 'expired-upload').exists()
         assert protected.read_bytes() == b'outside-tree'
@@ -126,15 +119,14 @@ class TestCleanupExpiredUploads:
     @pytest.mark.skipif(os.name == 'nt' or not hasattr(os, 'geteuid') or os.geteuid() == 0,
                         reason='Requires POSIX permission enforcement for a non-root process')
     def test_permission_denial_is_not_counted_and_can_be_retried(self, tmp_path, monkeypatch):
-        multipart = tmp_path / 'parts'
-        upload = multipart / '1' / 'expired-upload'
+        upload_root = tmp_path / 'uploads'
+        upload = upload_root / '.multipart' / '1' / 'expired-upload'
         upload.mkdir(parents=True)
         payload = upload / 'part'
         payload.write_bytes(b'uncleaned-upload')
         old = time.time() - 100000
         os.utime(upload, (old, old))
-        monkeypatch.setattr('app.features.file.service.UPLOAD_FOLDER', str(tmp_path / 'uploads'))
-        monkeypatch.setattr('app.features.file.service.MULTIPART_ROOT', str(multipart))
+        monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(upload_root))
         upload.chmod(0o500)
         try:
             assert cleanup_expired_uploads(max_age_hours=1) == 0
@@ -154,42 +146,43 @@ class TestCleanupExpiredUploads:
         payload.write_bytes(b'outside-upload-tree')
         old = time.time() - 100000
         os.utime(upload, (old, old))
-        multipart = tmp_path / 'parts'
+        upload_root = tmp_path / 'uploads'
+        multipart = upload_root / '.multipart'
         if link_level == 'root':
+            upload_root.mkdir()
             multipart.symlink_to(outside, target_is_directory=True)
         else:
-            multipart.mkdir()
+            multipart.mkdir(parents=True)
             (multipart / '1').symlink_to(outside / '1', target_is_directory=True)
-        monkeypatch.setattr('app.features.file.service.UPLOAD_FOLDER', str(tmp_path / 'uploads'))
-        monkeypatch.setattr('app.features.file.service.MULTIPART_ROOT', str(multipart))
+        monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(upload_root))
         assert cleanup_expired_uploads(max_age_hours=1) == 0
         assert payload.read_bytes() == b'outside-upload-tree'
 
-    def test_no_multipart_root(self, tmp_path):
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path / "nonexist")):
-            assert cleanup_expired_uploads() == 0
+    def test_no_multipart_root(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
+        assert cleanup_expired_uploads() == 0
 
-    def test_cleanup_old_dirs(self, tmp_path):
+    def test_cleanup_old_dirs(self, tmp_path, monkeypatch):
         # 创建过期的上传目录
-        ws_dir = tmp_path / "1"
-        upload_dir = ws_dir / "upload123"
+        upload_root = tmp_path / 'uploads'
+        upload_dir = upload_root / '.multipart' / '1' / 'upload123'
         upload_dir.mkdir(parents=True)
         # 设置很旧的修改时间
         old_time = time.time() - 100000
         os.utime(str(upload_dir), (old_time, old_time))
 
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path)):
-            count = cleanup_expired_uploads(max_age_hours=1)
+        monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(upload_root))
+        count = cleanup_expired_uploads(max_age_hours=1)
         assert count == 1
         assert not upload_dir.exists()
 
-    def test_keep_recent_dirs(self, tmp_path):
-        ws_dir = tmp_path / "1"
-        upload_dir = ws_dir / "upload456"
+    def test_keep_recent_dirs(self, tmp_path, monkeypatch):
+        upload_root = tmp_path / 'uploads'
+        upload_dir = upload_root / '.multipart' / '1' / 'upload456'
         upload_dir.mkdir(parents=True)
 
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path)):
-            count = cleanup_expired_uploads(max_age_hours=24)
+        monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(upload_root))
+        count = cleanup_expired_uploads(max_age_hours=24)
         assert count == 0
         assert upload_dir.exists()
 
@@ -281,7 +274,6 @@ class TestBatchDeleteItems:
         assert session.get(File, file_id) is None
 
     def test_delete_folder(self, session, test_workspace, test_user, test_folder):
-        from app.features.folder.service import get_folder
         folder_id = test_folder.id
 
         with patch("app.features.file.service.change_log_service"), \
@@ -300,77 +292,32 @@ class TestUploadAvatarForUser:
         with pytest.raises(PermissionDeniedError):
             upload_avatar_for_user(session, actor_id=1, actor_role="user", user_id=2, upload=MagicMock())
 
-    def test_admin_allowed(self, session):
-        with patch("app.features.file.service.upload_avatar", return_value={"avatar_url": "/x"}) as m:
-            result = upload_avatar_for_user(session, actor_id=1, actor_role="admin", user_id=2, upload=MagicMock())
-        assert result["avatar_url"] == "/x"
-
-    def test_self_allowed(self, session):
-        with patch("app.features.file.service.upload_avatar", return_value={"avatar_url": "/y"}) as m:
-            result = upload_avatar_for_user(session, actor_id=5, actor_role="user", user_id=5, upload=MagicMock())
-        assert result["avatar_url"] == "/y"
 
 
 # ---------------------------------------------------------------------------
-# 内部工具函数
+# 公开用例与存储工具
 # ---------------------------------------------------------------------------
 
 
-class TestInternalUtils:
-    def test_calculate_file_hash(self, tmp_path):
-        f = tmp_path / "test.bin"
-        f.write_bytes(b"hello world")
-        h = _calculate_file_hash(str(f))
-        assert len(h) == 64  # SHA-256 hex
+class TestPublicHelpers:
 
-    def test_get_reusable_source_file_not_found(self, session, test_workspace):
-        result = _get_reusable_source_file(session, "a" * 64, 100, test_workspace.id)
+    def test_reusable_source_file_not_found(self, session, test_workspace):
+        result = get_upload_service().reusable_source(session, "a" * 64, 100, test_workspace.id)
         assert result is None
 
-    def test_invalidate_processing_cache_empty(self):
-        _invalidate_processing_cache([], 1)  # 不应报错
-
-    def test_invalidate_processing_cache_calls_clear(self):
-        with patch("app.features.file.service.clear_search_cache") as clear:
-            _invalidate_processing_cache([1], 1)
-        clear.assert_called_once_with(1)
-
-    def test_clear_search_cache(self):
-        with patch("app.features.file.deletion.evict_cache_pattern") as m:
-            clear_search_cache(1)
-            m.assert_called_once()
 
     def test_multipart_paths(self):
-        with patch("app.features.file.service.MULTIPART_ROOT", "/base"):
-            d = multipart_upload_dir(1, "abc12345")
-            assert "1" in d
-            assert "abc12345" in d
-            assert multipart_chunks_dir(d).endswith("chunks")
-            assert multipart_meta_path(d).endswith("meta.json")
+        directory = multipart_storage.upload_directory("/base", 1, "abc12345")
+        assert "1" in directory
+        assert "abc12345" in directory
+        assert multipart_storage.chunks_directory(directory).endswith("chunks")
+        assert multipart_storage.metadata_path(directory).endswith("meta.json")
 
     def test_write_and_load_meta(self, tmp_path, test_workspace):
-        import json
-        meta_path = str(tmp_path / "meta.json")
         meta = {"workspace_id": test_workspace.id, "filename": "test.bin", "total_size": 100}
-        _write_multipart_meta(meta_path, meta)
+        directory = multipart_storage.upload_directory(str(tmp_path), test_workspace.id, "abc12345")
+        path = multipart_storage.metadata_path(directory)
+        multipart_storage.write_metadata(path, meta)
 
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path.parent)):
-            # 创建正确的目录结构
-            upload_dir = tmp_path.parent / str(test_workspace.id) / "abc12345"
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            meta_file = upload_dir / "meta.json"
-            meta_file.write_text(json.dumps(meta))
-
-            loaded = load_multipart_meta(test_workspace.id, "abc12345")
-            assert loaded["filename"] == "test.bin"
-
-    def test_load_meta_wrong_workspace(self, tmp_path, test_workspace):
-        import json
-        upload_dir = tmp_path / str(test_workspace.id) / "abc12345"
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        meta_file = upload_dir / "meta.json"
-        meta_file.write_text(json.dumps({"workspace_id": 99999}))
-
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path)):
-            with pytest.raises(PermissionDeniedError):
-                load_multipart_meta(test_workspace.id, "abc12345")
+        loaded = multipart_storage.read_metadata(path)
+        assert loaded["filename"] == "test.bin"

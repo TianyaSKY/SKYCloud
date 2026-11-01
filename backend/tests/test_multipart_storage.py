@@ -74,18 +74,23 @@ def test_real_merge_orders_chunks_and_checks_persisted_sizes(tmp_path):
 
 
 def test_service_merge_interruption_releases_staging_lease(session, test_workspace, test_user, tmp_path, monkeypatch):
-    from app.features.file import service
+    from app.features.file import upload_config, upload_quota
+    from app.features.file.multipart_service import (
+        SaveMultipartChunkParams,
+        get_multipart_service,
+    )
     from app.infra.upload_staging import StagedUpload
     from pathlib import Path
 
-    monkeypatch.setattr(service, "MULTIPART_ROOT", str(tmp_path / "parts"))
-    monkeypatch.setattr(service, "UPLOAD_FOLDER", str(tmp_path / "uploads"))
+    upload_root = tmp_path / "uploads"
+    monkeypatch.setattr(upload_config, "UPLOAD_FOLDER", str(upload_root))
+    service = get_multipart_service()
     upload_id = "interrupted-upload"
     service.init_multipart_upload(session, test_workspace.id, test_user.id,
                                  {"filename": "test.txt", "total_size": 3,
                                   "chunk_size": 3, "upload_id": upload_id})
-    service.save_multipart_chunk(session, service.SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=0, chunk=upload(b"abc")))
-    reservation = service.upload_quota.find_reservation(session, upload_id)
+    service.save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id=upload_id, chunk_index=0, chunk=upload(b"abc")))
+    reservation = upload_quota.find_reservation(session, upload_id)
     stage_id = reservation.details["stage_id"]
     def interrupt(source, target, limit):
         target.write(b"partial")
@@ -93,9 +98,9 @@ def test_service_merge_interruption_releases_staging_lease(session, test_workspa
     monkeypatch.setattr(storage, "copy_bounded", interrupt)
     with pytest.raises(KeyboardInterrupt):
         service.complete_multipart_upload(session, test_workspace.id, test_user.id, upload_id)
-    assert not (tmp_path / "uploads" / ".staging").exists()
-    chunks = Path(service.multipart_upload_dir(test_workspace.id, upload_id)) / "chunks"
+    assert not (upload_root / ".staging").exists()
+    chunks = Path(storage.chunks_directory(service.directory(test_workspace.id, upload_id)))
     assert (chunks / "0.part").read_bytes() == b"abc"
     assert reservation.status == "active"
-    retry = StagedUpload(str(tmp_path / "uploads"), "test.txt", stage_id=stage_id)
+    retry = StagedUpload(str(upload_root), "test.txt", stage_id=stage_id)
     retry.close()

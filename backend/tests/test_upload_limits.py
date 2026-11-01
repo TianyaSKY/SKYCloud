@@ -63,31 +63,32 @@ def test_request_limit_checks_actual_body_before_route(length_header):
     assert calls == []
 
 
-def test_single_file_excess_is_413_without_storage_or_temporary_file(session, tmp_path, monkeypatch):
-    from app.features.file import service
-    storage = MagicMock()
-    monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path))
-    monkeypatch.setattr(service, 'MAX_UPLOAD_SIZE', 5)
-    monkeypatch.setattr(service, 'get_storage_client', lambda: storage)
+def test_single_file_excess_is_413_without_storage_or_temporary_file(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage):
+    from app.features.file import upload_config
+    from app.features.file.upload_service import get_upload_service
+    monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(tmp_path))
+    monkeypatch.setattr(upload_config, 'MAX_UPLOAD_SIZE', 5)
     upload = FastAPIUploadAdapter(UploadFile(filename='x', file=BytesIO(b'123456')))
     with pytest.raises(PayloadTooLargeError):
-        service.create_file(session, upload, {'workspace_id': 1, 'uploader_id': 1})
-    storage.upload_file.assert_not_called()
+        get_upload_service().create_uploaded_file(session, test_workspace.id, test_user.id, upload)
+    assert mock_object_storage.objects == {}
     assert list(tmp_path.iterdir()) == []
 
 
 def test_oversized_part_preserves_existing_part_and_cleans_temp(session, test_workspace, test_user, tmp_path, monkeypatch):
-    from app.features.file import service
-    monkeypatch.setattr(service, 'MULTIPART_ROOT', str(tmp_path))
+    from app.infra import multipart_storage
+    from app.features.file import upload_config
+    from app.features.file.multipart_service import SaveMultipartChunkParams, get_multipart_service
+    monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
+    service = get_multipart_service()
     # Use the service's path contract rather than assume directory naming.
     result = service.init_multipart_upload(session, test_workspace.id, test_user.id,
         {'filename': 'x', 'total_size': 5, 'chunk_size': 5, 'upload_id': 'abcdefgh'})
-    directory = Path(service.multipart_upload_dir(test_workspace.id, result['upload_id']))
-    chunks = directory / 'chunks'
+    chunks = Path(multipart_storage.chunks_directory(service.directory(test_workspace.id, result['upload_id'])))
     (chunks / '0.part').write_bytes(b'12345')
     adapter = FastAPIUploadAdapter(UploadFile(filename='x', file=BytesIO(b'123456')))
     with pytest.raises(PayloadTooLargeError):
-        service.save_multipart_chunk(session, service.SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id='abcdefgh', chunk_index=0, chunk=adapter))
+        service.save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id='abcdefgh', chunk_index=0, chunk=adapter))
     assert (chunks / '0.part').read_bytes() == b'12345'
     assert list(chunks.glob('*.tmp')) == []
 
@@ -128,20 +129,21 @@ def test_chunked_request_closes_already_open_multipart_spools(monkeypatch):
     assert opened[0].closed
 
 
-def test_tampered_stored_chunk_cannot_overrun_assembly(session, test_workspace, tmp_path, monkeypatch):
-    from app.features.file import service
-    monkeypatch.setattr(service, 'MULTIPART_ROOT', str(tmp_path / 'multipart'))
-    monkeypatch.setattr(service, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
-    result = service.init_multipart_upload(session, test_workspace.id, 1, {'filename': 'x', 'total_size': 5, 'chunk_size': 5})
+def test_tampered_stored_chunk_cannot_overrun_assembly(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage):
+    from app.infra import multipart_storage
+    from app.features.file import upload_config
+    from app.features.file.multipart_service import get_multipart_service
+    upload_root = tmp_path / 'uploads'
+    monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(upload_root))
+    service = get_multipart_service()
+    result = service.init_multipart_upload(session, test_workspace.id, test_user.id, {'filename': 'x', 'total_size': 5, 'chunk_size': 5})
     upload_id = result['upload_id']
-    directory = Path(service.multipart_upload_dir(test_workspace.id, upload_id))
-    (directory / 'chunks' / '0.part').write_bytes(b'x' * 100000)
-    storage = MagicMock()
-    monkeypatch.setattr(service, 'get_storage_client', lambda: storage)
+    chunks = Path(multipart_storage.chunks_directory(service.directory(test_workspace.id, upload_id)))
+    (chunks / '0.part').write_bytes(b'x' * 100000)
     with pytest.raises(PayloadTooLargeError):
-        service.complete_multipart_upload(session, test_workspace.id, 1, upload_id)
-    storage.upload_file.assert_not_called()
-    assert list((tmp_path / 'uploads').iterdir()) == []
+        service.complete_multipart_upload(session, test_workspace.id, test_user.id, upload_id)
+    assert mock_object_storage.objects == {}
+    assert not (upload_root / '.staging').exists()
 
 
 def test_upload_request_concurrency_is_bounded_and_released(monkeypatch):

@@ -40,7 +40,7 @@ async def test_slow_file_boundary_leaves_loop_responsive(monkeypatch, boundary):
         operation = service.process_status(Mock(), 2)
     else:
         from contextlib import nullcontext
-        monkeypatch.setattr(service, 'upload_avatar_for_user', slow)
+        monkeypatch.setattr(avatar_upload, 'upload_avatar_for_user', slow)
         monkeypatch.setattr(avatar_upload.account_repository, 'current_role', lambda *args: 'common')
         operation = router.upload_avatar(
             user_id=1,
