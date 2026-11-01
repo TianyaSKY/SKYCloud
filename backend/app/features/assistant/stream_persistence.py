@@ -237,11 +237,11 @@ class StreamPersistence:
     def checkpoint(
         self,
         progress: StreamProgress,
-        permission: dict[str, Any] | None,
         *,
         commit: bool,
+        permission_boundary: bool = False,
     ) -> bool:
-        """Persist one stream checkpoint; permission prompts force a commit."""
+        """Persist stream progress without mutating permission decisions."""
         if self.session.get_bind().dialect.name == "postgresql":
             # A suspended/dead API worker must not retain message/run write
             # locks forever between streaming checkpoints. Transaction-local
@@ -249,16 +249,11 @@ class StreamPersistence:
             self.session.execute(
                 text("SET LOCAL idle_in_transaction_session_timeout = '5s'"),
             )
-        if permission is not None:
+        if permission_boundary:
             run = repository.lock_run(self.session, self.run_id)
             if run is None or run.status in repository.TERMINAL_RUN_STATUSES:
                 self.session.commit()
                 return False
-            # ExpertEngine already persisted this event. A recovery client may
-            # have answered before the stream consumes it; never reset its CAS.
-            if run.pending_permission_id != permission.get("permission_id"):
-                repository.set_pending_permission(run, permission)
-            commit = True
         self.message.content = progress.content
         self.message.metadata_dict = dict(progress.metadata)
         self.message.usage = dict(progress.usage)
@@ -293,6 +288,7 @@ class StreamPersistence:
         self.message.usage = dict(outcome.usage)
         run.metadata_dict = repository.serialize_events_metadata(outcome.events)
         repository.update_run_status(
+            self.session,
             run,
             status,
             error_code=outcome.error_code,

@@ -10,6 +10,7 @@ from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
+from typing import Literal
 
 from loguru import logger
 from sqlalchemy import func, select
@@ -83,17 +84,6 @@ class UpdateConversationParams:
     title: str | None = None
     status: str | None = None
 
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class StreamPreparedRunParams:
-    """Existing prepared Session whose owner keeps it idle."""
-
-    session: Session
-    workspace: Workspace
-    user_id: int
-    conversation: AssistantConversation
-    run: AssistantRun
-    history: list[dict[str, str]]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -195,9 +185,8 @@ def recover_abandoned_run(
         "streaming",
     }:
         assistant_message.status = "failed"
-    run.pending_permission_id = None
-    run.permission_response = None
     repository.update_run_status(
+        session,
         run,
         "failed",
         error_code="stream_abandoned",
@@ -283,18 +272,15 @@ def get_active_run_for_conversation(
     user_id: int,
     conversation_id: int,
 ) -> AssistantRun | None:
-    """Return the live run of one conversation, recovering stale workers."""
-    assert_member_locked(session, int(workspace.id), int(user_id))
+    """Read a conversation's active run without recovering worker state."""
+    assert_member(session, int(workspace.id), int(user_id))
     conversation = get_user_conversation(
         session,
         workspace,
         user_id,
         conversation_id,
     )
-    run = repository.active_run_for_conversation(session, int(conversation.id))
-    if run and recover_abandoned_run(session, run):
-        return None
-    return run
+    return repository.active_run_for_conversation(session, int(conversation.id))
 
 
 def get_active_expert_run_for_member(
@@ -302,16 +288,13 @@ def get_active_expert_run_for_member(
     workspace: Workspace,
     user_id: int,
 ) -> AssistantRun | None:
-    """Return the member's live expert run, recovering stale workers."""
-    assert_can_write_locked(session, int(workspace.id), int(user_id))
-    run = repository.active_expert_run_for_member(
+    """Read a member's active expert run without worker recovery side effects."""
+    assert_can_write(session, int(workspace.id), int(user_id))
+    return repository.active_expert_run_for_member(
         session,
         int(workspace.id),
         int(user_id),
     )
-    if run and recover_abandoned_run(session, run):
-        return None
-    return run
 
 
 def get_user_conversation(
@@ -541,7 +524,7 @@ def prepare_run(
         assistant_message,
         request_id=params.request_id or str(uuid.uuid4()),
     )
-    repository.update_run_status(run, "running")
+    repository.update_run_status(session, run, "running")
     assistant_message.status = "streaming"
     if params.on_run_created is not None:
         # create_run has flushed its ID. Capture internal identity before commit
@@ -728,15 +711,15 @@ async def _checkpoint_event(
         progress.event_count % CHECKPOINT_EVERY == 0
         or now - progress.last_commit > CHECKPOINT_INTERVAL_SECONDS
     )
-    permission = event.payload if event.type == "permission_required" else None
+    permission_boundary = event.type == "permission_required"
     if not await state.worker.call(
         state.persistence.checkpoint,
         progress,
-        permission,
-        commit=commit,
+        commit=commit or permission_boundary,
+        permission_boundary=permission_boundary,
     ):
         return False
-    if commit or permission is not None:
+    if commit or permission_boundary:
         progress.last_commit = time.monotonic()
     return True
 
@@ -904,36 +887,6 @@ def cleanup_stream_session(session: Session, operation: str) -> None:
             )
 
 
-async def stream_prepared_run(
-    params: StreamPreparedRunParams,
-) -> AsyncGenerator[AssistantEvent, None]:
-    """Compatibility seam for callers that own an existing prepared Session.
-
-    Callers must leave that Session idle until this iterator closes. HTTP
-    streams use stream_run, which creates and closes its Session in the worker.
-    """
-    async with StreamWorker() as worker:
-        try:
-            persistence = await worker.call(
-                StreamPersistence,
-                params.session,
-                params.workspace,
-                params.user_id,
-                params.conversation,
-                params.run,
-            )
-            async with aclosing(
-                _stream_persisted(worker, persistence, params.history),
-            ) as events:
-                async for event in events:
-                    yield event
-        finally:
-            await worker.call(
-                cleanup_stream_session,
-                params.session,
-                "rollback",
-            )
-
 
 async def stream_run(
     params: StreamRunParams,
@@ -1022,6 +975,10 @@ def respond_permission(
     if run is None:
         message = "Assistant run not found"
         raise ResourceNotFoundError(message)
+    run = repository.lock_run(session, params.run_id)
+    if run is None:
+        message = "Assistant run not found"
+        raise ResourceNotFoundError(message)
     if run.engine == "expert":
         assert_can_write(session, int(params.workspace.id), int(params.user_id))
     if run.engine != "expert" or run.status != "waiting_permission":
@@ -1030,26 +987,26 @@ def respond_permission(
     if run.pending_permission_id != params.permission_id:
         message = "Permission request does not belong to this run"
         raise PermissionDeniedError(message)
-    # The provider receives only the one-shot response.  ``remember`` is
-    # accepted for API compatibility but deliberately not persisted as a
-    # permanent allow rule in the first version.
-    # Persist first so a different API worker can wake the engine.  The local
-    # future below is only the low-latency path for same-worker requests.
-    if not repository.set_permission_response(
+    if params.response == "once":
+        response: Literal["once", "reject"] = "once"
+    elif params.response == "reject":
+        response = "reject"
+    else:
+        message = "Permission request has already been answered"
+        raise ConflictError(message)
+    if not repository.answer_permission(
         session,
-        params.run_id,
+        run,
         params.permission_id,
-        params.response,
+        response,
     ):
         message = "Permission request has already been answered"
         raise ConflictError(message)
     session.commit()
-    # A worker-thread notification can wake the stream immediately. Never
-    # authorize provider execution before the durable transaction succeeds.
     run_registry.resolve_permission(
         params.run_id,
         params.permission_id,
-        params.response,
+        response,
     )
     return run
 

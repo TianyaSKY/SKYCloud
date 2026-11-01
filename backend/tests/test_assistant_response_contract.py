@@ -8,13 +8,12 @@ from app.exceptions import register_exception_handlers
 from app.infra.extensions import get_db, get_session_factory
 from sqlalchemy.orm import sessionmaker
 from app.features.assistant import router as assistant
-from app.features.chat import router as chat
-from app.models.assistant import AssistantRun
+from app.models.assistant import AssistantMessage, AssistantPermission, AssistantRun
 
 @pytest.fixture
 def contract(session,test_user,test_workspace):
     app=FastAPI();register_exception_handlers(app)
-    app.include_router(assistant.router);app.include_router(chat.router)
+    app.include_router(assistant.router)
     app.dependency_overrides[get_db]=lambda:session
     app.dependency_overrides[get_session_factory]=lambda:sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
     app.dependency_overrides[get_current_user]=lambda:test_user
@@ -66,17 +65,40 @@ def test_permission_once_response(contract):
     cid=create(client,'expert')['id']
     _,run,_=assistant.service.prepare_run(db,assistant.service.PrepareRunParams(
         workspace=workspace,user_id=user.id,conversation_id=cid,query='Operate'))
-    run.status='waiting_permission';run.pending_permission_id='p1'
-    run.metadata_dict={'pending_permission':{'permission_id':'p1','title':'Read file'}}
+    assistant.repository.register_permission(
+        db,
+        run,
+        {"permission_id": "p1", "title": "Read file"},
+    )
     db.commit()
     waiting=data(client.get(f'/assistant/runs/{run.id}'))
     assert waiting['pending_permission']=={'permission_id':'p1','title':'Read file','tool':None}
     assert data(client.get('/assistant/runs/active'))['id']==run.id
     replied=data(client.post(f'/assistant/runs/{run.id}/permissions/p1',json={'response':'once'}))
     assert replied['pending_permission'] is None
+    assert replied['pending_permission_id']=='p1'
     db.expire_all()
-    assert db.get(AssistantRun,run.id).permission_response=='once'
+    permission=db.get(AssistantPermission,(run.id,'p1'))
+    assert permission.state=='answered' and permission.response=='once'
     assert client.post(f'/assistant/runs/{run.id}/permissions/p1',json={'response':'once'}).status_code==409
+
+@pytest.mark.parametrize("mode", ["fast", "expert"])
+def test_active_run_reads_do_not_recover_stale_runs(contract, mode):
+    from datetime import timedelta
+    from app.infra.datetime_utils import beijing_now
+    client,db,user,workspace=contract
+    cid=create(client,mode)['id']
+    _,run,_=assistant.service.prepare_run(db,assistant.service.PrepareRunParams(
+        workspace=workspace,user_id=user.id,conversation_id=cid,query='Question'))
+    run.started_at=beijing_now()-timedelta(hours=1)
+    run.metadata_dict={}
+    db.commit()
+    path=f'/assistant/conversations/{cid}/active-run' if mode=='fast' else '/assistant/runs/active'
+    assert data(client.get(path))['id']==run.id
+    db.refresh(run)
+    assert run.status=='running' and run.error_code is None
+    assert db.get(AssistantMessage,run.assistant_message_id).status=='streaming'
+
 
 def test_private_field_filter_and_invalid_output(contract,monkeypatch):
     client,db,user,workspace=contract
@@ -108,7 +130,7 @@ def test_openapi_json_stream_and_no_body(contract):
         for op in ops.values():
             responses=op['responses']
             if '204' in responses:assert 'content' not in responses['204']
-            elif path.endswith('/stream') or path=='/chat':assert set(responses['200']['content'])=={'text/event-stream'}
+            elif path.endswith('/stream'):assert set(responses['200']['content'])=={'text/event-stream'}
             else:
                 code='201' if '201' in responses else '200'
                 ref=responses[code]['content']['application/json']['schema']['$ref']
@@ -129,7 +151,7 @@ def test_main_api_openapi_requires_typed_json_success_for_every_public_route():
                     continue
                 content=response.get('content',{})
                 if 'application/json' not in content:
-                    assert path in {'/api/chat','/api/share/{token}','/api/files/{id}/download'} or path.endswith('/messages/stream'),path
+                    assert path in {'/api/share/{token}','/api/files/{id}/download'} or path.endswith('/messages/stream'),path
                     continue
                 ref=content['application/json']['schema']['$ref']
                 model=schema['components']['schemas'][ref.split('/')[-1]]
@@ -137,3 +159,4 @@ def test_main_api_openapi_requires_typed_json_success_for_every_public_route():
                 assert 'data' in model['required'],path
                 audited+=1
     assert audited>=60
+

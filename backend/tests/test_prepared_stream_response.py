@@ -26,7 +26,7 @@ def test_only_exact_unclaimed_run_cancelled(session, test_user, test_workspace, 
         repository.touch_run_lease(session, run.id, 1)
         session.commit()
     elif state == 'completed':
-        repository.update_run_status(run, 'completed')
+        repository.update_run_status(session, run, "completed")
         session.get(AssistantMessage, run.assistant_message_id).status = 'completed'
         session.commit()
     elif state.startswith('foreign-'):
@@ -270,7 +270,8 @@ async def test_response_teardown_cancellation_preserves_delivery_and_compensates
         assert scope==(1,2,3,4)
         calls.append('compensate')
     monkeypatch.setattr(stream_response,'cleanup_unclaimed_run',compensate)
-    monkeypatch.setattr(stream_response.logger,'error',lambda message,*args:logs.append(message.format(*args)))
+    from runtime_common import http_stream
+    monkeypatch.setattr(http_stream.logger,'error',lambda message,*args:logs.append(message % args))
     response=stream_response.PreparedStreamResponse(Body(),session_factory=None,run_scope=(1,2,3,4))
     async def receive():await asyncio.Event().wait()
     async def send(message):

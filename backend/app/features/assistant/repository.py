@@ -1,7 +1,9 @@
 """Database access for Assistant conversations, messages, and runs."""
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -14,11 +16,14 @@ from app.infra.datetime_utils import utc_now
 from app.models.assistant import (
     AssistantConversation,
     AssistantMessage,
+    AssistantPermission,
     AssistantRun,
 )
 from app.models.workspace import WorkspaceMember
 
 if TYPE_CHECKING:
+    from runtime_common.json_types import JsonValue
+
     from app.models.opencode_runtime import OpenCodeRuntime
 
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
@@ -96,7 +101,7 @@ def cancel_unclaimed_run(
     if message is not None:
         message.status = "cancelled"
     run.cancel_requested = True
-    update_run_status(run, "cancelled")
+    update_run_status(session, run, "cancelled")
     return True
 
 
@@ -297,32 +302,165 @@ def touch_run_lease(session: Session, run_id: int, now: float) -> bool:
     return True
 
 
-def set_pending_permission(run: AssistantRun, payload: dict[str, Any]) -> None:
-    """Persist the bounded permission prompt and enter the waiting state."""
+def register_permission(
+    session: Session,
+    run: AssistantRun,
+    payload: Mapping[str, object],
+) -> AssistantPermission:
+    """Persist one provider request without replacing an existing decision."""
+    locked = lock_run(session, run.id)
+    if locked is None:
+        message = "Assistant run is no longer available"
+        raise ConflictError(message)
+
     permission_id = payload.get("permission_id")
+    existing = (
+        permission_for_run(session, locked.id, permission_id)
+        if isinstance(permission_id, str)
+        else None
+    )
+    if existing is not None:
+        session.expire(locked, ["current_permission"])
+        return existing
+    details_payload = dict(payload)
+    details_payload["title"] = (
+        details_payload.get("title") or "专家请求执行高风险操作"
+    )
     details = permission_details(
-        {**payload, "title": payload.get("title") or "专家请求执行高风险操作"},
-        permission_id,
+        cast("JsonValue", details_payload),
+        permission_id if isinstance(permission_id, str) else None,
     )
     if details is None:
         message = "Invalid permission display contract"
         raise ValueError(message)
-    run.pending_permission_id = permission_id
-    run.permission_response = None
-    run.metadata_dict = {**run.metadata_dict, "pending_permission": details}
-    update_run_status(run, "waiting_permission")
+    if locked.status in TERMINAL_RUN_STATUSES or locked.cancel_requested:
+        message = "Assistant run is no longer active"
+        raise ConflictError(message)
+    open_permission = (
+        session.query(AssistantPermission)
+        .filter(
+            AssistantPermission.run_id == locked.id,
+            AssistantPermission.state.in_(("pending", "answered")),
+        )
+        .populate_existing()
+        .first()
+    )
+    if open_permission is not None:
+        message = "Another permission request is still open"
+        raise ConflictError(message)
+
+    permission = AssistantPermission(
+        run_id=locked.id,
+        permission_id=details["permission_id"],
+        state="pending",
+        details_json=json.dumps(
+            details,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    )
+    session.add(permission)
+    update_run_status(session, locked, "waiting_permission")
+    session.flush()
+    session.expire(locked, ["current_permission"])
+    return permission
 
 
-def clear_pending_permission(run: AssistantRun) -> None:
-    """Remove any pending prompt from the run."""
-    run.pending_permission_id = None
-    run.permission_response = None
-    metadata = run.metadata_dict
-    metadata.pop("pending_permission", None)
-    run.metadata_dict = metadata
+def permission_for_run(
+    session: Session,
+    run_id: int,
+    permission_id: str,
+) -> AssistantPermission | None:
+    """Read and refresh one permission record owned by a run."""
+    return (
+        session.query(AssistantPermission)
+        .filter(
+            AssistantPermission.run_id == run_id,
+            AssistantPermission.permission_id == permission_id,
+        )
+        .populate_existing()
+        .first()
+    )
+
+
+def answer_permission(
+    session: Session,
+    run: AssistantRun,
+    permission_id: str,
+    response: Literal["once", "reject"],
+) -> bool:
+    """Claim the pending permission once while its run is still waiting."""
+    locked = lock_run(session, run.id)
+    if (
+        locked is None
+        or locked.status != "waiting_permission"
+        or locked.cancel_requested
+        or locked.status in TERMINAL_RUN_STATUSES
+        or response not in {"once", "reject"}
+    ):
+        return False
+    permission = permission_for_run(session, locked.id, permission_id)
+    if permission is None or permission.state != "pending":
+        return False
+    updated = (
+        session.query(AssistantPermission)
+        .filter(
+            AssistantPermission.run_id == locked.id,
+            AssistantPermission.permission_id == permission_id,
+            AssistantPermission.state == "pending",
+        )
+        .update(
+            {
+                "state": "answered",
+                "response": response,
+                "answered_at": utc_now(),
+            },
+            synchronize_session="fetch",
+        )
+    )
+    if not updated:
+        return False
+    update_run_status(session, locked, "running")
+    session.flush()
+    session.expire(locked, ["current_permission"])
+    return True
+
+
+def mark_permission_dispatched(
+    session: Session,
+    run: AssistantRun,
+    permission: AssistantPermission,
+) -> None:
+    """Record provider acknowledgment without deleting the decision."""
+    if (
+        permission.run_id != run.id
+        or permission.state != "answered"
+        or permission.response not in {"once", "reject"}
+        or run.status in TERMINAL_RUN_STATUSES
+        or run.cancel_requested
+    ):
+        message = "Permission response is no longer dispatchable"
+        raise ConflictError(message)
+    permission.state = "dispatched"
+    permission.dispatched_at = utc_now()
+    update_run_status(session, run, "running")
+    session.flush()
+    session.expire(run, ["current_permission"])
+
+
+def cancel_open_permissions(session: Session, run_id: int) -> None:
+    """Close pending or answered decisions without erasing their response."""
+    session.query(AssistantPermission).filter(
+        AssistantPermission.run_id == run_id,
+        AssistantPermission.state.in_(("pending", "answered")),
+    ).update(
+        {"state": "cancelled"},
+        synchronize_session="fetch",
+    )
 
 
 def update_run_status(
+    session: Session,
     run: AssistantRun,
     status: str,
     *,
@@ -334,12 +472,14 @@ def update_run_status(
     if status == "running" and run.started_at is None:
         run.started_at = utc_now()
     if status in TERMINAL_RUN_STATUSES:
-        clear_pending_permission(run)
+        cancel_open_permissions(session, run.id)
         run.completed_at = utc_now()
     if error_code is not None:
         run.error_code = error_code
     if error_message is not None:
         run.error_message = error_message[:4000]
+    session.expire(run, ["current_permission"])
+
 
 
 def active_run_for_conversation(
@@ -413,47 +553,6 @@ def is_run_cancel_requested(session: Session, run_id: int) -> bool:
     return bool(value)
 
 
-def get_permission_response(
-    session: Session,
-    run_id: int,
-    permission_id: str,
-) -> str | None:
-    """Read a one-shot response written by any API worker."""
-    row = (
-        session.query(
-            AssistantRun.pending_permission_id,
-            AssistantRun.permission_response,
-        )
-        .filter(AssistantRun.id == run_id)
-        .first()
-    )
-    if row is None or row[0] != permission_id:
-        return None
-    return str(row[1]) if row[1] else None
-
-
-def set_permission_response(
-    session: Session,
-    run_id: int,
-    permission_id: str,
-    response: str,
-) -> bool:
-    """Atomically claim a pending permission response exactly once."""
-    updated = (
-        session.query(AssistantRun)
-        .filter(
-            AssistantRun.id == run_id,
-            AssistantRun.status == "waiting_permission",
-            AssistantRun.pending_permission_id == permission_id,
-            AssistantRun.permission_response.is_(None),
-        )
-        .update(
-            {"permission_response": response, "status": "running"},
-            synchronize_session="fetch",
-        )
-    )
-    return bool(updated)
-
 
 def get_message_for_conversation(
     session: Session,
@@ -520,6 +619,11 @@ def lock_permission_dispatch(
         params.workspace_id,
         params.user_id,
     )
+    permission = (
+        permission_for_run(session, run.id, params.permission_id)
+        if run is not None
+        else None
+    )
     if (
         runtime.status != "running"
         or conversation is None
@@ -531,8 +635,9 @@ def lock_permission_dispatch(
         or conversation.opencode_runtime_id != params.runtime_id
         or conversation.opencode_session_id != params.provider_session_id
         or run.opencode_session_id != params.provider_session_id
-        or run.pending_permission_id != params.permission_id
-        or run.permission_response != params.response
+        or permission is None
+        or permission.state != "answered"
+        or permission.response != params.response
         or params.response not in {"once", "reject"}
     ):
         message = "Permission dispatch is no longer current"

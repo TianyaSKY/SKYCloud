@@ -45,11 +45,16 @@ async def test_cancelled_future_ignores_queued_worker_notification():
 
 @pytest.mark.parametrize('commit_fails', [False, True])
 def test_permission_notification_only_after_successful_commit(monkeypatch, commit_fails):
-    run = SimpleNamespace(engine='expert', status='waiting_permission', pending_permission_id='p1')
-    monkeypatch.setattr(service.repository, 'get_owned_run', lambda *args: run)
-    monkeypatch.setattr(service, 'assert_can_write', lambda *args: None)
-    monkeypatch.setattr(service, 'assert_member_locked', lambda *args: None)
-    monkeypatch.setattr(service.repository, 'set_permission_response', lambda *args: True)
+    run = SimpleNamespace(
+        engine="expert",
+        status="waiting_permission",
+        pending_permission_id="p1",
+    )
+    monkeypatch.setattr(service.repository, "get_owned_run", lambda *args: run)
+    monkeypatch.setattr(service.repository, "lock_run", lambda *args: run)
+    monkeypatch.setattr(service, "assert_can_write", lambda *args: None)
+    monkeypatch.setattr(service, "assert_member_locked", lambda *args: None)
+    monkeypatch.setattr(service.repository, "answer_permission", lambda *args: True)
     committed = []
     def commit():
         if commit_fails:

@@ -56,7 +56,7 @@ def test_assistant_repository_persists_mode_specific_records(session, test_user,
         ),
     )
     run = repository.create_run(session, conversation, user_message, assistant_message)
-    repository.update_run_status(run, "running")
+    repository.update_run_status(session, run, "running")
     session.commit()
 
     stored = repository.get_conversation(
@@ -163,7 +163,7 @@ def test_conversation_management_validates_state_and_blocks_active_run(
             ),
         )
 
-    repository.update_run_status(run, "cancelled")
+    repository.update_run_status(session, run, "cancelled")
     session.commit()
     service.update_conversation(
         session,
@@ -321,14 +321,82 @@ def test_permission_response_is_durable_and_single_use(session, test_user, test_
         ),
     )
     run = repository.create_run(session, conversation, user_message, assistant_message)
-    repository.update_run_status(run, "waiting_permission")
-    run.pending_permission_id = "perm-1"
+    repository.register_permission(
+        session,
+        run,
+        {"permission_id": "perm-1", "title": "Run check"},
+    )
     session.commit()
 
-    assert repository.set_permission_response(session, run.id, "perm-1", "once")
+    assert repository.answer_permission(session, run, "perm-1", "once")
     session.commit()
-    assert repository.get_permission_response(session, run.id, "perm-1") == "once"
-    assert not repository.set_permission_response(session, run.id, "perm-1", "reject")
+    permission = repository.permission_for_run(session, run.id, "perm-1")
+    assert permission is not None
+    assert permission.state == "answered" and permission.response == "once"
+    assert not repository.answer_permission(session, run, "perm-1", "reject")
+
+
+def test_permission_registration_is_idempotent_and_allows_one_open_request(
+    session,
+    test_user,
+    test_workspace,
+):
+    conversation = repository.create_conversation(
+        session,
+        repository.CreateConversationParams(
+            workspace_id=test_workspace.id,
+            user_id=test_user.id,
+            mode="expert",
+            title="permission state",
+        ),
+    )
+    user = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(role="user", content="run"),
+    )
+    assistant = repository.create_message(
+        session,
+        conversation,
+        repository.CreateMessageParams(role="assistant", status="pending"),
+    )
+    run = repository.create_run(session, conversation, user, assistant)
+    first = repository.register_permission(
+        session,
+        run,
+        {"permission_id": "p1", "title": "First request"},
+    )
+    replay = repository.register_permission(
+        session,
+        run,
+        {"permission_id": "p1", "title": "replacement details"},
+    )
+    assert replay.details == first.details
+    with pytest.raises(ConflictError, match="Another permission request"):
+        repository.register_permission(
+            session,
+            run,
+            {"permission_id": "p2", "title": "Second request"},
+        )
+
+    assert repository.answer_permission(session, run, "p1", "once")
+    with pytest.raises(ConflictError, match="Another permission request"):
+        repository.register_permission(
+            session,
+            run,
+            {"permission_id": "p2", "title": "Second request"},
+        )
+    first = repository.permission_for_run(session, run.id, "p1")
+    assert first is not None
+    repository.mark_permission_dispatched(session, run, first)
+    next_permission = repository.register_permission(
+        session,
+        run,
+        {"permission_id": "p2", "title": "Second request"},
+    )
+    assert first.state == "dispatched" and first.response == "once"
+    assert next_permission.state == "pending"
+    assert run.pending_permission_id == "p2"
 
 
 @pytest.mark.parametrize("engine_cancelled", [False, True])
@@ -353,13 +421,17 @@ def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_wo
             request_id="req-test-1",
         ),
     )
+    workspace_id = int(test_workspace.id)
+    user_id = int(test_user.id)
+    conversation_id = int(conversation.id)
+    run_id = int(run.id)
 
     class FakeFastEngine:
         async def stream(self, request):
             assert isinstance(request, EngineRequest)
-            assert request.run_id == run.id
-            assert request.user_id == test_user.id
-            assert request.workspace_id == test_workspace.id
+            assert request.run_id == run_id
+            assert request.user_id == user_id
+            assert request.workspace_id == workspace_id
             assert request.query == "检查资料"
             assert request.history == history
             assert request.controller is not None
@@ -368,19 +440,18 @@ def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_wo
                 yield AssistantEvent("cancelled", {"status": "cancelled"})
 
     async def collect():
-        return [
-            event
-            async for event in service.stream_prepared_run(
-                service.StreamPreparedRunParams(
-                    session=session,
-                    workspace=test_workspace,
-                    user_id=test_user.id,
-                    conversation=conversation,
-                    run=run,
-                    history=history,
-                )
-            )
-        ]
+        params = service.StreamRunParams(
+            session_factory=sessionmaker(
+                bind=session.get_bind(),
+                join_transaction_mode="create_savepoint",
+            ),
+            workspace_id=workspace_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            history=history,
+        )
+        return [event async for event in service.stream_run(params)]
 
     with patch(
         "app.features.assistant.engines.fast_engine.FastEngine",
@@ -474,7 +545,7 @@ def test_prepare_run_recovers_abandoned_expert_run_from_another_conversation(
         old_user_message,
         old_assistant_message,
     )
-    repository.update_run_status(abandoned_run, "running")
+    repository.update_run_status(session, abandoned_run, "running")
     abandoned_run.started_at = beijing_now() - timedelta(minutes=5)
 
     new_conversation = repository.create_conversation(
@@ -541,29 +612,6 @@ def test_viewer_unfiltered_list_hides_expert_metadata(session, test_user, test_w
     assert [conversation.mode for conversation in visible] == ["fast"]
 
 
-def test_fast_engine_adapts_legacy_sse_to_internal_events():
-    async def fake_events(*_args, **_kwargs):
-        yield 'data: {"type":"keywords","content":"退款"}' + chr(10) + chr(10)
-        yield 'data: {"type":"token","content":"答案"}' + chr(10) + chr(10)
-
-    async def collect():
-        return [
-            event
-            async for event in FastEngine().stream(
-                EngineRequest(
-                    run_id=7,
-                    user_id=1,
-                    workspace_id=2,
-                    query="退款",
-                    history=[],
-                )
-            )
-        ]
-
-    with patch("app.features.assistant.engines.fast_engine.generate_chat_events", fake_events):
-        events = asyncio.run(collect())
-    assert [event.type for event in events] == ["keywords", "token"]
-    assert events[1].payload["content"] == "答案"
 
 
 def test_opencode_event_mapping_filters_other_sessions():
@@ -783,84 +831,130 @@ def test_handoff_creates_separate_expert_conversation(session, test_user, test_w
     assert "import.md" in system_message.content
 
 
-def test_pending_permission_is_durable_bounded_and_response_gated(session, test_user, test_workspace):
+def test_pending_permission_is_durable_bounded_and_response_gated(
+    session,
+    test_user,
+    test_workspace,
+):
     from sqlalchemy.orm import Session
+
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
             workspace_id=test_workspace.id,
             user_id=test_user.id,
-            mode='expert',
-            title='task',
+            mode="expert",
+            title="task",
         ),
     )
     user = repository.create_message(
         session,
         conversation,
-        repository.CreateMessageParams(role='user', content='patch'),
+        repository.CreateMessageParams(role="user", content="patch"),
     )
     assistant = repository.create_message(
         session,
         conversation,
         repository.CreateMessageParams(
-            role='assistant',
-            content='',
-            status='pending',
+            role="assistant",
+            content="",
+            status="pending",
         ),
     )
     run = repository.create_run(session, conversation, user, assistant)
-    repository.set_pending_permission(run, {'permission_id': 'p1', 'title': 'Patch a.txt', 'tool': 'apply_patch a.txt', 'provider_secret': 'never-persist'})
+    repository.register_permission(
+        session,
+        run,
+        {
+            "permission_id": "p1",
+            "title": "Patch a.txt",
+            "tool": "apply_patch a.txt",
+            "provider_secret": "never-persist",
+        },
+    )
     session.commit()
     with Session(bind=session.get_bind()) as restored:
         recovered = restored.get(type(run), run.id)
-        assert recovered.to_dict()['pending_permission'] == {'permission_id': 'p1', 'title': 'Patch a.txt', 'tool': 'apply_patch a.txt'}
-        assert 'provider_secret' not in recovered.metadata_dict['pending_permission']
-        assert repository.set_permission_response(restored, run.id, 'p1', 'once')
+        assert recovered.to_dict()["pending_permission"] == {
+            "permission_id": "p1",
+            "title": "Patch a.txt",
+            "tool": "apply_patch a.txt",
+        }
+        stored = repository.permission_for_run(restored, run.id, "p1")
+        assert stored is not None
+        assert stored.details == recovered.to_dict()["pending_permission"]
+        assert "provider_secret" not in stored.details_json
+        assert repository.answer_permission(restored, recovered, "p1", "once")
         restored.commit()
-        restored.refresh(recovered)
-        assert recovered.to_dict()['pending_permission'] is None
-        assert not repository.set_permission_response(restored, run.id, 'p1', 'reject')
+        assert recovered.to_dict()["pending_permission"] is None
+        assert not repository.answer_permission(
+            restored,
+            recovered,
+            "p1",
+            "reject",
+        )
+        replay = repository.register_permission(
+            restored,
+            recovered,
+            {"permission_id": "p1", "title": "replacement details"},
+        )
+        assert replay.state == "answered"
+        assert replay.response == "once"
+        assert replay.details == stored.details
 
 
-@pytest.mark.parametrize('state', ['running', 'completed', 'failed', 'cancelled', 'cancel_requested', 'mismatched', 'legacy'])
-def test_pending_permission_is_not_recovered_outside_matching_wait(session, test_user, test_workspace, state):
+@pytest.mark.parametrize(
+    "state",
+    ["running", "completed", "failed", "cancelled", "cancel_requested", "answered"],
+)
+def test_pending_permission_is_not_recovered_outside_matching_wait(
+    session,
+    test_user,
+    test_workspace,
+    state,
+):
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
             workspace_id=test_workspace.id,
             user_id=test_user.id,
-            mode='expert',
-            title='task',
+            mode="expert",
+            title="task",
         ),
     )
     user = repository.create_message(
         session,
         conversation,
-        repository.CreateMessageParams(role='user', content='patch'),
+        repository.CreateMessageParams(role="user", content="patch"),
     )
     assistant = repository.create_message(
         session,
         conversation,
         repository.CreateMessageParams(
-            role='assistant',
-            content='',
-            status='pending',
+            role="assistant",
+            content="",
+            status="pending",
         ),
     )
     run = repository.create_run(session, conversation, user, assistant)
-    repository.set_pending_permission(run, {'permission_id': 'p1', 'title': 'Patch a.txt'})
-    if state == 'cancel_requested':
+    repository.register_permission(
+        session,
+        run,
+        {"permission_id": "p1", "title": "Patch a.txt"},
+    )
+    if state == "cancel_requested":
         run.cancel_requested = True
-    elif state == 'mismatched':
-        run.pending_permission_id = 'p2'
-    elif state == 'legacy':
-        run.metadata_dict = {}
+    elif state == "answered":
+        assert repository.answer_permission(session, run, "p1", "once")
     else:
-        repository.update_run_status(run, state)
-    assert run.to_dict()['pending_permission'] is None
-    if state in {'completed', 'failed', 'cancelled'}:
+        repository.update_run_status(session, run, state)
+    assert run.to_dict()["pending_permission"] is None
+    if state in {"completed", "failed", "cancelled"}:
         assert run.pending_permission_id is None
-        assert 'pending_permission' not in run.metadata_dict
+        permission = repository.permission_for_run(session, run.id, "p1")
+        assert permission is not None and permission.state == "cancelled"
+    elif state == "answered":
+        assert run.pending_permission_id == "p1"
 
 
 def test_permission_wait_survives_heartbeat_and_status_events(session, test_user, test_workspace):
@@ -883,6 +977,16 @@ def test_permission_wait_survives_heartbeat_and_status_events(session, test_user
             query='check',
         ),
     )
+    repository.register_permission(
+        session,
+        run,
+        {"permission_id": "p1", "title": "Patch a.txt"},
+    )
+    session.commit()
+    workspace_id = int(test_workspace.id)
+    user_id = int(test_user.id)
+    conversation_id = int(conversation.id)
+    run_id = int(run.id)
 
     class WaitingEngine:
         async def stream(self, request):
@@ -891,18 +995,32 @@ def test_permission_wait_survives_heartbeat_and_status_events(session, test_user
             yield AssistantEvent('status', {'content': 'still waiting'})
 
     async def collect():
-        params = service.StreamPreparedRunParams(
-            session=session,
-            workspace=test_workspace,
-            user_id=test_user.id,
-            conversation=conversation,
-            run=run,
+        params = service.StreamRunParams(
+            session_factory=sessionmaker(
+                bind=session.get_bind(),
+                join_transaction_mode="create_savepoint",
+            ),
+            workspace_id=workspace_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
             history=history,
         )
-        async for event in service.stream_prepared_run(params):
+        events = []
+        async for event in service.stream_run(params):
+            events.append(event)
             if event.type in {'permission_required', 'heartbeat', 'status'}:
+                session.refresh(run)
                 assert run.status == 'waiting_permission'
                 assert run.to_dict()['pending_permission']['permission_id'] == 'p1'
+        assert [event.type for event in events] == [
+            'run_started',
+            'permission_required',
+            'heartbeat',
+            'status',
+            'done',
+        ]
+        session.refresh(run)
         assert run.status == 'completed'
         assert run.to_dict()['pending_permission'] is None
 
@@ -939,7 +1057,7 @@ def test_invalid_heartbeat_does_not_pin_an_abandoned_run(session, test_user, tes
         ),
     )
     run = repository.create_run(session, conversation, user, assistant)
-    repository.update_run_status(run, 'running')
+    repository.update_run_status(session, run, "running")
     run.started_at = beijing_now() - timedelta(minutes=5)
     run.metadata_dict = {'worker_heartbeat_unix': heartbeat}
     session.commit()
@@ -967,6 +1085,10 @@ def test_cancel_return_closes_engine_producer_before_stream_returns(session, tes
             query='check',
         ),
     )
+    workspace_id = int(test_workspace.id)
+    user_id = int(test_user.id)
+    conversation_id = int(conversation.id)
+    run_id = int(run.id)
     closed = asyncio.Event()
 
     class WaitingEngine:
@@ -979,20 +1101,21 @@ def test_cancel_return_closes_engine_producer_before_stream_returns(session, tes
                 closed.set()
 
     async def collect():
-        params = service.StreamPreparedRunParams(
-            session=session,
-            workspace=test_workspace,
-            user_id=test_user.id,
-            conversation=conversation,
-            run=run,
+        params = service.StreamRunParams(
+            session_factory=sessionmaker(
+                bind=session.get_bind(),
+                join_transaction_mode="create_savepoint",
+            ),
+            workspace_id=workspace_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
             history=history,
         )
-        events = [
-            event async for event in service.stream_prepared_run(params)
-        ]
+        events = [event async for event in service.stream_run(params)]
         assert events[-1].type == 'cancelled'
         assert closed.is_set()
-        assert service.run_registry.get(run.id) is None
+        assert service.run_registry.get(run_id) is None
 
     with patch(
         'app.features.assistant.engines.fast_engine.FastEngine',

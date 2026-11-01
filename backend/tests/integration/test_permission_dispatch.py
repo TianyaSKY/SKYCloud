@@ -10,9 +10,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.exceptions import PermissionDeniedError, ConflictError
 from app.features.assistant.engines import expert_engine as module
-from app.models.assistant import AssistantRun, AssistantConversation
-from app.models.workspace import Workspace, WorkspaceMember
+from app.features.assistant import repository
+from app.models.assistant import (
+    AssistantConversation,
+    AssistantPermission,
+    AssistantRun,
+)
 from app.models.opencode_runtime import OpenCodeRuntime
+from app.models.workspace import Workspace, WorkspaceMember
 from tests.integration.test_migrations import postgres
 from tests.integration.test_assistant_lease import create_run
 
@@ -29,9 +34,9 @@ def prepared(postgres,monkeypatch,entered,release,calls):
         runtime=OpenCodeRuntime(workspace_id=ws,user_id=user,container_id='a'*64,status='running')
         session.add(runtime);session.flush()
         run.opencode_session_id='provider-session'
-        run.permission_response='once'
         conversation.opencode_runtime_id=runtime.id
         conversation.opencode_session_id='provider-session'
+        assert repository.answer_permission(session, run, 'p1', 'once')
         session.commit()
         engine=module.ExpertEngine(session=session,conversation=conversation,run=run)
         connection=module.RuntimeConnection(runtime.id,'http://test-provider','a'*64)
@@ -74,6 +79,12 @@ def test_dispatch_lock_orders_revocation_after_ack(postgres,monkeypatch,change):
     with Session(postgres) as session:
         run=session.get(AssistantRun,run_id)
         assert run.pending_permission_id is None and run.status=='running'
+        permission = session.get(AssistantPermission, (run_id, "p1"))
+        assert permission is not None
+        assert permission.state == "dispatched"
+        assert permission.response == "once"
+        assert permission.answered_at is not None
+        assert permission.dispatched_at is not None
         assert session.query(WorkspaceMember.role).scalar()==('viewer' if change=='demote' else None)
 
 
@@ -82,16 +93,24 @@ def test_invalidated_dispatch_never_calls_provider(postgres,monkeypatch,change):
     entered,release=threading.Event(),threading.Event();release.set()
     calls=[]
     engine,args,run_id=prepared(postgres,monkeypatch,entered,release,calls)
-    statements={'demote':"UPDATE workspace_members SET role='viewer'",'remove':'DELETE FROM workspace_members',
+    statements={
+        'demote':"UPDATE workspace_members SET role='viewer'",
+        'remove':'DELETE FROM workspace_members',
         'runtime':"UPDATE opencode_runtimes SET container_id=repeat('b',64)",
         'cancel':'UPDATE assistant_runs SET cancel_requested=true',
-        'response':"UPDATE assistant_runs SET permission_response='reject'"}
-    with postgres.begin() as db: db.execute(text(statements[change]))
+        'response':"UPDATE assistant_permissions SET response='reject' WHERE run_id=:run_id AND permission_id='p1'",
+    }
+    with postgres.begin() as db:
+        db.execute(text(statements[change]), {'run_id': run_id})
     with ThreadPoolExecutor(max_workers=1) as executor:
         with pytest.raises((PermissionDeniedError,ConflictError)):
             executor.submit(engine._dispatch_permission,*args).result(5)
     assert calls==[]
-    with Session(postgres) as session: assert session.get(AssistantRun,run_id).pending_permission_id=='p1'
+    with Session(postgres) as session:
+        run = session.get(AssistantRun, run_id)
+        permission = session.get(AssistantPermission, (run_id, "p1"))
+        assert run.pending_permission_id == "p1"
+        assert permission is not None and permission.state == "answered"
 
 
 def test_successful_dispatch_cannot_replay_the_same_sql_response(postgres,monkeypatch):

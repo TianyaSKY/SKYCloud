@@ -34,7 +34,7 @@ from app.infra.extensions import engine
 from app.features.assistant import repository, service
 from app.features.chat import service as rag
 from app.features.chat.query_rewrite import RewriteKeywordDimensions
-from app.models.assistant import AssistantMessage
+from app.models.assistant import AssistantMessage, AssistantRun
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
 
@@ -111,17 +111,27 @@ async def main():
         )
         run = repository.create_run(db, conversation, request, answer)
         db.commit()
-        events = [event async for event in service.stream_prepared_run(
-            service.StreamPreparedRunParams(
-                session=db,
-                workspace=workspace,
-                user_id=user.id,
-                conversation=conversation,
-                run=run,
+        workspace_id = int(workspace.id)
+        user_id = int(user.id)
+        conversation_id = int(conversation.id)
+        run_id = int(run.id)
+        answer_id = int(answer.id)
+    events = [
+        event
+        async for event in service.stream_run(
+            service.StreamRunParams(
+                session_factory=lambda: Session(engine),
+                workspace_id=workspace_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                run_id=run_id,
                 history=[],
-            ))]
-        db.refresh(run)
-        db.refresh(answer)
+            )
+        )
+    ]
+    with Session(engine) as db:
+        run = db.get(AssistantRun, run_id)
+        answer = db.get(AssistantMessage, answer_id)
         if phase == 'empty':
             assert run.status == answer.status == 'completed'
             assert events[-1].type == 'done' and not any(event.type == 'error' for event in events)
@@ -137,7 +147,6 @@ async def main():
             assert closed == ['answer']
         if phase == 'retrieval':
             assert closed == [], 'Answer model was called despite total retrieval failure'
-
 asyncio.run(main())
 print('REAL_RAG_FAILURE_PERSISTED')
 '''
@@ -190,7 +199,11 @@ def create_run(engine):
             ),
         )
         run = repository.create_run(session, conversation, request, response)
-        repository.set_pending_permission(run, {'permission_id': 'p1', 'title': 'Patch file'})
+        repository.register_permission(
+            session,
+            run,
+            {"permission_id": "p1", "title": "Patch file"},
+        )
         run.started_at = beijing_now() - timedelta(minutes=5)
         session.commit()
         return run.id

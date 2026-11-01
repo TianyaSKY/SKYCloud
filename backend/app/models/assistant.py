@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from runtime_controller.json_types import JsonObject
+from runtime_common.json_types import JsonObject
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -22,8 +22,10 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    and_,
+    text,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 
 from app.features.assistant.permission_details import permission_details
 from app.infra.datetime_utils import local_isoformat, utc_now
@@ -366,14 +368,6 @@ class AssistantRun(Base):
         String(64),
         nullable=True,
     )
-    pending_permission_id: Mapped[str | None] = mapped_column(
-        String(128),
-        nullable=True,
-    )
-    permission_response: Mapped[str | None] = mapped_column(
-        String(16),
-        nullable=True,
-    )
     cancel_requested: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -408,6 +402,35 @@ class AssistantRun(Base):
         "AssistantMessage",
         foreign_keys=[assistant_message_id],
     )
+    current_permission: Mapped["AssistantPermission | None"] = relationship(
+        "AssistantPermission",
+        primaryjoin=lambda: and_(
+            AssistantRun.id == foreign(AssistantPermission.run_id),
+            AssistantPermission.state.in_(("pending", "answered")),
+        ),
+        uselist=False,
+        viewonly=True,
+        lazy="selectin",
+    )
+
+    @property
+    def pending_permission_id(self) -> str | None:
+        """Return the current unresolved permission identifier."""
+        permission = self.current_permission
+        return permission.permission_id if permission is not None else None
+
+    @property
+    def pending_permission(self) -> dict[str, str] | None:
+        """Return a prompt only while waiting on an unanswered request."""
+        permission = self.current_permission
+        if (
+            self.status != "waiting_permission"
+            or self.cancel_requested
+            or permission is None
+            or permission.state != "pending"
+        ):
+            return None
+        return permission.details
 
     __table_args__ = (
         CheckConstraint(
@@ -418,11 +441,6 @@ class AssistantRun(Base):
             "status IN ('pending', 'running', 'waiting_permission', "
             "'completed', 'failed', 'cancelled')",
             name="ck_assistant_run_status",
-        ),
-        CheckConstraint(
-            "permission_response IS NULL OR "
-            "permission_response IN ('once', 'reject')",
-            name="ck_assistant_run_permission_response",
         ),
         Index(
             "idx_assistant_runs_conversation",
@@ -443,19 +461,6 @@ class AssistantRun(Base):
 
     def to_dict(self) -> AssistantRunDict:
         """Return the public run representation."""
-        waiting = (
-            self.status == "waiting_permission"
-            and not self.cancel_requested
-            and self.permission_response is None
-        )
-        pending = (
-            permission_details(
-                self.metadata_dict.get("pending_permission"),
-                self.pending_permission_id,
-            )
-            if waiting
-            else None
-        )
         return {
             "id": self.id,
             "conversation_id": self.conversation_id,
@@ -466,7 +471,7 @@ class AssistantRun(Base):
             "request_id": self.request_id,
             "opencode_session_id": self.opencode_session_id,
             "pending_permission_id": self.pending_permission_id,
-            "pending_permission": pending,
+            "pending_permission": self.pending_permission,
             "cancel_requested": self.cancel_requested,
             "error_code": self.error_code,
             "error_message": self.error_message,
@@ -477,4 +482,70 @@ class AssistantRun(Base):
         }
 
 
-__all__ = ["AssistantConversation", "AssistantMessage", "AssistantRun"]
+class AssistantPermission(Base):
+    """Durable one-shot permission decision for one assistant run."""
+
+    __tablename__ = "assistant_permissions"
+
+    run_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("assistant_runs.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    permission_id: Mapped[str] = mapped_column(
+        String(128),
+        primary_key=True,
+    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    details_json: Mapped[str] = mapped_column(Text, nullable=False)
+    response: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        default=utc_now,
+        nullable=False,
+    )
+    answered_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+    dispatched_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('pending', 'answered', 'dispatched', 'cancelled')",
+            name="ck_assistant_permission_state",
+        ),
+        CheckConstraint(
+            "(state = 'pending' AND response IS NULL) OR "
+            "(state IN ('answered', 'dispatched') "
+            "AND response IS NOT NULL "
+            "AND response IN ('once', 'reject')) OR "
+            "(state = 'cancelled' AND "
+            "(response IS NULL OR response IN ('once', 'reject')))",
+        ),
+        Index(
+            "uq_assistant_permission_open_run",
+            "run_id",
+            unique=True,
+            postgresql_where=text("state IN ('pending', 'answered')"),
+            sqlite_where=text("state IN ('pending', 'answered')"),
+        ),
+    )
+
+    @property
+    def details(self) -> dict[str, str] | None:
+        """Return the stored, bounded UI permission details."""
+        return permission_details(
+            _load_json_object(self.details_json),
+            self.permission_id,
+        )
+
+__all__ = [
+    "AssistantConversation",
+    "AssistantMessage",
+    "AssistantPermission",
+    "AssistantRun",
+]

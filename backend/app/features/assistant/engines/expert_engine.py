@@ -7,7 +7,7 @@ from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from typing import NoReturn
 
-from runtime_controller.json_types import JsonObject, JsonValue
+from runtime_common.json_types import JsonObject, JsonValue
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
@@ -36,7 +36,11 @@ from app.features.assistant.run_control import RunController
 from app.features.workspace import docker_service, runtime_service
 from app.features.workspace.permissions import assert_can_write
 from app.infra.owned_work import run_owned
-from app.models.assistant import AssistantConversation, AssistantRun
+from app.models.assistant import (
+    AssistantConversation,
+    AssistantPermission,
+    AssistantRun,
+)
 from app.models.workspace import Workspace
 
 EXPERT_SYSTEM_PROMPT = (
@@ -284,6 +288,20 @@ class PermissionDispatch:
     permission_id: str
     response: str
 
+@dataclass(frozen=True, slots=True)
+class PermissionResponse:
+    """A permission response that is ready or awaiting durable confirmation."""
+
+    response: str | None
+    auto_rejected: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PermissionWait:
+    """Provider event and future for one UI-mediated permission decision."""
+
+    event: AssistantEvent
+    future: asyncio.Future[str]
 
 @dataclass(frozen=True, slots=True)
 class ProviderSession:
@@ -453,12 +471,14 @@ class ExpertEngine:
         workspace_id: int,
         user_id: int,
         payload: JsonObject,
-    ) -> None:
-        """Store a raised permission so a reviewer can answer it."""
+    ) -> AssistantPermission:
+        """Register one durable permission request for this run."""
         with self.runtime_session_factory() as session:
-            run = self._active_owned_run(session, workspace_id, user_id)
-            repository.set_pending_permission(run, payload)
+            run = self._owned_run(session, workspace_id, user_id)
+            permission = repository.register_permission(session, run, payload)
             session.commit()
+            session.refresh(permission)
+            return permission
 
     def _permission_state(
         self,
@@ -469,16 +489,53 @@ class ExpertEngine:
         """Return the durable response and cancellation state of the run."""
         with self.runtime_session_factory() as session:
             run = self._owned_run(session, workspace_id, user_id)
+            permission = repository.permission_for_run(
+                session,
+                self.run_id,
+                permission_id,
+            )
             cancelled = (
                 run.cancel_requested
                 or run.status in repository.TERMINAL_RUN_STATUSES
             )
             response = (
-                run.permission_response
-                if run.pending_permission_id == permission_id
+                permission.response
+                if permission is not None and permission.state == "answered"
                 else None
             )
             return response, bool(cancelled)
+
+    def _reject_pending_permission(
+        self,
+        workspace_id: int,
+        user_id: int,
+        permission_id: str,
+    ) -> str | None:
+        """Persist the UI-disabled rejection before provider dispatch."""
+        with self.runtime_session_factory() as session:
+            run = self._owned_run(session, workspace_id, user_id)
+            permission = repository.permission_for_run(
+                session,
+                self.run_id,
+                permission_id,
+            )
+            if permission is None:
+                message = "Permission request is no longer current"
+                raise ConflictError(message)
+            if permission.state == "answered":
+                return permission.response
+            if permission.state != "pending":
+                return None
+            if not repository.answer_permission(
+                session,
+                run,
+                permission_id,
+                "reject",
+            ):
+                message = "Permission request is no longer pending"
+                raise ConflictError(message)
+            session.commit()
+            return "reject"
 
     def _dispatch_permission(
         self,
@@ -507,6 +564,14 @@ class ExpertEngine:
                     response=dispatch.response,
                 ),
             )
+            permission = repository.permission_for_run(
+                session,
+                self.run_id,
+                dispatch.permission_id,
+            )
+            if permission is None:
+                message = "Permission response is no longer current"
+                raise ConflictError(message)
             password = server_password(
                 runtime.runtime_id,
                 user_id,
@@ -535,8 +600,7 @@ class ExpertEngine:
                         raise OpenCodeActionError(message) from None
 
             asyncio.run(respond())
-            repository.clear_pending_permission(run)
-            run.status = "running"
+            repository.mark_permission_dispatched(session, run, permission)
             session.commit()
 
     def _runtime_needs_start(self, workspace_id: int, user_id: int) -> bool:
@@ -882,43 +946,22 @@ class ExpertEngine:
             if progress.done_seen:
                 break
 
-    async def _resolve_permission(
+    async def _wait_for_permission_response(
         self,
         exchange: Exchange,
         progress: StreamProgress,
-        mapped: AssistantEvent,
-    ) -> AsyncGenerator[AssistantEvent, None]:
-        """Persist the raised permission and dispatch the user's answer."""
+        permission_id: str,
+        permission_future: asyncio.Future[str],
+    ) -> str | None:
+        """Wait until the permission decision is durably visible in SQL."""
         client = exchange.client
         session_id = exchange.provider.session_id
-        permission_id = str(mapped.payload.get("permission_id") or "")
-        if not _permission_ui_enabled():
-            await client.respond_permission(
-                session_id, permission_id, "reject", remember=False,
-            )
-            yield AssistantEvent(
-                "status",
-                {"content": "权限确认功能未开启,已拒绝高风险操作"},
-            )
-            return
-        permission_future = exchange.controller.wait_for_permission(
-            permission_id,
-        )
-        await run_owned(
-            self._persist_permission,
-            exchange.inputs.workspace_id,
-            exchange.inputs.user_id,
-            mapped.payload,
-        )
-        yield mapped
         cancel_task = asyncio.create_task(
             exchange.controller.cancel_event.wait(),
         )
-        permission_waiters: set[asyncio.Future[str] | asyncio.Task[bool]] = {
-            permission_future,
-            cancel_task,
-        }
-        response = ""
+        permission_waiters: set[
+            asyncio.Future[str] | asyncio.Task[bool]
+        ] = {permission_future, cancel_task}
         try:
             while True:
                 done, _ = await asyncio.wait(
@@ -928,10 +971,7 @@ class ExpertEngine:
                 )
                 if cancel_task in done:
                     progress.cancelled = True
-                    yield AssistantEvent(
-                        "cancelled", {"status": "cancelled"},
-                    )
-                    return
+                    return None
                 persisted, cancelled = await run_owned(
                     self._permission_state,
                     exchange.inputs.workspace_id,
@@ -941,23 +981,108 @@ class ExpertEngine:
                 if cancelled:
                     await client.abort_session(session_id)
                     progress.cancelled = True
-                    yield AssistantEvent(
-                        "cancelled", {"status": "cancelled"},
-                    )
-                    return
+                    return None
                 if persisted:
-                    response = persisted
-                    break
+                    return persisted
                 if permission_future in done:
                     _raise_permission_not_persisted()
-        except BaseException:
-            # A revoked role, DB failure or disconnected waiter must not
-            # leave a live provider task.
-            await _abort_quietly(client, session_id)
-            raise
         finally:
             cancel_task.cancel()
             await asyncio.gather(cancel_task, return_exceptions=True)
+
+    async def _reject_disabled_permission(
+        self,
+        exchange: Exchange,
+        progress: StreamProgress,
+        permission_id: str,
+    ) -> PermissionResponse:
+        """Persist the safe rejection when permission UI is disabled."""
+        response = await run_owned(
+            self._reject_pending_permission,
+            exchange.inputs.workspace_id,
+            exchange.inputs.user_id,
+            permission_id,
+        )
+        if response is None:
+            _, cancelled = await run_owned(
+                self._permission_state,
+                exchange.inputs.workspace_id,
+                exchange.inputs.user_id,
+                permission_id,
+            )
+            progress.cancelled = cancelled
+            return PermissionResponse(None)
+        return PermissionResponse(response, response == "reject")
+
+    @staticmethod
+    def _permission_response_dispatchable(
+        permission: AssistantPermission,
+        response: str | None,
+        progress: StreamProgress,
+    ) -> str | None:
+        """Return a durable response or record that cancellation won."""
+        if response in {"once", "reject"}:
+            return response
+        if permission.state == "cancelled":
+            progress.cancelled = True
+            return None
+        message = "Permission response is not durable"
+        raise ConflictError(message)
+
+    async def _prepare_permission_response(
+        self,
+        exchange: Exchange,
+        progress: StreamProgress,
+        permission: AssistantPermission,
+        permission_id: str,
+        mapped: AssistantEvent,
+    ) -> PermissionResponse | PermissionWait:
+        """Resolve an existing decision or prepare the UI wait event."""
+        if permission.state == "answered":
+            response = permission.response
+            if response not in {"once", "reject"}:
+                message = "Permission response is not durable"
+                raise ConflictError(message)
+            return PermissionResponse(response)
+        if permission.state == "pending":
+            if not _permission_ui_enabled():
+                return await self._reject_disabled_permission(
+                    exchange,
+                    progress,
+                    permission_id,
+                )
+            details = permission.details
+            if details is None:
+                message = "Stored permission details are invalid"
+                raise ConflictError(message)
+            return PermissionWait(
+                event=AssistantEvent(
+                    mapped.type,
+                    details,
+                    mapped.run_id,
+                    mapped.message_id,
+                ),
+                future=exchange.controller.wait_for_permission(permission_id),
+            )
+        message = "Permission request is in an invalid state"
+        raise ConflictError(message)
+
+    async def _dispatch_permission_response(
+        self,
+        exchange: Exchange,
+        progress: StreamProgress,
+        permission: AssistantPermission,
+        permission_id: str,
+        prepared: PermissionResponse,
+    ) -> AssistantEvent:
+        """Dispatch one durable answer and return its status event."""
+        dispatch_response = self._permission_response_dispatchable(
+            permission,
+            prepared.response,
+            progress,
+        )
+        if dispatch_response is None:
+            return AssistantEvent("cancelled", {"status": "cancelled"})
         try:
             await run_owned(
                 self._dispatch_permission,
@@ -965,16 +1090,100 @@ class ExpertEngine:
                 exchange.inputs.user_id,
                 exchange.runtime,
                 PermissionDispatch(
-                    provider_session_id=session_id,
+                    provider_session_id=exchange.provider.session_id,
                     permission_id=permission_id,
-                    response=response,
+                    response=dispatch_response,
                 ),
             )
         except BaseException:
-            await _abort_quietly(client, session_id)
+            await _abort_quietly(
+                exchange.client,
+                exchange.provider.session_id,
+            )
             raise
-        progress.permission_rejected = response == "reject"
-        yield AssistantEvent("status", {"content": "权限已响应,继续执行"})
+        progress.permission_rejected = dispatch_response == "reject"
+        return AssistantEvent(
+            "status",
+            {
+                "content": (
+                    "权限确认功能未开启,已拒绝高风险操作"
+                    if prepared.auto_rejected
+                    else "权限已响应,继续执行"
+                ),
+            },
+        )
+
+    async def _resolve_permission(
+        self,
+        exchange: Exchange,
+        progress: StreamProgress,
+        mapped: AssistantEvent,
+    ) -> AsyncGenerator[AssistantEvent, None]:
+        """Register the provider request, then dispatch its durable decision."""
+        permission_id = str(mapped.payload.get("permission_id") or "")
+        permission = await run_owned(
+            self._persist_permission,
+            exchange.inputs.workspace_id,
+            exchange.inputs.user_id,
+            mapped.payload,
+        )
+        if permission.state == "dispatched":
+            return
+        if permission.state == "cancelled":
+            progress.cancelled = True
+            yield AssistantEvent("cancelled", {"status": "cancelled"})
+            return
+
+        prepared = await self._prepare_permission_response(
+            exchange,
+            progress,
+            permission,
+            permission_id,
+            mapped,
+        )
+        if isinstance(prepared, PermissionWait):
+            yield prepared.event
+            try:
+                response = await self._wait_for_permission_response(
+                    exchange,
+                    progress,
+                    permission_id,
+                    prepared.future,
+                )
+                if response is None:
+                    if progress.cancelled:
+                        yield AssistantEvent(
+                            "cancelled",
+                            {"status": "cancelled"},
+                        )
+                    return
+            except BaseException:
+                # A revoked role, DB failure or disconnected waiter must not
+                # leave a live provider task.
+                await _abort_quietly(
+                    exchange.client,
+                    exchange.provider.session_id,
+                )
+                raise
+            dispatch_prepared = PermissionResponse(response)
+        else:
+            if prepared.response is None:
+                if progress.cancelled:
+                    yield AssistantEvent(
+                        "cancelled",
+                        {"status": "cancelled"},
+                    )
+                return
+            dispatch_prepared = prepared
+
+        event = await self._dispatch_permission_response(
+            exchange,
+            progress,
+            permission,
+            permission_id,
+            dispatch_prepared,
+        )
+        yield event
 
     async def _recover_reply(
         self,

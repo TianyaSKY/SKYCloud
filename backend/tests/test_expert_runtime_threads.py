@@ -80,50 +80,111 @@ async def test_runtime_setup_uses_independent_sessions_and_keeps_loop_responsive
 async def test_expert_control_transactions_use_worker_sessions_and_preserve_terminal_state(monkeypatch):
     from app.exceptions import ConflictError
     loop_thread = threading.get_ident()
-    run = SimpleNamespace(id=4, conversation_id=3, engine='expert', status='running',
-                          cancel_requested=False, pending_permission_id=None,
-                          permission_response=None, metadata_dict={})
-    conversation = SimpleNamespace(id=3, title='Expert', opencode_session_id=None,
-                                   source_conversation_id=8)
+    run = SimpleNamespace(
+        id=4,
+        conversation_id=3,
+        engine="expert",
+        status="running",
+        cancel_requested=False,
+        metadata_dict={},
+    )
+    permission = SimpleNamespace(
+        run_id=4,
+        permission_id="p1",
+        state="pending",
+        response=None,
+    )
+    conversation = SimpleNamespace(
+        id=3,
+        title="Expert",
+        opencode_session_id=None,
+        source_conversation_id=8,
+    )
     sessions, closed = [], []
+
     @contextmanager
     def factory():
         owner = threading.get_ident()
         assert owner != loop_thread
+
         def check_thread(*args):
             assert threading.get_ident() == owner
-        session = SimpleNamespace(get=lambda *args: (check_thread(), conversation)[1], commit=check_thread)
+
+        session = SimpleNamespace(
+            get=lambda *args: (check_thread(), conversation)[1],
+            commit=check_thread,
+            refresh=lambda *args: check_thread(),
+        )
         sessions.append(session)
         try:
             yield session
         finally:
             check_thread()
             closed.append(session)
+
+    def register_permission(session, _run, payload):
+        assert threading.get_ident() != loop_thread
+        if run.status == "failed":
+            raise ConflictError("run is terminal")
+        permission.permission_id = payload["permission_id"]
+        permission.state = "pending"
+        permission.response = None
+        run.status = "waiting_permission"
+        return permission
+
+    def permission_for_run(_session, _run_id, permission_id):
+        assert threading.get_ident() != loop_thread
+        return permission if permission.permission_id == permission_id else None
+
     stream_session = Mock()
     engine = module.ExpertEngine(session=stream_session, conversation=conversation, run=run)
     engine.runtime_session_factory = factory
-    monkeypatch.setattr(module.repository, 'get_owned_run', lambda *args: run)
-    monkeypatch.setattr(module.repository, 'lock_run', lambda *args: run)
-    monkeypatch.setattr(module, 'assert_can_write', lambda *args: None)
+    monkeypatch.setattr(module.repository, "get_owned_run", lambda *args: run)
+    monkeypatch.setattr(module.repository, "lock_run", lambda *args: run)
+    monkeypatch.setattr(module.repository, "register_permission", register_permission)
+    monkeypatch.setattr(module.repository, "permission_for_run", permission_for_run)
+    monkeypatch.setattr(module, "assert_can_write", lambda *args: None)
     context = await asyncio.to_thread(engine._load_context, 2, 1)
-    assert context == module.ExpertContext('Expert', None, 8)
-    await asyncio.to_thread(engine._save_provider_session, 2, 1, 9, 's1')
-    assert conversation.opencode_session_id == run.opencode_session_id == 's1'
+    assert context == module.ExpertContext("Expert", None, 8)
+    await asyncio.to_thread(engine._save_provider_session, 2, 1, 9, "s1")
+    assert conversation.opencode_session_id == run.opencode_session_id == "s1"
     assert conversation.opencode_runtime_id == 9
-    await asyncio.to_thread(engine._persist_permission, 2, 1, {'permission_id': 'p1', 'title': 'Execute'})
-    assert run.status == 'waiting_permission'
-    assert await asyncio.to_thread(engine._permission_state, 2, 1, 'p1') == (None, False)
-    run.permission_response = 'once'
-    run.status = 'running'
-    assert await asyncio.to_thread(engine._permission_state, 2, 1, 'other') == (None, False)
-    assert await asyncio.to_thread(engine._permission_state, 2, 1, 'p1') == ('once', False)
-    run.status = 'failed'
-    run.permission_response = None
-    run.pending_permission_id = 'p2'
-    assert await asyncio.to_thread(engine._permission_state, 2, 1, 'p2') == (None, True)
+    await asyncio.to_thread(
+        engine._persist_permission,
+        2,
+        1,
+        {"permission_id": "p1", "title": "Execute"},
+    )
+    assert run.status == "waiting_permission"
+    assert await asyncio.to_thread(engine._permission_state, 2, 1, "p1") == (
+        None,
+        False,
+    )
+    permission.state = "answered"
+    permission.response = "once"
+    run.status = "running"
+    assert await asyncio.to_thread(engine._permission_state, 2, 1, "other") == (
+        None,
+        False,
+    )
+    assert await asyncio.to_thread(engine._permission_state, 2, 1, "p1") == (
+        "once",
+        False,
+    )
+    run.status = "failed"
+    permission.state = "cancelled"
+    assert await asyncio.to_thread(engine._permission_state, 2, 1, "p2") == (
+        None,
+        True,
+    )
     with pytest.raises(ConflictError):
-        await asyncio.to_thread(engine._persist_permission, 2, 1, {'permission_id': 'p2'})
-    assert run.status == 'failed' and run.pending_permission_id == 'p2'
+        await asyncio.to_thread(
+            engine._persist_permission,
+            2,
+            1,
+            {"permission_id": "p2"},
+        )
+    assert run.status == "failed" and permission.permission_id == "p1"
     assert len(sessions) == 8 and closed == sessions
     stream_session.get.assert_not_called()
     stream_session.commit.assert_not_called()
@@ -196,6 +257,17 @@ async def test_cancelled_permission_worker_finishes_before_client_and_lease_clos
             return ('once',False)
         finally:
             order.append('worker-finished')
+
+    permission = SimpleNamespace(
+        state="pending",
+        response=None,
+        details={"permission_id": "p", "title": "Execute"},
+    )
+
+    def persist_permission(*args):
+        hold(*args)
+        return permission
+
     engine = module.ExpertEngine(session=Mock(),conversation=SimpleNamespace(id=3),run=SimpleNamespace(id=4))
     async def ready(*args):
         yield module.RuntimeConnection(9,'http://runtime','abc'),AssistantEvent('status',{})
@@ -225,7 +297,11 @@ async def test_cancelled_permission_worker_finishes_before_client_and_lease_clos
     monkeypatch.setenv('ASSISTANT_PERMISSION_UI_ENABLED','1')
     monkeypatch.setattr(engine,'_load_context',lambda *args:module.ExpertContext('title','session',None))
     monkeypatch.setattr(engine,'_save_provider_session',lambda *args:None)
-    monkeypatch.setattr(engine,'_persist_permission',hold if stage=='persist' else lambda *args:None)
+    monkeypatch.setattr(
+        engine,
+        "_persist_permission",
+        persist_permission if stage == "persist" else lambda *args: permission,
+    )
     monkeypatch.setattr(engine,'_permission_state',hold if stage=='state' else lambda *args:('once',False))
     monkeypatch.setattr(engine,'_dispatch_permission',hold if stage=='dispatch' else lambda *args:None)
     async def consume():
@@ -251,3 +327,77 @@ async def test_cancelled_permission_worker_finishes_before_client_and_lease_clos
     assert str(error.value)=='caller-stop'
     assert order.index('worker-finished') < order.index('client-close')
     assert order.index('worker-finished') < order.index('lease-close')
+
+
+@pytest.mark.parametrize(
+    ("reject_result", "cancelled", "expected_events"),
+    [
+        ("reject", False, ["status"]),
+        (None, True, ["cancelled"]),
+        (None, False, []),
+    ],
+)
+async def test_disabled_permission_ui_rejects_or_stops_without_dispatch(
+    monkeypatch,
+    reject_result,
+    cancelled,
+    expected_events,
+):
+    engine = module.ExpertEngine(
+        session=Mock(),
+        conversation=SimpleNamespace(id=3),
+        run=SimpleNamespace(id=4),
+    )
+    permission = SimpleNamespace(
+        state="pending",
+        response=None,
+        details={"permission_id": "p", "title": "Execute"},
+    )
+    dispatched = []
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(module, "run_owned", run_inline)
+    monkeypatch.setattr(module, "_permission_ui_enabled", lambda: False)
+    monkeypatch.setattr(engine, "_persist_permission", lambda *args: permission)
+    monkeypatch.setattr(
+        engine,
+        "_reject_pending_permission",
+        lambda *args: reject_result,
+    )
+    monkeypatch.setattr(
+        engine,
+        "_permission_state",
+        lambda *args: (None, cancelled),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_dispatch_permission",
+        lambda *args: dispatched.append(args),
+    )
+    exchange = SimpleNamespace(
+        inputs=SimpleNamespace(workspace_id=2, user_id=1),
+        provider=SimpleNamespace(session_id="session"),
+        client=SimpleNamespace(),
+        runtime=SimpleNamespace(),
+    )
+    progress = module.StreamProgress()
+    mapped = module.AssistantEvent(
+        "permission_required",
+        {"permission_id": "p"},
+    )
+
+    events = [
+        event
+        async for event in engine._resolve_permission(exchange, progress, mapped)
+    ]
+
+    assert [event.type for event in events] == expected_events
+    assert len(dispatched) == (1 if reject_result == "reject" else 0)
+    assert progress.cancelled is cancelled
+    if reject_result == "reject":
+        assert dispatched[0][-1].response == "reject"
+        assert events[0].payload["content"] == (
+            "权限确认功能未开启,已拒绝高风险操作"
+        )

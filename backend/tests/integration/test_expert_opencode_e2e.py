@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy.orm import sessionmaker
 
 from app.features.assistant import repository, service
 from app.features.assistant.clients.opencode_auth import server_password, server_username
@@ -314,16 +315,25 @@ def test_expert_engine_streams_through_official_opencode_runtime(
         monkeypatch.setattr(docker_service, "setup_mcp", lambda *_args, **_kwargs: None)
         monkeypatch.setenv("OPENCODE_EXPERT_AGENT", "skycloud-e2e")
 
+        factory = sessionmaker(
+            bind=session.get_bind(),
+            join_transaction_mode="create_savepoint",
+        )
+
+        workspace_id = int(test_workspace.id)
+        user_id = int(test_user.id)
+        conversation_id = int(conversation.id)
+        run_id = int(run.id)
         async def collect() -> list[Any]:
             return [
                 event
-                async for event in service.stream_prepared_run(
-                    service.StreamPreparedRunParams(
-                        session=session,
-                        workspace=test_workspace,
-                        user_id=test_user.id,
-                        conversation=conversation,
-                        run=run,
+                async for event in service.stream_run(
+                    service.StreamRunParams(
+                        session_factory=factory,
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        run_id=run_id,
                         history=history,
                     )
                 )

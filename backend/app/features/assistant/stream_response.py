@@ -3,10 +3,11 @@
 import asyncio
 from collections.abc import AsyncIterator, Callable, Generator, Mapping
 from contextlib import contextmanager
-from typing import TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 import anyio
 from loguru import logger
+from runtime_common.http_stream import close_reader, drain_cleanup
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
@@ -14,12 +15,10 @@ from starlette.types import Receive, Scope, Send
 from app.features.assistant import repository
 from app.features.assistant.service import cleanup_stream_session
 from app.features.assistant.stream_persistence import StreamWorker
-from app.infra.async_stream import (
-    CloseableAsyncIterator,
-    close_reader,
-    drain_cleanup,
-)
 from app.infra.extensions import SessionFactory
+
+if TYPE_CHECKING:
+    from runtime_common.async_stream import AsyncClosableIterator
 
 T = TypeVar("T")
 RunScope = tuple[int, int, int, int]
@@ -126,7 +125,7 @@ class PreparedStreamResponse(StreamingResponse):
         finally:
             async def release() -> None:
                 iterator = cast(
-                    "CloseableAsyncIterator[str | bytes]",
+                    "AsyncClosableIterator[str | bytes]",
                     self.body_iterator,
                 )
                 await close_reader(None, iterator)

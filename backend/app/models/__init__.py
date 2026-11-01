@@ -1,6 +1,11 @@
 """ORM model exports for users, files, workspaces, and assistant records."""
 
-from .assistant import AssistantConversation, AssistantMessage, AssistantRun
+from .assistant import (
+    AssistantConversation,
+    AssistantMessage,
+    AssistantPermission,
+    AssistantRun,
+)
 from .assistant_runtime_abort import AssistantRuntimeAbort
 from .cache_revision import SqlCacheRevision
 from .file import File
@@ -28,6 +33,7 @@ from .workspace import Workspace, WorkspaceMember
 __all__ = [
     "AssistantConversation",
     "AssistantMessage",
+    "AssistantPermission",
     "AssistantRun",
     "AssistantRuntimeAbort",
     "File",
