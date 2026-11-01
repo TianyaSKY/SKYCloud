@@ -310,12 +310,10 @@ import {
   getAdminAllUsageLogs,
   getAdminDailyStats,
   type UserTokenStats,
-  type AdminTokenUsageLog,
-  type DailyStat,
   type AdminUsageLogQueryParams,
 } from '@/api/token_usage'
-import { usePagination } from '@/hooks/usePagination'
-import { maxDailyTokens, barHeight, actionColor } from '@/hooks/useUsageCharts'
+import { useUsageReport } from '@/hooks/useUsageReport'
+import { barHeight, actionColor } from '@/hooks/useUsageCharts'
 import { formatDate, formatNumber } from '@/utils/format'
 import { logger } from '@/utils/logger'
 
@@ -351,92 +349,31 @@ const fetchUsersStats = async () => {
   }
 }
 
-const dailyDays = ref(30)
-const dailyStats = ref<DailyStat[]>([])
-const loadingDaily = ref(false)
-
-const fetchDailyStats = async () => {
-  loadingDaily.value = true
-  try {
-    const res = await getAdminDailyStats(dailyDays.value)
-    dailyStats.value = res
-  } catch (e) {
-    // 拦截器已弹唯一 Message.error，此处只记录日志，保留旧趋势避免清空
-    logger.warn('加载每日趋势失败', { days: dailyDays.value, error: e })
-  } finally {
-    loadingDaily.value = false
-  }
-}
-
-// 缓存每日 Token 最大值，避免 barHeight 在每行重复计算导致 O(n²)
-const dailyMax = computed(() => maxDailyTokens(dailyStats.value.map((d) => ({ tokens: d.total_tokens }))))
-
-const logs = ref<AdminTokenUsageLog[]>([])
-const loadingLogs = ref(false)
-const logFilter = reactive<{
-  action: string | undefined
-  user_id: number | undefined
-  start_date: string | undefined
-  end_date: string | undefined
-}>({
+const logFilter = reactive<AdminUsageLogQueryParams>({
   action: undefined,
   user_id: undefined,
   start_date: undefined,
   end_date: undefined,
 })
+
 const {
-  pagination: logsPagination,
-  handlePageChange: handleLogPageChange,
-  handlePageSizeChange: handleLogPageSizeChange,
-  reset: resetLogsPagination,
-  setTotal: setLogsTotal,
-} = usePagination({
-  defaultPageSize: 15,
-  pageSizeOptions: [15, 30, 50],
-  onChange: () => fetchLogs(),
-})
-
-const fetchLogs = async () => {
-  loadingLogs.value = true
-  try {
-    const params: AdminUsageLogQueryParams = {
-      page: logsPagination.current,
-      page_size: logsPagination.pageSize,
-    }
-    if (logFilter.action) params.action = logFilter.action
-    if (logFilter.user_id) params.user_id = logFilter.user_id
-    if (logFilter.start_date) params.start_date = logFilter.start_date
-    if (logFilter.end_date) params.end_date = logFilter.end_date
-
-    const res = await getAdminAllUsageLogs(params)
-    logs.value = res.items
-    setLogsTotal(res.total)
-  } catch (e) {
-    // 拦截器已弹唯一 Message.error，仅清理本地列表状态并记录日志
-    logger.warn('加载使用明细失败', { params: logFilter, error: e })
-    logs.value = []
-    setLogsTotal(0)
-  } finally {
-    loadingLogs.value = false
-  }
-}
-
-const handleFilterChange = () => {
-  resetLogsPagination()
-  fetchLogs()
-}
-
-const handleDateChange = (values: string[] | undefined) => {
-  if (values && values.length === 2) {
-    logFilter.start_date = values[0]
-    logFilter.end_date = values[1]
-  } else {
-    logFilter.start_date = undefined
-    logFilter.end_date = undefined
-  }
-  resetLogsPagination()
-  fetchLogs()
-}
+  logs,
+  dailyStats,
+  dailyDays,
+  loadingLogs,
+  loadingDaily,
+  dailyMax,
+  logsPagination,
+  fetchLogs,
+  fetchDailyStats,
+  handleFilterChange,
+  handleDateChange,
+  handleLogPageChange,
+  handleLogPageSizeChange,
+} = useUsageReport(
+  { logs: getAdminAllUsageLogs, daily: getAdminDailyStats },
+  logFilter,
+)
 
 const AVATAR_COLORS = [
   '#165dff',
