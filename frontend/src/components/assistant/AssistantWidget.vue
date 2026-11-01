@@ -1,6 +1,6 @@
 <template>
   <div
-    v-if="show"
+    v-show="show"
     class="assistant-widget"
     :style="{ left: `${position.x}px`, top: `${position.y}px` }"
   >
@@ -47,6 +47,7 @@
           @permission="respondPermission"
         />
         <AssistantComposer
+          v-model="assistant.draft"
           :mode="assistant.currentMode"
           :loading="assistant.loading || Boolean(assistant.activeRun)"
           :disabled="
@@ -63,7 +64,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
 import { IconClose } from '@arco-design/web-vue/es/icon'
 
@@ -71,12 +72,12 @@ import AssistantHeader from './AssistantHeader.vue'
 import AssistantConversationList from './AssistantConversationList.vue'
 import AssistantMessageList from './AssistantMessageList.vue'
 import AssistantComposer from './AssistantComposer.vue'
-import { useAssistantStore } from '@/stores/assistant'
+import { useAssistantStore, type AssistantContext } from '@/stores/assistant'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useAuthStore } from '@/stores/auth'
 import type { AssistantConversation } from '@/api/assistant'
 
-defineProps<{ show: boolean }>()
+const props = defineProps<{ show: boolean }>()
 
 const assistant = useAssistantStore()
 const wsStore = useWorkspaceStore()
@@ -88,23 +89,38 @@ const dragging = ref(false)
 const dragOffset = ref({ x: 0, y: 0 })
 let mouseDownAt = 0
 
+const currentContext = computed<AssistantContext | null>(() => {
+  const userId = auth.user.id
+  const workspaceId = wsStore.currentWorkspace?.id
+  if (!userId || !workspaceId) return null
+  return { userId, sessionVersion: auth.sessionVersion, workspaceId }
+})
+
+function reportInitializationFailure(error: unknown) {
+  Message.error((error as Error).message || '助手初始化失败')
+}
+
 watch(
-  [() => wsStore.currentWorkspace?.id, () => auth.user.id, () => auth.sessionVersion],
-  ([id]) => {
-    void assistant.bindWorkspace(id ?? null, true).catch((error) => {
-      Message.error((error as Error).message || '助手初始化失败')
-    })
+  [currentContext, () => props.show],
+  () => {
+    const context = currentContext.value
+    // 没有有效身份时只清空上下文；有身份时由 show 决定是否真正建会话（非首页不初始化）。
+    if (!context) {
+      void assistant.bindContext(null, false)
+      return
+    }
+    void assistant.bindContext(context, props.show).catch(reportInitializationFailure)
   },
   { immediate: true },
 )
 
 function toggle() {
   visible.value = !visible.value
-  if (visible.value) {
-    void assistant.bindWorkspace(wsStore.currentWorkspace?.id ?? null).catch((error) => {
-      Message.error((error as Error).message || '助手初始化失败')
-    })
-  }
+  if (!visible.value) return
+  const context = currentContext.value
+  if (!context) return
+  // 同上下文 watcher 不会重跑；打开触发器显式重试，初始化失败后可关闭再打开。
+  void assistant.bindContext(context, true).catch(reportInitializationFailure)
 }
 
 function handleMouseDown(event: MouseEvent) {
@@ -215,7 +231,6 @@ function handleResize() {
 onMounted(() => window.addEventListener('resize', handleResize))
 onUnmounted(() => {
   handleMouseUp()
-  void assistant.bindWorkspace(null)
   window.removeEventListener('resize', handleResize)
 })
 </script>

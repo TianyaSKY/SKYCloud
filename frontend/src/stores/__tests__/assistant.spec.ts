@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, disposePinia, getActivePinia, setActivePinia } from 'pinia'
 import type { AssistantConversation, AssistantMessageRecord, AssistantMode, AssistantRunRecord, AssistantEvent } from '@/api/assistant'
-import { useAssistantStore } from '../assistant'
+import { useAssistantStore, type AssistantContext } from '../assistant'
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(), create: vi.fn(), messages: vi.fn(), active: vi.fn(), expertActive: vi.fn(),
@@ -20,6 +20,10 @@ vi.mock('@/utils/sseRequest', () => ({ sseRequest: mocks.stream }))
 vi.mock('@/stores/workspace', () => ({ useWorkspaceStore: () => mocks.workspace }))
 vi.mock('@arco-design/web-vue', () => ({ Message: { error: mocks.error } }))
 
+/** 完整绑定身份：账号 + 登录会话 + 空间共同决定助手上下文。 */
+function contextOf(workspaceId: number, sessionVersion = 0, userId = 7): AssistantContext {
+  return { userId, sessionVersion, workspaceId }
+}
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason: Error) => void
@@ -73,8 +77,8 @@ describe('assistant workspace and conversation isolation', () => {
   it('does not adopt a late list or create a conversation in a former workspace', async () => {
     const old = deferred<{ conversations: AssistantConversation[] }>()
     mocks.list.mockReturnValueOnce(old.promise).mockResolvedValueOnce({ conversations: [conversation(22, 'fast', 2)] })
-    const store = useAssistantStore(); const first = store.bindWorkspace(1)
-    await store.bindWorkspace(2); old.resolve({ conversations: [] }); await first
+    const store = useAssistantStore(); const first = store.bindContext(contextOf(1), true)
+    await store.bindContext(contextOf(2), true); old.resolve({ conversations: [] }); await first
     expect(store.currentConversationId).toBe(22)
     expect(store.conversations.map(c => c.id)).toEqual([22]); expect(mocks.create).not.toHaveBeenCalled()
     expect(store.initializing).toBe(false)
@@ -83,14 +87,14 @@ describe('assistant workspace and conversation isolation', () => {
     const old = deferred<{ conversation: AssistantConversation; messages: AssistantMessageRecord[] }>()
     mocks.messages.mockReturnValueOnce(old.promise).mockResolvedValueOnce({ conversation: conversation(22), messages: [record(9, 'new workspace')] })
     mocks.list.mockResolvedValueOnce({ conversations: [conversation()] }).mockResolvedValueOnce({ conversations: [conversation(22, 'fast', 2)] })
-    const store = useAssistantStore(); const first = store.bindWorkspace(1)
+    const store = useAssistantStore(); const first = store.bindContext(contextOf(1), true)
     await vi.waitFor(() => expect(mocks.messages).toHaveBeenCalledTimes(1))
-    await store.bindWorkspace(2); old.resolve({ conversation: conversation(), messages: [record(8, 'private old history')] }); await first
+    await store.bindContext(contextOf(2), true); old.resolve({ conversation: conversation(), messages: [record(8, 'private old history')] }); await first
     expect(store.messages.map(m => m.content)).toEqual(['new workspace'])
   })
   it('keeps the latest selected conversation when earlier run lookups finish late', async () => {
     mocks.list.mockResolvedValue({ conversations: [conversation(), conversation(12), conversation(13)] })
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     const old = deferred<AssistantRunRecord | null>(); mocks.active.mockReturnValueOnce(old.promise).mockResolvedValueOnce(null)
     const first = store.selectConversation(12)
     await vi.waitFor(() => expect(mocks.active).toHaveBeenCalledWith(12))
@@ -99,16 +103,30 @@ describe('assistant workspace and conversation isolation', () => {
   })
   it('does not start a duplicate run when the selected conversation run lookup fails', async () => {
     mocks.list.mockResolvedValue({ conversations: [conversation(), conversation(12)] })
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     mocks.active.mockRejectedValueOnce(new Error('run lookup outage'))
     await expect(store.selectConversation(12)).rejects.toThrow('run lookup outage')
     expect(store.initialized).toBe(false)
     await store.send('unsafe duplicate'); expect(mocks.stream).not.toHaveBeenCalled()
-    await store.bindWorkspace(1); await store.send('retry'); expect(mocks.stream).toHaveBeenCalledTimes(1)
+    await store.bindContext(contextOf(1), true); await store.send('retry'); expect(mocks.stream).toHaveBeenCalledTimes(1)
+  })
+  it('retries the selected expert mode instead of initializing fast state', async () => {
+    mocks.list.mockImplementation(async mode => ({ conversations: [conversation(mode === 'expert' ? 31 : 11, mode)] }))
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
+    mocks.messages.mockResolvedValue({ conversation: conversation(31, 'expert'), messages: [] })
+    mocks.expertActive.mockRejectedValueOnce(new Error('run lookup outage'))
+    await expect(store.selectMode('expert')).rejects.toThrow('run lookup outage')
+    expect(store.initialized).toBe(false)
+
+    mocks.expertActive.mockResolvedValueOnce({ ...run(501), conversation_id: 31 })
+    await store.bindContext(contextOf(1), true)
+    expect(store.currentMode).toBe('expert')
+    expect(store.initialized).toBe(true)
+    expect(store.activeRun?.id).toBe(501)
   })
   it('blocks send while initialization is pending, rather than creating duplicate conversations', async () => {
     const pending = deferred<{ conversations: AssistantConversation[] }>(); mocks.list.mockReturnValue(pending.promise)
-    const store = useAssistantStore(); const binding = store.bindWorkspace(1)
+    const store = useAssistantStore(); const binding = store.bindContext(contextOf(1), true)
     await store.send('early'); expect(mocks.stream).not.toHaveBeenCalled(); expect(mocks.create).not.toHaveBeenCalled()
     pending.resolve({ conversations: [conversation()] }); await binding
     await store.send(' ready '); expect(mocks.stream).toHaveBeenCalledTimes(1)
@@ -117,17 +135,17 @@ describe('assistant workspace and conversation isolation', () => {
   it('coalesces an in-progress workspace initialization and retries a failed initialization', async () => {
     const pending = deferred<{ conversations: AssistantConversation[] }>()
     mocks.list.mockReturnValueOnce(pending.promise)
-    const store = useAssistantStore(); const first = store.bindWorkspace(1)
-    await store.bindWorkspace(1); expect(mocks.list).toHaveBeenCalledTimes(1)
+    const store = useAssistantStore(); const first = store.bindContext(contextOf(1), true)
+    await store.bindContext(contextOf(1), true); expect(mocks.list).toHaveBeenCalledTimes(1)
     pending.reject(new Error('initial outage')); await expect(first).rejects.toThrow('initial outage')
     expect(store.initialized).toBe(false); expect(store.initializing).toBe(false)
-    await store.bindWorkspace(1); expect(store.initialized).toBe(true)
+    await store.bindContext(contextOf(1), true); expect(store.initialized).toBe(true)
     await store.send('retry'); expect(mocks.stream).toHaveBeenCalledTimes(1)
   })
   it('allows the new workspace to send and ignores old stream events/finally cleanup', async () => {
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     const old = runningStream(); const first = store.send('old'); old.emit({ type: 'token', payload: { content: 'old private answer' } })
-    mocks.list.mockResolvedValue({ conversations: [conversation(22, 'fast', 2)] }); await store.bindWorkspace(2)
+    mocks.list.mockResolvedValue({ conversations: [conversation(22, 'fast', 2)] }); await store.bindContext(contextOf(2), true)
     expect(old.signal().aborted).toBe(true)
     const newer = runningStream(); const second = store.send('new')
     old.emit({ type: 'error', run_id: 501, payload: {} }); old.pending.resolve(); await first
@@ -137,17 +155,17 @@ describe('assistant workspace and conversation isolation', () => {
     expect(store.loading).toBe(false); expect(store.activeRun).toBeNull()
   })
   it('ignores a late expert forbidden response from an old workspace', async () => {
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     const pending = deferred<{ conversations: AssistantConversation[] }>(); mocks.list.mockReturnValueOnce(pending.promise)
-    const selecting = store.selectMode('expert'); await store.bindWorkspace(2)
+    const selecting = store.selectMode('expert'); await store.bindContext(contextOf(2), true)
     pending.reject(new Error('former workspace denied')); await selecting
     expect(store.expertAvailable).toBe(true); expect(store.currentMode).toBe('fast')
   })
   it.each((['rename', 'restore', 'archive', 'remove', 'handoff'] as const).flatMap(action => [[action, false], [action, true]] as const))('ignores late %s responses from a former workspace (failed=%s)', async (action, failed) => {
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     const pending = deferred<AssistantConversation>(); mocks.update.mockReturnValue(pending.promise); mocks.remove.mockReturnValue(pending.promise); mocks.handoff.mockReturnValue(pending.promise)
     const operation = action === 'rename' ? store.renameConversation(11, 'new') : action === 'restore' ? store.restoreConversation(11) : action === 'archive' ? store.archiveConversation(11) : action === 'remove' ? store.removeConversation(11) : store.handoff(5)
-    mocks.list.mockResolvedValue({ conversations: [conversation(22, 'fast', 2)] }); await store.bindWorkspace(2)
+    mocks.list.mockResolvedValue({ conversations: [conversation(22, 'fast', 2)] }); await store.bindContext(contextOf(2), true)
     if (failed) pending.reject(new Error('former workspace failure'))
     else pending.resolve(conversation(11, 'expert'))
     await operation
@@ -157,7 +175,7 @@ describe('assistant workspace and conversation isolation', () => {
 
 describe('assistant run and permission state', () => {
   it('keeps an interrupted server run available for cancellation and prevents a second send', async () => {
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     const stream = runningStream(); const sending = store.send('start')
     stream.emit({ type: 'token', payload: { content: 'partial' } }); mocks.active.mockResolvedValue(run())
     stream.pending.resolve(); await sending
@@ -166,24 +184,24 @@ describe('assistant run and permission state', () => {
     await store.cancel(); expect(mocks.cancel).toHaveBeenCalledWith(501); expect(store.activeRun).toBeNull()
   })
   it('does not report an empty stream as a completed answer', async () => {
-    const store = useAssistantStore(); await store.bindWorkspace(1); mocks.stream.mockResolvedValue(undefined)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true); mocks.stream.mockResolvedValue(undefined)
     await store.send('start'); expect(store.messages.at(-1)?.status).toBe('failed'); expect(mocks.error).toHaveBeenCalled()
   })
   it('retains the known run if reconciliation fails after a transport error', async () => {
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     const stream = runningStream(); const sending = store.send('start'); mocks.active.mockRejectedValue(new Error('lookup outage'))
     stream.pending.reject(new Error('transport outage')); await sending
     expect(store.activeRun?.id).toBe(501); expect(store.loading).toBe(false)
   })
   it('does not clear a running task or disconnect it when server cancellation fails', async () => {
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     const stream = runningStream(); const sending = store.send('start'); mocks.cancel.mockRejectedValue(new Error('cancel outage'))
     await expect(store.cancel()).rejects.toThrow('cancel outage')
     expect(store.activeRun?.id).toBe(501); expect(store.loading).toBe(true); expect(stream.signal().aborted).toBe(false)
     stream.emit({ type: 'done', run_id: 501, payload: {} }); stream.pending.resolve(); await sending
   })
   it('keeps listening after a cancellation acknowledgement until the engine actually stops', async () => {
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     const stream = runningStream(); const sending = store.send('start')
     stream.emit({ type: 'permission_required', payload: { permission_id: 'p1' } })
     mocks.cancel.mockResolvedValue({ ...run(), pending_permission_id: 'p1', cancel_requested: true })
@@ -195,10 +213,10 @@ describe('assistant run and permission state', () => {
     expect(store.activeRun).toBeNull(); expect(store.messages.at(-1)?.status).toBe('cancelled')
   })
   it('does not let a late cancellation response abort a new workspace task', async () => {
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     const old = runningStream(); const first = store.send('old')
     const pending = deferred<AssistantRunRecord>(); mocks.cancel.mockReturnValue(pending.promise)
-    const cancelling = store.cancel(); await store.bindWorkspace(2)
+    const cancelling = store.cancel(); await store.bindContext(contextOf(2), true)
     const newer = runningStream(); const second = store.send('new')
     pending.resolve({ ...run(), status: 'cancelled' }); await cancelling
     expect(newer.signal().aborted).toBe(false); expect(store.loading).toBe(true); expect(store.activeRun?.id).toBe(501)
@@ -206,7 +224,7 @@ describe('assistant run and permission state', () => {
     newer.emit({ type: 'done', run_id: 501, payload: {} }); newer.pending.resolve(); await second
   })
   it('does not restore a finished run when its permission response arrives late', async () => {
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     const stream = runningStream(); const sending = store.send('start')
     stream.emit({ type: 'permission_required', payload: { permission_id: 'p1', title: 'Patch file', tool: { name: 'apply_patch', input: { path: 'a.txt' } } } })
     expect(store.messages.at(-1)?.permission?.tool).toEqual({ name: 'apply_patch', input: { path: 'a.txt' } })
@@ -216,7 +234,7 @@ describe('assistant run and permission state', () => {
     expect(mocks.permission).toHaveBeenCalledWith(501, 'p1', 'once'); expect(store.activeRun).toBeNull(); expect(store.messages.at(-1)?.permission).toBeUndefined()
   })
   it('keeps a newer permission request when the previous response finishes late', async () => {
-    const store = useAssistantStore(); await store.bindWorkspace(1)
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true)
     const stream = runningStream(); const sending = store.send('start')
     stream.emit({ type: 'permission_required', payload: { permission_id: 'p1' } })
     const pending = deferred<AssistantRunRecord>(); mocks.permission.mockReturnValue(pending.promise); const answering = store.respondPermission('reject')
@@ -225,7 +243,7 @@ describe('assistant run and permission state', () => {
     stream.emit({ type: 'cancelled', run_id: 501, payload: {} }); stream.pending.resolve(); await sending
   })
   it('gates expert send, selection, handoff and permission answers after role removal', async () => {
-    const store = useAssistantStore(); await store.bindWorkspace(1); mocks.workspace.canWrite = false
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true); mocks.workspace.canWrite = false
     await store.selectMode('expert'); expect(store.currentMode).toBe('fast')
     await store.handoff(1); expect(mocks.handoff).not.toHaveBeenCalled()
     store.currentMode = 'expert'; await store.send('forbidden'); expect(mocks.stream).not.toHaveBeenCalled()
@@ -239,7 +257,7 @@ describe('durable pending expert permission recovery', () => {
     mocks.list.mockImplementation(async mode => ({ conversations: [conversation(11, mode)] }))
     mocks.messages.mockResolvedValue({ conversation: conversation(11, 'expert'), messages: [{ ...record(601, 'working'), status: 'streaming' }] })
     mocks.expertActive.mockResolvedValue(recovered)
-    const store = useAssistantStore(); await store.bindWorkspace(1); await store.selectMode('expert')
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true); await store.selectMode('expert')
     return store
   }
   it('restores the matching permission card and submits its one-shot response', async () => {
@@ -274,7 +292,7 @@ describe('recovered assistant run synchronization', () => {
     mocks.list.mockImplementation(async mode => ({ conversations: [conversation(11, mode)] }))
     mocks.messages.mockResolvedValue({ conversation: conversation(11, 'expert'), messages: [{ ...record(601, 'partial'), status: 'streaming' }] })
     mocks.expertActive.mockResolvedValue({ ...run(501, 'p1'), pending_permission: { permission_id: 'p1', title: 'Patch file' } })
-    const store = useAssistantStore(); await store.bindWorkspace(1); await store.selectMode('expert')
+    const store = useAssistantStore(); await store.bindContext(contextOf(1), true); await store.selectMode('expert')
     mocks.messages.mockClear(); mocks.expertActive.mockClear()
     return store
   }
@@ -290,7 +308,7 @@ describe('recovered assistant run synchronization', () => {
     const store = await recover(); const pending = deferred<{ conversation: AssistantConversation; messages: AssistantMessageRecord[] }>()
     mocks.messages.mockReturnValueOnce(pending.promise)
     await vi.advanceTimersByTimeAsync(12000); expect(mocks.messages).toHaveBeenCalledTimes(1)
-    await store.bindWorkspace(null)
+    await store.bindContext(null, false)
     pending.resolve({ conversation: conversation(), messages: [record(601, 'old private output')] })
     await vi.advanceTimersByTimeAsync(0)
     expect(store.messages).toEqual([]); expect(store.activeRun).toBeNull(); expect(vi.getTimerCount()).toBe(0)

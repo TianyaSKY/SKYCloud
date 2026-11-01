@@ -35,6 +35,13 @@ export interface AssistantPermission {
   tool?: unknown
 }
 
+/** 绑定身份：账号 + 登录会话 + 空间，三者共同决定助手上下文。 */
+export interface AssistantContext {
+  userId: number
+  sessionVersion: number
+  workspaceId: number
+}
+
 export interface AssistantMessage {
   id: number
   role: 'user' | 'assistant' | 'system'
@@ -52,7 +59,9 @@ export interface AssistantMessage {
 
 export const useAssistantStore = defineStore('assistant', () => {
   const currentMode = ref<AssistantMode>('fast')
-  const workspaceId = ref<number | null>(null)
+  const context = ref<AssistantContext | null>(null)
+  const workspaceId = computed(() => context.value?.workspaceId ?? null)
+  const draft = ref('')
   const conversations = ref<AssistantConversation[]>([])
   const conversationIds = ref<Record<AssistantMode, number | null>>({ fast: null, expert: null })
   const messagesByConversation = ref<Record<number, AssistantMessage[]>>({})
@@ -180,6 +189,16 @@ export const useAssistantStore = defineStore('assistant', () => {
     }
   }
 
+  /** 载入缺失历史并重读活动 run：初始化失败后的重试与切换会话共用。 */
+  async function syncConversation(mode: AssistantMode, conversationId: number, version = stateVersion) {
+    if (!messagesByConversation.value[conversationId]) {
+      const history = await getAssistantMessages(conversationId)
+      if (!isCurrent(version)) return
+      messagesByConversation.value[conversationId] = mapMessages(history.messages, mode)
+    }
+    await refreshActiveRun(mode, conversationId, version)
+  }
+
   let pollTimer: ReturnType<typeof setTimeout> | undefined
   let polling = false
   let pollGeneration = 0
@@ -218,6 +237,8 @@ export const useAssistantStore = defineStore('assistant', () => {
     }, Math.min(3000 * 2 ** Math.min(pollFailures, 4), 30000))
   }
   watch([activeRun, loading, initializing, currentMode, currentConversationId, workspaceId, () => useWorkspaceStore().canWrite], schedulePolling, { flush: 'sync' })
+  // 切模式清草稿（沿用 Composer 本地状态的既有行为），上下文切换由 bindContext 另行清空。
+  watch(currentMode, () => { draft.value = '' }, { flush: 'sync' })
   onScopeDispose(() => { pollDisposed = true; stopPolling() })
 
   async function loadMode(mode: AssistantMode, createIfMissing = true, version = stateVersion) {
@@ -253,24 +274,60 @@ export const useAssistantStore = defineStore('assistant', () => {
     }
   }
 
-  async function bindWorkspace(id: number | null, force = false) {
-    if (!force && workspaceId.value === id && (initialized.value || initializing.value)) return
-    const version = ++stateVersion
-    initializing.value = true
+  function sameContext(left: AssistantContext | null, right: AssistantContext | null) {
+    if (!left || !right) return left === right
+    return left.userId === right.userId
+      && left.sessionVersion === right.sessionVersion
+      && left.workspaceId === right.workspaceId
+  }
+
+  /** 上下文切换时同步丢弃旧会话状态：旧流、旧轮询、旧消息与草稿都不能串到新上下文。 */
+  function clearSessionState() {
+    controller?.abort()
+    controller = null
+    loading.value = false
+    initializing.value = false
+    activeRun.value = null
+    stopPolling()
     pollFailures = 0
+    expertAvailable.value = true
+    currentMode.value = 'fast'
+    conversations.value = []
+    conversationIds.value = { fast: null, expert: null }
+    messagesByConversation.value = {}
+    initialized.value = false
+    draft.value = ''
+  }
+
+  async function bindContext(next: AssistantContext | null, initialize: boolean): Promise<void> {
+    if (sameContext(context.value, next)) {
+      // 同一上下文幂等：initialize=false 绝不发请求，已完成/进行中的初始化也不重复启动。
+      if (!initialize || !next || initialized.value || initializing.value) return
+      const retryVersion = ++stateVersion
+      initializing.value = true
+      try {
+        // 重试必须对账当前选中模式；只加载 fast 会在 expert 初始化失败后
+        // 把界面标成可用，却漏掉已有的活动 run 与权限卡。
+        const conversationId = currentConversationId.value
+        if (conversationId) {
+          await syncConversation(currentMode.value, conversationId, retryVersion)
+        } else {
+          await loadMode(currentMode.value, true, retryVersion)
+        }
+        if (isCurrent(retryVersion)) initialized.value = true
+      } catch (error) {
+        if (isCurrent(retryVersion)) throw error
+      } finally {
+        if (isCurrent(retryVersion)) initializing.value = false
+      }
+      return
+    }
+    const version = ++stateVersion
+    clearSessionState()
+    context.value = next
+    if (!next || !initialize) return
+    initializing.value = true
     try {
-      controller?.abort()
-      controller = null
-      loading.value = false
-      expertAvailable.value = true
-      workspaceId.value = id
-      currentMode.value = 'fast'
-      conversations.value = []
-      conversationIds.value = { fast: null, expert: null }
-      messagesByConversation.value = {}
-      activeRun.value = null
-      initialized.value = false
-      if (!id) return
       await loadMode('fast', true, version)
       if (isCurrent(version)) initialized.value = true
     } catch (error) {
@@ -314,12 +371,7 @@ export const useAssistantStore = defineStore('assistant', () => {
       activeRun.value = null
       currentMode.value = conversation.mode
       conversationIds.value[conversation.mode] = id
-      if (!messagesByConversation.value[id]) {
-        const history = await getAssistantMessages(id)
-        if (!isCurrent(version)) return
-        messagesByConversation.value[id] = mapMessages(history.messages, conversation.mode)
-      }
-      await refreshActiveRun(conversation.mode, id, version)
+      await syncConversation(conversation.mode, id, version)
     } catch (error) {
       if (isCurrent(version)) throw error
     } finally {
@@ -506,6 +558,8 @@ export const useAssistantStore = defineStore('assistant', () => {
     if (currentConversation.value?.status === 'archived') return
     const version = stateVersion
     const mode = currentMode.value
+    // 发送前保存草稿快照：只有当前上下文的首次有效 run_started 且草稿未被改写时才清空。
+    const draftSnapshot = draft.value
     const streamController = new AbortController()
     controller?.abort()
     controller = streamController
@@ -513,6 +567,7 @@ export const useAssistantStore = defineStore('assistant', () => {
     let conversationId: number | null = null
     let streamMessageId = 0
     let terminalReceived = false
+    let accepted = false
     try {
       if (!conversationIds.value[mode]) await loadMode(mode, true, version)
       if (!isCurrent(version) || streamController.signal.aborted) return
@@ -531,6 +586,12 @@ export const useAssistantStore = defineStore('assistant', () => {
           signal: streamController.signal,
           onEvent: (event) => {
             if (!isCurrent(version) || streamController.signal.aborted || terminalReceived) return
+            if (!accepted && event.type === 'run_started'
+              && typeof event.run_id === 'number' && event.run_id > 0
+              && typeof event.message_id === 'number' && event.message_id > 0) {
+              accepted = true
+              if (draft.value === draftSnapshot) draft.value = ''
+            }
             applyEvent(event, streamMessageId)
             if (event.type === 'run_started' && event.message_id) streamMessageId = event.message_id
             if (['done', 'error', 'cancelled'].includes(event.type)) terminalReceived = true
@@ -640,6 +701,8 @@ export const useAssistantStore = defineStore('assistant', () => {
 
   return {
     currentMode,
+    context,
+    draft,
     conversations,
     currentConversations,
     currentConversationId,
@@ -650,7 +713,7 @@ export const useAssistantStore = defineStore('assistant', () => {
     initialized,
     initializing,
     expertAvailable,
-    bindWorkspace,
+    bindContext,
     selectMode,
     selectConversation,
     newConversation,

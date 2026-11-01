@@ -1,12 +1,13 @@
 <template>
   <form class="composer" @submit.prevent="submit">
     <a-textarea
-      v-model="value"
+      :model-value="modelValue"
       :disabled="disabled"
       :placeholder="mode === 'expert' ? '让专家分析、处理或修改当前工作空间…' : '问问 AI 关于当前工作空间的资料…'"
       :auto-size="{ minRows: 1, maxRows: 5 }"
       allow-clear
       class="composer-textarea"
+      @update:model-value="emit('update:modelValue', $event)"
       @keydown.meta.enter.prevent="submit"
       @keydown.ctrl.enter.prevent="submit"
     />
@@ -29,31 +30,27 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
 import { IconArrowUp, IconStop } from '@arco-design/web-vue/es/icon'
 import type { AssistantMode } from '@/api/assistant'
 
 const props = defineProps<{
+  modelValue: string
   mode: AssistantMode
   loading: boolean
   disabled?: boolean
 }>()
 
 const emit = defineEmits<{
+  (event: 'update:modelValue', value: string): void
   (event: 'send', value: string): void
   (event: 'cancel'): void
 }>()
 
-const value = ref('')
-
+// 草稿由 store 拥有：Composer 只发发送意图，不自行清稿。
 function submit() {
-  if (props.loading || props.disabled || !value.value.trim()) return
-  const query = value.value.trim()
-  value.value = ''
-  emit('send', query)
+  if (props.loading || props.disabled || !props.modelValue.trim()) return
+  emit('send', props.modelValue.trim())
 }
-
-watch(() => props.mode, () => { value.value = '' })
 </script>
 
 <style scoped>
