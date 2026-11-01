@@ -89,44 +89,95 @@ def test_fresh_upgrade_matches_models_and_supports_vectors(postgres):
         assert database.has_table(table.name)
         columns = {column["name"] for column in database.get_columns(table.name)}
         assert set(table.columns.keys()) <= columns, table.name
+
+    run_columns = {
+        column["name"] for column in database.get_columns("assistant_runs")
+    }
+    assert {"pending_permission_id", "permission_response"}.isdisjoint(
+        run_columns,
+    )
+    permission_primary_key = database.get_pk_constraint("assistant_permissions")
+    assert permission_primary_key["constrained_columns"] == [
+        "run_id",
+        "permission_id",
+    ]
+    permission_checks = {
+        check["name"]
+        for check in database.get_check_constraints("assistant_permissions")
+    }
+    assert permission_checks == {
+        "ck_assistant_permission_state",
+        "ck_assistant_permission_response",
+    }
+    permission_foreign_keys = database.get_foreign_keys(
+        "assistant_permissions",
+    )
+    assert any(
+        foreign_key["referred_table"] == "assistant_runs"
+        and foreign_key["options"].get("ondelete") == "CASCADE"
+        for foreign_key in permission_foreign_keys
+    )
+    permission_index = next(
+        index
+        for index in database.get_indexes("assistant_permissions")
+        if index["name"] == "uq_assistant_permission_open_run"
+    )
+    assert permission_index["unique"] is True
+    with postgres.connect() as conn:
+        predicate = conn.scalar(text(
+            "SELECT indexdef FROM pg_indexes "
+            "WHERE indexname='uq_assistant_permission_open_run'"
+        ))
+    assert "WHERE" in predicate and "pending" in predicate and "answered" in predicate
     with postgres.connect() as conn:
         assert conn.scalar(text("SELECT count(*) FROM users")) == 0
+        assert conn.scalar(text("SELECT value FROM sys_dict WHERE key='site_name'")) == "SKYCloud"
         assert conn.scalar(text("SELECT '[1,0,0]'::vector <=> '[0,1,0]'::vector")) == 1
-    upgrade(postgres)
-    check_schema(postgres)
-
-
-def test_unversioned_upgrade_repairs_old_columns_index_and_preserves_data(postgres):
-    snapshot = Path(__file__).resolve().parents[2] / "migrations/0001_schema.sql"
-    with postgres.begin() as conn:
-        conn.exec_driver_sql(snapshot.read_text())
-        conn.execute(text("INSERT INTO users (username,password_hash,role) VALUES ('existing','existing-hash','common')"))
-        for table, column in [("files", "content_hash"), ("mcp_tokens", "token_value"), ("workspaces", "container_id"), ("workspaces", "status"), ("workspaces", "error_message"), ("assistant_runs", "permission_response")]:
-            conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
-        conn.execute(text("DROP INDEX file_vector_idx"))
-        conn.execute(text("CREATE INDEX file_vector_idx ON files USING hnsw (vector_info vector_l2_ops)"))
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == EXPECTED_REVISION
+        cache_triggers = set(conn.scalars(text(
+            "SELECT tgname FROM pg_trigger "
+            "WHERE NOT tgisinternal AND tgname LIKE '%sql_cache_revision'"
+        )))
+        assert "sys_dict_sql_cache_revision" not in cache_triggers
+        assert {
+            "users_sql_cache_revision",
+            "files_sql_cache_revision",
+            "folder_sql_cache_revision",
+        } <= cache_triggers
     upgrade(postgres)
     check_schema(postgres)
     with postgres.connect() as conn:
-        assert conn.scalar(text("SELECT password_hash FROM users WHERE username='existing'")) == "existing-hash"
-        definition = conn.scalar(text("SELECT indexdef FROM pg_indexes WHERE indexname='file_vector_idx'"))
-        assert "vector_cosine_ops" in definition
-    database = inspect(postgres)
-    assert "content_hash" in {c["name"] for c in database.get_columns("files")}
-    assert "token_value" not in {c["name"] for c in database.get_columns("mcp_tokens")}
-    assert "permission_response" in {c["name"] for c in database.get_columns("assistant_runs")}
+        assert conn.scalar(text("SELECT count(*) FROM users")) == 0
+        assert conn.scalar(text("SELECT value FROM sys_dict WHERE key='site_name'")) == "SKYCloud"
 
-
-def test_migration_failure_rolls_back_ddl_and_revision(postgres):
-    # Incompatible historical table makes a later index operation fail.
+def test_unversioned_database_upgrade_is_rejected_without_changes(postgres):
     with postgres.begin() as conn:
-        conn.execute(text("CREATE TABLE files (id SERIAL PRIMARY KEY)"))
-    with pytest.raises(Exception):
+        conn.execute(text("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)"))
+        conn.execute(text("INSERT INTO users VALUES (7, 'preserved')"))
+
+    with pytest.raises(RuntimeError, match="(?i)unversioned|empty database"):
         upgrade(postgres)
+
     database = inspect(postgres)
-    assert not database.has_table("alembic_version")
-    assert not database.has_table("users")
-    assert "content_hash" not in {c["name"] for c in database.get_columns("files")}
+    assert database.get_table_names() == ["users"]
+    with postgres.connect() as conn:
+        assert conn.execute(text("SELECT id, username FROM users")).one() == (7, "preserved")
+
+def test_old_revision_upgrade_is_rejected_without_changes(postgres):
+    with postgres.begin() as conn:
+        conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        conn.execute(text("INSERT INTO alembic_version VALUES ('0019_sql_cache_revisions')"))
+
+    with pytest.raises(RuntimeError, match="revision|version"):
+        upgrade(postgres)
+
+    with postgres.connect() as conn:
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0019_sql_cache_revisions"
+        assert conn.scalar(text("SELECT to_regclass('public.users')")) is None
+
+
+
+
 
 
 def test_concurrent_upgrade_is_serialized(postgres):
@@ -224,35 +275,6 @@ def test_password_change_is_atomic_and_concurrent_requests_cannot_reuse_old_pass
         assert get_active_mcp_token(session, external) is None
 
 
-def test_hash_only_mcp_migration_removes_legacy_raw_tokens_and_serializes_issuance(postgres):
-    from sqlalchemy.orm import Session
-    from app.models.user import User
-    from app.models.mcp_token import McpToken
-    from app.mcp.token_service import refresh_user_mcp_token, get_active_mcp_token
-
-    upgrade(postgres, "0003_auth_version")
-    with postgres.begin() as conn:
-        user_id = conn.scalar(text("INSERT INTO users (username,password_hash,role) VALUES ('mcp-owner','hash','common') RETURNING id"))
-        conn.execute(text("INSERT INTO mcp_tokens (user_id,token_hash,token_preview,token_value,expires_at) VALUES (:user,:hash,'legacy','legacy-raw-secret',now()+interval '1 year')"), {"user": user_id, "hash": McpToken.hash_token("legacy-raw-secret")})
-    upgrade(postgres)
-    columns = {c["name"] for c in inspect(postgres).get_columns("mcp_tokens")}
-    assert "token_value" not in columns
-    with postgres.connect() as conn:
-        assert conn.scalar(text("SELECT count(*) FROM mcp_tokens WHERE revoked_at IS NULL")) == 0
-
-    def issue(_):
-        with Session(postgres) as session:
-            _, raw = refresh_user_mcp_token(session, user_id)
-            return raw
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
-        raw_tokens = list(workers.map(issue, range(2)))
-    assert len(set(raw_tokens)) == 2
-    with Session(postgres) as session:
-        assert sum(get_active_mcp_token(session, raw) is not None for raw in raw_tokens) == 1
-        records = session.query(McpToken).all()
-        assert all(raw not in str(record.to_dict()) for record in records for raw in raw_tokens)
-        assert sum(record.revoked_at is None for record in records) == 1
 
 
 def test_legacy_admin_gate_and_operator_recovery_preserve_workspace_data(postgres):
@@ -276,19 +298,15 @@ def test_legacy_admin_gate_and_operator_recovery_preserve_workspace_data(postgre
         assert conn.scalar(text("SELECT count(*) FROM workspaces WHERE owner_id=:user"), {"user": user_id}) == 1
 
 
-def test_wrong_version_blocks_startup_and_baseline_downgrade_is_rejected(postgres):
-    upgrade(postgres, "0002_vector_index")
-    with postgres.begin() as conn:
-        command.downgrade(migration_config(conn), "0001_baseline")
-    with pytest.raises(RuntimeError, match="version differs"):
-        check_schema(postgres)
-    with pytest.raises(RuntimeError, match="delete user data"):
+def test_baseline_downgrade_is_rejected(postgres):
+    upgrade(postgres)
+    with pytest.raises(RuntimeError, match="downgrade|backup"):
         with postgres.begin() as conn:
             command.downgrade(migration_config(conn), "base")
-    with postgres.connect() as conn:
-        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0001_baseline"
-    upgrade(postgres)
     check_schema(postgres)
+    with postgres.connect() as conn:
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == EXPECTED_REVISION
+
 
 
 @pytest.mark.parametrize('shared', ['user', 'workspace', 'daily'])
@@ -360,167 +378,3 @@ def test_upload_consumption_rollback_and_concurrent_completion(postgres):
         assert conn.scalar(text("SELECT sum(attempts) FROM upload_daily_usage")) == 1
 
 
-def test_legacy_mcp_audit_redaction_preserves_event_metadata(postgres):
-    upgrade(postgres, "0009_utc_timestamps")
-    with postgres.begin() as db:
-        db.execute(text("""INSERT INTO mcp_audit_logs
-            (request_id,actor_type,tool_name,arguments_summary,entity_id,success,error_type,duration_ms)
-            VALUES ('legacy','user','upload_file',:body,42,false,'tool_error',12),
-                   ('empty','user','read_file_content',NULL,43,true,NULL,4)"""),
-            {"body": '{"args":["PRIVATE_LEGACY_BODY_AND_TOKEN"]}'})
-        events = db.execute(text("""SELECT id,request_id,actor_type,tool_name,entity_id,
-            success,error_type,duration_ms,created_at FROM mcp_audit_logs ORDER BY id""")).all()
-    upgrade(postgres)
-    check_schema(postgres)
-    with postgres.connect() as db:
-        assert db.execute(text("""SELECT id,request_id,actor_type,tool_name,entity_id,
-            success,error_type,duration_ms,created_at FROM mcp_audit_logs ORDER BY id""")).all() == events
-        assert db.execute(text("SELECT arguments_summary FROM mcp_audit_logs ORDER BY id")).scalars().all() == [
-            '{"schema":2,"legacy_redacted":true}', None]
-    # Redaction executes only once; later safe summaries are not rewritten on startup.
-    with postgres.begin() as db:
-        db.execute(text("UPDATE mcp_audit_logs SET arguments_summary='safe-summary' WHERE request_id='legacy'"))
-    upgrade(postgres)
-    with postgres.connect() as db:
-        assert db.scalar(text("SELECT arguments_summary FROM mcp_audit_logs WHERE request_id='legacy'")) == 'safe-summary'
-    with pytest.raises(RuntimeError, match="durable .*cache revisions"):
-        with postgres.begin() as db:
-            command.downgrade(migration_config(db), "0009_utc_timestamps")
-    check_schema(postgres)
-    from alembic.script import ScriptDirectory
-    from alembic.config import Config
-    config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
-    with pytest.raises(RuntimeError, match="account deletion cascades"):
-        ScriptDirectory.from_config(config).get_revision("0013_account_delete_fks").module.downgrade()
-    with pytest.raises(RuntimeError, match="pending object cleanup"):
-        ScriptDirectory.from_config(config).get_revision("0012_object_delete_trigger").module.downgrade()
-    with pytest.raises(RuntimeError, match="cannot be reconstructed"):
-        ScriptDirectory.from_config(config).get_revision("0010_redact_mcp_audit").module.downgrade()
-
-
-def test_mcp_audit_redaction_failure_rolls_back_and_can_retry(postgres):
-    upgrade(postgres, "0009_utc_timestamps")
-    with postgres.begin() as db:
-        db.execute(text("""INSERT INTO mcp_audit_logs(request_id,actor_type,tool_name,arguments_summary,success)
-            VALUES ('first','user','upload_file','private-one',true),
-                   ('second','user','upload_file','private-two',true)"""))
-        db.execute(text("""CREATE FUNCTION reject_audit_redaction() RETURNS trigger LANGUAGE plpgsql AS $$
-            BEGIN IF NEW.request_id='second' THEN RAISE EXCEPTION 'injected audit migration failure'; END IF;
-            RETURN NEW; END $$"""))
-        db.execute(text("CREATE TRIGGER reject_audit BEFORE UPDATE ON mcp_audit_logs FOR EACH ROW EXECUTE FUNCTION reject_audit_redaction()"))
-    with pytest.raises(Exception, match="injected audit migration failure"):
-        upgrade(postgres)
-    with postgres.connect() as db:
-        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0009_utc_timestamps"
-        assert db.execute(text("SELECT arguments_summary FROM mcp_audit_logs ORDER BY id")).scalars().all() == ['private-one','private-two']
-    with postgres.begin() as db:
-        db.execute(text("DROP TRIGGER reject_audit ON mcp_audit_logs"))
-    upgrade(postgres)
-    check_schema(postgres)
-    with postgres.connect() as db:
-        assert db.scalar(text("SELECT count(*) FROM mcp_audit_logs WHERE arguments_summary LIKE '%private%'")) == 0
-
-
-def test_object_trigger_upgrade_is_atomic_preserves_queue_and_installs_once(postgres):
-    upgrade(postgres,'0011_object_deletions')
-    with postgres.begin() as db:
-        db.execute(text("INSERT INTO file_object_deletions(object_name,attempts,last_error_type) VALUES ('pending',2,'TimeoutError')"))
-        prior = db.execute(text('SELECT * FROM file_object_deletions')).all()
-        db.execute(text("""CREATE FUNCTION stage_deleted_file_object() RETURNS trigger LANGUAGE plpgsql AS $$
-            BEGIN RETURN OLD; END $$"""))
-    with pytest.raises(Exception,match='already exists'):
-        upgrade(postgres)
-    with postgres.begin() as db:
-        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0011_object_deletions'
-        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
-        assert db.scalar(text("SELECT count(*) FROM pg_trigger WHERE tgname='stage_file_object_cleanup'")) == 0
-        db.execute(text('DROP FUNCTION stage_deleted_file_object()'))
-    upgrade(postgres)
-    check_schema(postgres)
-    upgrade(postgres)
-    with postgres.connect() as db:
-        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
-        assert db.scalar(text("SELECT count(*) FROM pg_trigger WHERE tgname='stage_file_object_cleanup'")) == 1
-        assert db.scalar(text("SELECT confdeltype FROM pg_constraint WHERE conname='fk_files_uploader_id_users'")) == 'n'
-
-
-def test_account_foreign_key_upgrade_rolls_back_and_preserves_existing_rows(postgres):
-    upgrade(postgres, '0012_object_delete_trigger')
-    with postgres.begin() as db:
-        db.execute(text("INSERT INTO users(id,username,password_hash) VALUES (1,'kept','x')"))
-        db.execute(text("INSERT INTO mcp_tokens(user_id,token_hash,token_preview,expires_at) VALUES (1,'hash','preview',now()+interval '1 day')"))
-        db.execute(text("INSERT INTO file_object_deletions(object_name,attempts) VALUES ('pending',3)"))
-        db.execute(text("ALTER TABLE shares ADD CONSTRAINT fk_shares_user_id_users CHECK (user_id > 0)"))
-        prior = db.execute(text('SELECT * FROM file_object_deletions')).all()
-    with pytest.raises(Exception, match='already exists'):
-        upgrade(postgres)
-    with postgres.begin() as db:
-        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0012_object_delete_trigger'
-        assert db.scalar(text("SELECT confdeltype FROM pg_constraint WHERE conrelid='mcp_tokens'::regclass AND contype='f'")) == 'a'
-        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
-        assert db.scalar(text('SELECT count(*) FROM mcp_tokens')) == 1
-        db.execute(text('ALTER TABLE shares DROP CONSTRAINT fk_shares_user_id_users'))
-    upgrade(postgres)
-    upgrade(postgres)
-    check_schema(postgres)
-    with postgres.connect() as db:
-        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
-        assert db.scalar(text('SELECT count(*) FROM mcp_tokens')) == 1
-        for table,column,action in [('workspaces','owner_id','c'),('mcp_tokens','user_id','c'),('shares','user_id','c'),('workspace_members','invited_by','n')]:
-            assert db.scalar(text('SELECT confdeltype FROM pg_constraint WHERE conname=:name'), {'name':f'fk_{table}_{column}_users'}) == action
-
-
-def test_container_cleanup_migration_atomic_retry_and_capture_hooks(postgres):
-    upgrade(postgres,'0013_account_delete_fks')
-    with postgres.begin() as db:
-        db.execute(text("INSERT INTO users(id,username,password_hash) VALUES (1,'retained','x')"))
-        db.execute(text("INSERT INTO workspaces(id,name,owner_id,container_id) VALUES (1,'retained',1,'legacy')"))
-        db.execute(text("INSERT INTO opencode_runtimes(id,workspace_id,user_id,container_id) VALUES (1,1,1,'runtime')"))
-        db.execute(text("INSERT INTO file_object_deletions(object_name,attempts) VALUES ('pending',3)"))
-        prior = db.execute(text('SELECT * FROM file_object_deletions')).all()
-        db.execute(text("CREATE FUNCTION stage_detached_runtime_container() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN OLD; END $$"))
-    with pytest.raises(Exception,match='already exists'):
-        upgrade(postgres)
-    with postgres.begin() as db:
-        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0013_account_delete_fks'
-        assert db.scalar(text("SELECT to_regclass('runtime_container_deletions')")) is None
-        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
-        db.execute(text('DROP FUNCTION stage_detached_runtime_container()'))
-    upgrade(postgres)
-    upgrade(postgres)
-    check_schema(postgres)
-    with postgres.connect() as db:
-        assert db.scalar(text('SELECT count(*) FROM runtime_container_deletions')) == 0
-        assert db.scalar(text("SELECT count(*) FROM pg_trigger WHERE tgname IN ('stage_workspaces_container_delete','stage_workspaces_container_detach','stage_opencode_runtimes_container_delete','stage_opencode_runtimes_container_detach')")) == 4
-        tx = db.begin_nested()
-        db.execute(text('DELETE FROM users WHERE id=1'))
-        assert sorted(db.execute(text('SELECT container_id FROM runtime_container_deletions')).scalars().all()) == ['legacy','runtime']
-        tx.rollback()
-        assert db.scalar(text('SELECT count(*) FROM runtime_container_deletions')) == 0
-        assert db.scalar(text('SELECT count(*) FROM opencode_runtimes')) == 1
-    with postgres.begin() as db:
-        db.execute(text("UPDATE workspaces SET container_id='new-legacy' WHERE id=1"))
-        db.execute(text('UPDATE opencode_runtimes SET container_id=NULL WHERE id=1'))
-        assert sorted(db.execute(text('SELECT container_id FROM runtime_container_deletions')).scalars().all()) == ['legacy','runtime']
-        assert db.execute(text('SELECT * FROM file_object_deletions')).all() == prior
-
-
-def test_runtime_operation_upgrade_rollback_preserves_cleanup_and_retry_installs_once(postgres):
-    upgrade(postgres,'0014_container_deletions')
-    with postgres.begin() as db:
-        db.execute(text("INSERT INTO runtime_container_deletions(container_id) VALUES (:id)"),{'id':'a'*64})
-        prior = db.execute(text('SELECT * FROM runtime_container_deletions')).all()
-        db.execute(text('CREATE TABLE runtime_operations (sentinel TEXT)'))
-    with pytest.raises(Exception,match='already exists'):
-        upgrade(postgres)
-    with postgres.begin() as db:
-        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0014_container_deletions'
-        assert db.execute(text('SELECT * FROM runtime_container_deletions')).all() == prior
-        assert db.scalar(text("SELECT count(*) FROM pg_trigger WHERE tgname='cancel_deleted_runtime_operation'")) == 0
-        db.execute(text('DROP TABLE runtime_operations'))
-    upgrade(postgres)
-    upgrade(postgres)
-    check_schema(postgres)
-    with postgres.connect() as db:
-        assert db.execute(text('SELECT * FROM runtime_container_deletions')).all() == prior
-        assert db.scalar(text("SELECT count(*) FROM pg_trigger WHERE tgname='cancel_deleted_runtime_operation'")) == 1

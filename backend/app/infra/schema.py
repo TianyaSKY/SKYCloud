@@ -3,7 +3,7 @@
 from sqlalchemy import Connection, Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
-EXPECTED_REVISION = "0019_sql_cache_revisions"
+EXPECTED_REVISION = "0001_rebuild"
 
 
 def _revisions(connection: Connection) -> set[str]:

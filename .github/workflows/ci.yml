@@ -34,10 +34,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0
       - name: Compile production Python
-        run: uv run --locked python -m compileall -q backend/app backend/entry backend/runtime_controller
+        run: uv run --locked python -m compileall -q backend/app backend/entry backend/runtime_controller backend/runtime_common
       - name: Lint production Python
         run: >-
-          uv run --locked ruff check backend/app backend/entry backend/runtime_controller
+          uv run --locked ruff check backend/app backend/entry backend/runtime_controller backend/runtime_common
           --output-format json --exit-zero
           --output-file "$RUNNER_TEMP/ruff-all.json"
       - name: Enforce reviewed Ruff baseline
@@ -150,7 +150,7 @@ jobs:
           RUN_FILE_OUTBOX_TESTS: '1'
           RUN_ORGANIZE_TASK_TESTS: '1'
           RUN_TIME_BOUNDARY_TESTS: '1'
-          RUN_UTC_MIGRATION_TESTS: '1'
+          RUN_UTC_STORAGE_TESTS: '1'
           RUN_WORKSPACE_INSIGHTS_TESTS: '1'
           RUN_VECTOR_TESTS: '1'
           RUN_OBJECT_DELETION_TESTS: '1'
@@ -181,7 +181,7 @@ jobs:
           tests/integration/test_file_task_outbox.py
           tests/integration/test_organize_tasks.py
           tests/integration/test_time_boundaries.py
-          tests/integration/test_utc_migration.py
+          tests/integration/test_utc_storage.py
           tests/integration/test_workspace_insights.py
           tests/integration/test_vector_retrieval.py
           tests/integration/test_file_object_deletion.py

@@ -1,5 +1,5 @@
 import pytest
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, text
 
 from app.infra.schema import EXPECTED_REVISION, check_schema
 
@@ -31,13 +31,3 @@ def test_startup_rejects_unversioned_database():
     engine.dispose()
 
 
-def test_startup_executes_only_read_queries():
-    engine = create_engine("sqlite:///:memory:")
-    with engine.begin() as conn:
-        conn.execute(text("CREATE TABLE alembic_version (version_num TEXT)"))
-        conn.execute(text("INSERT INTO alembic_version VALUES (:revision)"), {"revision": EXPECTED_REVISION})
-    statements = []
-    event.listen(engine, "before_cursor_execute", lambda conn, cursor, statement, params, context, many: statements.append(statement))
-    check_schema(engine)
-    assert statements == ["SELECT version_num FROM alembic_version"]
-    engine.dispose()

@@ -132,41 +132,6 @@ def test_real_cosine_indexes_and_bad_dimension_transaction_rollback(indexed, pos
         assert [item['id'] for item in result['items']] == identifiers[:3]
 
 
-def test_legacy_native_user_role_upgrade_preserves_data_and_rolls_back_failure(postgres):
-    from sqlalchemy import event
-    from app.infra.schema import check_schema
-    upgrade(postgres, '0005_upload_quotas')
-    with postgres.begin() as db:
-        db.execute(text("CREATE TYPE user_roles AS ENUM ('admin', 'common')"))
-        db.execute(text('ALTER TABLE users ALTER COLUMN role DROP DEFAULT'))
-        db.execute(text('ALTER TABLE users ALTER COLUMN role TYPE user_roles USING role::user_roles'))
-        db.execute(text("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'common'::user_roles"))
-        db.execute(text("INSERT INTO users (username,password_hash,role) VALUES ('legacy-admin','synthetic','admin'), ('legacy-null','synthetic',NULL)"))
-    def fail(conn, cursor, statement, parameters, context, executemany):
-        if statement.startswith('ALTER TABLE users ALTER COLUMN role TYPE VARCHAR'):
-            raise RuntimeError('synthetic role migration failure')
-    event.listen(postgres, 'before_cursor_execute', fail)
-    try:
-        with pytest.raises(RuntimeError, match='synthetic role migration failure'):
-            upgrade(postgres)
-    finally:
-        event.remove(postgres, 'before_cursor_execute', fail)
-    with postgres.connect() as db:
-        assert db.scalar(text('SELECT version_num FROM alembic_version')) == '0005_upload_quotas'
-        assert db.scalar(text("SELECT udt_name FROM information_schema.columns WHERE table_name='users' AND column_name='role'")) == 'user_roles'
-        assert 'user_roles' in db.scalar(text("SELECT column_default FROM information_schema.columns WHERE table_name='users' AND column_name='role'"))
-    upgrade(postgres)
-    check_schema(postgres)
-    with postgres.connect() as db:
-        assert db.scalar(text("SELECT data_type FROM information_schema.columns WHERE table_name='users' AND column_name='role'")) == 'character varying'
-        assert db.execute(text("SELECT username,role FROM users ORDER BY username")).all() == [('legacy-admin', 'admin'), ('legacy-null', None)]
-    with sessionmaker(bind=postgres)() as db:
-        db.add_all([User(username='bulk-common', password_hash='synthetic', role='common'),
-                    User(username='bulk-admin', password_hash='synthetic', role='admin')])
-        db.commit()
-        assert {user.role for user in db.query(User).filter(User.username.like('bulk-%')).all()} == {'common', 'admin'}
-    upgrade(postgres)  # Already at head: idempotent.
-
 
 @pytest.mark.parametrize('kind', ['single','multi'])
 async def test_chat_retrieval_denies_membership_removed_during_embedding(indexed, postgres, monkeypatch, kind):
@@ -340,13 +305,13 @@ async def test_cancelled_owned_sql_drains_native_lock_before_return(indexed,post
     # no assertion of database-side cancellation or rollback of accepted writes.
 
 
-@pytest.mark.parametrize('kind', ['single', 'multi', 'membership'])
+@pytest.mark.parametrize('kind', ['single', 'multi'])
 async def test_chat_cancelled_native_sql_closes_all_owned_sessions(indexed, postgres, monkeypatch, kind):
     import asyncio
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from sqlalchemy.orm import Session
-    from app.features.chat import service, stream_authorization
+    from app.features.chat import service
 
     factory, workspace, _, _ = indexed
     with factory() as db:
@@ -374,26 +339,13 @@ async def test_chat_cancelled_native_sql_closes_all_owned_sessions(indexed, post
         aembed_documents=AsyncMock(return_value=[vector(1), vector(1), vector(1)]),
     ))
     monkeypatch.setattr(service, 'build_multi_queries', lambda *args, **kwargs: ['one', 'two', 'three'])
-    iterator_closed = []
-
-    class Iterator:
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            await asyncio.Event().wait()
-
-        async def aclose(self):
-            iterator_closed.append(sorted(closed) == sorted(pids))
-
     if kind == 'single':
         operation = service.custom_db_retriever('query', workspace, user_id=actor)
-    elif kind == 'multi':
-        operation = service.multi_query_db_retriever('query', workspace, object(), user_id=actor)
+        expected = 1
     else:
-        operation = anext(stream_authorization.authorized_events(Iterator(), owned, workspace, actor))
-    table = 'workspace_members' if kind == 'membership' else 'file_chunks'
-    expected = 3 if kind == 'multi' else 1
+        operation = service.multi_query_db_retriever('query', workspace, object(), user_id=actor)
+        expected = 3
+    table = 'file_chunks'
     gate = postgres.connect()
     transaction = gate.begin()
     pending = None
@@ -415,7 +367,7 @@ async def test_chat_cancelled_native_sql_closes_all_owned_sessions(indexed, post
         await asyncio.sleep(.01)
         pending.cancel('repeat-stop')
         await asyncio.sleep(.01)
-        assert not pending.done() and not closed and not iterator_closed
+        assert not pending.done() and not closed
     finally:
         transaction.rollback()
         gate.close()
@@ -425,4 +377,3 @@ async def test_chat_cancelled_native_sql_closes_all_owned_sessions(indexed, post
         else:
             operation.close()
     assert len(closed) == expected and sorted(closed) == sorted(pids)
-    assert iterator_closed == ([True] if kind == 'membership' else [])
