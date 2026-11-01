@@ -1,11 +1,9 @@
 """Continued HTTP stream authorization checks signed scope and live state."""
-import asyncio
 import time
 import jwt
 import pytest
 from app.api.stream_credentials import StreamCredential
 from app.exceptions import AuthenticationError
-from app.features.chat import repository, stream_authorization as guard
 from app.infra.extensions import SECRET_KEY
 from app.models.mcp_token import McpToken
 from app.infra.datetime_utils import utc_now
@@ -50,31 +48,3 @@ def test_mcp_stream_reads_token_state_without_commit(session, test_user, admin_u
     assert row.last_used_at is None
 
 
-@pytest.mark.parametrize('quiet', [False, True])
-async def test_guard_closes_model_on_live_credential_revocation(monkeypatch, quiet):
-    revoked, closed = [False], []
-    waiting = asyncio.Event()
-    class Credential:
-        def validate(self, session, user_id):
-            if revoked[0]: raise AuthenticationError('revoked')
-    class Owned:
-        def close(self): pass
-    monkeypatch.setattr(repository,'assert_member',lambda *args:None)
-    monkeypatch.setattr(guard,'POLL_SECONDS',0.01)
-    async def source():
-        try:
-            yield 'allowed'
-            waiting.set()
-            if quiet: await asyncio.Event().wait()
-            revoked[0] = True
-            yield 'private-late'
-        finally: closed.append(True)
-    received=[]
-    async def collect():
-        async for event in guard.authorized_events(source(), Owned, 1, 1, Credential()): received.append(event)
-    pending=asyncio.create_task(collect())
-    if quiet:
-        await asyncio.wait_for(waiting.wait(),1)
-        revoked[0]=True
-    with pytest.raises(AuthenticationError): await asyncio.wait_for(pending,2)
-    assert received == ['allowed'] and closed == [True]

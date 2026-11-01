@@ -16,7 +16,6 @@ from app.exceptions import register_exception_handlers
 from app.features.assistant.router import router as assistant_router
 from app.features.auth.router import router as auth_router
 from app.features.chat.rerank import close_rerank_client
-from app.features.chat.router import router as chat_router
 from app.features.file.router import router as file_router
 from app.features.folder.router import router as folder_router
 from app.features.inbox.router import router as inbox_router
@@ -56,7 +55,6 @@ def create_fastapi_app() -> FastAPI:
     app.include_router(sys_dict_router, prefix="/api")
     app.include_router(share_router, prefix="/api")
     app.include_router(inbox_router, prefix="/api")
-    app.include_router(chat_router, prefix="/api")
     app.include_router(token_usage_router, prefix="/api")
     app.include_router(workspace_router, prefix="/api")
     app.include_router(ui_gateway_router)

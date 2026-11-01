@@ -65,7 +65,6 @@ declare module 'vue' {
     ATree: typeof import('@arco-design/web-vue')['Tree']
     ATypographyParagraph: typeof import('@arco-design/web-vue')['TypographyParagraph']
     AUpload: typeof import('@arco-design/web-vue')['Upload']
-    ChatWidget: typeof import('./src/components/ChatWidget.vue')['default']
     ErrorBoundary: typeof import('./src/components/ErrorBoundary.vue')['default']
     ExpertToolTimeline: typeof import('./src/components/assistant/ExpertToolTimeline.vue')['default']
     FileDiffCard: typeof import('./src/components/assistant/FileDiffCard.vue')['default']

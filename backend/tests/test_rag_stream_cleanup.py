@@ -7,24 +7,141 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from app.features.assistant.engines.base import EngineRequest
 from app.features.assistant.engines.fast_engine import FastEngine
 from app.features.assistant.event_protocol import AssistantEvent
 from app.features.assistant.stream_events import engine_events_with_heartbeats
-from app.features.chat import router as chat_router
+
+from app.features.chat.query_rewrite import RewriteKeywordDimensions
+from app.features.chat.stream_events import stream_chat_events
 from app.features.chat import service as rag
 
 
+async def test_rag_stream_translates_provider_events_to_structured_payloads():
+    dimensions = RewriteKeywordDimensions(
+        topic_terms=["contract"],
+        entity_terms=[],
+        time_terms=[],
+        file_type_terms=[],
+        action_terms=[],
+        synonym_terms=[],
+    )
+    provider_events = [
+        {
+            "event": "on_chain_end",
+            "name": "keyword_gen",
+            "data": {"output": dimensions},
+            "metadata": {},
+        },
+        {
+            "event": "on_retriever_start",
+            "name": "custom_db_retriever",
+            "data": {},
+            "metadata": {},
+        },
+        {
+            "event": "on_chain_end",
+            "name": "custom_db_retriever",
+            "data": {
+                "output": [
+                    Document(
+                        page_content="private chunk",
+                        metadata={
+                            "id": 42,
+                            "name": "policy.pdf",
+                            "page_number": 3,
+                            "chunk_index": 7,
+                        },
+                    )
+                ]
+            },
+            "metadata": {},
+        },
+        {
+            "event": "on_chat_model_stream",
+            "name": "final_answer_model",
+            "data": {"chunk": AIMessageChunk(content="answer")},
+            "metadata": {},
+        },
+        {
+            "event": "on_chat_model_end",
+            "name": "final_answer_model",
+            "data": {
+                "output": AIMessage(
+                    content="",
+                    usage_metadata={
+                        "input_tokens": 4,
+                        "output_tokens": 2,
+                        "total_tokens": 6,
+                    },
+                )
+            },
+            "metadata": {"ls_model_name": "structured-model"},
+        },
+    ]
+
+    async def source():
+        for event in provider_events:
+            yield event
+
+    recorded = []
+    events = [
+        event
+        async for event in stream_chat_events(
+            source,
+            user_id=5,
+            query="question",
+            record_usage=recorded.append,
+        )
+    ]
+
+    assert [event.type for event in events] == [
+        "keywords",
+        "status",
+        "sources",
+        "token",
+        "usage",
+    ]
+    assert events[0].payload == {"content": "主题: contract"}
+    assert events[1].payload == {"content": "正在检索相关文件..."}
+    assert events[2].payload == {
+        "sources": [
+            {
+                "file_id": 42,
+                "file_name": "policy.pdf",
+                "page_number": 3,
+                "chunk_index": 7,
+            }
+        ]
+    }
+    assert events[3].payload == {"content": "answer"}
+    assert events[4].payload == {
+        "prompt_tokens": 4,
+        "completion_tokens": 2,
+        "total_tokens": 6,
+        "model_name": "structured-model",
+    }
+    assert len(recorded) == 1
+    assert recorded[0].user_id == 5
+    assert recorded[0].model_name == "structured-model"
+    assert recorded[0].prompt_tokens == 4
+    assert recorded[0].completion_tokens == 2
+    assert recorded[0].total_tokens == 6
+
+
+
+
 @pytest.mark.parametrize("cancel_waiting", [False, True])
-async def test_fast_engine_closes_legacy_stream_before_returning(cancel_waiting):
+async def test_fast_engine_closes_structured_stream_before_returning(monkeypatch, cancel_waiting):
     closed = asyncio.Event()
     waiting = asyncio.Event()
 
     async def source(*args):
         try:
-            yield 'data: {"type":"token","content":"answer"}\n\n'
+            yield AssistantEvent("token", {"content": "answer"})
             waiting.set()
             await asyncio.Event().wait()
         finally:
@@ -33,7 +150,11 @@ async def test_fast_engine_closes_legacy_stream_before_returning(cancel_waiting)
 
     # Retain the nested iterator so GC/finalization cannot satisfy the assertion.
     inner = source()
-    outer = FastEngine(legacy_generator=lambda *args: inner).stream(
+    monkeypatch.setattr(
+        "app.features.assistant.engines.fast_engine.generate_chat_events",
+        lambda *args: inner,
+    )
+    outer = FastEngine().stream(
         EngineRequest(
             run_id=1,
             user_id=2,
@@ -57,35 +178,6 @@ async def test_fast_engine_closes_legacy_stream_before_returning(cancel_waiting)
         await outer.aclose()
         await inner.aclose()
 
-
-async def test_legacy_http_stream_close_reaches_rag_generator(monkeypatch):
-    from app.features.chat import stream_authorization
-    # This test isolates nested generator cleanup; authorization has separate SQL cases.
-    monkeypatch.setattr(stream_authorization, "require_membership", lambda *args: None)
-    closed = asyncio.Event()
-
-    async def source(*args):
-        try:
-            yield 'data: {"type":"token","content":"answer"}\n\n'
-            await asyncio.Event().wait()
-        finally:
-            closed.set()
-
-    inner = source()
-    monkeypatch.setattr(chat_router, "generate_chat_events", lambda *args: inner)
-    response = await chat_router.chat(
-        SimpleNamespace(query="hello", history=[]),
-        SimpleNamespace(id=2, http_stream_credential=None),
-        SimpleNamespace(id=3),
-        session_factory=lambda: None,
-    )
-    try:
-        assert 'answer' in await anext(response.body_iterator)
-        await response.body_iterator.aclose()
-        assert closed.is_set()
-    finally:
-        await response.body_iterator.aclose()
-        await inner.aclose()
 
 
 @pytest.mark.parametrize("cancel_waiting", [False, True])
@@ -129,7 +221,8 @@ async def test_rag_close_awaits_model_cleanup_and_known_usage(monkeypatch, cance
     monkeypatch.setattr("app.infra.llm.client.record_llm_usage", lambda **kwargs: recorded.append(kwargs))
     outer = rag.generate_chat_events(2, 3, "hello", [])
     try:
-        assert 'answer' in await anext(outer)
+        event = await anext(outer)
+        assert event.type == "token" and event.payload["content"] == "answer"
         if cancel_waiting:
             pending = asyncio.create_task(anext(outer))
             await asyncio.wait_for(waiting.wait(), 1)

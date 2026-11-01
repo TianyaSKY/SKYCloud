@@ -120,23 +120,6 @@ class TestRerankGaps:
         assert result == docs
 
 
-# ---------------------------------------------------------------------------
-# chat/router.py 剩余分支
-# ---------------------------------------------------------------------------
-class TestChatRouter:
-    def test_chat_empty_query_raises(self):
-        """空 query 应抛 400（22, 27-30）。绕过 pydantic 校验。"""
-        from app.features.chat.router import chat
-        from app.features.chat.schemas import ChatRequest
-        from fastapi import HTTPException
-        # model_construct 跳过校验
-        payload = ChatRequest.model_construct(query="", history=[])
-        with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(chat(
-                payload=payload, current_user=MagicMock(id=1), workspace=MagicMock(id=1),
-                session_factory=MagicMock(),
-            ))
-        assert exc_info.value.status_code == 400
 
 
 

@@ -5,7 +5,6 @@ usage writer. This module owns iterator closure and cancellation accounting.
 """
 
 import asyncio
-import json
 from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
 from typing import Protocol, cast
@@ -15,6 +14,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.runnables.schema import StreamEvent
 from loguru import logger
 
+from app.features.assistant.event_protocol import AssistantEvent
 from app.features.chat.query_rewrite import (
     format_keyword_dimensions,
     require_keyword_dimensions,
@@ -61,16 +61,18 @@ def _model_name(event: StreamEvent) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _keyword_frame(event: StreamEvent) -> str | None:
+def _keyword_event(event: StreamEvent) -> AssistantEvent | None:
     """Emit the complete keyword dimensions once the rewriter settles."""
     if event["event"] != "on_chain_end" or event["name"] != "keyword_gen":
         return None
     dimensions = require_keyword_dimensions(_event_data(event).get("output"))
-    keywords = format_keyword_dimensions(dimensions)
-    return f"data: {json.dumps({'type': 'keywords', 'content': keywords})}\n\n"
+    return AssistantEvent(
+        type="keywords",
+        payload={"content": format_keyword_dimensions(dimensions)},
+    )
 
 
-def _token_frame(event: StreamEvent) -> str | None:
+def _token_event(event: StreamEvent) -> AssistantEvent | None:
     """Forward one final-answer model chunk, excluding rewriter tokens."""
     if event["event"] != "on_chat_model_stream":
         return None
@@ -79,11 +81,11 @@ def _token_frame(event: StreamEvent) -> str | None:
     content = _chunk_content(_event_data(event).get("chunk"))
     if not content:
         return None
-    return f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
+    return AssistantEvent(type="token", payload={"content": content})
 
 
-def _retrieval_start_frame(event: StreamEvent) -> str | None:
-    """Emit the retrieval status frame when the retriever starts."""
+def _retrieval_start_event(event: StreamEvent) -> AssistantEvent | None:
+    """Emit the retrieval status event when the retriever starts."""
     started = event["event"] == "on_retriever_start"
     chain_start = (
         event["event"] == "on_chain_start"
@@ -91,12 +93,14 @@ def _retrieval_start_frame(event: StreamEvent) -> str | None:
     )
     if not (started or chain_start):
         return None
-    content = "正在检索相关文件..."
-    return f"data: {json.dumps({'type': 'status', 'content': content})}\n\n"
+    return AssistantEvent(
+        type="status",
+        payload={"content": "正在检索相关文件..."},
+    )
 
 
-def _source_frame(event: StreamEvent) -> str | None:
-    """Expose only source metadata for the sources panel, never chunk text."""
+def _source_event(event: StreamEvent) -> AssistantEvent | None:
+    """Expose source metadata for the sources panel, never chunk text."""
     if event["event"] != "on_chain_end" or event["name"] != "custom_db_retriever":
         return None
     output: object = _event_data(event).get("output") or []
@@ -117,8 +121,7 @@ def _source_frame(event: StreamEvent) -> str | None:
                 sources.append(source)
     if not sources:
         return None
-    payload: dict[str, object] = {"type": "sources", "sources": sources}
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    return AssistantEvent(type="sources", payload={"sources": sources})
 
 
 def _accumulate_usage(event: StreamEvent, usage: dict[str, int]) -> None:
@@ -132,33 +135,36 @@ def _accumulate_usage(event: StreamEvent, usage: dict[str, int]) -> None:
     usage["total_tokens"] += total_tokens
 
 
-def _usage_frame(usage: dict[str, int], model_name: str | None) -> str | None:
-    """Render the settled usage frame, or nothing when no tokens were seen."""
+def _usage_event(
+    usage: dict[str, int],
+    model_name: str | None,
+) -> AssistantEvent | None:
+    """Build the settled usage event, or nothing when no tokens were seen."""
     if not any(usage.values()):
         return None
-    payload: dict[str, object] = {"type": "usage", **usage, "model_name": model_name}
-    return f"data: {json.dumps(payload)}\n\n"
+    return AssistantEvent(
+        type="usage",
+        payload={**usage, "model_name": model_name},
+    )
 
 
-def _event_frame(event: StreamEvent) -> str | None:
-    """Map one provider event onto at most one legacy SSE frame."""
+def _assistant_event(event: StreamEvent) -> AssistantEvent | None:
+    """Map one provider event onto at most one structured assistant event."""
     if event["event"] == "on_chat_model_end":
         return None
-    frame = _keyword_frame(event)
-    if frame is None:
-        frame = _token_frame(event)
-    if frame is None:
-        frame = _retrieval_start_frame(event)
-    if frame is None:
-        frame = _source_frame(event)
-    return frame
+    return (
+        _keyword_event(event)
+        or _token_event(event)
+        or _retrieval_start_event(event)
+        or _source_event(event)
+    )
 
 
 async def stream_chat_events(
     event_factory: Callable[[], AsyncGenerator[StreamEvent, None]], *,
     user_id: int, query: str, record_usage: UsageRecorder,
-) -> AsyncGenerator[str, None]:
-    """Translate provider events into legacy SSE frames and settle usage."""
+) -> AsyncGenerator[AssistantEvent, None]:
+    """Translate provider events into stable assistant events and settle usage."""
     usage_accumulator: dict[str, int] = {
         "prompt_tokens": 0,
         "completion_tokens": 0,
@@ -177,21 +183,20 @@ async def stream_chat_events(
                     if model_name_seen is None:
                         model_name_seen = _model_name(event)
                     continue
-                frame = _event_frame(event)
-                if frame is not None:
-                    yield frame
+                assistant_event = _assistant_event(event)
+                if assistant_event is not None:
+                    yield assistant_event
 
-        usage_frame = _usage_frame(usage_accumulator, model_name_seen)
-        if usage_frame is not None:
-            yield usage_frame
+        usage_event = _usage_event(usage_accumulator, model_name_seen)
+        if usage_event is not None:
+            yield usage_event
 
     except Exception as e:
         logger.error("Chat request failed (error_type={})", type(e).__name__)
-        payload: dict[str, object] = {
-            "type": "error",
-            "payload": {"message": "对话请求失败, 请稍后重试。"},
-        }
-        yield f"data: {json.dumps(payload)}\n\n"
+        yield AssistantEvent(
+            type="error",
+            payload={"message": "对话请求失败, 请稍后重试。"},
+        )
     except BaseException:
         failed = True
         raise

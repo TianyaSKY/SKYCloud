@@ -1,5 +1,4 @@
 """Failure logs must not serialize provider responses, exception text or SQL binds."""
-import json
 from unittest.mock import Mock, MagicMock
 import httpx
 import pytest
@@ -63,7 +62,7 @@ async def test_rerank_failure_returns_original_docs_and_keeps_exception_private(
     assert_safe(logs,'error_type=HTTPStatusError')
 
 
-async def test_chat_stream_failure_keeps_prompt_out_of_logs_and_sse(monkeypatch,logs):
+async def test_chat_stream_failure_keeps_prompt_out_of_logs_and_error_event(monkeypatch,logs):
     from app.features.chat import service
     from app.infra.llm import client
     chain=MagicMock()
@@ -78,8 +77,8 @@ async def test_chat_stream_failure_keeps_prompt_out_of_logs_and_sse(monkeypatch,
     for name in ('RunnableParallel','RunnableLambda','StrOutputParser'):
         monkeypatch.setattr(service,name,lambda *a,**kw:chain)
     recorder=Mock();monkeypatch.setattr(client,'record_llm_usage',recorder)
-    output=''.join([event async for event in service.generate_chat_events(1,2,PRIVATE,[])])
-    event = json.loads(output.removeprefix('data: ').strip())
-    assert event['type'] == 'error' and '对话请求失败' in event['payload']['message'] and PRIVATE not in output
+    events = [event async for event in service.generate_chat_events(1,2,PRIVATE,[])]
+    assert len(events) == 1 and events[0].type == 'error'
+    assert '对话请求失败' in events[0].payload['message'] and PRIVATE not in str(events[0].payload)
     recorder.assert_called_once()
     assert_safe(logs,'error_type=RuntimeError')

@@ -8,7 +8,7 @@ import pytest
 import anyio
 from langchain_core.messages import AIMessage
 
-from app.features.chat import repository, service, stream_authorization as guard
+from app.features.chat import repository, service
 
 
 @pytest.mark.parametrize('kind', ['single', 'multi'])
@@ -74,53 +74,6 @@ async def test_retrieval_cancellation_drains_every_started_session(monkeypatch, 
     assert len(sessions) == count and all(session.closed for session in sessions)
 
 
-@pytest.mark.parametrize('phase', ['initial', 'poll'])
-async def test_stream_cancellation_drains_membership_before_iterator_close(monkeypatch, phase):
-    entered, release = threading.Event(), threading.Event()
-    sessions, calls = [], []
-
-    class Owned:
-        def __init__(self):
-            self.closed = False
-            sessions.append(self)
-
-        def close(self):
-            self.closed = True
-
-    def member(*args):
-        if phase == 'initial' or len(sessions) > 1:
-            entered.set()
-            assert release.wait(3)
-
-    class Iterator:
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            await asyncio.Event().wait()
-
-        async def aclose(self):
-            calls.append(all(session.closed for session in sessions))
-
-    monkeypatch.setattr(repository, 'assert_member', member)
-    monkeypatch.setattr(guard, 'POLL_SECONDS', .01)
-    pending = asyncio.create_task(anext(guard.authorized_events(Iterator(), Owned, 2, 1)))
-    try:
-        assert await asyncio.to_thread(entered.wait, 1)
-        pending.cancel()
-        await asyncio.sleep(.01)
-        pending.cancel()
-        await asyncio.sleep(.01)
-        assert not pending.done() and not calls
-    finally:
-        release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(pending, 1)
-        for _ in range(100):
-            if all(session.closed for session in sessions):
-                break
-            await asyncio.sleep(.001)
-    assert calls == [True]
 
 
 @pytest.mark.parametrize('mode', ['record', 'producer', 'anyio'])

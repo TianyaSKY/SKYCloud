@@ -207,7 +207,6 @@ from app.features.file.schemas import FilePreflightRequest, MultipartInitRequest
 from app.features.workspace.schemas import WorkspaceCreateRequest
 from app.features.share.schemas import ShareCreateRequest
 from app.features.sys_dict.schemas import SysDictPayload
-from app.features.chat.schemas import ChatRequest
 
 
 class TestSchemas:
@@ -227,9 +226,6 @@ class TestSchemas:
         req = MultipartInitRequest(filename="big.bin", total_size=1024)
         assert req.total_size == 1024
 
-    def test_chat_request(self):
-        req = ChatRequest(query="hello")
-        assert req.query == "hello"
 
     def test_workspace_create(self):
         req = WorkspaceCreateRequest(name="ws")

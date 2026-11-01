@@ -9,7 +9,7 @@ from loguru import logger
 from sqlalchemy import Row, text
 
 from app.exceptions import PermissionDeniedError
-from app.features.workspace.permissions import assert_member, assert_member_locked
+from app.features.workspace.permissions import assert_member_locked
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Sequence
@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session
 
-    from app.api.stream_credentials import StreamCredential
     from app.infra.extensions import SessionFactory
 
 
@@ -69,17 +68,3 @@ def _owned_session(session_factory: SessionFactory) -> Generator[Session, None, 
                 )
 
 
-def require_membership(
-    session_factory: SessionFactory,
-    workspace_id: int,
-    user_id: int,
-    credential: StreamCredential | None = None,
-) -> None:
-    """Recheck the stream credential and current workspace membership."""
-    if type(user_id) is not int or user_id <= 0:
-        message = "Authenticated retrieval identity is required"
-        raise PermissionDeniedError(message)
-    with _owned_session(session_factory) as session:
-        if credential is not None:
-            credential.validate(session, user_id)
-        assert_member(session, workspace_id, user_id)

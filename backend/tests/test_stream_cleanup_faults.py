@@ -8,10 +8,9 @@ from app.features.assistant import service
 from app.features.assistant.event_protocol import AssistantEvent
 
 
-@pytest.mark.parametrize('borrowed', [False, True])
 @pytest.mark.parametrize('outcome', ['done','business-error','creation-error','cancel'])
 @pytest.mark.parametrize('invalidation_fails', [False, True])
-async def test_cleanup_fault_preserves_stream_outcome_and_thread(monkeypatch, borrowed, outcome, invalidation_fails):
+async def test_cleanup_fault_preserves_stream_outcome_and_thread(monkeypatch, outcome, invalidation_fails):
     calls, logged = [], []
     loop_thread = threading.get_ident()
     entered = asyncio.Event()
@@ -23,7 +22,6 @@ async def test_cleanup_fault_preserves_stream_outcome_and_thread(monkeypatch, bo
             assert self.owner != loop_thread and threading.get_ident() == self.owner
         def get(self, *args): self.check(); return SimpleNamespace()
         def close(self): self.fail('close')
-        def rollback(self): self.fail('rollback')
         def fail(self, phase):
             self.check(); calls.append(phase)
             raise RuntimeError('private-connection-url')
@@ -45,25 +43,14 @@ async def test_cleanup_fault_preserves_stream_outcome_and_thread(monkeypatch, bo
     monkeypatch.setattr(service, 'StreamPersistence', persistence)
     monkeypatch.setattr(service, '_stream_persisted', events)
     monkeypatch.setattr(service.logger, 'error', lambda message,*args: logged.append(message.format(*args)))
-    iterator = (
-        service.stream_prepared_run(service.StreamPreparedRunParams(
-            session=session,
-            workspace=None,
-            user_id=1,
-            conversation=None,
-            run=None,
-            history=[],
-        ))
-        if borrowed
-        else service.stream_run(service.StreamRunParams(
-            session_factory=lambda: session,
-            workspace_id=1,
-            user_id=1,
-            conversation_id=1,
-            run_id=1,
-            history=[],
-        ))
-    )
+    iterator = service.stream_run(service.StreamRunParams(
+        session_factory=lambda: session,
+        workspace_id=1,
+        user_id=1,
+        conversation_id=1,
+        run_id=1,
+        history=[],
+    ))
     async def collect(): return [event.type async for event in iterator]
     if outcome == 'done': assert await collect() == ['done']
     elif outcome == 'cancel':
@@ -74,5 +61,5 @@ async def test_cleanup_fault_preserves_stream_outcome_and_thread(monkeypatch, bo
     else:
         with pytest.raises(ResourceNotFoundError) as error: await collect()
         assert error.value is original
-    assert calls == [('rollback' if borrowed else 'close'), 'invalidate']
+    assert calls == ['close', 'invalidate']
     assert logged and 'private-' not in str(logged)

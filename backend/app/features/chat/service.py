@@ -41,6 +41,7 @@ from app.infra.owned_work import closeable_event_stream
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
 
+    from app.features.assistant.event_protocol import AssistantEvent
     from app.infra.llm.usage import TokenUsage
 
 
@@ -250,8 +251,8 @@ def _record_chat_usage(usage: TokenUsage) -> None:
 
 async def generate_chat_events(
     user_id: int, workspace_id: int, query: str, history: list[dict[str, str]],
-) -> AsyncGenerator[str, None]:
-    """SSE 异步生成器: 关键词 -> 检索状态 -> 回答 token, 并统一记 token 用量."""
+) -> AsyncGenerator[AssistantEvent, None]:
+    """Yield structured RAG events and persist accepted usage."""
     llm = get_chat_model()
     formatted_history = format_history(history)
 

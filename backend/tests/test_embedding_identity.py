@@ -95,10 +95,9 @@ rag.get_chat_model = lambda: Model()
 
 async def request(user_id, word):
     assert rag.get_embeddings_model() is shared
-    events = [json.loads(chunk.split('data:', 1)[1])
-              async for chunk in rag.generate_chat_events(user_id, user_id, word, [])]
-    assert any(event['type'] == 'keywords' for event in events), events
-    assert ''.join(event['content'] for event in events if event['type'] == 'token') == 'synthetic answer', events
+    events = [event async for event in rag.generate_chat_events(user_id, user_id, word, [])]
+    assert any(event.type == 'keywords' for event in events), events
+    assert ''.join(event.payload['content'] for event in events if event.type == 'token') == 'synthetic answer', events
 
 async def main():
     await asyncio.gather(request(1, 'one'), request(2, 'two'))
