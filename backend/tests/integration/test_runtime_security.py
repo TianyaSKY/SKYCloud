@@ -137,6 +137,11 @@ def test_production_ports_and_runtime_network_are_restricted(tmp_path, developme
     assert not any(mount.get("target", "").startswith("/docker-entrypoint-initdb.d") for mount in config["services"]["db"].get("volumes", []))
     for service in ("backend-api", "backend-worker", "backend-mcp", "llm-gateway"):
         assert config["services"][service]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
+    worker = config["services"]["backend-worker"]
+    assert worker["environment"]["RUNTIME_CONTROLLER_URL"] == "http://runtime-controller-control:5003"
+    assert worker["depends_on"]["runtime-controller"]["condition"] == "service_healthy"
+    assert "control-network" in worker["networks"]
+    assert "runtime-network" not in worker["networks"]
     for name, service in config["services"].items():
         if name != "frontend":
             ports = service.get("ports", [])
@@ -180,34 +185,48 @@ def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import Session
     from entry.bootstrap_admin import bootstrap_admin
+    from entry.migrate import upgrade
 
-    root = Path(__file__).resolve().parents[3]
     name = "skycloud-bootstrap-test-" + uuid.uuid4().hex[:12]
     password = uuid.uuid4().hex + uuid.uuid4().hex
     engine = None
     try:
-        docker("run", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=" + password,
-               "-p", "127.0.0.1::5432", "-v", str(root / "backend/init_db.sql") + ":/docker-entrypoint-initdb.d/init_db.sql:ro",
-               POSTGRES_IMAGE)
+        docker(
+            "run",
+            "-d",
+            "--name",
+            name,
+            "-e",
+            "POSTGRES_PASSWORD=" + password,
+            "-p",
+            "127.0.0.1::5432",
+            POSTGRES_IMAGE,
+        )
         port = docker("port", name, "5432/tcp").stdout.strip().rsplit(":", 1)[1]
-        engine = create_engine(f"postgresql://postgres:{password}@127.0.0.1:{port}/postgres")
+        engine = create_engine(
+            f"postgresql://postgres:{password}@127.0.0.1:{port}/postgres"
+        )
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             try:
                 with engine.connect() as conn:
-                    assert conn.scalar(text("SELECT count(*) FROM users")) == 0
+                    conn.scalar(text("SELECT 1"))
                 break
             except Exception:
                 time.sleep(0.2)
         else:
             raise AssertionError("PostgreSQL initialization failed")
-        from entry.migrate import upgrade
+
         upgrade(engine)
+        with engine.connect() as conn:
+            assert conn.scalar(text("SELECT count(*) FROM users")) == 0
 
         def create(index):
             with Session(engine) as session:
                 try:
-                    return bootstrap_admin(session, f"operator-{index}", "unique-long-admin-password")
+                    return bootstrap_admin(
+                        session, f"operator-{index}", "unique-long-admin-password"
+                    )
                 except ValueError as exc:
                     assert "already exists" in str(exc)
                     return None
@@ -226,7 +245,6 @@ def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
         if engine:
             engine.dispose()
         docker("rm", "-f", "-v", name, check=False)
-
 
 @pytest.fixture
 def controller(infrastructure, monkeypatch):
@@ -286,12 +304,15 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
     from runtime_controller.client import auth_headers
 
     workspace = Workspace(id=int(uuid.uuid4().hex[:10], 16))
-    name = f"skycloud-opencode-w{workspace.id}-u1"
+    generation = uuid.uuid4().hex
+    name = f"skycloud-opencode-w{workspace.id}-u1-g{generation}"
     infrastructure["cleanup"].append(name)
-    container = service.create_runtime_container(workspace, 1, 1)
-    inspect = json.loads(docker("inspect", container.id).stdout)[0]
+    container = controller["client"].prepare(workspace.id, 1, 1, generation)
+    assert container["status"] == "created"
+    controller["client"].action(container["id"], "start")
+    inspect = json.loads(docker("inspect", container["id"]).stdout)[0]
     snapshot = controller["client"].user_snapshot(1)
-    assert {"id": container.id, "workspace_id": workspace.id, "user_id": 1, "runtime_id": 1, "status": "running"} in snapshot
+    assert {"id": container["id"], "workspace_id": workspace.id, "user_id": 1, "runtime_id": 1, "status": "running"} in snapshot
     assert controller["client"].user_snapshot(2) == []
     policy = inspect["HostConfig"]
     assert policy["ReadonlyRootfs"] is True
@@ -299,12 +320,12 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
     assert "no-new-privileges:true" in policy["SecurityOpt"]
     assert policy["PidsLimit"] == 128
     assert inspect["Config"]["User"] == "10001:10001"
-    assert docker("exec", container.id, "id", "-u").stdout.strip() == "10001"
-    assert docker("exec", container.id, "sh", "-c", "touch /etc/write-test", check=False).returncode != 0
+    assert docker("exec", container["id"], "id", "-u").stdout.strip() == "10001"
+    assert docker("exec", container["id"], "sh", "-c", "touch /etc/write-test", check=False).returncode != 0
     assert "size=512m" in policy["Tmpfs"]["/workspace"]
     assert not policy.get("PortBindings")
     assert not inspect["Mounts"]
-    runtime = OpenCodeRuntime(container_id=container.id, id=1)
+    runtime = OpenCodeRuntime(container_id=container["id"], id=1)
     base = service.get_runtime_base_url(workspace, 1, runtime)
     with httpx.Client(base_url=base, headers=auth_headers(base), timeout=10) as client:
         deadline = time.monotonic() + 20
@@ -312,7 +333,7 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
             try:
                 response = client.get("/global/health")
             except httpx.HTTPError:
-                logs = docker("logs", container.id, check=False)
+                logs = docker("logs", container["id"], check=False)
                 (FIXTURE_DIR / 'skycloud-runtime-integration.log').write_text(logs.stdout + logs.stderr)
                 raise
             if response.status_code == 200:
@@ -331,13 +352,13 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
         assert "javascript" in asset.headers.get("content-type", "")
         (FIXTURE_DIR / 'skycloud-runtime-ui-main.js').write_text(asset.text)
         config = service.merge_opencode_chat_provider({}, {"base_url": "http://gateway:5002/v1", "model": "test-model", "api_key": "scoped-token"})
-        container.write_config(config)
-        assert container.read_config() == config
+        controller["client"].write_config(container["id"], config)
+        assert controller["client"].read_config(container["id"]) == config
         assert client.post("/instance/dispose").status_code == 200
         loaded = client.get("/config")
         assert loaded.status_code == 200
         assert loaded.json()["model"] == "skycloud-chat/test-model"
-        assert container.read_config()["provider"] == config["provider"]
+        assert controller["client"].read_config(container["id"])["provider"] == config["provider"]
     async def exercise_async_client():
         import asyncio
         from app.features.assistant.clients.opencode_client import OpenCodeClient
@@ -354,13 +375,13 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
     import asyncio
     asyncio.run(exercise_async_client())
     assert httpx.get(base + "/global/health", timeout=5).status_code == 401
-    container.stop()
-    assert controller["client"].get(container.id).status == "exited"
-    assert next(row for row in controller["client"].user_snapshot(1) if row["id"] == container.id)["status"] == "stopped"
-    container.start()
-    assert controller["client"].get(container.id).status == "running"
-    container.remove()
-    assert not any(row["id"] == container.id for row in controller["client"].user_snapshot(1))
+    controller["client"].action(container["id"], "stop")
+    assert controller["client"].inspect(container["id"])["status"] == "exited"
+    assert next(row for row in controller["client"].user_snapshot(1) if row["id"] == container["id"])["status"] == "stopped"
+    controller["client"].action(container["id"], "start")
+    assert controller["client"].inspect(container["id"])["status"] == "running"
+    controller["client"].retire_generation(workspace.id, 1, 1, generation)
+    assert not any(row["id"] == container["id"] for row in controller["client"].user_snapshot(1))
 
 
 def test_runtime_network_cannot_contact_controller_rpc_listener(infrastructure, controller):

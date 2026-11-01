@@ -7,24 +7,18 @@ from typing import TypedDict
 
 import httpx
 from loguru import logger
+from runtime_common.contracts import ContainerPayload
+from runtime_common.json_types import JsonObject
 from runtime_controller.client import (
     ControllerClient,
+    ControllerError,
     ControllerGenerationMissing,
-    RemoteContainer,
-    RemoteContainerConfig,
+    ControllerNotFound,
     runtime_url,
-)
-from runtime_controller.client import ControllerError as DockerException
-from runtime_controller.client import (
-    ControllerNotFound as ContainerNotFound,
-)
-from runtime_controller.client import (
-    ControllerNotFound as ImageNotFound,
 )
 from runtime_controller.client import (
     auth_headers as controller_auth_headers,
 )
-from runtime_controller.json_types import JsonObject
 from runtime_controller.policy import POLICY_VERSION
 from sqlalchemy import case, exists, select, update
 from sqlalchemy.orm import Session
@@ -43,6 +37,7 @@ from app.features.workspace import (
 from app.features.workspace import runtime_operation_repository as operations
 from app.features.workspace.permissions import get_member_role
 from app.features.workspace.runtime_execution import serialized
+from app.features.workspace.runtime_port import RuntimeController
 from app.features.workspace.schemas import (
     RuntimeSummary,
     WorkspaceListEntry,
@@ -125,41 +120,18 @@ class StartState:
     generation: str | None = None
 
 
-def _client() -> ControllerClient:
+def _client() -> RuntimeController:
     return ControllerClient()
 
 
-def ensure_runtime_image(client: ControllerClient) -> None:
-    """Ensure the configured upstream Runtime image is available locally."""
-    try:
-        client.images.get(OPENCODE_IMAGE)
-    except ImageNotFound:
-        logger.info("正在拉取 OpenCode 官方镜像: {}", OPENCODE_IMAGE)
-    else:
-        return
-
-    try:
-        client.images.pull(OPENCODE_IMAGE)
-    except DockerException as exc:
-        message = f"拉取 OpenCode 官方镜像失败: {OPENCODE_IMAGE}"
-        raise DockerException(message) from exc
 
 
-def _container_uses_configured_image(container: RemoteContainer) -> bool:
+def _container_uses_configured_image(container: ContainerPayload) -> bool:
     """Whether an existing Runtime was created from the current image ref."""
-    try:
-        config = container.attrs.get(
-            "Config", RemoteContainerConfig(Image=None, Labels=None),
-        )
-        image_ref = config.get("Image")
-    except (AttributeError, TypeError):
-        # Lightweight Docker fakes used by callers/tests may not expose attrs.
-        return True
-    labels = config.get("Labels")
-    if isinstance(labels, dict) and labels.get(RUNTIME_POLICY_LABEL) != POLICY_VERSION:
+    if container["labels"].get(RUNTIME_POLICY_LABEL) != POLICY_VERSION:
         return False
+    image_ref = container["image"]
     return not image_ref or image_ref == OPENCODE_IMAGE
-
 
 def runtime_uses_configured_image(runtime: OpenCodeRuntime) -> bool:
     """Check whether a persisted Runtime already uses ``OPENCODE_IMAGE``.
@@ -171,10 +143,10 @@ def runtime_uses_configured_image(runtime: OpenCodeRuntime) -> bool:
     if not container_id:
         return False
     try:
-        container = _client().containers.get(container_id)
-    except ContainerNotFound:
+        container = _client().inspect(container_id)
+    except ControllerNotFound:
         return False
-    except DockerException as exc:
+    except ControllerError as exc:
         logger.warning(
             "无法检查 OpenCode Runtime 镜像: runtime_id={}, error_type={}",
             runtime.id,
@@ -254,14 +226,6 @@ def _sync_mcp_via_runtime_api(
     )
 
 
-def runtime_container_name(workspace: Workspace, user_id: int | None = None) -> str:
-    """Return a stable container name scoped to workspace *and* user."""
-    if user_id is None:
-        # Legacy callers may still inspect the old workspace-level name. New
-        # lifecycle calls always provide user_id.
-        return f"skycloud-workspace-{workspace.id}"
-    return f"skycloud-opencode-w{workspace.id}-u{user_id}"
-
 
 def _sync_status(session: Session, workspace: Workspace) -> None:
     """Best-effort synchronization for legacy workspace container fields."""
@@ -269,16 +233,16 @@ def _sync_status(session: Session, workspace: Workspace) -> None:
     if not container_id:
         return
     try:
-        container = _client().containers.get(container_id)
-        status = "running" if container.status == "running" else "stopped"
+        container = _client().inspect(container_id)
+        status = "running" if container["status"] == "running" else "stopped"
         if workspace.status != status:
             workspace.status = status
             session.commit()
-    except ContainerNotFound:
+    except ControllerNotFound:
         workspace.container_id = None
         workspace.status = "stopped"
         session.commit()
-    except DockerException as exc:
+    except ControllerError as exc:
         logger.warning(
             "同步 OpenCode 容器状态失败: workspace_id={}, error_type={}",
             workspace.id,
@@ -301,19 +265,19 @@ def _sync_runtime_status(session: Session, runtime: OpenCodeRuntime) -> None:
     if active is not None:
         return  # Observing a stopped candidate is not a user stop request.
     try:
-        container = _client().containers.get(container_id)
-        status = "running" if container.status == "running" else "stopped"
+        container = _client().inspect(container_id)
+        status = "running" if container["status"] == "running" else "stopped"
         if runtime.status != status:
             runtime.status = status
             runtime.last_used_at = utc_now()
             session.commit()
-    except ContainerNotFound:
+    except ControllerNotFound:
         runtime.container_id = None
         runtime.status = "stopped"
         runtime.last_used_at = utc_now()
         runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
         session.commit()
-    except DockerException as exc:
+    except ControllerError as exc:
         logger.warning(
             "同步 OpenCode Runtime 状态失败: runtime_id={}, error_type={}",
             runtime.id,
@@ -388,7 +352,7 @@ def _status_snapshot(
             for row in _client().user_snapshot(user_id)
             if int(row["user_id"]) == user_id
         }
-    except DockerException as exc:
+    except ControllerError as exc:
         logger.warning(
             "批量同步 OpenCode 状态失败: user_id={}, error_type={}",
             user_id,
@@ -563,19 +527,19 @@ def _stale_attempt(
 def _select_existing_container(
     session: Session,
     runtime: OpenCodeRuntime | None,
-) -> RemoteContainer | None:
+) -> ContainerPayload | None:
     """Return a live container that already satisfies the current identity."""
     if runtime is None or not runtime.container_id:
         return None
     try:
-        existing = _client().containers.get(runtime.container_id)
-    except ContainerNotFound:
+        existing = _client().inspect(runtime.container_id)
+    except ControllerNotFound:
         return None
     cancelled = (
         session.query(RuntimeOperation.generation)
         .filter(
             RuntimeOperation.runtime_id == runtime.id,
-            RuntimeOperation.candidate_container_id == existing.id,
+            RuntimeOperation.candidate_container_id == existing["id"],
             RuntimeOperation.state == "cancelled",
         )
         .first()
@@ -619,7 +583,7 @@ def _prepare_generation(
             runtime_operations_applied = operations.record_candidate(
                 session,
                 generation,
-                prepared.id,
+                prepared["id"],
             )
             session.commit()  # Preserve candidate even if publication fails.
             runtime = operations.switch_candidate(session, generation)
@@ -632,7 +596,10 @@ def _prepare_generation(
             _retire_generation(workspace_id, user_id, runtime_id, generation)
             operations.runtime_with_write_access(session, workspace_id, user_id)
             raise
-        return runtime, runtime_operations_applied.candidate_container_id or prepared.id
+        return (
+            runtime,
+            runtime_operations_applied.candidate_container_id or prepared["id"],
+        )
     candidate_id = operation.candidate_container_id
     runtime = operations.switch_candidate(session, generation)
     session.commit()  # Old cleanup and new identity publish atomically.
@@ -648,7 +615,7 @@ def _admit_and_prepare(
     workspace: Workspace,
     state: StartState,
     attempt: StartAttempt,
-) -> tuple[OpenCodeRuntime, RemoteContainer] | None:
+) -> tuple[OpenCodeRuntime, ContainerPayload] | None:
     """Admit, prepare and inspect one generation; None means replacement queued."""
     operation = operations.admit(session, state.workspace_id, state.user_id)
     state.generation = operation.generation
@@ -675,8 +642,8 @@ def _admit_and_prepare(
         return None
     state.runtime = runtime
     try:
-        container = _client().containers.get(container_id)
-    except ContainerNotFound:
+        container = _client().inspect(container_id)
+    except ControllerNotFound:
         _replace_missing(
             session,
             workspace,
@@ -700,7 +667,7 @@ def _replace_missing(
     """Replace one vanished candidate generation and restart the attempt."""
     if candidate.attempt >= 1:
         message = "Repeated candidate disappearance; retry later"
-        raise DockerException(message)
+        raise ControllerError(message)
     operation = operations.replace_missing(
         session,
         candidate.generation,
@@ -729,7 +696,7 @@ def _start_published(
     workspace: Workspace,
     state: StartState,
     runtime: OpenCodeRuntime,
-    container: RemoteContainer,
+    container: ContainerPayload,
 ) -> None:
     """Start the published container and finish its generation bookkeeping."""
     runtime = operations.current_runtime(
@@ -738,11 +705,11 @@ def _start_published(
             workspace_id=state.workspace_id,
             user_id=state.user_id,
             runtime_id=int(runtime.id),
-            container_id=container.id,
+            container_id=container["id"],
             generation=state.generation,
         ),
     )
-    container.start()
+    _client().action(container["id"], "start")
     runtime.status = "running"
     runtime.error_message = None
     runtime.last_started_at = utc_now()
@@ -794,7 +761,7 @@ def _activate(
 def _record_start_failure(
     session: Session,
     state: StartState,
-    error: DockerException,
+    error: ControllerError,
 ) -> None:
     """Record one failed start without recreating a deleted runtime."""
     session.rollback()
@@ -848,7 +815,7 @@ def start(
                 attempt=_replacement_attempt,
             ),
         )
-    except DockerException as error:
+    except ControllerError as error:
         _record_start_failure(session, state, error)
     return workspace
 
@@ -857,13 +824,13 @@ def _stop_legacy(session: Session, workspace: Workspace) -> Workspace:
     """Stop the legacy workspace-level container without runtime ownership."""
     try:
         if workspace.container_id:
-            _client().containers.get(workspace.container_id).stop()
+            _client().action(workspace.container_id, "stop")
         workspace.status = "stopped"
         workspace.error_message = None
-    except ContainerNotFound:
+    except ControllerNotFound:
         workspace.container_id = None
         workspace.status = "stopped"
-    except DockerException as exc:
+    except ControllerError as exc:
         workspace.status = "error"
         workspace.error_message = _runtime_error_message(exc)
         logger.error(
@@ -902,14 +869,14 @@ def _stop_runtime(session: Session, workspace: Workspace, user_id: int) -> Works
     try:
         container_id = runtime.container_id
         if container_id:
-            _client().containers.get(container_id).stop()
+            _client().action(container_id, "stop")
         runtime.status = "stopped"
         runtime.error_message = None
         runtime.last_used_at = utc_now()
-    except ContainerNotFound:
+    except ControllerNotFound:
         runtime.container_id = None
         runtime.status = "stopped"
-    except DockerException as exc:
+    except ControllerError as exc:
         runtime.status = "error"
         runtime.error_message = _runtime_error_message(exc)
         logger.error(
@@ -982,23 +949,23 @@ def _restart_existing(
         container_id = runtime.container_id
         if container_id is None:
             return start(session, workspace, user_id)
-        container = _client().containers.get(container_id)
+        container = _client().inspect(container_id)
         if not _container_uses_configured_image(container):
             return start(session, workspace, user_id)
-        container.restart()
+        _client().action(container_id, "restart")
         runtime.status = "running"
         runtime.error_message = None
         runtime.last_started_at = utc_now()
         runtime.last_used_at = utc_now()
         session.commit()
         setup_mcp(session, workspace, user_id, runtime=runtime)
-    except ContainerNotFound:
+    except ControllerNotFound:
         runtime.container_id = None
         runtime.status = "stopped"
         runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
         session.commit()
         return start(session, workspace, user_id)
-    except DockerException as exc:
+    except ControllerError as exc:
         runtime.status = "error"
         runtime.error_message = _runtime_error_message(exc)
         session.commit()
@@ -1029,8 +996,8 @@ def remove_container(workspace: Workspace, session: Session | None = None) -> No
 
 
 def _remove_container_now(container_id: str) -> None:
-    with suppress(ContainerNotFound):
-        _client().containers.get(container_id).remove()
+    with suppress(ControllerNotFound):
+        _client().action(container_id, "remove")
 
 
 def remove_runtime(runtime: OpenCodeRuntime, session: Session | None = None) -> None:
@@ -1056,12 +1023,12 @@ def get_access_url(entity: Workspace | OpenCodeRuntime) -> str | None:
     if not container_id:
         return None
     try:
-        container = _client().containers.get(container_id)
-        ports = container.attrs["NetworkSettings"]["Ports"]
+        container = _client().inspect(container_id)
+        ports = container["ports"]
         mapping = ports.get("3000/tcp") or []
         if mapping and mapping[0].get("HostPort"):
             return f"http://localhost:{mapping[0]['HostPort']}"
-    except DockerException as exc:
+    except ControllerError as exc:
         logger.warning(
             "读取 OpenCode 访问地址失败: entity_id={}, error_type={}",
             getattr(entity, "id", None),
@@ -1137,12 +1104,12 @@ def merge_opencode_expert_agent(existing: "JsonObject | None") -> JsonObject:
     )
 
 
-def _read_opencode_config(container: RemoteContainer) -> JsonObject:
-    return container.read_config()
+def _read_opencode_config(container_id: str) -> JsonObject:
+    return _client().read_config(container_id)
 
 
-def _write_opencode_config(container: RemoteContainer, config: JsonObject) -> None:
-    container.write_config(config)
+def _write_opencode_config(container_id: str, config: JsonObject) -> None:
+    _client().write_config(container_id, config)
 
 
 def setup_mcp(
@@ -1210,8 +1177,7 @@ def _apply_runtime_config(
         "headers": {"Authorization": f"Bearer {token}"},
     }
     try:
-        container = _client().containers.get(container_id)
-        existing = _read_opencode_config(container)
+        existing = _read_opencode_config(container_id)
         runtime = operations.current_runtime(session, published)
         llm_token = runtime_llm_tokens.issue_token(session, runtime)
         runtime = operations.current_runtime(session, published)
@@ -1233,7 +1199,7 @@ def _apply_runtime_config(
                 runtime_config=merged,
             ),
         )
-        _write_opencode_config(container, merged)
+        _write_opencode_config(container_id, merged)
         runtime.config_version = int(runtime.config_version or 0) + 1
         runtime.last_used_at = utc_now()
         session.commit()
@@ -1246,7 +1212,7 @@ def _apply_runtime_config(
             record.id,
             runtime.config_version,
         )
-    except DockerException as exc:
+    except ControllerError as exc:
         runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))
         session.commit()
         logger.error(
@@ -1260,20 +1226,3 @@ def _apply_runtime_config(
         raise
 
 
-def create_runtime_container(
-    workspace: Workspace,
-    user_id: int,
-    runtime_id: int | None = None,
-) -> RemoteContainer:
-    """Create the container for one prepared runtime generation."""
-    if not runtime_id:
-        message = "Runtime identity is required"
-        raise BusinessRuleError(message)
-    # Policy and Docker access exist only in the restricted controller.
-    container = _client().create(int(workspace.id), int(user_id), int(runtime_id))
-    logger.info(
-        "Runtime Controller 已创建容器: runtime_id={}, container={}",
-        runtime_id,
-        container.short_id,
-    )
-    return container

@@ -60,7 +60,7 @@ def test_http_list_has_constant_sql_and_controller_calls(session, test_user, adm
             event.remove(engine, 'before_cursor_execute', record)
     assert response.status_code == 200, response.text
     controller.user_snapshot.assert_called_once_with(user_id)
-    controller.containers.get.assert_not_called()
+    controller.inspect.assert_not_called()
     selects = [sql for sql in statements if sql.lstrip().upper().startswith('SELECT')]
     assert len([sql for sql in selects if 'FROM workspaces ' in sql]) == 1
     assert len(selects) <= 4, statements  # Includes actual authentication reads.

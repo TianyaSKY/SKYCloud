@@ -56,7 +56,7 @@ def delete_account(graph):
 
 def exists(graph, runtime):
     try:
-        graph['client'].get(graph['containers'][runtime])
+        graph['client'].inspect(graph['containers'][runtime])
         return True
     except ControllerNotFound:
         return False
@@ -126,15 +126,16 @@ def test_overlapping_duplicate_intents_idempotently_remove_one_container(graph):
         db.execute(text('INSERT INTO runtime_container_deletions(container_id) VALUES (:id)'),{'id':graph['containers'][target]})
     barrier = Barrier(2)
     class Client:
-        def __init__(self): self.containers = self
-        def get(self, reference):
-            remote = ControllerClient().get(reference)
-            remove = remote.remove
-            def overlap(**kwargs):
+        def __init__(self):
+            self.client = ControllerClient()
+
+        def __getattr__(self, name):
+            return getattr(self.client, name)
+
+        def action(self, container_id, action):
+            if action == "remove":
                 barrier.wait(timeout=10)
-                return remove(**kwargs)
-            remote.remove = overlap
-            return remote
+            return self.client.action(container_id, action)
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _:cleanup(graph,controller_factory=Client,limit=1),range(2)))
     assert sorted(results) in ([0,1],[1,1])
@@ -239,18 +240,18 @@ def test_generation_prepare_preserves_old_runtime_and_replays_stopped_identity(g
     name = f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
     infrastructure['cleanup'].append(name)
     prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
-    assert prepared.id != graph['containers'][graph['id']]
-    assert prepared.status == 'created'
+    assert prepared["id"] != graph['containers'][graph['id']]
+    assert prepared["status"] == 'created'
     assert all(exists(graph,runtime) for runtime in graph['containers'])
     replay = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
-    assert replay.id == prepared.id and replay.status == 'created'
+    assert replay["id"] == prepared["id"] and replay["status"] == 'created'
     rows = graph['client'].user_snapshot(graph['id'])
-    assert {row['id'] for row in rows if row['runtime_id'] == graph['id']} == {prepared.id,graph['containers'][graph['id']]}
+    assert {row['id'] for row in rows if row['runtime_id'] == graph['id']} == {prepared["id"],graph['containers'][graph['id']]}
     with graph['db'].connect() as db:
         assert db.scalar(text('SELECT container_id FROM opencode_runtimes WHERE id=:id'),{'id':graph['id']}) == graph['containers'][graph['id']]
     from runtime_controller.client import ControllerError
     with pytest.raises(ControllerError): graph['client'].prepare(graph['id'],graph['id'],graph['id']+9,generation)
-    prepared.remove()
+    graph['client'].action(prepared["id"], "remove")
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
@@ -265,9 +266,9 @@ def test_overlapping_generation_prepares_create_only_one_stopped_container(gener
         return ControllerClient().prepare(graph['id'],graph['id'],graph['id'],generation)
     with ThreadPoolExecutor(max_workers=2) as pool:
         rows = list(pool.map(invoke,range(2)))
-    assert rows[0].id == rows[1].id and rows[0].status == rows[1].status == 'created'
+    assert rows[0]["id"] == rows[1]["id"] and rows[0]["status"] == rows[1]["status"] == 'created'
     assert all(exists(graph,runtime) for runtime in graph['containers'])
-    rows[0].remove()
+    ControllerClient().action(rows[0]["id"], "remove")
 
 
 @pytest.fixture
@@ -302,7 +303,7 @@ def test_retired_generation_survives_controller_restart_and_rejects_late_prepare
     name = f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
     infrastructure['cleanup'].append(name)
     prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
-    prepared.remove()
+    graph['client'].action(prepared["id"], "remove")
     docker('restart',controller['name'])
     port = docker('port',controller['name'],'5003/tcp').stdout.strip().rsplit(':',1)[1]
     controller['url'] = 'http://127.0.0.1:'+port
@@ -341,7 +342,7 @@ def test_parallel_prepare_and_retire_end_with_durable_retirement(generation_grap
     barrier = Barrier(2)
     def prepare():
         barrier.wait(timeout=10)
-        try: return graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation).id
+        try: return graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)["id"]
         except ControllerError: return None
     def retire():
         barrier.wait(timeout=10)
@@ -373,9 +374,9 @@ def test_prepared_generation_replays_same_identity_after_controller_restart(gene
         time.sleep(0.1)
     else: raise AssertionError('Controller restart did not recover')
     replay = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
-    assert replay.id == prepared.id and replay.status == 'created'
+    assert replay["id"] == prepared["id"] and replay["status"] == 'created'
     assert all(exists(graph,runtime) for runtime in graph['containers'])
-    replay.remove()
+    graph['client'].action(replay["id"], "remove")
 
 
 def test_durable_candidate_survives_sql_switch_failure_and_can_be_retired(generation_graph,infrastructure):
@@ -390,7 +391,7 @@ def test_durable_candidate_survives_sql_switch_failure_and_can_be_retired(genera
     infrastructure['cleanup'].append(f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}")
     prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
     with graph['factory']() as session:
-        repository.record_candidate(session,generation,prepared.id)
+        repository.record_candidate(session,generation,prepared["id"])
         session.commit()
     with graph['db'].begin() as db:
         db.execute(text("""CREATE FUNCTION reject_operation_switch() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -402,16 +403,16 @@ def test_durable_candidate_survives_sql_switch_failure_and_can_be_retired(genera
             session.commit()
         session.rollback()
         operation = session.get(RuntimeOperation,generation)
-        assert operation.state == 'preparing' and operation.candidate_container_id == prepared.id
+        assert operation.state == 'preparing' and operation.candidate_container_id == prepared["id"]
         repository.cancel_runtime(session,graph['id'])
         session.commit()
     with graph['db'].connect() as db:
         assert db.scalar(text('SELECT container_id FROM opencode_runtimes WHERE id=:id'),{'id':graph['id']}) == graph['containers'][graph['id']]
         assert db.scalar(text('SELECT count(*) FROM runtime_container_deletions')) == 0
-    assert graph['client'].get(prepared.id).status == 'created'
+    assert graph['client'].inspect(prepared["id"])["status"] == 'created'
     assert all(exists(graph,runtime) for runtime in graph['containers'])
     assert retire_cancelled_operations(session_factory=graph['factory']) == 1
-    with pytest.raises(ControllerNotFound): graph['client'].get(prepared.id)
+    with pytest.raises(ControllerNotFound): graph['client'].inspect(prepared["id"])
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
@@ -436,7 +437,7 @@ def test_member_demotion_cancels_generation_atomically_and_worker_retires(genera
     with graph['db'].begin() as db:
         db.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=:id AND user_id=:id"),{'id':graph['id']})
     assert retire_cancelled_operations(session_factory=graph['factory']) == 1
-    with pytest.raises(ControllerNotFound): graph['client'].get(prepared.id)
+    with pytest.raises(ControllerNotFound): graph['client'].inspect(prepared["id"])
     with pytest.raises(ControllerError): graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
@@ -455,7 +456,7 @@ def test_owner_cascade_retains_cancelled_generation_without_foreign_keys(generat
     with graph['db'].connect() as db:
         assert db.execute(text('SELECT generation,state,finished_at FROM runtime_operations')).one() == (generation,'cancelled',None)
     assert retire_cancelled_operations(session_factory=graph['factory']) == 1
-    with pytest.raises(ControllerNotFound): graph['client'].get(prepared.id)
+    with pytest.raises(ControllerNotFound): graph['client'].inspect(prepared["id"])
     assert cleanup(graph) == 3
     assert exists(graph,graph['other'])
 
@@ -488,7 +489,7 @@ def test_committed_candidate_switch_captures_only_old_identity_and_stop_cancels(
     infrastructure['cleanup'].append(f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}")
     prepared = graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
     with graph['factory']() as session:
-        repository.record_candidate(session,generation,prepared.id)
+        repository.record_candidate(session,generation,prepared["id"])
         session.commit()
         repository.switch_candidate(session,generation)
         session.commit()
@@ -496,12 +497,12 @@ def test_committed_candidate_switch_captures_only_old_identity_and_stop_cancels(
         assert db.scalar(text('SELECT state FROM runtime_operations')) == 'switched'
         assert db.execute(text('SELECT container_id FROM runtime_container_deletions')).scalars().all() == [graph['containers'][graph['id']]]
     assert cleanup(graph) == 1 and not exists(graph,graph['id'])
-    assert graph['client'].get(prepared.id).status == 'created'
+    assert graph['client'].inspect(prepared["id"])["status"] == 'created'
     with graph['db'].begin() as db:
         db.execute(text("UPDATE opencode_runtimes SET status='stopped' WHERE id=:id"),{'id':graph['id']})
         assert db.scalar(text('SELECT state FROM runtime_operations')) == 'cancelled'
     assert retire_cancelled_operations(session_factory=graph['factory']) == 1
-    with pytest.raises(ControllerNotFound): graph['client'].get(prepared.id)
+    with pytest.raises(ControllerNotFound): graph['client'].inspect(prepared["id"])
     assert all(exists(graph,runtime) for runtime in graph['containers'] if runtime != graph['id'])
 
 
@@ -524,7 +525,7 @@ def test_generation_retirement_sql_marker_failure_replays_durable_fence(generati
         db.execute(text("CREATE TRIGGER reject_retirement_marker BEFORE UPDATE OF finished_at ON runtime_operations FOR EACH ROW WHEN (NEW.finished_at IS NOT NULL) EXECUTE FUNCTION reject_retirement_marker()"))
     with pytest.raises(Exception,match='injected retirement marker'):
         retire_cancelled_operations(session_factory=graph['factory'])
-    with pytest.raises(ControllerNotFound): graph['client'].get(prepared.id)
+    with pytest.raises(ControllerNotFound): graph['client'].inspect(prepared["id"])
     with graph['db'].begin() as db:
         assert db.scalar(text('SELECT finished_at FROM runtime_operations')) is None
         db.execute(text('DROP TRIGGER reject_retirement_marker ON runtime_operations'))
@@ -550,7 +551,7 @@ def test_production_start_sql_failure_preserves_old_and_durable_candidate(genera
         assert db.scalar(text('SELECT container_id FROM opencode_runtimes WHERE id=:id'),{'id':graph['id']}) == graph['containers'][graph['id']]
         assert db.scalar(text('SELECT count(*) FROM runtime_container_deletions')) == 0
     infrastructure['cleanup'].append(f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{operation.generation}")
-    assert graph['client'].get(operation.candidate_container_id).status == 'created'
+    assert graph['client'].inspect(operation.candidate_container_id)["status"] == 'created'
     assert all(exists(graph,runtime) for runtime in graph['containers'])
     from app.features.workspace import runtime_operation_repository as repository
     from app.infra.runtime_operation_cleanup import retire_cancelled_operations
@@ -647,10 +648,10 @@ def test_missing_ready_candidate_reports_exact_identity_without_recreating(gener
     name=f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
     infrastructure['cleanup'].append(name)
     prepared=graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
-    docker('rm','-f',prepared.id)  # External disappearance bypasses retirement.
+    docker('rm','-f',prepared["id"])  # External disappearance bypasses retirement.
     with pytest.raises(ControllerGenerationMissing) as error:
         graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
-    assert error.value.generation==generation and error.value.container_id==prepared.id
+    assert error.value.generation==generation and error.value.container_id==prepared["id"]
     assert docker('inspect',name,check=False).returncode!=0
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
@@ -667,7 +668,7 @@ def test_detached_completed_generation_is_fenced_even_when_physical_id_already_m
     infrastructure['cleanup'].append(name)
     prepared=graph['client'].prepare(graph['id'],graph['id'],graph['id'],generation)
     with graph['factory']() as session:
-        operations.record_candidate(session,generation,prepared.id); session.commit()
+        operations.record_candidate(session,generation,prepared["id"]); session.commit()
         operations.switch_candidate(session,generation); session.commit()
         # Configuration isn't exercised here: mark the lifecycle as completed
         # so this tests ID-queue retirement independent of active cancellation.
@@ -677,7 +678,7 @@ def test_detached_completed_generation_is_fenced_even_when_physical_id_already_m
         operation.finished_at=utc_now()
         session.commit()
     assert cleanup(graph)==1 and not exists(graph,graph['id'])
-    docker('rm','-f',prepared.id)
+    docker('rm','-f',prepared["id"])
     with graph['db'].begin() as db:
         db.execute(text('UPDATE opencode_runtimes SET container_id=NULL WHERE id=:id'),{'id':graph['id']})
     assert cleanup(graph)==1

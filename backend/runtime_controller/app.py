@@ -19,36 +19,36 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from starlette.concurrency import run_in_threadpool
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
-
-from runtime_controller.client import ContainerPayload, UserSnapshotRow
-from runtime_controller.engine import (
-    Engine,
-    MissingGenerationCandidate,
-    MissingRuntime,
-    PolicyViolation,
-)
-from runtime_controller.http_decode import (
+from runtime_common.contracts import ContainerPayload, UserSnapshotRow
+from runtime_common.http_decode import (
     ACCEPT_ENCODING,
     content_encoding,
     decoded_bytes,
 )
-from runtime_controller.http_stream import (
+from runtime_common.http_stream import (
     UpstreamLease,
     UpstreamResponse,
     deadline_reader,
 )
-from runtime_controller.http_wait import WaitPolicy, guarded_wait
-from runtime_controller.json_types import JsonObject
-from runtime_controller.policy import Settings
-from runtime_controller.socket_relay import (
+from runtime_common.http_wait import WaitPolicy, guarded_wait
+from runtime_common.json_types import JsonObject
+from runtime_common.socket_relay import (
     MAX_MESSAGE,
     SocketSlots,
     direct_connect,
     pump,
     terminal_path,
 )
+from starlette.concurrency import run_in_threadpool
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from runtime_controller.engine import (
+    Engine,
+    MissingGenerationCandidate,
+    MissingRuntime,
+    PolicyViolation,
+)
+from runtime_controller.policy import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -115,18 +115,13 @@ WS_INTERNAL_ERROR: Final = 1011
 WS_TRY_AGAIN_LATER: Final = 1013
 
 
-class CreateRequest(BaseModel):
-    """Fixed runtime identity accepted by the create RPC."""
+class PrepareRequest(BaseModel):
+    """Fixed runtime identity plus the generation to prepare."""
 
     model_config = ConfigDict(extra="forbid")
     workspace_id: int = Field(gt=0, le=2**63 - 1)
     user_id: int = Field(gt=0, le=2**63 - 1)
     runtime_id: int = Field(gt=0, le=2**63 - 1)
-
-
-class PrepareRequest(CreateRequest):
-    """Fixed runtime identity plus the generation to prepare."""
-
     generation: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
@@ -308,21 +303,12 @@ def _validate_user_id(user_id: int) -> None:
         raise HTTPException(STATUS_UNPROCESSABLE, "Invalid user identity")
 
 
-def _register_health_routes(app: FastAPI, settings: Settings, engine: Engine) -> None:
+def _register_health_routes(app: FastAPI) -> None:
     @app.get("/health", response_model=None)
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.post("/image/ensure", response_model=None)
-    def image_ensure() -> dict[str, str]:
-        engine.ensure_image()
-        return {"image": settings.image}
-
-
 def _register_container_routes(app: FastAPI, engine: Engine) -> None:
-    @app.post("/containers/create", response_model=None)
-    def create(payload: CreateRequest) -> ContainerPayload:
-        return engine.create(**payload.model_dump())
 
     @app.post("/containers/prepare", response_model=None)
     def prepare(payload: PrepareRequest) -> ContainerPayload:
@@ -664,7 +650,7 @@ def create_app(
     )
     app.add_middleware(AuthAndBodyLimit, token=active_settings.token)
     _register_exception_handlers(app)
-    _register_health_routes(app, active_settings, active_engine)
+    _register_health_routes(app)
     _register_container_routes(app, active_engine)
     _register_config_routes(app, active_engine)
     _register_relay_routes(app, active_settings, active_engine, slots)

@@ -54,19 +54,75 @@ def test_controller_missing_local_digest_never_attempts_registry_pull(monkeypatc
 
 def test_restart_recreates_runtime_using_previous_policy(session, test_workspace, test_user):
     from unittest.mock import patch
-    from types import SimpleNamespace
     from app.features.workspace import docker_service
     from app.models.opencode_runtime import OpenCodeRuntime
     runtime = OpenCodeRuntime(workspace_id=test_workspace.id,user_id=test_user.id,container_id='a'*64,status='running')
     session.add(runtime)
     session.commit()
-    container = Mock()
-    container.attrs = {'Config': {'Image': docker_service.OPENCODE_IMAGE,
-                                 'Labels': {'skycloud.runtime_policy': '3'}}}
-    client = Mock(); client.containers.get.return_value = container
+    container = {
+        "id": "a" * 64,
+        "name": "runtime",
+        "status": "running",
+        "image": docker_service.OPENCODE_IMAGE,
+        "labels": {"skycloud.runtime_policy": "3"},
+        "ports": {},
+    }
+    client = Mock()
+    client.inspect.return_value = container
     with patch.object(docker_service.runtime_service, 'get_runtime', return_value=runtime), \
          patch.object(docker_service, '_client', return_value=client), \
          patch.object(docker_service, 'start', return_value=test_workspace) as start:
         assert docker_service.restart(session, test_workspace, test_user.id) is test_workspace
         start.assert_called_once_with(session, test_workspace, test_user.id)
-    container.restart.assert_not_called()
+    client.action.assert_not_called()
+
+
+def test_start_reuses_the_current_container_after_a_completed_generation(
+    session, test_workspace, test_user,
+):
+    """A finished generation must not force a new one on the next start."""
+    from unittest.mock import patch
+    from app.features.workspace import docker_service
+    from app.models.opencode_runtime import OpenCodeRuntime
+    from app.models.runtime_operation import RuntimeOperation
+
+    runtime = OpenCodeRuntime(
+        workspace_id=test_workspace.id,
+        user_id=test_user.id,
+        container_id='a' * 64,
+        status='running',
+    )
+    session.add(runtime)
+    session.flush()
+    session.add(RuntimeOperation(
+        generation='g1',
+        workspace_id=test_workspace.id,
+        user_id=test_user.id,
+        runtime_id=runtime.id,
+        candidate_container_id='a' * 64,
+        state='complete',
+    ))
+    session.commit()
+
+    container = {
+        "id": "a" * 64,
+        "name": "runtime",
+        "status": "running",
+        "image": docker_service.OPENCODE_IMAGE,
+        "labels": {
+            docker_service.RUNTIME_POLICY_LABEL: docker_service.POLICY_VERSION,
+        },
+        "ports": {},
+    }
+    client = Mock()
+    client.inspect.return_value = container
+    client.prepare.return_value = {**container, "id": "b" * 64}
+    with patch.object(docker_service, '_client', return_value=client), \
+         patch.object(docker_service, '_apply_runtime_config'):
+        docker_service.start(session, test_workspace, test_user.id)
+
+    client.prepare.assert_not_called()
+    client.action.assert_called_once_with('a' * 64, 'start')
+    session.expire_all()
+    assert session.get(OpenCodeRuntime, runtime.id).container_id == 'a' * 64
+    assert session.query(RuntimeOperation).count() == 1

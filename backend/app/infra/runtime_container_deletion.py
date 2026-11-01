@@ -5,11 +5,11 @@ from contextlib import suppress
 from datetime import datetime, timedelta
 
 from loguru import logger
+from runtime_common.contracts import ContainerPayload
 from runtime_controller.client import (
     ControllerClient,
     ControllerError,
     ControllerNotFound,
-    RemoteContainer,
 )
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -49,10 +49,10 @@ def clock(session: Session) -> datetime:
 def _inspect_container(
     client: ControllerClient,
     container_id: str,
-) -> RemoteContainer | None:
+) -> ContainerPayload | None:
     """Inspect one exact container, falling back to legacy removal."""
     try:
-        return client.containers.get(container_id)
+        return client.inspect(container_id)
     except ControllerNotFound:
         # Absence alone does not retire a known generation.
         return None
@@ -63,19 +63,22 @@ def _inspect_container(
         return None
 
 
-def _verify_container_identity(container: RemoteContainer, container_id: str) -> None:
+def _verify_container_identity(
+    container: ContainerPayload,
+    container_id: str,
+) -> None:
     """Refuse to clean a container whose full identity differs."""
-    if container.id != container_id:
+    if container["id"] != container_id:
         message = "Container cleanup requires exact identity"
         raise ControllerError(message)
 
 
 def _verify_generation(
-    container: RemoteContainer,
+    container: ContainerPayload,
     generation: RuntimeOperation,
 ) -> None:
     """Refuse a container whose labels do not match the recorded generation."""
-    labels = container.attrs["Config"]["Labels"] or {}
+    labels = container["labels"]
     expected = {
         "skycloud.generation": generation.generation,
         "skycloud.workspace_id": str(generation.workspace_id),
@@ -114,7 +117,7 @@ def _clean_container(
     elif container is not None:
         with suppress(ControllerNotFound):
             # Completed-marker replay / concurrent removal.
-            container.remove()
+            client.action(container_id, "remove")
 
 
 def _is_still_referenced(session: Session, container_id: str) -> bool:

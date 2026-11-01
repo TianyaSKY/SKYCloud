@@ -70,13 +70,23 @@ def controller(identity, *, change=None):
     labels = {'skycloud.workspace_id': str(workspace), 'skycloud.user_id': str(user), 'skycloud.runtime_id': str(runtime)}
     if change == 'identity':
         labels['skycloud.user_id'] = '999'
-    container = SimpleNamespace(id='a'*64, status='exited' if change == 'stopped' else 'running', attrs={'Config': {'Labels': labels}})
-    def get(ref):
+    container = SimpleNamespace(
+        id='a'*64,
+        status='exited' if change == 'stopped' else 'running',
+        attrs={'Config': {'Labels': labels}},
+    )
+
+    def inspect(ref):
         assert ref == 'a'*64
         if change == 'gone':
             raise ControllerNotFound('Absent')
-        return container
-    return lambda: SimpleNamespace(containers=SimpleNamespace(get=get))
+        return {
+            'id': container.id,
+            'status': container.status,
+            'labels': container.attrs['Config']['Labels'],
+        }
+
+    return lambda: SimpleNamespace(inspect=inspect)
 
 def test_recovery_intent_is_atomic_and_retry_blocks_new_admission(seeded):
     factory, identity = seeded
@@ -323,7 +333,6 @@ def test_idle_stream_commits_partial_checkpoint_before_quiet_provider_wait(seede
                 metadata={},
                 usage={},
             ),
-            None,
             commit=False,
         )
         assert persistence.poll(LeasePoll(

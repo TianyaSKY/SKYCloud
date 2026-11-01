@@ -22,7 +22,10 @@ def client(session, test_user, test_workspace, monkeypatch):
         container_id=None, status='stopped', error_message=None, private_token='private'))
     return TestClient(app, raise_server_exceptions=False)
 
-@pytest.mark.parametrize('suffix', ['start', 'stop', 'restart', 'setup-mcp', 'runtime/start', 'runtime/stop', 'runtime/restart'])
+@pytest.mark.parametrize(
+    'suffix',
+    ['runtime/start', 'runtime/stop', 'runtime/restart', 'runtime/setup-mcp'],
+)
 def test_runtime_operations_use_typed_envelope(client, test_workspace, suffix):
     response = client.post(f'/workspace/{test_workspace.id}/opencode/{suffix}')
     assert response.status_code == 200, response.text

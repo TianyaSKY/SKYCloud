@@ -87,29 +87,45 @@ def provisioner(session,test_workspace,test_user,monkeypatch):
     containers = {}
     calls = []
     class Container:
-        def __init__(self,identity):
+        def __init__(self, identity):
             self.id = identity
             self.status = 'created'
-            self.attrs = {'Config':{'Image':docker_service.OPENCODE_IMAGE,'Labels':{'skycloud.runtime_policy':POLICY_VERSION}}}
             self.config = {}
+        def payload(self):
+            return {
+                "id": self.id,
+                "name": "skycloud-runtime-" + self.id,
+                "status": self.status,
+                "image": docker_service.OPENCODE_IMAGE,
+                "labels": {"skycloud.runtime_policy": POLICY_VERSION},
+                "ports": {},
+            }
         def start(self): self.status = 'running'
-        def read_config(self): return self.config
-        def write_config(self,config): self.config = config
     class Controller:
-        containers = SimpleNamespace(get=lambda identity: containers[identity])
-        def prepare(self,workspace,user,runtime,generation):
+        def prepare(self,workspace_id,user_id,runtime_id,generation):
             calls.append(generation)
             containers.setdefault('b'*64,Container('b'*64))
-            return containers['b'*64]
+            return containers['b'*64].payload()
+        def inspect(self, identity):
+            return containers[identity].payload()
+        def action(self, identity, action):
+            if action in {"start", "restart"}:
+                containers[identity].start()
+            elif action == "stop":
+                containers[identity].status = "stopped"
+        def read_config(self, identity):
+            return containers[identity].config.copy()
+        def write_config(self, identity, config):
+            containers[identity].config = config.copy()
     monkeypatch.setattr(docker_service,'_client',Controller)
     monkeypatch.setattr(docker_service,'_sync_mcp_via_runtime_api',lambda *args,**kwargs:None)
-    return containers,calls
+    return containers,calls,Container
 
 
 def test_production_start_prepares_publishes_configures_and_completes(session,test_workspace,test_user,provisioner):
     from app.features.workspace import docker_service
     from app.models.mcp_runtime_token import McpRuntimeToken
-    containers,calls = provisioner
+    containers,calls,_ = provisioner
     docker_service.start(session,test_workspace,test_user.id)
     operation = session.query(RuntimeOperation).one()
     runtime = session.query(OpenCodeRuntime).one()
@@ -225,16 +241,11 @@ def test_stop_commits_cancellation_before_rpc_so_crash_cannot_resume(session,tes
     from app.features.workspace import docker_service
     from app.infra.runtime_operations import recover_runtime_operations
     events = []
-    containers = {'a'*64: None}
-    class Container:
-        def __init__(self,identity): self.id = identity
-        def stop(self): events.append(('stop',self.id))
-        def start(self): events.append(('start',self.id))
-    containers['a'*64] = Container('a'*64)
     class Controller:
-        containers = SimpleNamespace(get=lambda identity: containers[identity])
+        def action(self, identity, action):
+            events.append((action, identity))
         def retire_generation(self,*args): events.append(('retire',args))
-    monkeypatch.setattr(docker_service,'_client',Controller)
+    monkeypatch.setattr(docker_service, '_client', Controller)
 
     runtime=OpenCodeRuntime(workspace_id=test_workspace.id,user_id=test_user.id,container_id='a'*64,status='running')
     session.add(runtime); session.flush()
@@ -257,11 +268,30 @@ def test_stop_commits_cancellation_before_rpc_so_crash_cannot_resume(session,tes
     assert not [event for event in events if event[0]=='start']
 
 
+def test_stop_keeps_the_container_and_stages_no_deletion(session,test_workspace,test_user,monkeypatch):
+    """A normal stop must not be treated as the physical-removal trigger."""
+    from app.features.workspace import docker_service
+    events=[]
+    class Controller:
+        def action(self, identity, action): events.append((action, identity))
+    monkeypatch.setattr(docker_service, '_client', Controller)
+
+    runtime=OpenCodeRuntime(workspace_id=test_workspace.id,user_id=test_user.id,container_id='a'*64,status='running')
+    session.add(runtime); session.commit()
+
+    docker_service.stop(session,test_workspace,test_user.id)
+    session.expire_all()
+    stopped=session.get(OpenCodeRuntime,runtime.id)
+    assert stopped.status=='stopped' and stopped.container_id=='a'*64
+    assert events==[('stop','a'*64)]
+    assert session.query(RuntimeContainerDeletion).count()==0
+
+
 def test_start_conflict_after_prepare_retires_candidate_instead_of_leaving_it(session,test_workspace,test_user,monkeypatch):
     """A generation cancelled mid-prepare must be retired by the caller, not orphaned."""
     from app.features.workspace import docker_service
     events = []
-    prepared = SimpleNamespace(id='b'*64)
+    prepared = {"id": 'b'*64}
 
     class Controller:
         def prepare(self,workspace_id,user_id,runtime_id,generation):
@@ -295,7 +325,7 @@ def test_start_publication_conflict_survives_retirement_failure(
     class Controller:
         def prepare(self, workspace_id, user_id, runtime_id, generation):
             identity = (workspace_id, user_id, runtime_id, generation)
-            candidates[identity] = SimpleNamespace(id='b' * 64)
+            candidates[identity] = {"id": 'b' * 64}
             with Session(
                 bind=session.get_bind(), join_transaction_mode='create_savepoint'
             ) as other:
@@ -337,7 +367,7 @@ def test_recovery_defers_failed_generation_and_completes_later_generation(
     session.commit()
     controller = docker_service._client
     unavailable = True
-    containers, _ = provisioner
+    containers, _, container_type = provisioner
 
     class Controller(controller):
         def prepare(self, workspace_id, user_id, runtime_id, generation):
@@ -347,7 +377,8 @@ def test_recovery_defers_failed_generation_and_completes_later_generation(
                 workspace_id, user_id, runtime_id, generation
             )
             if generation == first_generation:
-                return containers.setdefault('c' * 64, type(container)('c' * 64))
+                replacement = containers.setdefault('c' * 64, container_type('c' * 64))
+                return replacement.payload()
             return container
 
     monkeypatch.setattr(docker_service, '_client', Controller)

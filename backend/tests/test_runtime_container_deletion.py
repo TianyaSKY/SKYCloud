@@ -1,5 +1,4 @@
 """Transactional fallback and cleanup identity contracts using actual SQLite."""
-from types import SimpleNamespace
 from sqlalchemy.orm import Session
 from app.features.workspace.docker_service import remove_runtime
 from app.infra.datetime_utils import utc_now
@@ -39,15 +38,19 @@ def test_detach_and_credential_revocation_rollback_together(session,test_workspa
 def test_controller_failure_persists_type_and_missing_replay_completes(session):
     session.add(RuntimeContainerDeletion(container_id='a'*64))
     session.commit()
-    def reject(ref): raise RuntimeError('sensitive details must not be retained')
-    assert reaper(session,lambda:SimpleNamespace(containers=SimpleNamespace(get=reject))) == 0
+    class RejectingController:
+        def inspect(self, _ref):
+            raise RuntimeError('sensitive details must not be retained')
+    assert reaper(session, RejectingController) == 0
     session.expire_all()
     row = session.query(RuntimeContainerDeletion).one()
     assert row.attempts == 1 and row.last_error_type == 'RuntimeError' and row.completed_at is None
     row.next_attempt_at = utc_now()
     session.commit()
-    def missing(ref): raise ControllerNotFound('already gone')
-    assert reaper(session,lambda:SimpleNamespace(containers=SimpleNamespace(get=missing))) == 1
+    class MissingController:
+        def inspect(self, _ref):
+            raise ControllerNotFound('already gone')
+    assert reaper(session, MissingController) == 1
     session.expire_all()
     assert row.completed_at is not None and row.last_error_type is None and row.attempts == 2
 
@@ -56,8 +59,20 @@ def test_alias_reference_cannot_remove_a_different_full_identity(session):
     removed = []
     session.add(RuntimeContainerDeletion(container_id='a'*12))
     session.commit()
-    container = SimpleNamespace(id='a'*64,remove=lambda **kwargs:removed.append(True))
-    assert reaper(session,lambda:SimpleNamespace(containers=SimpleNamespace(get=lambda ref:container))) == 0
+    container = {
+        "id": 'a'*64,
+        "name": "runtime",
+        "status": "running",
+        "image": None,
+        "labels": {},
+        "ports": {},
+    }
+    class Controller:
+        def inspect(self, _ref):
+            return container
+        def action(self, _ref, _action):
+            removed.append(True)
+    assert reaper(session, Controller) == 0
     assert removed == []
     session.expire_all()
     row = session.query(RuntimeContainerDeletion).one()
@@ -69,8 +84,21 @@ def test_live_reference_is_retained_then_detach_stages_new_cleanup(session,test_
     session.add(RuntimeContainerDeletion(container_id=runtime.container_id))
     session.commit()
     removed = []
-    container = SimpleNamespace(id='a'*64,remove=lambda **kwargs:removed.append(True))
-    factory = lambda:SimpleNamespace(containers=SimpleNamespace(get=lambda ref:container))
+    container = {
+        "id": 'a'*64,
+        "name": "runtime",
+        "status": "running",
+        "image": None,
+        "labels": {},
+        "ports": {},
+    }
+    class Controller:
+        def inspect(self, _ref):
+            return container
+        def action(self, _ref, action):
+            assert action == "remove"
+            removed.append(True)
+    factory = Controller
     assert reaper(session,factory) == 1 and removed == []
     remove_runtime(runtime,session)
     session.commit()
@@ -103,10 +131,12 @@ def test_missing_full_id_still_retires_known_generation_before_completion(sessio
     session.commit()
     remove_runtime(runtime,session); session.commit()
     calls=[]
-    def missing(ref): raise ControllerNotFound('old ID absent')
-    client=SimpleNamespace(containers=SimpleNamespace(get=missing),
-        retire_generation=lambda *args:calls.append(args))
-    assert reaper(session,lambda:client)==1
+    class MissingGenerationController:
+        def inspect(self, _ref):
+            raise ControllerNotFound('old ID absent')
+        def retire_generation(self, *args):
+            calls.append(args)
+    assert reaper(session, MissingGenerationController) == 1
     assert calls==[(test_workspace.id,test_user.id,runtime.id,generation)]
 
 
@@ -118,10 +148,12 @@ def test_missing_id_generation_retirement_failure_keeps_intent(session,test_work
         runtime_id=runtime.id,candidate_container_id=runtime.container_id,state='complete',finished_at=utc_now()))
     session.commit()
     remove_runtime(runtime,session); session.commit()
-    def missing(ref): raise ControllerNotFound('old ID absent')
-    def unsupported(*args): raise ControllerError('unsupported retirement')
-    client=SimpleNamespace(containers=SimpleNamespace(get=missing),retire_generation=unsupported)
-    assert reaper(session,lambda:client)==0
+    class FailedRetirementController:
+        def inspect(self, _ref):
+            raise ControllerNotFound('old ID absent')
+        def retire_generation(self, *_args):
+            raise ControllerError('unsupported retirement')
+    assert reaper(session, FailedRetirementController) == 0
     session.expire_all()
     intent=session.query(RuntimeContainerDeletion).one()
     assert intent.completed_at is None and intent.last_error_type=='ControllerError'

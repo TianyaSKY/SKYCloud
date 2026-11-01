@@ -105,16 +105,34 @@ def test_inspection_never_returns_environment(settings, managed_container):
 def test_request_auth_and_no_arbitrary_docker_api(settings):
     engine = Mock()
     with TestClient(create_app(settings, engine), raise_server_exceptions=False) as client:
-        assert client.post("/containers/create", json={}).status_code == 401
+        assert client.get("/containers/" + "a" * 64).status_code == 401
         headers = {"X-Runtime-Controller-Token": settings.token}
-        response = client.post("/containers/create", headers=headers, json={"workspace_id": 2, "user_id": 3, "runtime_id": 4, "volumes": {"/": "/host"}})
-        assert response.status_code == 422
-        engine.create.assert_not_called()
         assert client.post("/containers/" + "a" * 64 + "/actions/exec", headers=headers).status_code == 422
         assert client.post("/containers/" + "a" * 64 + "/exec", headers=headers, json={"cmd": "cat /etc/shadow"}).status_code == 404
         response = client.put("/containers/" + "a" * 64 + "/config", headers=headers, content=b"a" * (MAX_BODY + 1))
         assert response.status_code == 413
         engine.write_config.assert_not_called()
+
+
+def test_removed_create_route_is_method_not_allowed(settings):
+    engine = Mock()
+    with TestClient(create_app(settings, engine), raise_server_exceptions=False) as client:
+        headers = {"X-Runtime-Controller-Token": settings.token}
+        assert client.post("/containers/create", headers=headers, json={}).status_code == 405
+        assert client.post("/containers/create", json={}).status_code == 401
+
+
+def test_missing_container_hides_controller_error_text(settings):
+    engine = Mock()
+    engine.inspect.side_effect = MissingRuntime("private-docker-sentinel")
+    with TestClient(create_app(settings, engine), raise_server_exceptions=False) as client:
+        response = client.get(
+            "/containers/" + "a" * 64,
+            headers={"X-Runtime-Controller-Token": settings.token},
+        )
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Runtime not found"}
+        assert "private-docker-sentinel" not in response.text
 
 
 def test_config_writer_never_executes_caller_commands(settings, managed_container):
@@ -349,7 +367,7 @@ def test_controller_socket_auth_and_fixed_target(settings):
 
 
 async def test_websocket_redirect_never_reaches_another_host():
-    from runtime_controller.socket_relay import direct_connect
+    from runtime_common.socket_relay import direct_connect
     from websockets.exceptions import InvalidStatus
     hits = []
     async def attacker(reader, writer):

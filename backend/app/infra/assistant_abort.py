@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from loguru import logger
+from runtime_common.contracts import ContainerPayload
 from runtime_controller.client import (
     ControllerClient,
     ControllerError,
     ControllerNotFound,
-    RemoteContainer,
     runtime_url,
 )
 from sqlalchemy import func, select
@@ -99,11 +99,11 @@ def _expected_labels(target: AbortTarget) -> dict[str, str]:
     return expected
 
 
-def _verify_target(target: AbortTarget, container: RemoteContainer) -> None:
+def _verify_target(target: AbortTarget, container: ContainerPayload) -> None:
     """Refuse a container whose identity differs from the captured intent."""
-    labels = container.attrs["Config"]["Labels"] or {}
+    labels = container["labels"]
     expected = _expected_labels(target)
-    if container.id != target.container_id or any(
+    if container["id"] != target.container_id or any(
         labels.get(key) != value for key, value in expected.items()
     ):
         message = "Remote cleanup identity mismatch"
@@ -116,14 +116,14 @@ def _abort_target(
     abort_function: Callable[[AbortTarget], None],
 ) -> None:
     """Abort one live provider session, then release its runtime lease."""
-    container: RemoteContainer | None
+    container: ContainerPayload | None
     try:
-        container = controller_factory().containers.get(target.container_id)
+        container = controller_factory().inspect(target.container_id)
     except ControllerNotFound:
         container = None
     if container is not None:
         _verify_target(target, container)
-        if target.session_id and container.status not in SETTLED_CONTAINER_STATES:
+        if target.session_id and container["status"] not in SETTLED_CONTAINER_STATES:
             abort_function(target)
     if target.lease_token:
         extensions.redis_client.eval(

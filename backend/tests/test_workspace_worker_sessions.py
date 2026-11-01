@@ -20,8 +20,8 @@ CASES = [
     ('GET', '/workspace', None, 'get_user_workspace_rows'),
     ('GET', '/workspace/2', None, 'assert_member'),
     ('POST', '/workspace/2/opencode/ui-ticket', None, 'issue'),
-    *[('POST', '/workspace/2/opencode/' + action, None, 'assert_can_write')
-      for action in ('start', 'stop', 'restart', 'setup-mcp', 'runtime/start', 'runtime/stop', 'runtime/restart')],
+    *[('POST', '/workspace/2/opencode/runtime/' + action, None, 'assert_can_write')
+      for action in ('start', 'stop', 'restart', 'setup-mcp')],
     ('GET', '/workspace/2/opencode/runtime', None, 'assert_member'),
     ('PUT', '/workspace/2', {'name': 'Updated'}, 'update_workspace'),
     ('DELETE', '/workspace/2', None, 'delete_workspace'),

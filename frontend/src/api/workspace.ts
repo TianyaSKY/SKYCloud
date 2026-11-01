@@ -60,17 +60,17 @@ export const removeMember = (workspaceId: number, userId: number) => {
 
 /** 启动协作空间关联的 SKYcode Docker 工作区。 */
 export const startSkycode = (workspaceId: number) => {
-  return request.post<unknown>(`/workspace/${workspaceId}/opencode/start`).then(workspaceInfoSchema.parse)
+  return request.post<unknown>(`/workspace/${workspaceId}/opencode/runtime/start`).then(workspaceInfoSchema.parse)
 }
 
 /** 停止协作空间关联的 SKYcode Docker 工作区。 */
 export const stopSkycode = (workspaceId: number) => {
-  return request.post<unknown>(`/workspace/${workspaceId}/opencode/stop`).then(workspaceInfoSchema.parse)
+  return request.post<unknown>(`/workspace/${workspaceId}/opencode/runtime/stop`).then(workspaceInfoSchema.parse)
 }
 
 /** 重启协作空间关联的 SKYcode Docker 工作区。 */
 export const restartSkycode = (workspaceId: number) => {
-  return request.post<unknown>(`/workspace/${workspaceId}/opencode/restart`).then(workspaceInfoSchema.parse)
+  return request.post<unknown>(`/workspace/${workspaceId}/opencode/runtime/restart`).then(workspaceInfoSchema.parse)
 }
 
 /** Exchange the current session for a one-use runtime UI launch URL. */

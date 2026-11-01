@@ -6,6 +6,7 @@ from datetime import timedelta
 from loguru import logger
 from runtime_controller.client import ControllerClient
 
+from app.features.workspace.runtime_port import RuntimeController
 from app.infra.extensions import SessionFactory, SessionLocal
 from app.infra.runtime_container_deletion import clock
 from app.models.runtime_operation import RuntimeOperation
@@ -14,7 +15,7 @@ from app.models.runtime_operation import RuntimeOperation
 def retire_cancelled_operations(
     *,
     session_factory: SessionFactory = SessionLocal,
-    controller_factory: Callable[[], ControllerClient] = ControllerClient,
+    controller_factory: Callable[[], RuntimeController] = ControllerClient,
     limit: int = 20,
 ) -> int:
     """Retire each cancelled generation the Controller still owns."""

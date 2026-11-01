@@ -74,11 +74,12 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
         operation=db.query(RuntimeOperation).filter_by(runtime_id=runtime_id).one()
         assert operation.state=='complete' and operation.finished_at is not None
         assert operation.candidate_container_id==runtime.container_id and operation.previous_container_id is None
-        container=docker_service._client().containers.get(runtime.container_id)
-        inspected=json.loads(docker('inspect',container.id).stdout)[0]
+        container_id=runtime.container_id
+        assert container_id is not None
+        inspected=json.loads(docker('inspect',container_id).stdout)[0]
         assert inspected['Name']==f'/skycloud-opencode-w{ws_id}-u{user_id}-g{operation.generation}'
         assert inspected['State']['Running'] is True
-        mount_rows = docker('exec', container.id, 'cat', '/proc/mounts').stdout.splitlines()
+        mount_rows = docker('exec', container_id, 'cat', '/proc/mounts').stdout.splitlines()
         temporary = next(row for row in mount_rows if row.split()[1] == '/tmp')
         native = next(row for row in mount_rows if row.split()[1] == '/tmp/.native')
         assert 'noexec' in temporary.split()[3].split(',')
@@ -125,7 +126,7 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
         created = client.post('/runtime-ui/pty?directory=%2Fworkspace', headers=headers,
             json={'command': 'sh', 'args': [], 'cwd': '/workspace', 'title': 'Real terminal', 'env': {}})
         if created.status_code != 200:
-            logs = docker('logs', container.id, check=False)
+            logs = docker('logs', container_id, check=False)
             (FIXTURE_DIR / 'skycloud-ui-terminal-runtime.log').write_text(logs.stdout + logs.stderr)
         assert created.status_code == 200, created.text
         pty_id = created.json()['id']
@@ -171,4 +172,4 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
                 pass
         assert exc.value.code == 1008
         assert client.post(f'/api/workspace/{ws_id}/opencode/ui-ticket', headers=auth).status_code == (403 if revocation == 'membership' else 401)
-    container.remove()
+        controller['client'].action(container_id, 'remove')

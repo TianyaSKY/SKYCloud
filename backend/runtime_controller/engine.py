@@ -15,20 +15,19 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Protocol, TypedDict, Unpack, cast
 
 import docker
+from runtime_common.contracts import ContainerPayload, UserSnapshotRow
+from runtime_common.json_types import JsonObject, JsonValue
 
-from runtime_controller.client import ContainerPayload, UserSnapshotRow
 from runtime_controller.generation_journal import (
     GenerationJournal,
     GenerationRecord,
     JournalIdentityError,
 )
-from runtime_controller.json_types import JsonObject, JsonValue
 from runtime_controller.policy import (
     CONFIG_PATH,
     POLICY_VERSION,
     RUNTIME_USER,
     DockerCreateOptions,
-    DockerRunOptions,
     Settings,
     container_create_options,
     container_name,
@@ -131,10 +130,6 @@ class ContainerApi(Protocol):
 
 class RuntimeContainers(Protocol):
     """The fixed Docker container collection surface used by this engine."""
-
-    def run(self, **options: Unpack[DockerRunOptions]) -> "Container":
-        """Create and start one container from the fixed policy options."""
-        ...
 
     def create(self, **options: Unpack[DockerCreateOptions]) -> "Container":
         """Create one stopped container from the fixed policy options."""
@@ -343,26 +338,6 @@ class Engine:
             )
         return result
 
-    def create(
-        self, workspace_id: int, user_id: int, runtime_id: int,
-    ) -> ContainerPayload:
-        """Create one managed workspace runtime container."""
-        network = self.client.networks.get(self.settings.network)
-        if not network.attrs.get("Internal"):
-            message = "Runtime network must be internal"
-            raise PolicyViolation(message)
-        self.ensure_image()
-        name = container_name(workspace_id, user_id)
-        try:
-            existing: Container | None = self.managed(name)
-        except MissingRuntime:
-            existing = None
-        if existing is not None:
-            existing.remove(force=True, v=True)
-        options = self.settings.container_options(workspace_id, user_id, runtime_id)
-        container = self._containers().run(**options)
-        container.reload()
-        return self.inspect(self._container_id(container))
 
     def _generation_record(
         self, request: GenerationRequest, *, nonblocking: bool = False,

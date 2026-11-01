@@ -6,17 +6,23 @@ not about Docker.
 """
 import os
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.orm import sessionmaker
-
 from app.exceptions import PermissionDeniedError
-from app.features.workspace import docker_service, runtime_operation_repository as repository
+from app.features.workspace import docker_service
+from app.features.workspace import runtime_operation_repository as repository
+from app.features.workspace.runtime_port import RuntimeController
 from app.infra.runtime_operations import recover_runtime_operations
 from app.models.runtime_operation import RuntimeOperation
 from entry.migrate import upgrade
-from tests.integration.test_migrations import postgres  # noqa: F401  (fixture re-export)
+from runtime_common.contracts import ContainerPayload, UserSnapshotRow
+from runtime_common.json_types import JsonObject
+from sqlalchemy import text
+from sqlalchemy.orm import sessionmaker
+from tests.integration.test_migrations import (
+    postgres,  # noqa: F401  (fixture re-export)
+)
 
 pytestmark = pytest.mark.skipif(
     os.getenv('RUN_RUNTIME_LIFECYCLE_TESTS') != '1',
@@ -42,27 +48,55 @@ def graph(postgres):  # noqa: F811
     return sessionmaker(bind=postgres)
 
 
-class RecordingController:
-    """Controller seam: records lifecycle RPCs and runs a per-test prepare hook."""
+class RecordingController(RuntimeController):
+    """Recording implementation of the explicit Controller RPC contract."""
 
     def __init__(self, recorder):
         self.events = recorder['events']
         self.prepare_hook = recorder['prepare_hook']
-        self.containers = SimpleNamespace(get=self._container)
 
-    def _container(self, identity):
-        container = SimpleNamespace(id=identity)
-        container.stop = lambda: self.events.append(('stop', identity))
-        container.start = lambda: self.events.append(('start', identity))
-        return container
+    def inspect(self, ref: str) -> ContainerPayload:
+        self.events.append(('inspect', ref))
+        return ContainerPayload(
+            id=ref,
+            name=ref,
+            status='created',
+            image='',
+            labels={},
+            ports={},
+        )
 
-    def prepare(self, workspace_id, user_id, runtime_id, generation):
+    def prepare(self, workspace_id: int, user_id: int, runtime_id: int, generation: str) -> ContainerPayload:
         self.events.append(('prepare', generation))
         self.prepare_hook(int(runtime_id))
-        return SimpleNamespace(id=NEW_CONTAINER)
+        return ContainerPayload(
+            id=NEW_CONTAINER,
+            name=NEW_CONTAINER,
+            status='created',
+            image='',
+            labels={},
+            ports={},
+        )
 
-    def retire_generation(self, workspace_id, user_id, runtime_id, generation):
+    def retire_generation(self, workspace_id: int, user_id: int, runtime_id: int, generation: str) -> None:
         self.events.append(('retire', (workspace_id, user_id, runtime_id, generation)))
+
+    def remove_legacy(self, ref: str) -> None:
+        self.events.append(('remove_legacy', ref))
+
+    def user_snapshot(self, user_id: int) -> list[UserSnapshotRow]:
+        self.events.append(('user_snapshot', user_id))
+        return []
+
+    def action(self, container_id: str, action: Literal['start', 'stop', 'restart', 'remove']) -> None:
+        self.events.append((action, container_id))
+
+    def read_config(self, container_id: str) -> JsonObject:
+        self.events.append(('read_config', container_id))
+        return {}
+
+    def write_config(self, container_id: str, config: JsonObject) -> None:
+        self.events.append(('write_config', container_id))
 
 
 @pytest.fixture

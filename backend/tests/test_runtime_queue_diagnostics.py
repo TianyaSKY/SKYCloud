@@ -37,9 +37,11 @@ def runtime(session, test_workspace, test_user):
 
 @pytest.mark.parametrize('action', ['start', 'stop', 'restart', 'legacy-stop', 'setup'])
 def test_lifecycle_rpc_failure_keeps_safe_state(session, test_workspace, test_user, runtime, monkeypatch, diagnostics, action):
-    error = docker_service.DockerException(SECRET)
+    error = docker_service.ControllerError(SECRET)
     client = MagicMock()
-    client.containers.get.side_effect = error
+    client.inspect.side_effect = error
+    client.action.side_effect = error
+    client.read_config.side_effect = error
     monkeypatch.setattr(docker_service, '_client', lambda: client)
     if action == 'legacy-stop':
         test_workspace.container_id = runtime.container_id
@@ -47,7 +49,7 @@ def test_lifecycle_rpc_failure_keeps_safe_state(session, test_workspace, test_us
         assert docker_service.stop(session, test_workspace) is test_workspace
         assert test_workspace.status == 'error' and SECRET not in test_workspace.error_message
     elif action == 'setup':
-        with pytest.raises(docker_service.DockerException) as raised:
+        with pytest.raises(docker_service.ControllerError) as raised:
             docker_service.setup_mcp(session, test_workspace, test_user.id, runtime=runtime)
         assert raised.value is error
         tokens = session.query(McpRuntimeToken).filter_by(runtime_id=runtime.id).all()
@@ -63,8 +65,8 @@ def test_lifecycle_rpc_failure_keeps_safe_state(session, test_workspace, test_us
 @pytest.mark.parametrize('operation', ['legacy-status', 'runtime-status', 'list', 'image', 'access'])
 def test_snapshot_failure_does_not_mutate_identity(session, test_workspace, test_user, runtime, monkeypatch, diagnostics, operation):
     client = MagicMock()
-    client.containers.get.side_effect = docker_service.DockerException(SECRET)
-    client.user_snapshot.side_effect = docker_service.DockerException(SECRET)
+    client.inspect.side_effect = docker_service.ControllerError(SECRET)
+    client.user_snapshot.side_effect = docker_service.ControllerError(SECRET)
     monkeypatch.setattr(docker_service, '_client', lambda: client)
     if operation == 'legacy-status':
         test_workspace.container_id = 'a'*64

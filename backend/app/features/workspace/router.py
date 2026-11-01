@@ -33,7 +33,7 @@ from app.features.workspace.schemas import (
 from app.features.workspace.ui_tickets import UiTicket
 from app.infra.extensions import SECRET_KEY, SessionFactory, get_session_factory
 from app.models.user import User
-from app.models.workspace import WorkspaceDict, WorkspaceMemberDict
+from app.models.workspace import Workspace, WorkspaceDict, WorkspaceMemberDict
 
 router = APIRouter(tags=["workspace"])
 
@@ -82,10 +82,9 @@ def list_workspaces(
 
 def _docker_response(
     session: Session,
-    workspace_id: int,
-    user_id: int | None = None,
+    workspace: Workspace,
+    user_id: int,
 ) -> WorkspaceRuntimeData:
-    workspace = workspace_service.get_workspace(session, workspace_id)
     summary = docker_service.summary(session, workspace, user_id)
     return {**workspace.to_dict(), **summary}
 
@@ -153,72 +152,6 @@ def issue_ui_ticket(
         )
 
 
-@router.post(
-    "/workspace/{workspace_id}/opencode/start",
-    response_model=SuccessResponse[RuntimeWorkspaceResponse],
-)
-def start_opencode_workspace(
-    workspace_id: int,
-    current_user: CurrentUser,
-    session_factory: SessionFactoryDep,
-) -> SuccessEnvelope[WorkspaceRuntimeData]:
-    """启动当前协作空间的 OpenCode 容器; 编辑者及以上可操作."""
-    with session_factory() as session:
-        assert_can_write(session, workspace_id, current_user.id)
-        workspace = workspace_service.get_workspace(session, workspace_id)
-        docker_service.start(session, workspace, current_user.id)
-        return success_payload(_docker_response(session, workspace_id, current_user.id))
-
-
-@router.post(
-    "/workspace/{workspace_id}/opencode/stop",
-    response_model=SuccessResponse[RuntimeWorkspaceResponse],
-)
-def stop_opencode_workspace(
-    workspace_id: int,
-    current_user: CurrentUser,
-    session_factory: SessionFactoryDep,
-) -> SuccessEnvelope[WorkspaceRuntimeData]:
-    """停止当前协作空间的 OpenCode 容器."""
-    with session_factory() as session:
-        assert_can_write(session, workspace_id, current_user.id)
-        workspace = workspace_service.get_workspace(session, workspace_id)
-        docker_service.stop(session, workspace, current_user.id)
-        return success_payload(_docker_response(session, workspace_id, current_user.id))
-
-
-@router.post(
-    "/workspace/{workspace_id}/opencode/restart",
-    response_model=SuccessResponse[RuntimeWorkspaceResponse],
-)
-def restart_opencode_workspace(
-    workspace_id: int,
-    current_user: CurrentUser,
-    session_factory: SessionFactoryDep,
-) -> SuccessEnvelope[WorkspaceRuntimeData]:
-    """重启当前协作空间的 OpenCode 容器并刷新 MCP 配置."""
-    with session_factory() as session:
-        assert_can_write(session, workspace_id, current_user.id)
-        workspace = workspace_service.get_workspace(session, workspace_id)
-        docker_service.restart(session, workspace, current_user.id)
-        return success_payload(_docker_response(session, workspace_id, current_user.id))
-
-
-@router.post(
-    "/workspace/{workspace_id}/opencode/setup-mcp",
-    response_model=SuccessResponse[RuntimeWorkspaceResponse],
-)
-def setup_opencode_mcp(
-    workspace_id: int,
-    current_user: CurrentUser,
-    session_factory: SessionFactoryDep,
-) -> SuccessEnvelope[WorkspaceRuntimeData]:
-    """重新写入当前用户的 MCP Token, 用于 Token 刷新后的修复."""
-    with session_factory() as session:
-        assert_can_write(session, workspace_id, current_user.id)
-        workspace = workspace_service.get_workspace(session, workspace_id)
-        docker_service.setup_mcp(session, workspace, current_user.id)
-        return success_payload(_docker_response(session, workspace_id, current_user.id))
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +171,8 @@ def get_opencode_runtime(
     """Return only the current member's OpenCode Runtime status."""
     with session_factory() as session:
         assert_member(session, workspace_id, current_user.id)
-        return success_payload(_docker_response(session, workspace_id, current_user.id))
+        workspace = workspace_service.get_workspace(session, workspace_id)
+        return success_payload(_docker_response(session, workspace, current_user.id))
 
 
 @router.post(
@@ -255,7 +189,7 @@ def start_opencode_runtime(
         assert_can_write(session, workspace_id, current_user.id)
         workspace = workspace_service.get_workspace(session, workspace_id)
         docker_service.start(session, workspace, current_user.id)
-        return success_payload(_docker_response(session, workspace_id, current_user.id))
+        return success_payload(_docker_response(session, workspace, current_user.id))
 
 
 @router.post(
@@ -272,7 +206,7 @@ def stop_opencode_runtime(
         assert_can_write(session, workspace_id, current_user.id)
         workspace = workspace_service.get_workspace(session, workspace_id)
         docker_service.stop(session, workspace, current_user.id)
-        return success_payload(_docker_response(session, workspace_id, current_user.id))
+        return success_payload(_docker_response(session, workspace, current_user.id))
 
 
 @router.post(
@@ -289,7 +223,24 @@ def restart_opencode_runtime(
         assert_can_write(session, workspace_id, current_user.id)
         workspace = workspace_service.get_workspace(session, workspace_id)
         docker_service.restart(session, workspace, current_user.id)
-        return success_payload(_docker_response(session, workspace_id, current_user.id))
+        return success_payload(_docker_response(session, workspace, current_user.id))
+
+
+@router.post(
+    "/workspace/{workspace_id}/opencode/runtime/setup-mcp",
+    response_model=SuccessResponse[RuntimeWorkspaceResponse],
+)
+def setup_opencode_runtime_mcp(
+    workspace_id: int,
+    current_user: CurrentUser,
+    session_factory: SessionFactoryDep,
+) -> SuccessEnvelope[WorkspaceRuntimeData]:
+    """Refresh the caller's MCP token and Runtime configuration."""
+    with session_factory() as session:
+        assert_can_write(session, workspace_id, current_user.id)
+        workspace = workspace_service.get_workspace(session, workspace_id)
+        docker_service.setup_mcp(session, workspace, current_user.id)
+        return success_payload(_docker_response(session, workspace, current_user.id))
 
 
 @router.put(
