@@ -1,4 +1,6 @@
 """HTTP contracts for personal and administrator accounting endpoints."""
+from datetime import timedelta
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -7,7 +9,7 @@ from app.exceptions import register_exception_handlers
 from app.features.token_usage import router as usage
 from app.infra.extensions import get_db, get_session_factory
 from sqlalchemy.orm import sessionmaker
-from app.infra.datetime_utils import utc_now
+from app.infra.datetime_utils import BEIJING_TZ, utc_now
 from app.models.token_usage_log import TokenUsageLog
 
 @pytest.fixture
@@ -75,6 +77,60 @@ def test_log_filters_pagination_and_openapi(contract):
         for op in ops.values():
             ref=op['responses']['200']['content']['application/json']['schema']['$ref']
             assert schema['components']['schemas'][ref.split('/')[-1]]['properties']['success']['const'] is True
+
+def test_maximum_calendar_end_date_is_a_valid_bounded_filter(contract):
+    client, app, user, admin, log = contract
+    page = data(client.get(
+        "/token-usage/logs",
+        params={"start_date": "9999-12-31", "end_date": "9999-12-31"},
+    ))
+    assert page["total"] == 0
+    app.dependency_overrides[get_current_user] = lambda: admin
+    all_users = data(client.get(
+        "/admin/token-usage/logs",
+        params={
+            "user_id": user.id,
+            "start_date": "9999-12-31",
+            "end_date": "9999-12-31",
+        },
+    ))
+    assert all_users["total"] == 0
+
+
+def test_date_only_end_includes_only_the_selected_day_for_user_and_admin(
+    contract,
+    session,
+):
+    client, app, user, admin, log = contract
+    selected_day = log.created_at.astimezone(BEIJING_TZ).date().isoformat()
+    next_day_log = TokenUsageLog(
+        user_id=user.id,
+        action="chat",
+        prompt_tokens=1,
+        total_tokens=1,
+        created_at=log.created_at + timedelta(days=1),
+    )
+    session.add(next_day_log)
+    session.commit()
+
+    personal = data(client.get(
+        "/token-usage/logs",
+        params={"start_date": selected_day, "end_date": selected_day},
+    ))
+    assert personal["total"] == 1
+    assert personal["items"][0]["id"] == log.id
+
+    app.dependency_overrides[get_current_user] = lambda: admin
+    all_users = data(client.get(
+        "/admin/token-usage/logs",
+        params={
+            "user_id": user.id,
+            "start_date": selected_day,
+            "end_date": selected_day,
+        },
+    ))
+    assert all_users["total"] == 1
+    assert all_users["items"][0]["id"] == log.id
 
 
 def test_stats_output_private_field_filtered_and_invalid_output_safe(contract,monkeypatch):

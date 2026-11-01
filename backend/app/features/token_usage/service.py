@@ -232,11 +232,19 @@ def _date_bounds(
             if start_date
             else None
         )
-        end = (
-            to_utc_datetime(dt.datetime.fromisoformat(end_date))
-            if end_date
-            else None
-        )
+        if end_date:
+            parsed_end = dt.datetime.fromisoformat(end_date)
+            if parsed_end.date().isoformat() == end_date:
+                # Date-only filters include the whole selected calendar day.
+                # Use the date's own maximum instant: incrementing the date would
+                # overflow on 9999-12-31 while the input itself is valid.
+                parsed_end = dt.datetime.combine(
+                    parsed_end.date(),
+                    dt.time.max,
+                )
+            end = to_utc_datetime(parsed_end)
+        else:
+            end = None
     except (ValueError, TypeError) as exc:
         message = "Invalid usage date filter"
         raise BusinessRuleError(message) from exc
