@@ -15,7 +15,7 @@ from tests.integration.test_migrations import postgres  # noqa: F401
 from app.infra.task_queue import publish_organize_task as real_publish_organize
 from tests.integration.test_task_queue import broker  # noqa: F401
 from tests.integration.test_upload_storage import minio_storage, upload_api  # noqa: F401
-from tests.integration.test_worker_outcomes import redis_client  # noqa: F401
+from tests.integration.test_runtime_security import infrastructure  # noqa: F401
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_ORGANIZE_PIPELINE_TESTS") != "1", reason="Opt-in isolated complete organize workflow"
@@ -25,7 +25,7 @@ PROBE = """
 import time
 from app.infra.task_queue import RabbitMQTaskConsumer, ORGANIZE_FILE_QUEUE
 from app.infra.worker_runtime import WorkerRuntime, worker_step
-from app.infra.organize_tasks import deliver_pending_organize_tasks
+from app.features.folder.organize.tasks import deliver_pending_organize_tasks
 import os
 if os.getenv("ORGANIZE_REPLAY") != "1":
     assert deliver_pending_organize_tasks() >= 1
@@ -51,7 +51,7 @@ finally:
 
 
 @pytest.mark.parametrize("mode", ["success", "provider_rejected", "checkpoint_rejected"])
-def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker, redis_client, mode):
+def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker, infrastructure, mode):
     client, headers, _ = upload_api
     content = b"Synthetic document that belongs in the organized folder."
     uploaded = client.post("/api/files", headers=headers,
@@ -142,11 +142,17 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
         assert client.post("/api/folder/organize", headers=headers).json()['data']["queued"] is False
         with postgres.connect() as db:
             assert db.scalar(text("SELECT state FROM organize_tasks WHERE workspace_id=1")) == "queued"
-        env = {**os.environ, "DATABASE_URL":postgres.url.render_as_string(hide_password=False),
-               "REDIS_PORT":str(redis_client.connection_pool.connection_kwargs["port"]),
-               "CHAT_API_URL":f"http://127.0.0.1:{server.server_port}/v1",
-               "CHAT_API_KEY":"synthetic-pipeline-model-key",
-               "CHAT_API_MODEL":"pipeline-organizer"}
+        env = os.environ.copy()
+        for proxy_key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            env.pop(proxy_key, None)
+        env.update({
+            "DATABASE_URL":postgres.url.render_as_string(hide_password=False),
+            "REDIS_HOST":"127.0.0.1",
+            "REDIS_PORT":str(infrastructure['redis'].connection_pool.connection_kwargs["port"]),
+            "CHAT_API_URL":f"http://127.0.0.1:{server.server_port}/v1",
+            "CHAT_API_KEY":"synthetic-pipeline-model-key",
+            "CHAT_API_MODEL":"pipeline-organizer",
+        })
         result = subprocess.run([sys.executable,"-c",PROBE],
             cwd=Path(__file__).resolve().parents[2],env=env,capture_output=True,text=True,timeout=35)
         assert result.returncode == 0, result.stderr[-5000:]
@@ -163,7 +169,7 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
         server.server_close()
         thread.join(timeout=2)
     with postgres.connect() as db:
-        assert db.scalar(text("SELECT state FROM organize_tasks WHERE workspace_id=1")) == ("completed" if mode == "success" else "failed")
+        assert db.scalar(text("SELECT state FROM organize_tasks WHERE workspace_id=1")) == ("completed" if mode == "success" else "failed"), result.stderr[-5000:]
     with postgres.connect() as db:
         message = db.scalar(text("SELECT content FROM inbox WHERE user_id=1"))
         assert db.scalar(text("SELECT count(*) FROM inbox WHERE user_id=1")) == 1
@@ -180,7 +186,7 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
             assert "执行失败" in message
             assert db.scalar(text("SELECT count(*) FROM organize_checkpoints")) == 0
             if mode == "checkpoint_rejected":
-                assert len(calls) == 4
+                assert len(calls) == 4, result.stderr[-5000:]
                 assert "error_type=InternalError" in result.stderr
                 assert "synthetic checkpoint failure" not in result.stderr
                 assert db.scalar(text("SELECT sum(total_tokens) FROM token_usage_logs WHERE action='organize'")) == 32

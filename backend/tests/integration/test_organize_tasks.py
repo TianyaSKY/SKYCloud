@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
-from app.infra.organize_tasks import (
+from app.features.folder.organize.tasks import (
     admit_task, assert_task_claim, deliver_pending_organize_tasks,
     task_execution, RetryTaskLater,
 )
@@ -112,7 +112,7 @@ def test_broker_refusal_is_retryable(tasks, request, monkeypatch):
 DEAD_PROCESS = """
 import sys,time
 from app.infra.task_queue import RabbitMQTaskConsumer, ORGANIZE_FILE_QUEUE
-from app.infra.organize_tasks import task_execution
+from app.features.folder.organize.tasks import task_execution
 consumer = RabbitMQTaskConsumer()
 message = consumer.get_message(ORGANIZE_FILE_QUEUE)
 assert message is not None

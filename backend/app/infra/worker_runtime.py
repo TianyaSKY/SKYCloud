@@ -19,18 +19,18 @@ from pika.exceptions import AMQPError
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.features.file.service import cleanup_expired_uploads
+from app.features.file.tasks import deliver_pending_file_tasks
 from app.features.folder.organize.handler import handle_organize_process
-from app.infra.assistant_abort import abort_pending_sessions, recover_abandoned_runs
-from app.infra.extensions import SessionLocal
-from app.infra.file_object_deletion import delete_pending_objects
-from app.infra.file_task_outbox import deliver_pending_file_tasks
-from app.infra.indexing.handler import handle_file_indexing as handle_file_process
-from app.infra.llm.sync_client import close_sync_clients
-from app.infra.organize_tasks import (
+from app.features.folder.organize.tasks import (
     RetryTaskLater,
     deliver_pending_organize_tasks,
     task_execution,
 )
+from app.infra.assistant_abort import abort_pending_sessions, recover_abandoned_runs
+from app.infra.extensions import SessionLocal
+from app.infra.file_object_deletion import delete_pending_objects
+from app.infra.indexing.handler import handle_file_indexing as handle_file_process
+from app.infra.llm.sync_client import close_sync_clients
 from app.infra.runtime_container_deletion import delete_pending_containers
 from app.infra.runtime_operation_cleanup import retire_cancelled_operations
 from app.infra.runtime_operations import recover_runtime_operations
@@ -44,7 +44,7 @@ from app.infra.task_queue import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
-    from runtime_controller.json_types import JsonValue
+    from runtime_common.json_types import JsonValue
 
     from app.infra.task_queue import QueueMessage
 

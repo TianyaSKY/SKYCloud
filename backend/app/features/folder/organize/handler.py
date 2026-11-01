@@ -22,13 +22,13 @@ from pydantic import SecretStr
 from sqlalchemy.orm import Session
 
 from app.features.folder import change_log as change_log_service
+from app.features.folder.organize.tasks import assert_task_claim
 from app.features.inbox import service as inbox_service
 from app.infra.datetime_utils import BEIJING_TZ, utc_now
 from app.infra.extensions import SessionLocal
 from app.infra.llm.config import get_chat_model_config
 from app.infra.llm.sync_client import record_llm_usage
 from app.infra.llm.usage import TokenUsage
-from app.infra.organize_tasks import assert_task_claim
 
 from .scope import OrganizeScope, authorize_session, bind_tools, organize_scope
 from .tools import (

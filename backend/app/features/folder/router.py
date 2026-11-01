@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Path, Response, status
 from app.api.contracts import SuccessResponse, success_payload
 from app.api.dependencies import Ctx, get_current_workspace, require_workspace_role
 from app.features.folder import service as folder_service
+from app.features.folder.organize.tasks import admit_task
 from app.features.folder.schemas import (
     FolderCreateRequest,
     FolderListResponse,
@@ -143,7 +144,7 @@ def organize_workspace_files(
     """触发 AI 自动整理; 已有任务在跑时拒绝重复入队."""
     with context.session_factory() as session:
         assert_can_write_locked(session, workspace.id, context.user.id)
-        queued = folder_service.organize_files(session, workspace.id, context.user.id)
+        queued = admit_task(session, workspace.id, context.user.id)
         message = (
             "已开始整理文件, 请留意收件箱里的通知, 整理完成后会通知您"
             if queued

@@ -263,8 +263,7 @@ def mock_redis():
     refresh_store = fakeredis.FakeRedis(decode_responses=True)
     with patch("app.features.auth.refresh_sessions.redis_client", refresh_store), \
          patch("app.infra.extensions.redis_client", mock), \
-         patch("app.infra.cache.redis_client", mock), \
-         patch("app.features.folder.service.redis_client", mock):
+         patch("app.infra.cache.redis_client", mock):
         yield mock
 
 

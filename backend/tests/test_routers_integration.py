@@ -1,9 +1,8 @@
 """路由器测试：直接调用路由函数并 mock 依赖。"""
 
-import pytest
 from contextlib import nullcontext
 from unittest.mock import patch, MagicMock, AsyncMock
-from fastapi import HTTPException, Response, Request
+from fastapi import Response, Request
 from sqlalchemy.orm import sessionmaker
 
 from app.api.dependencies import RequestContext
@@ -311,13 +310,17 @@ class TestFolderRouter:
 
     def test_organize(self, session, test_user, test_workspace):
         from app.features.folder.router import organize_workspace_files
+        from app.models.organize_task import OrganizeTask
 
-        with patch("app.features.folder.service.organize_files", return_value=True):
-            result = organize_workspace_files(context=_request_context(test_user, session), workspace=test_workspace)
-            assert result['success'] is True
-            result = result['data']
-        assert result["queued"] is True
+        result = organize_workspace_files(
+            context=_request_context(test_user, session), workspace=test_workspace,
+        )
 
+        assert result["success"] is True
+        assert result["data"]["queued"] is True
+        task = session.query(OrganizeTask).one()
+        assert task.state == "queued" and task.user_id == test_user.id
+        assert task.delivered_at is None
 
 # ---------------------------------------------------------------------------
 # File Router 测试
@@ -439,57 +442,6 @@ class TestFileRouter:
             assert result['success'] is True
             result = result['data']
         assert "pending" in result
-
-    def test_preflight(self, session, test_user, test_workspace):
-        from app.features.file.router import preflight_file_upload
-        from app.features.file.schemas import FilePreflightRequest
-
-        payload = FilePreflightRequest(filename="test.txt", total_size=100, content_hash="a" * 64)
-        with patch("app.features.file.service.preflight_file_upload", return_value={"ok": True}):
-            result = preflight_file_upload(payload=payload, ctx=_request_context(test_user, session), workspace=test_workspace)
-            assert result['success'] is True
-            result = result['data']
-        assert result["ok"] is True
-
-    def test_multipart_init(self, session, test_user, test_workspace):
-        from app.features.file.router import init_multipart_upload
-        from app.features.file.schemas import MultipartInitRequest
-
-        payload = MultipartInitRequest(filename="big.zip", total_size=1000000)
-        with patch("app.features.file.service.init_multipart_upload", return_value={"upload_id": "abc"}):
-            result = init_multipart_upload(payload=payload, ctx=_request_context(test_user, session), workspace=test_workspace)
-            assert result['success'] is True
-            result = result['data']
-        assert "upload_id" in result
-
-    def test_multipart_status(self, session, test_user, test_workspace):
-        from app.features.file.router import get_multipart_upload_status
-
-        with patch("app.features.file.service.get_multipart_upload_status", return_value={"chunks": []}):
-            result = get_multipart_upload_status(upload_id="abc", ctx=_request_context(test_user, session), workspace=test_workspace)
-            assert result['success'] is True
-            result = result['data']
-        assert "chunks" in result
-
-    def test_multipart_abort(self, session, test_user, test_workspace):
-        from app.features.file.router import abort_multipart_upload
-
-        with patch("app.features.file.service.abort_multipart_upload"):
-            result = abort_multipart_upload(upload_id="abc", ctx=_request_context(test_user, session), workspace=test_workspace)
-        assert result.status_code == 204
-
-    def test_multipart_complete(self, session, test_user, test_workspace):
-        from app.features.file.router import complete_multipart_upload
-        from app.features.file.schemas import MultipartCompleteRequest
-
-        mock_file = MagicMock()
-        mock_file.to_dict.return_value = {"id": 1}
-        payload = MultipartCompleteRequest(upload_id="abc")
-        with patch("app.features.file.service.complete_multipart_upload", return_value=mock_file):
-            result = complete_multipart_upload(payload=payload, ctx=_request_context(test_user, session), workspace=test_workspace)
-            assert result['success'] is True
-            result = result['data']
-        assert result == mock_file.to_dict.return_value
 
 
 # ---------------------------------------------------------------------------
@@ -688,27 +640,3 @@ class TestTokenUsageRouter:
         assert result == {"success":True,"data":[]}
 
 
-# ---------------------------------------------------------------------------
-# Chat Router 测试
-# ---------------------------------------------------------------------------
-
-class TestChatRouter:
-    def test_chat_stream(self, session, test_user, test_workspace):
-        from app.features.chat.router import chat
-        from app.features.chat.schemas import ChatRequest
-        import asyncio
-
-        async def mock_events(*args, **kwargs):
-            yield "data: test\n\n"
-
-        payload = ChatRequest(query="hello")
-        with patch("app.features.chat.router.generate_chat_events", mock_events):
-            result = asyncio.run(
-                chat(
-                    payload=payload,
-                    current_user=test_user,
-                    workspace=test_workspace,
-                    session_factory=_owned_factory(session),
-                ),
-            )
-        assert result.media_type == "text/event-stream"

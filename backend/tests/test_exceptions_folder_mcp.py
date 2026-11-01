@@ -230,19 +230,6 @@ class TestFolderService:
         folders = get_folders(session, test_workspace.id)
         assert len(folders) >= 2  # 根 + 子目录
 
-    def test_organize_files(self, session, test_workspace, test_user):
-        from app.features.folder.service import organize_files
-
-        assert organize_files(session, test_workspace.id, test_user.id) is True
-
-    def test_organize_files_lock_taken(self, session, test_workspace, test_user, mock_redis):
-        from app.features.folder.service import organize_files
-
-        # mock_redis.set 返回 None/False 表示锁已被占用
-        mock_redis.set.return_value = None
-        assert organize_files(session, test_workspace.id, test_user.id)
-        result = organize_files(session, test_workspace.id, test_user.id)
-        assert result is False
 
 
 # ---------------------------------------------------------------------------

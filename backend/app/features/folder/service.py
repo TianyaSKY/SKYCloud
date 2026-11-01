@@ -1,4 +1,4 @@
-"""文件夹 CRUD、缓存失效, 以及整理任务的 Redis 分布式锁与入队."""
+"""文件夹 CRUD 与目录树读穿缓存."""
 
 from typing import NotRequired, TypedDict
 
@@ -14,24 +14,17 @@ from app.features.workspace.permissions import assert_member
 from app.infra.cache import (
     CacheableParams,
     cacheable,
-    evict_cache,
     sql_cache_allowed,
     sql_cache_revision,
 )
-from app.infra.extensions import redis_client
-from app.infra.organize_tasks import admit_task
-from app.models.file import File, FileDict
+from app.models.file import File
 from app.models.folder import Folder, FolderDict
 
 from . import repository, tree
 from .change_log import FileChangeEventSpec
 
-ORGANIZE_TASK_LOCK_PREFIX = "organize:task:lock"
-ORGANIZE_TASK_LOCK_TTL_SECONDS = 6 * 60 * 60
-
 FOLDER_CACHE_PREFIX = "workspace:folders"
 ROOT_FOLDER_CACHE_PREFIX = "workspace:root_folder:v2"
-ROOT_FILES_CACHE_PREFIX = "workspace:root_files:v2"
 FOLDER_CACHE_EXPIRE = 3600
 
 
@@ -50,8 +43,6 @@ class FolderUpdateData(TypedDict):
     parent_id: NotRequired[int | None]
 
 
-def _organize_task_lock_key(workspace_id: int) -> str:
-    return f"{ORGANIZE_TASK_LOCK_PREFIX}:{workspace_id}"
 
 
 def _tree_cache_key(session: Session, workspace_id: int) -> str:
@@ -63,13 +54,6 @@ def _tree_cache_key(session: Session, workspace_id: int) -> str:
 def _tree_cache_allowed(session: Session, workspace_id: int) -> bool:
     """Use the shared SQL cache gate with the cached tree signature."""
     return sql_cache_allowed(session, workspace_id)
-
-
-def _invalidate_folder_caches(workspace_id: int) -> None:
-    """失效目录相关缓存, 避免列表读到旧结构."""
-    evict_cache(FOLDER_CACHE_PREFIX, workspace_id)
-    evict_cache(ROOT_FOLDER_CACHE_PREFIX, workspace_id)
-    evict_cache(ROOT_FILES_CACHE_PREFIX, workspace_id)
 
 
 def _require_workspace_id(data: FolderCreateData) -> int:
@@ -110,9 +94,6 @@ def create_folder(session: Session, data: FolderCreateData) -> Folder:
         )
         session.add(new_folder)
         session.commit()
-
-        if new_folder.workspace_id:
-            _invalidate_folder_caches(new_folder.workspace_id)
     except Exception:
         session.rollback()
         raise
@@ -168,7 +149,6 @@ def update_folder(
             folder.parent_id = parent_id
         folder.name = data.get("name", folder.name)
         session.commit()
-        _invalidate_folder_caches(workspace_id)
     except Exception:
         session.rollback()
         raise
@@ -205,7 +185,6 @@ def delete_folder(session: Session, folder_id: int) -> None:
         session.commit()
 
         if workspace_id:
-            _invalidate_folder_caches(workspace_id)
             clear_search_cache(workspace_id)
     except Exception:
         session.rollback()
@@ -285,28 +264,6 @@ def get_root_folder_id(session: Session, workspace_id: int) -> int | None:
 
 
 @cacheable(
-    CacheableParams(prefix=ROOT_FILES_CACHE_PREFIX, expire=FOLDER_CACHE_EXPIRE),
-    cache_allowed=_tree_cache_allowed,
-    key=_tree_cache_key,
-)
-def get_files_in_root_folder(
-    session: Session,
-    workspace_id: int,
-) -> list[FileDict]:
-    """List the file records stored directly in the workspace root folder."""
-    root_folder_id = get_root_folder_id(session, workspace_id)
-    if not root_folder_id:
-        return []
-
-    files = (
-        session.query(File)
-        .filter_by(workspace_id=workspace_id, parent_id=root_folder_id)
-        .all()
-    )
-    return [f.to_dict() for f in files]
-
-
-@cacheable(
     CacheableParams(prefix=FOLDER_CACHE_PREFIX, expire=FOLDER_CACHE_EXPIRE),
     cache_allowed=_tree_cache_allowed,
     key=_tree_cache_key,
@@ -317,45 +274,3 @@ def get_folders(session: Session, workspace_id: int) -> list[FolderDict]:
     return [f.to_dict() for f in folders]
 
 
-def mark_organize_task_running(workspace_id: int, lock_token: str) -> bool:
-    """仅当当前锁 token 匹配时, 将状态改为 running 并续期."""
-    script = """
-    local current = redis.call('GET', KEYS[1])
-    if not current then
-        return 0
-    end
-    if current ~= ARGV[1] .. ':queued' and current ~= ARGV[1] .. ':running' then
-        return 0
-    end
-    redis.call('SET', KEYS[1], ARGV[1] .. ':running', 'EX', ARGV[2])
-    return 1
-    """
-    return bool(
-        redis_client.eval(
-            script,
-            1,
-            _organize_task_lock_key(workspace_id),
-            lock_token,
-            ORGANIZE_TASK_LOCK_TTL_SECONDS,
-        ),
-    )
-
-
-def release_organize_task_lock(workspace_id: int, lock_token: str) -> None:
-    """仅释放属于当前 token 的锁, 避免误删新任务锁."""
-    script = """
-    local current = redis.call('GET', KEYS[1])
-    if not current then
-        return 0
-    end
-    if current ~= ARGV[1] .. ':queued' and current ~= ARGV[1] .. ':running' then
-        return 0
-    end
-    return redis.call('DEL', KEYS[1])
-    """
-    redis_client.eval(script, 1, _organize_task_lock_key(workspace_id), lock_token)
-
-
-def organize_files(session: Session, workspace_id: int, user_id: int) -> bool:
-    """Commit one durable admitted task; broker delivery is performed by Worker."""
-    return admit_task(session, workspace_id, user_id)

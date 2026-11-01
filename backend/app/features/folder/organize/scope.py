@@ -12,9 +12,9 @@ from langchain.tools import BaseTool, tool
 from sqlalchemy.orm import Session
 
 from app.exceptions import PermissionDeniedError
+from app.features.folder.organize.tasks import assert_task_claim
 from app.features.workspace.permissions import assert_can_write
 from app.infra.extensions import SessionFactory
-from app.infra.organize_tasks import assert_task_claim
 
 
 @dataclass(frozen=True)
