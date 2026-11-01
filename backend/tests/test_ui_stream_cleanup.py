@@ -1,23 +1,18 @@
 """Upstream leases close even when ASGI never enters the response body."""
 import asyncio
+
 import pytest
 from starlette.requests import ClientDisconnect
-from app.infra import http_stream as ui_stream
 
-
-@pytest.fixture(autouse=True, params=['backend', 'controller'])
-def stream_surface(request, monkeypatch):
-    if request.param == 'controller':
-        import sys
-        from runtime_controller import http_stream
-        monkeypatch.setattr(sys.modules[__name__], 'ui_stream', http_stream)
+import runtime_common.http_stream as ui_stream
 
 
 def capture_logs(monkeypatch, logs):
-    if ui_stream.__name__.startswith('runtime_controller'):
-        monkeypatch.setattr(ui_stream.logger, 'error', lambda message, *args: logs.append(message % args))
-    else:
-        monkeypatch.setattr(ui_stream.logger, 'error', lambda message, *args: logs.append(message.format(*args)))
+    monkeypatch.setattr(
+        ui_stream.logger,
+        'error',
+        lambda message, *args: logs.append(message % args),
+    )
 
 
 @pytest.mark.parametrize('phase',['header','body','cancel','normal'])

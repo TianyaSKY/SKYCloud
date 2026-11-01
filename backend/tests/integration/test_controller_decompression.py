@@ -136,7 +136,7 @@ def test_rebuilt_controller_decoder_allocation_bound(relay_controller):
     name,_,_=relay_controller
     script='''
 import asyncio,gzip,tracemalloc,httpx
-from runtime_controller.http_decode import decoded_bytes
+from runtime_common.http_decode import decoded_bytes
 async def main():
     wire=gzip.compress(b'x'*(16*1024*1024))
     class Stream(httpx.AsyncByteStream):

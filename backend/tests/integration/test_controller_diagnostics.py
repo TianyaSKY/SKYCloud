@@ -40,7 +40,11 @@ def test_daemon_private_failure_is_absent_from_http_and_standalone_logs(fault_co
     headers = {'X-Runtime-Controller-Token':fault_controller['token']}
     base = fault_controller['url']
     with httpx.Client(trust_env=False, timeout=10) as client:
-        response = client.post(base + '/image/ensure', headers=headers)
+        response = client.post(
+            base + '/containers/prepare',
+            headers=headers,
+            json={'workspace_id':1,'user_id':1,'runtime_id':1,'generation':'a'*32},
+        )
         assert response.status_code == 500
         assert response.json() == {'detail':'Runtime controller operation failed'}
         denied = client.get(base + '/containers/' + SECRET, headers=headers)

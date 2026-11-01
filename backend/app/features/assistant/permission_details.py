@@ -1,6 +1,6 @@
 """Bounded display contract for a durable, one-shot permission request."""
 
-from runtime_controller.json_types import JsonValue
+from runtime_common.json_types import JsonValue
 
 MAX_PERMISSION_ID_LENGTH = 128
 MAX_TITLE_LENGTH = 2000

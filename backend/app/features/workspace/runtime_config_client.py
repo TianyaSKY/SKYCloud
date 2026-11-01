@@ -8,8 +8,8 @@ import time
 from dataclasses import dataclass
 
 import httpx
+from runtime_common.json_types import JsonObject
 from runtime_controller.client import ControllerError
-from runtime_controller.json_types import JsonObject
 
 READY_POLL_SECONDS = 0.25
 HEALTHY_STATUS = 200

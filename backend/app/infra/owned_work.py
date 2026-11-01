@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from enum import Enum
 from typing import ParamSpec, TypeVar, cast
 
-from app.infra.async_stream import drain_cleanup
+from runtime_common.http_stream import drain_cleanup
 
 _Event = TypeVar("_Event")
 _P = ParamSpec("_P")

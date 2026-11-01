@@ -23,5 +23,6 @@ RUN uv sync --locked --no-default-groups --only-group controller --no-install-pr
     groupadd -g 10002 controller && useradd -u 10002 -g 10002 controller
 RUN mkdir /state && chown 10002:10002 /state && chmod 0700 /state
 COPY backend/runtime_controller ./runtime_controller
+COPY backend/runtime_common ./runtime_common
 USER 10002:10002
 CMD ["python", "-m", "runtime_controller.app"]

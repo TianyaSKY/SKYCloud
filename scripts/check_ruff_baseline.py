@@ -12,6 +12,7 @@ ALLOWED_PREFIXES = (
     "backend/app/",
     "backend/entry/",
     "backend/runtime_controller/",
+    "backend/runtime_common/",
 )
 ALLOWED_CODES = frozenset({"BLE001", "N818", "S603", "S104", "S108", "PLR0913"})
 N818_NAMES = frozenset(
@@ -29,9 +30,9 @@ DiagnosticKey = tuple[str, str, int, int, int, int, str]
 MCP_LIST_FILES_DIAGNOSTIC: DiagnosticKey = (
     "backend/app/mcp/server.py",
     "PLR0913",
-    219,
+    220,
     11,
-    219,
+    220,
     21,
     "Too many arguments in function definition (6 > 5)",
 )

@@ -14,22 +14,27 @@ from urllib.parse import quote, urlencode
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse, RedirectResponse
-from runtime_controller.client import auth_headers, controller_url
-from runtime_controller.json_types import JsonObject
-from runtime_controller.socket_relay import (
+from runtime_common.http_decode import ACCEPT_ENCODING, content_encoding, decoded_bytes
+from runtime_common.http_stream import (
+    UpstreamLease,
+    UpstreamResponse,
+    closable,
+    close_reader,
+    drain_cleanup,
+)
+from runtime_common.http_wait import WaitPolicy, guarded_wait
+from runtime_common.json_types import JsonObject
+from runtime_common.socket_relay import (
     SocketSlots,
     direct_connect,
     pump,
     terminal_path,
 )
+from runtime_controller.client import auth_headers, controller_url
 from starlette.requests import ClientDisconnect
 
 from app.features.workspace import ui_tickets
-from app.infra.async_stream import close_reader, drain_cleanup
 from app.infra.extensions import SessionFactory, SessionLocal, get_session_factory
-from app.infra.http_decode import ACCEPT_ENCODING, content_encoding, decoded_bytes
-from app.infra.http_stream import UpstreamLease, UpstreamResponse
-from app.infra.http_wait import WaitPolicy, guarded_wait
 from app.infra.owned_work import run_owned
 
 router = APIRouter(prefix="/runtime-ui", include_in_schema=False)
@@ -373,7 +378,7 @@ async def _stream_output(
 ) -> AsyncGenerator[bytes, None]:
     size = 0
     pending: asyncio.Task[bytes] | None = None
-    iterator = decoded_bytes(upstream, MAX_RESPONSE).__aiter__()
+    iterator = closable(decoded_bytes(upstream, MAX_RESPONSE).__aiter__())
     deadline = time.monotonic() + max(0, target.expires_at - time.time())
     failed = False
     try:

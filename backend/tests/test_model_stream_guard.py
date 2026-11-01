@@ -54,8 +54,12 @@ async def test_disconnected_model_client_closes_pending_reader_without_sql(monke
 async def test_model_iterator_cleanup_fault_preserves_outcome(monkeypatch,cause,close_error):
     started=asyncio.Event()
     calls,logs=[],[]
-    from app.infra import async_stream
-    monkeypatch.setattr(async_stream.logger,'error',lambda message,*args:logs.append(message.format(*args)))
+    import runtime_common.http_stream as shared_stream
+    monkeypatch.setattr(
+        shared_stream.logger,
+        'error',
+        lambda message, *args: logs.append(message % args),
+    )
     class Iterator:
         def __aiter__(self):return self
         async def __anext__(self):

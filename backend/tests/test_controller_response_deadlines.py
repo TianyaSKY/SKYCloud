@@ -41,7 +41,7 @@ async def test_controller_quiet_response_reaches_deadline(monkeypatch,tmp_path,e
 @pytest.mark.parametrize('stage',['ready','consumer'])
 async def test_deadline_never_forwards_late_bytes(monkeypatch,stage):
     from fastapi import HTTPException
-    from runtime_controller import http_stream
+    import runtime_common.http_stream as http_stream
     now=[0]
     monkeypatch.setattr(http_stream,'monotonic',lambda:now[0])
     calls=[]
@@ -64,7 +64,7 @@ async def test_deadline_never_forwards_late_bytes(monkeypatch,stage):
 @pytest.mark.parametrize('outcome',['timeout','cancel'])
 async def test_deadline_drains_reader_despite_repeated_cancellation(outcome):
     from fastapi import HTTPException
-    from runtime_controller.http_stream import deadline_reader
+    from runtime_common.http_stream import deadline_reader
     entered,closing,release=asyncio.Event(),asyncio.Event(),asyncio.Event()
     calls=[]
     class Iterator:
@@ -93,7 +93,7 @@ async def test_deadline_drains_reader_despite_repeated_cancellation(outcome):
 
 @pytest.mark.parametrize('handled',[False,True])
 async def test_deadline_eof_cleanup_preserves_new_cancellation(handled):
-    from runtime_controller.http_stream import deadline_reader
+    from runtime_common.http_stream import deadline_reader
     closing,release=asyncio.Event(),asyncio.Event()
     calls=[]
     class Iterator:

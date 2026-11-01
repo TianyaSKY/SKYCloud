@@ -11,7 +11,7 @@ from typing import TypedDict
 from urllib.parse import SplitResult, urlsplit
 
 from fastapi import HTTPException
-from runtime_controller.json_types import JsonObject, JsonValue
+from runtime_common.json_types import JsonObject, JsonValue
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 

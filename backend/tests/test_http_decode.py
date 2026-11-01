@@ -4,7 +4,7 @@ import tracemalloc
 import zlib
 import httpx
 import pytest
-from app.infra.http_decode import decoded_bytes, CHUNK_BYTES
+from runtime_common.http_decode import decoded_bytes, CHUNK_BYTES
 
 
 class Stream(httpx.AsyncByteStream):

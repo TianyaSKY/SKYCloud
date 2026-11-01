@@ -8,6 +8,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from runtime_common.http_stream import drain_cleanup
 
 from app.api.contracts import SuccessEnvelope, SuccessResponse, success_payload
 from app.api.dependencies import (
@@ -36,7 +37,6 @@ from app.features.assistant.stream_response import (
     prepare_response_run,
 )
 from app.features.workspace.permissions import assert_can_write, assert_member
-from app.infra.async_stream import drain_cleanup
 from app.infra.extensions import SessionFactory, get_session_factory
 from app.infra.owned_work import run_owned_persistent
 from app.models.assistant import AssistantConversationDict, AssistantRunDict

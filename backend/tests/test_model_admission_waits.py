@@ -1,16 +1,9 @@
 import asyncio
 import pytest
 from fastapi import HTTPException
-from app.infra.http_wait import guarded_wait
-from runtime_controller.http_wait import WaitPolicy
+from runtime_common.http_wait import guarded_wait
+from runtime_common.http_wait import WaitPolicy
 
-
-@pytest.fixture(autouse=True, params=["backend", "controller"])
-def wait_surface(request, monkeypatch):
-    if request.param == "controller":
-        import sys
-        from runtime_controller import http_wait
-        monkeypatch.setattr(sys.modules[__name__], "guarded_wait", http_wait.guarded_wait)
 
 
 @pytest.mark.parametrize('cause',['revoke','timeout','cancel','late-response','abort-fault'])
@@ -59,13 +52,13 @@ async def test_successful_wait_transfers_resource_without_abort():
 @pytest.mark.parametrize('close_fault',[None,RuntimeError,asyncio.CancelledError])
 async def test_successful_wait_cancelled_during_teardown_closes_before_cancellation(monkeypatch,mode,close_fault,handled_error):
     import anyio
-    from app.infra import http_wait
+    from runtime_common import http_wait
     calls,logs,scopes=[],[],[]
-    if guarded_wait.__module__.startswith('runtime_controller'):
-        from runtime_controller import http_wait as standalone
-        monkeypatch.setattr(standalone.logger,'error',lambda message,*args:logs.append(message % args))
-    else:
-        monkeypatch.setattr(http_wait.logger,'error',lambda message,*args:logs.append(message.format(*args)))
+    monkeypatch.setattr(
+        http_wait.logger,
+        'error',
+        lambda message,*args:logs.append(message % args),
+    )
     async def operation():calls.append('operation');return 'opened'
     async def check():
         if mode=='anyio':scopes[0].cancel()
@@ -111,7 +104,7 @@ async def test_teardown_cancellation_preserves_existing_wait_failure(phase):
 
 @pytest.mark.parametrize('outcome',['timeout','cancel'])
 async def test_admission_closes_response_published_during_cancel_drain(outcome):
-    from app.infra.http_stream import UpstreamLease
+    from runtime_common.http_stream import UpstreamLease
     from fastapi import HTTPException
     entered=asyncio.Event()
     calls=[]

@@ -93,7 +93,7 @@ async def test_cancelled_ui_request_drains_worker_before_upstream_close(monkeypa
 @pytest.mark.parametrize('fault', [False, True])
 async def test_cancelled_terminal_drains_auth_before_socket_and_slot_release(monkeypatch, held_ui_worker, stage, fault):
     from starlette.websockets import WebSocket
-    from runtime_controller.socket_relay import SocketSlots
+    from runtime_common.socket_relay import SocketSlots
     entered, release, finished, closed, Owned, hold, payload = held_ui_worker
     calls, upstream_closed = 0, []
 

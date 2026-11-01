@@ -77,7 +77,7 @@ asyncio_mode = "auto"
 addopts = "--tb=short -q"
 
 [tool.pyright]
-include = ["backend/app", "backend/entry", "backend/runtime_controller"]
+include = ["backend/app", "backend/entry", "backend/runtime_controller", "backend/runtime_common"]
 extraPaths = ["backend"]
 stubPath = "backend/typings"
 pythonVersion = "3.11"
@@ -86,7 +86,7 @@ typeCheckingMode = "strict"
 [tool.mypy]
 python_version = "3.11"
 mypy_path = "$MYPY_CONFIG_FILE_DIR/backend/typings:$MYPY_CONFIG_FILE_DIR/backend"
-files = ["backend/app", "backend/entry", "backend/runtime_controller"]
+files = ["backend/app", "backend/entry", "backend/runtime_controller", "backend/runtime_common"]
 check_untyped_defs = true
 show_error_codes = true
 pretty = false

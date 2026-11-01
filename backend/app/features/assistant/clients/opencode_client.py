@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from types import TracebackType
 
-    from runtime_controller.json_types import JsonObject, JsonValue
+    from runtime_common.json_types import JsonObject, JsonValue
 
 HTTP_BAD_REQUEST = 400
 HTTP_NO_CONTENT = 204

@@ -3,7 +3,7 @@
 from typing import Generic, Literal, NotRequired, TypedDict, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict
-from runtime_controller.json_types import JsonValue
+from runtime_common.json_types import JsonValue
 
 
 class ValidationIssue(BaseModel):

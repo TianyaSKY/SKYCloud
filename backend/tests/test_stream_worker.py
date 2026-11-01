@@ -77,6 +77,7 @@ async def test_cancel_during_stream_session_creation_closes_on_owner_thread():
 
 async def test_actual_stream_sql_runs_on_worker_while_loop_is_responsive(session, test_user, test_workspace, monkeypatch):
     from sqlalchemy import event
+    from sqlalchemy.orm import sessionmaker
     from app.features.assistant import repository
     from app.features.assistant.event_protocol import AssistantEvent
     conversation = repository.create_conversation(
@@ -112,19 +113,27 @@ async def test_actual_stream_sql_runs_on_worker_while_loop_is_responsive(session
         if statement.startswith('UPDATE assistant_messages'):
             entered.set()
             assert release.wait(5)
-    user_id = test_user.id
+    workspace_id = int(test_workspace.id)
+    user_id = int(test_user.id)
+    conversation_id = int(conversation.id)
+    run_id = int(run.id)
     engine = session.get_bind()
     event.listen(engine, 'before_cursor_execute', record)
+    factory = sessionmaker(bind=engine, join_transaction_mode='create_savepoint')
     async def collect():
-        return [item async for item in service.stream_prepared_run(
-            service.StreamPreparedRunParams(
-                session=session,
-                workspace=test_workspace,
-                user_id=user_id,
-                conversation=conversation,
-                run=run,
-                history=history,
-            ))]
+        return [
+            item
+            async for item in service.stream_run(
+                service.StreamRunParams(
+                    session_factory=factory,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    history=history,
+                )
+            )
+        ]
     operation = asyncio.create_task(collect())
     try:
         assert await asyncio.to_thread(entered.wait, 2)
@@ -174,24 +183,34 @@ def test_replayed_permission_preserves_response_and_finish_preserves_terminal(se
         ),
     )
     run = repository.create_run(session, conversation, user_message, assistant)
-    payload = {'permission_id': 'p1', 'title': 'Execute'}
-    repository.set_pending_permission(run, payload)
+    payload = {"permission_id": "p1", "title": "Execute"}
+    repository.register_permission(session, run, payload)
     session.commit()
-    persistence = StreamPersistence(session, test_workspace, test_user.id, conversation, run)
-    assert repository.set_permission_response(session, run.id, 'p1', 'once')
+    persistence = StreamPersistence(
+        session,
+        test_workspace,
+        test_user.id,
+        conversation,
+        run,
+    )
+    assert repository.answer_permission(session, run, "p1", "once")
     session.commit()
     assert persistence.checkpoint(
-        StreamProgress(answer_parts=[''], metadata={}, usage={}),
-        payload,
+        StreamProgress(answer_parts=[""], metadata={}, usage={}),
         commit=True,
+        permission_boundary=True,
     )
     session.refresh(run)
-    assert run.permission_response == 'once' and run.status == 'running'
-    assert not repository.set_permission_response(session, run.id, 'p1', 'reject')
-    repository.update_run_status(run, 'failed')
-    assistant.content = 'Existing final answer'
-    assistant.status = 'failed'
+    permission = repository.permission_for_run(session, run.id, "p1")
+    assert permission is not None
+    assert permission.state == "answered" and permission.response == "once"
+    assert run.status == "running"
+    assert not repository.answer_permission(session, run, "p1", "reject")
+    repository.update_run_status(session, run, "failed")
+    assistant.content = "Existing final answer"
+    assistant.status = "failed"
     session.commit()
+    assert permission.state == "cancelled" and permission.response == "once"
     assert persistence.finish(FinalOutcome(
         status='completed',
         content='Late answer',

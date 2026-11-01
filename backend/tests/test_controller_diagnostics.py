@@ -20,9 +20,13 @@ SECRET = 'private-controller-daemon-sentinel'
 ])
 def test_controller_failure_response_and_log_are_private(settings, caplog, error, status, detail):
     engine = Mock()
-    engine.ensure_image.side_effect = error
+    engine.prepare.side_effect = error
     with TestClient(create_app(settings, engine), raise_server_exceptions=False) as client:
-        response = client.post('/image/ensure', headers={'X-Runtime-Controller-Token':settings.token})
+        response = client.post(
+            '/containers/prepare',
+            headers={'X-Runtime-Controller-Token':settings.token},
+            json={'workspace_id':1,'user_id':1,'runtime_id':1,'generation':'a'*32},
+        )
     assert response.status_code == status and response.json() == {'detail':detail}
     assert SECRET not in caplog.text
     assert all(record.exc_info is None for record in caplog.records)

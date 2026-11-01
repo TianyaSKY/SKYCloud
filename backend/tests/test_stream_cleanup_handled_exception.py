@@ -2,12 +2,11 @@
 import asyncio
 import pytest
 from app.features.assistant import stream_response
-from app.infra import http_stream as ui_stream
-from app.features.chat import stream_authorization
+import runtime_common.http_stream as ui_stream
 from app.features.runtime_llm import router
 
 
-@pytest.mark.parametrize('kind',['prepared','upstream','model-reader','legacy-reader','ui-reader'])
+@pytest.mark.parametrize('kind',['prepared','upstream','model-reader','ui-reader'])
 async def test_cleanup_cancellation_ignores_handled_caller_exception(monkeypatch,kind):
     closing,release=asyncio.Event(),asyncio.Event()
     calls=[]
@@ -19,7 +18,6 @@ async def test_cleanup_cancellation_ignores_handled_caller_exception(monkeypatch
     async def send(message):pass
     async def check(*args):pass
     monkeypatch.setattr(router,'verify_connected',check)
-    monkeypatch.setattr(stream_authorization,'require_membership',lambda *args:None)
     if kind=='prepared':
         monkeypatch.setattr(stream_response,'cleanup_unclaimed_run',lambda *args:calls.append('release'))
         response=stream_response.PreparedStreamResponse(Iterator(),session_factory=None,run_scope=(1,2,3,4))
@@ -63,8 +61,6 @@ async def test_cleanup_cancellation_ignores_handled_caller_exception(monkeypatch
                     headers = {}
                     def aiter_bytes(self):return Iterator()
                 async for _ in router.authorized_bytes(Response(),None,None):pass
-            else:
-                async for _ in stream_authorization.authorized_events(Iterator(),None,2,1):pass
     pending=asyncio.create_task(caller())
     try:
         await asyncio.wait_for(closing.wait(),1)

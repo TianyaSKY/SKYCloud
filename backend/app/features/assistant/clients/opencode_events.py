@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from app.features.assistant.event_protocol import AssistantEvent
 
 if TYPE_CHECKING:
-    from runtime_controller.json_types import JsonObject, JsonValue
+    from runtime_common.json_types import JsonObject, JsonValue
 
 _CONNECTION_EVENTS = frozenset({"server.connected", "connected"})
 _SESSION_EVENTS = frozenset(

@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import ParamSpec, cast
 
-from runtime_controller.json_types import JsonObject, JsonValue
+from runtime_common.json_types import JsonObject, JsonValue
 
 _P = ParamSpec("_P")
 

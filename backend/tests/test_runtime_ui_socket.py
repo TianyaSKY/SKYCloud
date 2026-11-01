@@ -10,7 +10,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests.test_runtime_ui import ui, launch
 from app.features.workspace import ui_gateway, ui_tickets
-from runtime_controller.socket_relay import SocketSlots, MAX_INPUT
+from runtime_common.socket_relay import SocketSlots, MAX_INPUT
 
 
 class TrackingSlots(SocketSlots):
@@ -181,7 +181,7 @@ def test_terminal_bridge_failure_closes_1011_and_releases_owner_for_next_connect
 
 @pytest.mark.parametrize('limit', ['bytes', 'messages'])
 def test_socket_total_budgets(socket_setup, monkeypatch, limit):
-    from runtime_controller import socket_relay
+    import runtime_common.socket_relay as socket_relay
     if limit == 'bytes':
         monkeypatch.setattr(socket_relay, 'MAX_BYTES', 4)
     else:
@@ -197,7 +197,7 @@ def test_socket_total_budgets(socket_setup, monkeypatch, limit):
 
 
 async def test_expiry_watchdog_survives_a_stalled_permission_check():
-    from runtime_controller.socket_relay import pump
+    from runtime_common.socket_relay import pump
     stalled = asyncio.Event()
     started = asyncio.Event()
     class Client:

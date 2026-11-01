@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
 from loguru import logger
-from runtime_controller.json_types import JsonValue
+from runtime_common.json_types import JsonValue
 from sqlalchemy import case
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.orm import Session

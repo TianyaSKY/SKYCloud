@@ -8,10 +8,10 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from loguru import logger
+from runtime_common.http_stream import drain_cleanup
 
 from app.exceptions import ConflictError, ServiceOperationError
 from app.infra import extensions
-from app.infra.async_stream import drain_cleanup
 from app.infra.extensions import RedisValue
 from app.infra.owned_work import run_owned, run_owned_persistent
 

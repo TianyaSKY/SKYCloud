@@ -10,16 +10,20 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from runtime_controller.json_types import JsonObject, JsonValue
+from runtime_common.http_decode import ACCEPT_ENCODING, content_encoding, decoded_bytes
+from runtime_common.http_stream import (
+    UpstreamLease,
+    UpstreamResponse,
+    closable,
+    close_reader,
+)
+from runtime_common.http_wait import WaitPolicy, guarded_wait
+from runtime_common.json_types import JsonObject, JsonValue
 from starlette.requests import ClientDisconnect
 
 from app.features.runtime_llm import quota, tokens
 from app.features.runtime_llm.tokens import RuntimeLlmClaims
-from app.infra.async_stream import close_reader
 from app.infra.extensions import SessionFactory, get_session_factory
-from app.infra.http_decode import ACCEPT_ENCODING, content_encoding, decoded_bytes
-from app.infra.http_stream import UpstreamLease, UpstreamResponse
-from app.infra.http_wait import WaitPolicy, guarded_wait
 from app.infra.llm.config import get_chat_model_config
 from app.infra.owned_work import run_owned
 
@@ -103,7 +107,7 @@ async def authorized_bytes(
 ) -> AsyncGenerator[bytes, None]:
     """Revalidate during quiet waits and before releasing every upstream chunk."""
     pending: asyncio.Task[bytes] | None = None
-    iterator = decoded_bytes(response, MAX_RESPONSE_BYTES).__aiter__()
+    iterator = closable(decoded_bytes(response, MAX_RESPONSE_BYTES).__aiter__())
     deadline = time.monotonic() + MAX_STREAM_SECONDS
     failed = False
     try:

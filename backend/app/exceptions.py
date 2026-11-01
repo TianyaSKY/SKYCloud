@@ -12,7 +12,7 @@ from fastapi import HTTPException as FastAPIHTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from loguru import logger
-from runtime_controller.json_types import JsonValue
+from runtime_common.json_types import JsonValue
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.contracts import (

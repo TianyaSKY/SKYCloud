@@ -78,6 +78,26 @@ def test_extra_diagnostic_fails_without_count_discount(tmp_path):
     assert "confirmed=1 new=1 stale=0" in result.stdout
 
 
+
+def test_runtime_common_is_an_allowed_production_tree(tmp_path):
+    result = run_gate(
+        tmp_path,
+        [
+            diagnostic(
+                path="backend/runtime_common/http_stream.py",
+                row=1,
+                column=1,
+                code="E501",
+                message="Line too long",
+            ),
+        ],
+        [],
+    )
+    assert result.returncode == 1
+    assert (
+        "NEW backend/runtime_common/http_stream.py:1:1 E501 Line too long"
+        in result.stdout
+    )
 def test_line_shift_creates_new_and_stale_diagnostics(tmp_path):
     result = run_gate(tmp_path, [diagnostic(row=19)], [baseline_entry(row=18)])
     assert result.returncode == 1
@@ -107,17 +127,17 @@ def test_unregistered_rule_is_visible_and_fails_as_new(tmp_path):
 def test_only_approved_mcp_list_files_parameter_count_can_be_registered(tmp_path):
     path = "backend/app/mcp/server.py"
     message = "Too many arguments in function definition (6 > 5)"
-    report = diagnostic(path=path, row=219, column=11, code="PLR0913", message=message)
+    report = diagnostic(path=path, row=220, column=11, code="PLR0913", message=message)
     report["end_location"]["column"] = 21
     approved = baseline_entry(
-        path=path, row=219, column=11, end_column=21,
+        path=path, row=220, column=11, end_column=21,
         code="PLR0913", message=message,
     )
     result = run_gate(tmp_path, [report], [approved])
     assert result.returncode == 0, result.stderr
     assert "confirmed=1 new=0 stale=0" in result.stdout
 
-    unapproved = {**approved, "row": 220, "end_row": 220}
+    unapproved = {**approved, "row": 221, "end_row": 221}
     result = run_gate(tmp_path, [], [unapproved])
     assert result.returncode == 2
     assert "outside the approved MCP tool" in result.stderr

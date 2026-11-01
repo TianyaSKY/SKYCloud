@@ -5,7 +5,7 @@ No SQL sessions, environment lookup or external RPC belongs in this module.
 
 import copy
 
-from runtime_controller.json_types import JsonObject
+from runtime_common.json_types import JsonObject
 
 
 def merge_opencode_mcp_config(

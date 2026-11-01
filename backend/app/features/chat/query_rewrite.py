@@ -5,7 +5,7 @@ import re
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from runtime_controller.json_types import JsonValue
+from runtime_common.json_types import JsonValue
 
 DIMENSION_KEYS = (
     "topic_terms",
