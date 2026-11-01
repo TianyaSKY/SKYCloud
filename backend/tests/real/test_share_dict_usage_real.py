@@ -21,13 +21,10 @@ from app.features.share.service import (
     resolve_shared_file,
 )
 from app.features.sys_dict.service import (
-    MODEL_CONFIG_DB_ERROR,
     create_sys_dict,
     delete_sys_dict,
-    get_sys_dict,
-    get_sys_dict_all,
-    get_sys_dict_by_key,
-    get_sys_dict_by_key_sync,
+    get_sys_dict_all_sync,
+    get_sys_dict_sync,
     update_sys_dict,
 )
 from app.features.token_usage.service import (
@@ -270,60 +267,25 @@ class TestSysDictService:
         with pytest.raises(ResourceNotFoundError):
             delete_sys_dict(db.session, 99999)
 
-    @pytest.mark.asyncio
-    async def test_get_sys_dict_all(self):
+    def test_get_sys_dict_all_sync(self):
         """获取全部（排除模型配置键）。"""
         create_sys_dict(db.session, {"key": "visible_key", "value": "v", "des": "", "enable": True})
-        result = await get_sys_dict_all(db.session)
+        result = get_sys_dict_all_sync(db.session)
         keys = [item["key"] for item in result]
         assert "visible_key" in keys
         # 模型配置键不出现
         assert "chat_api_key" not in keys
 
-    @pytest.mark.asyncio
-    async def test_get_sys_dict_by_key_found(self):
-        """按 key 查找启用的字典。"""
-        create_sys_dict(db.session, {"key": "findme", "value": "val", "des": "", "enable": True})
-        result = await get_sys_dict_by_key(db.session, "findme")
-        assert result is not None
-        assert result.value == "val"
-
-    @pytest.mark.asyncio
-    async def test_get_sys_dict_by_key_disabled(self):
-        """禁用的字典不返回。"""
-        create_sys_dict(db.session, {"key": "disabled_key", "value": "v", "des": "", "enable": False})
-        result = await get_sys_dict_by_key(db.session, "disabled_key")
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_get_sys_dict_by_key_model_config(self):
-        """模型配置键返回 None。"""
-        result = await get_sys_dict_by_key(db.session, "chat_api_key")
-        assert result is None
-
-    def test_get_sys_dict_by_key_sync_found(self):
-        """同步查找。"""
-        create_sys_dict(db.session, {"key": "sync_key", "value": "sv", "des": "", "enable": True})
-        result = get_sys_dict_by_key_sync(db.session, "sync_key")
-        assert result is not None
-        assert result.value == "sv"
-
-    def test_get_sys_dict_by_key_sync_model_config(self):
-        """同步查找模型配置键返回 None。"""
-        assert get_sys_dict_by_key_sync(db.session, "emb_api_url") is None
-
-    @pytest.mark.asyncio
-    async def test_get_sys_dict_by_id(self):
+    def test_get_sys_dict_sync_by_id(self):
         """按 ID 查找。"""
         created = create_sys_dict(db.session, {"key": "id_key", "value": "v", "des": "", "enable": True})
-        result = await get_sys_dict(db.session, created.id)
+        result = get_sys_dict_sync(db.session, created.id)
         assert result["key"] == "id_key"
 
-    @pytest.mark.asyncio
-    async def test_get_sys_dict_by_id_not_found(self):
+    def test_get_sys_dict_sync_by_id_not_found(self):
         """ID 不存在抛 404。"""
         with pytest.raises(ResourceNotFoundError):
-            await get_sys_dict(db.session, 99999)
+            get_sys_dict_sync(db.session, 99999)
 
 
 # ===========================================================================

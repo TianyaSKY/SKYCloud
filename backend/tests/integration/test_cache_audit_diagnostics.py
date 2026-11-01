@@ -45,12 +45,7 @@ async def test_actual_redis_acl_rejection_preserves_cache_fallback(infrastructur
         @cache.cacheable(cache.CacheableParams(prefix=SECRET), key=lambda value: value)
         async def read(value):
             return {'result': value}
-        @cache.cache_put(SECRET)
-        def put(value):
-            return value
         assert await read(SECRET) == {'result': SECRET}
-        assert put(SECRET) == SECRET
-        cache.evict_cache(SECRET, SECRET)
         assert cache.evict_cache_pattern(SECRET) == 0
         safe(diagnostics, 'NoPermissionError')
         # The denied writer did not silently store data under the caller's key.
@@ -92,8 +87,7 @@ async def test_actual_postgres_audit_rejection_preserves_tool_and_recovers(postg
         reset_mcp_context(context)
 
 
-@pytest.mark.parametrize('operation', ['read', 'put', 'evict'])
-async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, monkeypatch, operation):
+async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, monkeypatch):
     import asyncio
     import threading
     import json
@@ -101,17 +95,15 @@ async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, 
     key = 'owned-cache:actual'
     admin.set(key, json.dumps({'previous': True}))
     entered = threading.Event()
-    expected = 'GET' if operation == 'read' else 'SETEX' if operation == 'put' else 'DEL'
     class ObservedRedis(Redis):
         def execute_command(self, *args, **kwargs):
-            if str(args[0]).upper() == expected:
+            if str(args[0]).upper() == 'GET':
                 entered.set()
             return super().execute_command(*args, **kwargs)
     client = ObservedRedis(**admin.connection_pool.connection_kwargs)
     monkeypatch.setattr(cache, 'redis_client', client)
     business = []
-    decorator = cache.cacheable(cache.CacheableParams(prefix=key)) if operation == 'read' else cache.cache_put(prefix=key) if operation == 'put' else cache.cache_evict(prefix=key)
-    @decorator
+    @cache.cacheable(cache.CacheableParams(prefix=key))
     async def work():
         business.append('accepted')
         return {'updated': True}
@@ -134,13 +126,7 @@ async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, 
         finally:
             client.close()
     assert str(error.value) == 'caller-stop'
-    actual = admin.get(key)
-    if operation == 'read':
-        assert business == [] and json.loads(actual) == {'previous': True}
-    elif operation == 'put':
-        assert business == ['accepted'] and json.loads(actual) == {'updated': True}
-    else:
-        assert business == ['accepted'] and actual is None
+    assert business == [] and json.loads(admin.get(key)) == {'previous': True}
 
 
 @pytest.mark.parametrize('mode', ['generic', 'workspace'])
@@ -323,14 +309,12 @@ def test_rolled_back_search_does_not_publish_uncommitted_cache(postgres, infrast
         assert search_service._search_files_fuzzy(db,workspace_id,'name',1,10)['items'][0]['name'] == 'committed-name'
 
 
-@pytest.mark.parametrize('operation', ['user-owned', 'dictionary-shared'])
-async def test_cached_read_cancel_drains_actual_blocked_sql(postgres, infrastructure, monkeypatch, operation):
+async def test_cached_read_cancel_drains_actual_blocked_sql(postgres, infrastructure, monkeypatch):
     import asyncio
     import time
     from contextlib import contextmanager
     from sqlalchemy import text
     from app.features.auth import user_service
-    from app.features.sys_dict import service as dictionary
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(cache, 'redis_client', infrastructure['redis'])
@@ -347,16 +331,10 @@ async def test_cached_read_cancel_drains_actual_blocked_sql(postgres, infrastruc
                 yield db
             finally:
                 closed.append('closed')
-    shared = None
     with postgres.connect() as locker:
         transaction = locker.begin()
-        locker.execute(text('LOCK TABLE '+('users' if operation == 'user-owned' else 'sys_dict')+' IN ACCESS EXCLUSIVE MODE'))
-        if operation == 'user-owned':
-            pending = asyncio.create_task(user_service.get_user(None,user_id,session_factory=tracked_factory))
-        else:
-            shared = factory()
-            pids.append(shared.scalar(text('SELECT pg_backend_pid()')))
-            pending = asyncio.create_task(dictionary.get_sys_dict_all(shared))
+        locker.execute(text('LOCK TABLE users IN ACCESS EXCLUSIVE MODE'))
+        pending = asyncio.create_task(user_service.get_user(None,user_id,session_factory=tracked_factory))
         try:
             deadline = time.monotonic()+5
             while True:
@@ -373,25 +351,18 @@ async def test_cached_read_cancel_drains_actual_blocked_sql(postgres, infrastruc
             assert not pending.done() and not closed
         finally:
             transaction.rollback()
-            try:
-                with pytest.raises(asyncio.CancelledError) as error:
-                    await asyncio.wait_for(pending,5)
-            finally:
-                if shared is not None:
-                    shared.close()
+            with pytest.raises(asyncio.CancelledError) as error:
+                await asyncio.wait_for(pending,5)
         assert str(error.value) == 'caller-stop'
-    assert closed == (['closed'] if operation == 'user-owned' else [])
+    assert closed == ['closed']
 
 
-@pytest.mark.parametrize('kind', ['profile', 'dictionary', 'folders', 'root-id', 'root-files'])
+@pytest.mark.parametrize('kind', ['profile', 'folders', 'root-id'])
 @pytest.mark.parametrize('finish', ['rollback', 'commit'])
 def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructure, monkeypatch, kind, finish):
     from app.features.auth import user_service
-    from app.features.sys_dict import service as dictionaries
     from app.features.folder import service as folders
     from app.models.folder import Folder
-    from app.models.file import File
-    from app.models.sys_dict import SysDict
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     admin = infrastructure['redis']
@@ -404,15 +375,11 @@ def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructu
         root = Folder(name='/', workspace_id=workspace.id)
         db.add(root); db.flush()
         child = Folder(name='original-name', workspace_id=workspace.id, parent_id=root.id)
-        item = File(name='original-name',file_path='other-cache-object',workspace_id=workspace.id,parent_id=root.id)
-        option = SysDict(key='transaction-test-option',value='original-name',enable=True)
-        db.add_all([child,item,option]); db.commit()
-        uid, wid, root_id, child_id, file_id, option_id = user.id,workspace.id,root.id,child.id,item.id,option.id
+        db.add_all([child]); db.commit()
+        uid, wid, root_id, child_id = user.id,workspace.id,root.id,child.id
     def read(db):
         if kind == 'profile': return user_service.get_user_data(db,uid)['username']
-        if kind == 'dictionary': return next(row['value'] for row in dictionaries.get_sys_dict_all_sync(db) if row['key']=='transaction-test-option')
         if kind == 'folders': return next(row['name'] for row in folders.get_folders(db,wid) if row['id']==child_id)
-        if kind == 'root-files': return folders.get_files_in_root_folder(db,wid)[0]['name']
         return folders.get_root_folder_id(db,wid)
     expected_original = root_id if kind == 'root-id' else 'original-name'
     with factory() as db:
@@ -421,9 +388,7 @@ def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructu
     assert before
     with factory() as db:
         if kind == 'profile': db.get(User,uid).username = 'uncommitted-name'
-        elif kind == 'dictionary': db.get(SysDict,option_id).value = 'uncommitted-name'
         elif kind == 'folders': db.get(Folder,child_id).name = 'uncommitted-name'
-        elif kind == 'root-files': db.get(File,file_id).name = 'uncommitted-name'
         else:
             replacement = Folder(name='new-root',workspace_id=wid)
             db.add(replacement); db.flush()

@@ -1,9 +1,9 @@
-"""补充测试：file/service.py 分片上传、搜索、头像；mcp/server.py 剩余工具；chat/service.py 检索。"""
+"""补充测试：文件上传/分片用例、搜索、头像；mcp/server.py 剩余工具；chat/service.py 检索。"""
 
 import json
 import os
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock, mock_open
+from unittest.mock import patch, MagicMock, AsyncMock
 
 
 # ---------------------------------------------------------------------------
@@ -11,95 +11,37 @@ from unittest.mock import patch, MagicMock, AsyncMock, mock_open
 # ---------------------------------------------------------------------------
 
 class TestFileServiceMultipart:
-    """分片上传相关函数测试。"""
-
-    def testsafe_upload_id_valid(self):
-        from app.features.file.service import safe_upload_id
-        assert safe_upload_id("abc12345") == "abc12345"  # 至少8字符
-
-    def testsafe_upload_id_invalid(self):
-        from app.features.file.service import safe_upload_id
-        from app.exceptions import BusinessRuleError
-        with pytest.raises(BusinessRuleError):
-            safe_upload_id("")
-        with pytest.raises(BusinessRuleError):
-            safe_upload_id("invalid/id")
-        with pytest.raises(BusinessRuleError):
-            safe_upload_id("short")  # 少于8字符
-
-    def testmultipart_upload_dir(self):
-        from app.features.file.service import multipart_upload_dir, MULTIPART_ROOT
-        result = multipart_upload_dir(1, "abc")
-        assert "1" in result
-        assert "abc" in result
-
-    def testmultipart_chunks_dir(self):
-        from app.features.file.service import multipart_chunks_dir
-        result = multipart_chunks_dir("/tmp/upload")
-        assert result.endswith("chunks")
-
-    def testmultipart_meta_path(self):
-        from app.features.file.service import multipart_meta_path
-        result = multipart_meta_path("/tmp/upload")
-        assert result.endswith("meta.json")
-
-    def testlist_uploaded_chunks_empty(self, tmp_path):
-        from app.features.file.service import list_uploaded_chunks
-        result = list_uploaded_chunks(str(tmp_path / "nonexistent"))
-        assert result == []
-
-    def testlist_uploaded_chunks_with_files(self, tmp_path):
-        from app.features.file.service import list_uploaded_chunks
-        chunks_dir = tmp_path / "chunks"
-        chunks_dir.mkdir()
-        (chunks_dir / "0.part").write_text("data")
-        (chunks_dir / "2.part").write_text("data")
-        (chunks_dir / "1.part").write_text("data")
-        result = list_uploaded_chunks(str(chunks_dir))
-        assert result == [0, 1, 2]
-
-    def testload_multipart_meta_not_found(self):
-        from app.features.file.service import load_multipart_meta
-        from app.exceptions import ResourceNotFoundError
-        with pytest.raises(ResourceNotFoundError):
-            load_multipart_meta(999, "nonexistent")
-
-    def test_write_andload_multipart_meta(self, tmp_path):
-        from app.features.file.service import _write_multipart_meta, load_multipart_meta, multipart_upload_dir, multipart_meta_path
-        import app.features.file.service as fs
-
-        # 临时修改 MULTIPART_ROOT
-        original_root = fs.MULTIPART_ROOT
-        fs.MULTIPART_ROOT = str(tmp_path)
-        try:
-            upload_dir = multipart_upload_dir(1, "test12345678")  # 至少8字符
-            os.makedirs(upload_dir, exist_ok=True)
-            meta_path = multipart_meta_path(upload_dir)
-            meta = {"upload_id": "test12345678", "workspace_id": 1, "filename": "test.txt"}
-            _write_multipart_meta(meta_path, meta)
-            loaded = load_multipart_meta(1, "test12345678")
-            assert loaded["upload_id"] == "test12345678"
-        finally:
-            fs.MULTIPART_ROOT = original_root
+    """分片上传用例与搜索测试。"""
 
     def test_init_multipart_upload_no_filename(self, session, test_user, test_workspace):
-        from app.features.file.service import init_multipart_upload
+        from app.features.file.multipart_service import get_multipart_service
         from app.exceptions import BusinessRuleError
         with pytest.raises(BusinessRuleError, match="filename"):
-            init_multipart_upload(session, test_workspace.id, test_user.id, {"filename": "", "total_size": 100})
+            get_multipart_service().init_multipart_upload(
+                session, test_workspace.id, test_user.id, {"filename": "", "total_size": 100},
+            )
 
     def test_init_multipart_upload_invalid_size(self, session, test_user, test_workspace):
-        from app.features.file.service import init_multipart_upload
+        from app.features.file.multipart_service import get_multipart_service
         from app.exceptions import BusinessRuleError
         with pytest.raises(BusinessRuleError, match="total_size"):
-            init_multipart_upload(session, test_workspace.id, test_user.id, {"filename": "test.txt", "total_size": 0})
+            get_multipart_service().init_multipart_upload(
+                session, test_workspace.id, test_user.id, {"filename": "test.txt", "total_size": 0},
+            )
 
     def test_abort_multipart_upload(self, session, test_workspace, test_user, tmp_path):
-        from app.features.file.service import abort_multipart_upload, init_multipart_upload
-        with patch("app.features.file.service.MULTIPART_ROOT", str(tmp_path)):
-            result = init_multipart_upload(session, test_workspace.id, test_user.id, {"filename": "x", "total_size": 5})
-            abort_multipart_upload(session, test_workspace.id, test_user.id, result["upload_id"])
-            assert not (tmp_path / str(test_workspace.id) / result["upload_id"]).exists()
+        from app.features.file.multipart_service import get_multipart_service
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
+            service = get_multipart_service()
+            result = service.init_multipart_upload(
+                session, test_workspace.id, test_user.id, {"filename": "x", "total_size": 5},
+            )
+            service.abort_multipart_upload(
+                session, test_workspace.id, test_user.id, result["upload_id"],
+            )
+        assert not (
+            tmp_path / ".multipart" / str(test_workspace.id) / result["upload_id"]
+        ).exists()
 
     def test_search_files_fuzzy_no_match(self, session, test_user, test_workspace):
         from app.features.file.search_service import _search_files_fuzzy
@@ -128,19 +70,33 @@ class TestFileServiceAvatar:
     """头像上传测试。"""
 
     def test_upload_avatar_for_user_permission_denied(self, session, test_user):
-        from app.features.file.service import upload_avatar_for_user
+        from app.features.file.avatar_service import upload_avatar_for_user
         from app.exceptions import PermissionDeniedError
 
         with pytest.raises(PermissionDeniedError):
             upload_avatar_for_user(session, test_user.id, "common", test_user.id + 1, MagicMock())
 
-    def test_upload_avatar_for_user_self(self, session, test_user):
-        from app.features.file.service import upload_avatar_for_user
+    def test_upload_avatar_for_user_self(
+        self, session, test_user, test_workspace, tmp_path,
+    ):
+        from io import BytesIO
 
-        mock_upload = MagicMock()
-        with patch("app.features.file.service.upload_avatar", return_value={"avatar_url": "/test"}):
+        from fastapi import UploadFile
+        from app.features.file.avatar_service import upload_avatar_for_user
+        from app.infra.upload_adapter import FastAPIUploadAdapter
+        from app.models.share import Share
+        from app.models.user import User
+
+        mock_upload = FastAPIUploadAdapter(UploadFile(
+            filename="avatar.png", file=BytesIO(b"avatar-bytes"),
+            headers={"content-type": "image/png"},
+        ))
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
             result = upload_avatar_for_user(session, test_user.id, "common", test_user.id, mock_upload)
-        assert "avatar_url" in result
+        assert result["avatar_url"].startswith("/api/share/")
+        assert result["name"] == "avatar.png"
+        assert session.get(User, test_user.id).avatar == result["avatar_url"]
+        assert session.query(Share).filter_by(file_id=result["id"]).count() == 1
 
 
 class TestFileServiceBatch:
@@ -183,36 +139,27 @@ class TestFileServiceCleanup:
 
     def test_cleanup_expired_uploads_no_dir(self, tmp_path):
         from app.features.file.service import cleanup_expired_uploads
-        import app.features.file.service as fs
 
-        original_root = fs.MULTIPART_ROOT
-        fs.MULTIPART_ROOT = str(tmp_path / "nonexistent")
-        try:
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path / "nonexistent")):
             result = cleanup_expired_uploads()
-            assert result == 0
-        finally:
-            fs.MULTIPART_ROOT = original_root
+        assert result == 0
 
     def test_cleanup_expired_uploads_with_old_dir(self, tmp_path):
         from app.features.file.service import cleanup_expired_uploads
-        import app.features.file.service as fs
         import time
 
-        original_root = fs.MULTIPART_ROOT
-        fs.MULTIPART_ROOT = str(tmp_path)
-        try:
-            # 创建过期的上传目录
-            ws_dir = tmp_path / "1"
-            upload_dir = ws_dir / "old_upload"
-            upload_dir.mkdir(parents=True)
-            # 设置修改时间为很久以前
-            old_time = time.time() - 100000
-            os.utime(upload_dir, (old_time, old_time))
+        # 创建过期的分片上传目录
+        ws_dir = tmp_path / ".multipart" / "1"
+        upload_dir = ws_dir / "old_upload"
+        upload_dir.mkdir(parents=True)
+        # 设置修改时间为很久以前
+        old_time = time.time() - 100000
+        os.utime(upload_dir, (old_time, old_time))
 
+        with patch("app.features.file.upload_config.UPLOAD_FOLDER", str(tmp_path)):
             result = cleanup_expired_uploads(max_age_hours=1)
-            assert result >= 1
-        finally:
-            fs.MULTIPART_ROOT = original_root
+        assert result >= 1
+        assert not upload_dir.exists()
 
 
 # ---------------------------------------------------------------------------

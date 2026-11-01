@@ -265,53 +265,6 @@ class TestChangeLog:
 
 
 # ---------------------------------------------------------------------------
-# folder/service.py 剩余 Redis 锁逻辑
-# ---------------------------------------------------------------------------
-class TestFolderServiceLocks:
-    def test_organize_task_lock_key(self):
-        from app.features.folder.service import _organize_task_lock_key
-        assert _organize_task_lock_key(5) == "organize:task:lock:5"
-
-    def test_invalidate_folder_caches(self):
-        from app.features.folder.service import _invalidate_folder_caches
-        with patch("app.features.folder.service.evict_cache") as mock_evict:
-            _invalidate_folder_caches(1)
-        assert mock_evict.call_count == 3
-
-    def test_mark_organize_task_running(self):
-        from app.features.folder.service import mark_organize_task_running
-        with patch("app.features.folder.service.redis_client") as mock_redis:
-            mark_organize_task_running(1, "token-abc")
-        mock_redis.eval.assert_called_once()
-
-    def test_release_organize_task_lock(self):
-        from app.features.folder.service import release_organize_task_lock
-        with patch("app.features.folder.service.redis_client") as mock_redis:
-            release_organize_task_lock(1, "token-abc")
-        mock_redis.eval.assert_called_once()
-
-    def test_organize_files_duplicate_admission(self, session, test_workspace, test_user):
-        from app.features.folder.service import organize_files
-        assert organize_files(session, test_workspace.id, test_user.id)
-        assert not organize_files(session, test_workspace.id, test_user.id)
-
-    def test_organize_files_success(self, session, test_workspace, test_user):
-        from app.features.folder.service import organize_files
-        from app.models.organize_task import OrganizeTask
-        assert organize_files(session, test_workspace.id, test_user.id)
-        row = session.query(OrganizeTask).one()
-        assert row.state == "queued" and row.user_id == test_user.id
-        assert row.delivered_at is None
-
-    def test_organize_files_commit_failure(self, session, test_workspace, test_user):
-        from app.features.folder.service import organize_files
-        with patch.object(session, "commit", side_effect=RuntimeError("intent commit failure")):
-            with pytest.raises(RuntimeError, match="intent commit failure"):
-                organize_files(session, test_workspace.id, test_user.id)
-        session.rollback()
-
-
-# ---------------------------------------------------------------------------
 # infra/cache.py 剩余分支
 # ---------------------------------------------------------------------------
 class TestCacheRemaining:
@@ -347,42 +300,3 @@ class TestCacheRemaining:
             result = fn()
         assert result is None
         mock_redis.setex.assert_not_called()
-
-    def test_cache_evict_before_async(self):
-        from app.infra.cache import cache_evict
-        mock_redis = MagicMock()
-
-        @cache_evict(prefix="test", before_invocation=True)
-        async def fn(x):
-            return x
-
-        with patch("app.infra.cache.redis_client", mock_redis):
-            result = __import__("asyncio").run(fn(1))
-        assert result == 1
-        mock_redis.delete.assert_called_once()
-
-    def test_cache_put_async_none(self):
-        from app.infra.cache import cache_put
-        mock_redis = MagicMock()
-
-        @cache_put(prefix="test", expire=60)
-        async def fn():
-            return None
-
-        with patch("app.infra.cache.redis_client", mock_redis):
-            result = __import__("asyncio").run(fn())
-        assert result is None
-        mock_redis.setex.assert_not_called()
-
-    def test_cache_evict_all_entries_async(self):
-        from app.infra.cache import cache_evict
-        mock_redis = MagicMock()
-        mock_redis.scan_iter.return_value = iter(["t:1"])
-
-        @cache_evict(prefix="t", all_entries=True)
-        async def fn():
-            return "done"
-
-        with patch("app.infra.cache.redis_client", mock_redis):
-            result = __import__("asyncio").run(fn())
-        assert result == "done"

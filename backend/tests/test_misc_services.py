@@ -307,8 +307,7 @@ class TestShareService:
 class TestSysDictService:
     def test_create_sys_dict(self, session, test_user):
         from app.features.sys_dict.service import create_sys_dict
-        with patch("app.features.sys_dict.service._invalidate_sys_dict_cache"):
-            result = create_sys_dict(session, {"key": "test_key", "value": "val", "des": "desc", "enable": True})
+        result = create_sys_dict(session, {"key": "test_key", "value": "val", "des": "desc", "enable": True})
         assert result.key == "test_key"
 
     def test_create_sys_dict_model_config_key(self, session):
@@ -324,8 +323,7 @@ class TestSysDictService:
         sd = SysDict(key="update_me", value="old", des="d", enable=True)
         session.add(sd)
         session.flush()
-        with patch("app.features.sys_dict.service._invalidate_sys_dict_cache"):
-            result = update_sys_dict(session, sd.id, {"value": "new"})
+        result = update_sys_dict(session, sd.id, {"value": "new"})
         assert result.value == "new"
 
     def test_update_sys_dict_not_found(self, session):
@@ -351,8 +349,7 @@ class TestSysDictService:
         sd = SysDict(key="delete_me", value="v", des="d", enable=True)
         session.add(sd)
         session.flush()
-        with patch("app.features.sys_dict.service._invalidate_sys_dict_cache"):
-            delete_sys_dict(session, sd.id)
+        delete_sys_dict(session, sd.id)
 
     def test_delete_sys_dict_not_found(self, session):
         from app.features.sys_dict.service import delete_sys_dict
@@ -360,80 +357,31 @@ class TestSysDictService:
         with pytest.raises(ResourceNotFoundError):
             delete_sys_dict(session, 99999)
 
-    def test_get_sys_dict_all(self, session):
-        from app.features.sys_dict.service import get_sys_dict_all
+    def test_get_sys_dict_all_sync_reads_sql(self, session):
+        from app.features.sys_dict.service import get_sys_dict_all_sync
         from app.models.sys_dict import SysDict
         sd = SysDict(key="list_me", value="v", des="d", enable=True)
-        session.add(sd)
+        hidden = SysDict(key="chat_api_key", value="secret", des="d", enable=True)
+        session.add_all([sd, hidden])
         session.flush()
-        # @cacheable 使用 Redis，mock redis 返回 None（cache miss）
-        mock_redis = MagicMock()
-        mock_redis.get.return_value = None
-        with patch('app.infra.cache.redis_client', mock_redis):
-            result = asyncio.run(get_sys_dict_all(session))
+        result = get_sys_dict_all_sync(session)
         assert any(d["key"] == "list_me" for d in result)
+        assert all(d["key"] != "chat_api_key" for d in result)
 
-    def test_get_sys_dict_by_key(self, session):
-        from app.features.sys_dict.service import get_sys_dict_by_key
-        from app.models.sys_dict import SysDict
-        sd = SysDict(key="find_me", value="v", des="d", enable=True)
-        session.add(sd)
-        session.flush()
-        mock_redis = MagicMock()
-        mock_redis.get.return_value = None
-        with patch('app.infra.cache.redis_client', mock_redis):
-            result = asyncio.run(get_sys_dict_by_key(session, "find_me"))
-        assert result is not None
-
-    def test_get_sys_dict_by_key_not_found(self, session):
-        from app.features.sys_dict.service import get_sys_dict_by_key
-        mock_redis = MagicMock()
-        mock_redis.get.return_value = None
-        with patch('app.infra.cache.redis_client', mock_redis):
-            result = asyncio.run(get_sys_dict_by_key(session, "nonexistent"))
-        assert result is None
-
-    def test_get_sys_dict_by_key_model_config(self, session):
-        from app.features.sys_dict.service import get_sys_dict_by_key
-        with patch("app.features.sys_dict.service.is_model_config_sys_dict_key", return_value=True):
-            result = asyncio.run(get_sys_dict_by_key(session, "CHAT_MODEL_API"))
-        assert result is None
-
-    def test_get_sys_dict_by_key_sync(self, session):
-        from app.features.sys_dict.service import get_sys_dict_by_key_sync
-        from app.models.sys_dict import SysDict
-        sd = SysDict(key="sync_key", value="v", des="d", enable=True)
-        session.add(sd)
-        session.flush()
-        result = get_sys_dict_by_key_sync(session, "sync_key")
-        assert result is not None
-
-    def test_get_sys_dict_by_key_sync_model_config(self, session):
-        from app.features.sys_dict.service import get_sys_dict_by_key_sync
-        with patch("app.features.sys_dict.service.is_model_config_sys_dict_key", return_value=True):
-            result = get_sys_dict_by_key_sync(session, "CHAT_MODEL_API")
-        assert result is None
-
-    def test_get_sys_dict(self, session):
-        from app.features.sys_dict.service import get_sys_dict
+    def test_get_sys_dict_sync(self, session):
+        from app.features.sys_dict.service import get_sys_dict_sync
         from app.models.sys_dict import SysDict
         sd = SysDict(key="get_me", value="v", des="d", enable=True)
         session.add(sd)
         session.flush()
-        mock_redis = MagicMock()
-        mock_redis.get.return_value = None
-        with patch('app.infra.cache.redis_client', mock_redis):
-            result = asyncio.run(get_sys_dict(session, sd.id))
+        result = get_sys_dict_sync(session, sd.id)
         assert result["key"] == "get_me"
 
-    def test_get_sys_dict_not_found(self, session):
-        from app.features.sys_dict.service import get_sys_dict
+    def test_get_sys_dict_sync_not_found(self, session):
+        from app.features.sys_dict.service import get_sys_dict_sync
         from app.exceptions import ResourceNotFoundError
-        mock_redis = MagicMock()
-        mock_redis.get.return_value = None
-        with patch('app.infra.cache.redis_client', mock_redis):
-            with pytest.raises(ResourceNotFoundError):
-                asyncio.run(get_sys_dict(session, 99999))
+        with pytest.raises(ResourceNotFoundError):
+            get_sys_dict_sync(session, 99999)
 
 
 class TestDependencies:

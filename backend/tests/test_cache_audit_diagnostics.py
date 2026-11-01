@@ -29,35 +29,24 @@ def assert_safe(messages):
     assert any('error_type=' in message for message, _ in messages)
 
 
-@pytest.mark.parametrize('operation', ['get', 'setex', 'delete', 'scan', 'put', 'manual', 'pattern', 'json'])
+@pytest.mark.parametrize('operation', ['get', 'setex', 'pattern', 'json'])
 @pytest.mark.parametrize('asynchronous', [False, True])
 async def test_cache_failures_preserve_fallback_and_private_keys(monkeypatch, diagnostic_capture, operation, asynchronous):
     redis = MagicMock()
     redis.get.return_value = None
     if operation == 'json':
         redis.get.return_value = SECRET
+    elif operation == 'pattern':
+        redis.scan_iter.side_effect = RuntimeError(SECRET)
     else:
-        method = {'put': 'setex', 'manual': 'delete', 'pattern': 'scan_iter', 'scan': 'scan_iter'}.get(operation, operation)
-        getattr(redis, method).side_effect = RuntimeError(SECRET)
+        getattr(redis, operation).side_effect = RuntimeError(SECRET)
     monkeypatch.setattr(cache, 'redis_client', redis)
-    if operation in {'manual', 'pattern'}:
-        if operation == 'manual':
-            cache.evict_cache(SECRET, SECRET)
-        else:
-            assert cache.evict_cache_pattern(SECRET) == 0
+    if operation == 'pattern':
+        assert cache.evict_cache_pattern(SECRET) == 0
     else:
-        if operation == 'put':
-            decorator = cache.cache_put(prefix=SECRET, key=lambda value: value)
-        elif operation in {'delete', 'scan'}:
-            decorator = cache.cache_evict(
-                prefix=SECRET,
-                key=lambda value: value,
-                all_entries=operation == 'scan',
-            )
-        else:
-            decorator = cache.cacheable(
-                cache.CacheableParams(prefix=SECRET), key=lambda value: value,
-            )
+        decorator = cache.cacheable(
+            cache.CacheableParams(prefix=SECRET), key=lambda value: value,
+        )
         if asynchronous:
             @decorator
             async def work(value):

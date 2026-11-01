@@ -15,7 +15,6 @@ from app.features.workspace import docker_service
 from app.infra.cache import (
     CacheableParams,
     cacheable,
-    evict_cache,
     sql_cache_allowed,
     sql_cache_revision,
 )
@@ -181,7 +180,6 @@ def update_user(session: Session, user_id: int, data: UpdateUserData) -> User:
     user.avatar = data.get("avatar", user.avatar)
     session.commit()
 
-    evict_cache(USER_CACHE_PREFIX, user_id)
     return user
 
 
@@ -205,8 +203,6 @@ def delete_user(session: Session, user_id: int) -> None:
     account_repository.delete_account(session, user_id)
     session.commit()
     session.expire_all()
-
-    evict_cache(USER_CACHE_PREFIX, user_id)
 
 
 def change_password(session: Session, params: ChangePasswordParams) -> None:
@@ -234,7 +230,6 @@ def change_password(session: Session, params: ChangePasswordParams) -> None:
         McpRuntimeToken.revoked_at.is_(None),
     ).update({McpRuntimeToken.revoked_at: utc_now()}, synchronize_session=False)
     session.commit()
-    evict_cache(USER_CACHE_PREFIX, params.user_id)
 
 
 def ensure_user_access(

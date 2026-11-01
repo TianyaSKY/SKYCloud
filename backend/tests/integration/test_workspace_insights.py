@@ -412,6 +412,139 @@ async def test_profile_http_current_roles_and_cached_target_lifecycle(postgres,i
         assert denied.status_code==(403 if change=='demote' else 404),denied.text
 
 
+
+
+def test_account_and_folder_cache_revisions_follow_transaction_and_redis_failure(
+    postgres,
+    infrastructure,
+    monkeypatch,
+):
+    from redis.exceptions import ConnectionError as RedisConnectionError
+    from sqlalchemy.orm import sessionmaker
+    from app.features.auth import user_service
+    from app.features.folder import service as folder_service
+    from app.infra import cache
+
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text(
+            "INSERT INTO users(id,username,password_hash,role) "
+            "VALUES (1,'cache-reader','x','common')",
+        ))
+        db.execute(text(
+            "INSERT INTO workspaces(id,name,owner_id) VALUES (1,'cache-space',1)",
+        ))
+        db.execute(text(
+            "INSERT INTO folder(id,name,workspace_id,parent_id) "
+            "VALUES (1,'/',1,NULL),(2,'original-folder',1,1)",
+        ))
+
+    factory = sessionmaker(bind=postgres)
+    redis = infrastructure["redis"]
+    monkeypatch.setattr(cache, "redis_client", redis)
+
+    def read_profiles():
+        with factory() as db:
+            user = user_service.get_user_data(db, 1)
+            folders = folder_service.get_folders(db, 1)
+            return user, folders
+
+    def folder_name(folders):
+        return next(folder["name"] for folder in folders if folder["id"] == 2)
+
+    user, folders = read_profiles()
+    assert user["username"] == "cache-reader"
+    assert folder_name(folders) == "original-folder"
+    assert warmed(redis, user_service.USER_CACHE_PREFIX + ":1:sql:")
+    assert warmed(redis, folder_service.FOLDER_CACHE_PREFIX + ":1:sql:")
+
+    with postgres.connect() as db:
+        transaction = db.begin()
+        db.execute(text("UPDATE users SET username='rolled-back-user' WHERE id=1"))
+        db.execute(text("UPDATE folder SET name='rolled-back-folder' WHERE id=2"))
+        transaction.rollback()
+
+    user, folders = read_profiles()
+    assert user["username"] == "cache-reader"
+    assert folder_name(folders) == "original-folder"
+
+    with postgres.begin() as db:
+        db.execute(text("UPDATE users SET username='committed-user' WHERE id=1"))
+        db.execute(text("UPDATE folder SET name='committed-folder' WHERE id=2"))
+    user, folders = read_profiles()
+    assert user["username"] == "committed-user"
+    assert folder_name(folders) == "committed-folder"
+
+    class UnavailableRedis:
+        def get(self, *args, **kwargs):
+            raise RedisConnectionError("fixture Redis unavailable")
+
+        def set(self, *args, **kwargs):
+            raise RedisConnectionError("fixture Redis unavailable")
+
+    monkeypatch.setattr(cache, "redis_client", UnavailableRedis())
+    with postgres.begin() as db:
+        db.execute(text("UPDATE users SET username='redis-down-user' WHERE id=1"))
+        db.execute(text("UPDATE folder SET name='redis-down-folder' WHERE id=2"))
+    user, folders = read_profiles()
+    assert user["username"] == "redis-down-user"
+    assert folder_name(folders) == "redis-down-folder"
+
+
+async def test_sys_dict_crud_reads_current_sql_without_revision_state(postgres):
+    import httpx
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from app.api.dependencies import require_admin
+    from app.exceptions import register_exception_handlers
+    from app.features.sys_dict import router
+    from app.infra.extensions import get_session_factory
+    from sqlalchemy.orm import sessionmaker
+
+    upgrade(postgres)
+    with postgres.begin() as db:
+        db.execute(text("DELETE FROM sys_dict"))
+        db.execute(text(
+            "INSERT INTO users(id,username,password_hash,role) "
+            "VALUES (1,'dictionary-admin','x','admin')",
+        ))
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(router.router)
+    app.dependency_overrides[require_admin] = lambda: SimpleNamespace(id=1, role="admin")
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app),
+        base_url="http://test",
+    ) as client:
+        created = await client.post(
+            "/sys_dicts",
+            json={"key": "browser-visible", "value": "first", "des": "first", "enable": True},
+        )
+        assert created.status_code == 201
+        dict_id = created.json()["data"]["id"]
+        assert any(
+            item["id"] == dict_id and item["value"] == "first"
+            for item in (await client.get("/sys_dicts")).json()["data"]
+        )
+        assert (await client.get(f"/sys_dicts/{dict_id}")).json()["data"]["value"] == "first"
+
+        updated = await client.put(
+            f"/sys_dicts/{dict_id}",
+            json={"key": "browser-visible", "value": "updated", "des": "updated", "enable": False},
+        )
+        assert updated.status_code == 200
+        assert (await client.get(f"/sys_dicts/{dict_id}")).json()["data"]["value"] == "updated"
+
+        deleted = await client.delete(f"/sys_dicts/{dict_id}")
+        assert deleted.status_code == 204
+        assert (await client.get(f"/sys_dicts/{dict_id}")).status_code == 404
+
+    with postgres.connect() as db:
+        assert db.execute(text(
+            "SELECT count(*) FROM sql_cache_revisions WHERE scope LIKE 'sys_dict:%'",
+        )).scalar_one() == 0
 @pytest.mark.parametrize('operation', ['create', 'profile', 'password', 'delete', 'self-password'])
 async def test_account_mutations_reject_stale_admin_snapshot(postgres, monkeypatch, operation):
     import httpx
@@ -694,6 +827,7 @@ async def test_file_batch_delete_rechecks_after_committed_item(postgres, monkeyp
 async def test_mcp_write_authorization_holds_role_lock_at_dispatch(postgres, monkeypatch, operation):
     from sqlalchemy.exc import DBAPIError
     from app.exceptions import BusinessRuleError
+    from app.features.file.upload_service import FileUploadService
     upgrade(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
@@ -715,7 +849,7 @@ async def test_mcp_write_authorization_holds_role_lock_at_dispatch(postgres, mon
         'move_folder': (server.folder_service, 'update_folder'),
         'delete_folder': (server.folder_service, 'delete_folder'),
         'batch_delete': (server.file_service, 'delete_file'),
-        'upload_file': (server.file_service, 'create_uploaded_file'),
+        'upload_file': (FileUploadService, 'create_uploaded_file'),
     }[operation]
     calls = []
     def dispatch(session, *args, **kwargs):
@@ -821,28 +955,19 @@ async def test_mcp_share_publication_rejects_concurrent_workspace_change(postgre
 
 
 @pytest.mark.parametrize('change', ['demote', 'delete'])
-async def test_settings_owned_routes_reject_stale_admin_with_warm_cache(postgres, infrastructure, monkeypatch, change):
+async def test_settings_owned_routes_reject_stale_admin(postgres, change):
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
     from app.api.dependencies import require_admin
     from app.features.sys_dict import router
-    from app.features.sys_dict import service as sys_dict_service
     from app.infra.extensions import get_session_factory
-    from app.infra import cache
     from app.exceptions import register_exception_handlers
     upgrade(postgres)
     with postgres.begin() as db:
         db.execute(text("DELETE FROM sys_dict"))
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin')"))
         db.execute(text("INSERT INTO sys_dict(id,key,value,des,enable) VALUES (1,'original','value','description',true)"))
-    monkeypatch.setattr(cache, 'redis_client', infrastructure['redis'])
-    # Warm the shared cache through the cached read itself: the HTTP route locks the
-    # actor row for authorization, and a row-locking transaction is deliberately
-    # excluded from the shared cache, so it can never be the warming step.
-    with sessionmaker(bind=postgres)() as warmer:
-        sys_dict_service.get_sys_dict_all_sync(warmer)
-    assert warmed(infrastructure['redis'], 'sys_dict:all:all')
     app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
     # Explicit stale identity seam; current SQL authorization is real.
     app.dependency_overrides[require_admin] = lambda: SimpleNamespace(id=1, role='admin')
@@ -889,7 +1014,6 @@ async def test_settings_http_write_keeps_actor_lock_until_commit(postgres, monke
         observed.append(True)
         return create(session, data)
     monkeypatch.setattr(router.sys_dict_service, 'create_sys_dict', observe_then_create)
-    monkeypatch.setattr(router.sys_dict_service, '_invalidate_sys_dict_cache', lambda: None)
     app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
     app.dependency_overrides[require_admin] = lambda: SimpleNamespace(id=1, role='admin')
     app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
@@ -986,7 +1110,7 @@ async def test_assistant_owned_http_rechecks_committed_membership(postgres, chan
     from types import SimpleNamespace
     from fastapi import FastAPI
     from app.api.dependencies import get_current_user, get_current_workspace
-    from app.features.assistant import router, service
+    from app.features.assistant import repository, router, service
     from app.infra.extensions import get_session_factory
     from app.models.workspace import Workspace
     from app.exceptions import register_exception_handlers
@@ -1004,7 +1128,11 @@ async def test_assistant_owned_http_rechecks_committed_membership(postgres, chan
         _, run, _ = service.prepare_run(owned, service.PrepareRunParams(
             workspace=workspace, user_id=1,
             conversation_id=cid, query='original query'))
-        run.status = 'waiting_permission'; run.pending_permission_id = 'p1'
+        repository.register_permission(
+            owned,
+            run,
+            {"permission_id": "p1", "title": "Read file"},
+        )
         owned.commit(); rid = run.id
         source = service.create_conversation(owned, workspace, 1, 'fast', 'source')
         sid = source.id
@@ -1039,7 +1167,11 @@ async def test_assistant_owned_http_rechecks_committed_membership(postgres, chan
             assert [row['id'] for row in listing.json()['data']['conversations']] == [sid]
     with postgres.connect() as db:
         assert db.execute(text('SELECT title FROM assistant_conversations ORDER BY id')).scalars().all() == ['original','source']
-        assert db.execute(text('SELECT cancel_requested,pending_permission_id,permission_response FROM assistant_runs')).all() == [(False,'p1',None)]
+        assert db.execute(text(
+            'SELECT assistant_runs.cancel_requested, assistant_permissions.state, '
+            'assistant_permissions.response FROM assistant_runs JOIN '
+            'assistant_permissions ON assistant_permissions.run_id=assistant_runs.id'
+        )).all() == [(False, 'pending', None)]
         assert db.scalar(text('SELECT count(*) FROM assistant_messages')) == 2
 
 
@@ -1275,48 +1407,6 @@ async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, mo
     assert service.run_registry.get(rid) is None
 
 
-@pytest.mark.parametrize('quiet', [False,True])
-async def test_legacy_chat_http_stops_after_committed_member_removal(postgres, monkeypatch, quiet):
-    import httpx
-    from app.models.user import User
-    from app.models.workspace import Workspace
-    from fastapi import FastAPI
-    from app.api.dependencies import get_current_user,get_current_workspace
-    from app.features.chat import router
-    from app.infra.extensions import get_session_factory
-    upgrade(postgres)
-    with postgres.begin() as db:
-        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
-        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
-        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'viewer')"))
-    app=FastAPI();app.include_router(router.router)
-    app.dependency_overrides[get_current_user]=lambda:User(id=1)
-    app.dependency_overrides[get_current_workspace]=lambda:Workspace(id=1)
-    app.dependency_overrides[get_session_factory]=lambda:sessionmaker(bind=postgres)
-    entered,closed=asyncio.Event(),asyncio.Event()
-    async def model(*args,**kwargs):
-        try:
-            yield 'data: {"type":"token","content":"allowed"}\n\n'
-            entered.set()
-            if quiet:await asyncio.Event().wait()
-            else:
-                with postgres.begin() as independent:
-                    independent.execute(text('DELETE FROM workspace_members WHERE user_id=1'))
-                yield 'data: {"type":"token","content":"private-late-data"}\n\n'
-        finally:closed.set()
-    monkeypatch.setattr(router,'generate_chat_events',model)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
-        pending=asyncio.create_task(client.post('/chat',json={'query':'question'}))
-        if quiet:
-            await asyncio.wait_for(entered.wait(),3)
-            with postgres.begin() as independent:
-                independent.execute(text('DELETE FROM workspace_members WHERE user_id=1'))
-        response=await asyncio.wait_for(pending,5)
-    assert response.status_code==200
-    assert 'allowed' in response.text and 'private-late-data' not in response.text
-    payloads=[json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
-    assert any('权限已撤销' in payload.get('content','') for payload in payloads)
-    assert closed.is_set()
 
 
 @pytest.mark.parametrize('leased,cleanup', [(False,None),(True,None),(False,'self-cancel'),(True,'self-cancel'),(False,'repeat-cancel'),(True,'repeat-cancel')])
@@ -1605,83 +1695,10 @@ async def test_http_stream_initialization_abort_cleans_unclaimed_run(postgres, m
             ('user', 'completed'), ('assistant', 'cancelled')]
 
 
-@pytest.mark.parametrize('change,quiet,close_fault', [('version',False,None),('version',True,None),('family',False,None),('family',True,None),('mcp',False,None),('expiry',True,None),('version',False,'error'),('version',False,'cancel')])
-async def test_legacy_stream_live_signed_session_revocation(postgres, infrastructure, monkeypatch, change, quiet, close_fault):
-    import time
-    import httpx
-    import jwt
-    from datetime import timedelta
-    from fastapi import FastAPI
-    from app.features.auth import refresh_sessions
-    from app.features.chat import router
-    from app.infra.extensions import SECRET_KEY, get_db, get_session_factory
-    from app.infra.datetime_utils import utc_now
-    from app.models.mcp_token import McpToken
-    upgrade(postgres)
-    with postgres.begin() as db:
-        db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
-        db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
-        db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'viewer')"))
-    factory=sessionmaker(bind=postgres)
-    monkeypatch.setattr(refresh_sessions, 'redis_client', infrastructure['redis'])
-    claims={'sub':'1','ver':0,'exp':int(time.time())+(4 if change=='expiry' else 60)}
-    if change=='family':
-        with factory() as db:
-            _, payload=refresh_sessions.create(db, claims)
-            raw=payload['token']
-    else:
-        if change=='mcp': claims['type']='mcp'
-        raw=jwt.encode(claims,SECRET_KEY,algorithm='HS256')
-    if change=='mcp':
-        with factory() as db:
-            db.add(McpToken(user_id=1,token_hash=McpToken.hash_token(raw),token_preview='test',
-                            expires_at=utc_now()+timedelta(minutes=1)))
-            db.commit()
-    def revoke():
-        if change=='family': refresh_sessions.revoke_access('Bearer '+raw)
-        elif change=='version':
-            with postgres.begin() as db:
-                db.execute(text('UPDATE users SET auth_version=auth_version+1 WHERE id=1'))
-        elif change=='mcp':
-            with postgres.begin() as db:
-                db.execute(text('UPDATE mcp_tokens SET revoked_at=now() WHERE user_id=1'))
-    app=FastAPI();app.include_router(router.router)
-    # Real get_current_user / get_current_workspace, actual signed credential,
-    # owned PostgreSQL factory. Only unused borrowed Session and model are seams.
-    app.dependency_overrides[get_db]=lambda:None
-    app.dependency_overrides[get_session_factory]=lambda:factory
-    entered,closed=asyncio.Event(),asyncio.Event()
-    async def model(*args,**kwargs):
-        try:
-            yield 'data: {"type":"token","content":"allowed"}\n\n'
-            entered.set()
-            if quiet: await asyncio.Event().wait()
-            else:
-                revoke()
-                yield 'data: {"type":"token","content":"private-late-data"}\n\n'
-        finally:
-            closed.set()
-            if close_fault:
-                error=RuntimeError if close_fault=='error' else asyncio.CancelledError
-                raise error('private-provider-close-credential')
-    monkeypatch.setattr(router,'generate_chat_events',model)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
-        pending=asyncio.create_task(client.post('/chat',headers={'Authorization':'Bearer '+raw,'X-Workspace-Id':'1'},json={'query':'question'}))
-        if quiet:
-            await asyncio.wait_for(entered.wait(),3)
-            revoke()
-        response=await asyncio.wait_for(pending,8)
-    assert response.status_code==200
-    assert 'allowed' in response.text and 'private-late-data' not in response.text and raw not in response.text
-    payloads=[json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
-    assert any('登录状态已失效' in payload.get('content','') for payload in payloads)
-    assert closed.is_set() and 'private-provider-close-credential' not in response.text
-    with postgres.connect() as db:
-        assert db.scalar(text('SELECT count(*) FROM workspace_members WHERE user_id=1'))==1
 
 
-@pytest.mark.parametrize('change,quiet', [('version',False),('version',True),('family',False),('family',True),('mcp',False),('expiry',True)])
-async def test_assistant_stream_live_signed_session_revocation(postgres, infrastructure, monkeypatch, change, quiet):
+@pytest.mark.parametrize('change,quiet', [('version',False),('version',True),('family',False),('family',True),('mcp',False),('expiry',True),('member',False),('member',True)])
+async def test_assistant_stream_rechecks_live_identity_and_membership(postgres, infrastructure, monkeypatch, change, quiet):
     import time
     import httpx
     import jwt
@@ -1722,6 +1739,8 @@ async def test_assistant_stream_live_signed_session_revocation(postgres, infrast
             with postgres.begin() as db:db.execute(text('UPDATE users SET auth_version=auth_version+1 WHERE id=1'))
         elif change=='mcp':
             with postgres.begin() as db:db.execute(text('UPDATE mcp_tokens SET revoked_at=now() WHERE user_id=1'))
+        elif change=='member':
+            with postgres.begin() as db:db.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
     app=FastAPI();app.include_router(router.router)
     app.dependency_overrides[get_db]=lambda:None
     app.dependency_overrides[get_session_factory]=lambda:factory
@@ -1763,7 +1782,8 @@ async def test_assistant_stream_live_signed_session_revocation(postgres, infrast
     run_id=int(response.headers['X-Assistant-Run-Id'])
     assert service.run_registry.get(run_id) is None
     with postgres.connect() as db:
-        assert db.scalar(text('SELECT count(*) FROM workspace_members WHERE user_id=1'))==1
+        expected_members = 0 if change == 'member' else 1
+        assert db.scalar(text('SELECT count(*) FROM workspace_members WHERE user_id=1')) == expected_members
         assert db.scalar(text('SELECT status FROM assistant_runs WHERE id=:id'),{'id':run_id})=='cancelled'
         assert db.execute(text("SELECT status,content FROM assistant_messages WHERE role='assistant'")).one()==('cancelled','allowed')
 
@@ -1828,7 +1848,8 @@ async def test_ui_header_send_failure_closes_real_upstream_http(postgres,infrast
                         if cleanup=='repeat-cancel':await release.wait()
                         await iterator.aclose()
                         if cleanup=='self-cancel':raise asyncio.CancelledError('private-upstream-close')
-                self.body_iterator=Body()
+                self.iterator=Body()
+                self.body_iterator=self.iterator
         monkeypatch.setattr(ui_gateway,'UpstreamResponse',WrappedResponse)
     async def fail_headers(scope,receive,send):
         scope={**scope,'asgi':{'version':'3.0','spec_version':'2.4'}}
@@ -2187,7 +2208,7 @@ async def test_http_completed_header_teardown_cancel_closes_native_upstream(post
     import httpx
     from fastapi import FastAPI
     from urllib.parse import urlsplit,parse_qs
-    from app.infra.http_wait import guarded_wait
+    from runtime_common.http_wait import guarded_wait
     from app.infra.extensions import get_session_factory
     from app.features.runtime_llm import router as model,tokens
     from app.features.workspace import ui_gateway,ui_tickets
