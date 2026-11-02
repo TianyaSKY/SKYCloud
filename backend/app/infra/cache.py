@@ -39,9 +39,9 @@ class _SQLiteDriver(Protocol):
     def in_transaction(self) -> bool: ...
 
 
-# ---------------------------------------------------------------------------
 # 缓存键构造
-# ---------------------------------------------------------------------------
+# 拼装 Redis 键: prefix + 自定义 key 回调或位置/关键字参数
+# 供 @cacheable 等缓存装饰器统一调用
 
 def _build_cache_key(
     prefix: str,
@@ -56,7 +56,7 @@ def _build_cache_key(
         key=lambda id, **_: id → "user:profile:2"
     """
     if key is not None:
-        # ParamSpec cannot express a signature reconstructed from stored args.
+        # ParamSpec 无法表达从已存储参数中重新构建的函数签名。
         suffix = str(cast("Callable[..., object]", key)(*args, **kwargs))
         return f"{prefix}:{suffix}"
 
@@ -66,12 +66,12 @@ def _build_cache_key(
     return f"{prefix}:{':'.join(parts)}" if parts else prefix
 
 
-# ---------------------------------------------------------------------------
-# @cacheable — 读穿缓存
-# ---------------------------------------------------------------------------
+# @cacheable — 读穿缓存装饰器实现
+# 基于 Redis 与 SQL 版本号的双重检查读穿缓存
+# 版本匹配时直接返回缓存,失效时回源查询并更新
 
 def sql_cache_revision(session: Session, scope: str) -> int:
-    """Read the SQL revision for a cache scope, defaulting missing scopes to zero."""
+    """读取缓存作用域的 SQL 版本号, 缺失的作用域默认为 0."""
     return (
         session.scalar(
             select(SqlCacheRevision.revision).where(SqlCacheRevision.scope == scope),
@@ -81,13 +81,13 @@ def sql_cache_revision(session: Session, scope: str) -> int:
 
 
 def sql_cache_allowed(session: Session, *args: object, **kwargs: object) -> bool:
-    """Keep shared SQL caches outside transactions which may roll back writes."""
+    """将共享 SQL 缓存排除在可能回滚写入的事务之外."""
     del args, kwargs
     if session.new or session.dirty or session.deleted:
         return False
     dialect = session.get_bind().dialect.name
     if dialect == "postgresql":
-        # Flush/direct SQL can empty ORM dirty state while writes remain live.
+        # Flush/原生 SQL 可能清空 ORM 脏状态, 但写入事务依然处于活跃中。
         return session.scalar(text("SELECT pg_current_xact_id_if_assigned()")) is None
     if dialect == "sqlite":
         driver = cast(
@@ -98,11 +98,11 @@ def sql_cache_allowed(session: Session, *args: object, **kwargs: object) -> bool
 
 
 def invalidate_cache_generation(scope: str) -> None:
-    """Rotate a cache namespace before removing old physical keys."""
+    """在清除旧的物理键之前轮转缓存命名空间."""
     try:
         redis_client.set(scope, uuid.uuid4().hex)
     except Exception as exc:
-        # Redis adapters may fail arbitrarily; invalidation must not undo a write.
+        # Redis 适配层可能发生任意异常; 失效失败绝不得撤销业务写入。
         logger.warning(
             "[cache] generation invalidation failed: error_type={}",
             type(exc).__name__,
@@ -115,12 +115,12 @@ class CachedFunction(Protocol[_P, _R_co]):
     cache_prefix: str
 
     def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _R_co:
-        """Call the decorated business function with its original signature."""
+        """以原始签名调用被装饰的业务函数."""
         ...
 
 
 class _CacheableDecorator(Protocol):
-    """A cache decorator without signature-constraining callbacks."""
+    """不约束函数签名的缓存装饰器协议."""
 
     def __call__(self, func: Callable[_P, _R]) -> CachedFunction[_P, _R]: ...
 
@@ -147,7 +147,7 @@ def _generation_cache_key(cache_key: str, scope: str) -> str:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CacheableParams:
-    """Configure a read-through cache without changing the wrapped signature."""
+    """配置读穿缓存而不改变被包装函数的签名."""
 
     prefix: str
     expire: int = 3600
@@ -181,7 +181,7 @@ class _Cacheable(Generic[_P]):
             if cached is not None:
                 return cache_key, json.loads(cached)
         except Exception as exc:
-            # Generation callbacks, Redis and JSON can fail; retain SQL fallback.
+            # 代际回调、Redis 和 JSON 可能失败; 保留 SQL 回退。
             logger.warning("[cache] read failed: error_type={}", type(exc).__name__)
             if self.generation_key is not None:
                 return None, _CACHE_MISS
@@ -200,7 +200,7 @@ class _Cacheable(Generic[_P]):
             if cached is not None:
                 return cache_key, json.loads(cached)
         except Exception as exc:
-            # Preserve fallback without catching BaseException/cancellation.
+            # 保留回退机制, 且不捕获 BaseException/任务取消。
             logger.warning("[cache] read failed: error_type={}", type(exc).__name__)
             if self.generation_key is not None:
                 return None, _CACHE_MISS
@@ -238,7 +238,7 @@ class _Cacheable(Generic[_P]):
                 json.dumps(result, ensure_ascii=False, default=str),
             )
         except Exception as exc:
-            # Serialization and Redis failures must not replace business results.
+            # 序列化和 Redis 失败绝不得替代业务处理结果。
             logger.warning("[cache] write failed: error_type={}", type(exc).__name__)
 
     def _wrap_async(self, func: Callable[_P, _R]) -> Callable[_P, _R]:
@@ -276,7 +276,7 @@ class _Cacheable(Generic[_P]):
                 json.dumps(result, ensure_ascii=False, default=str),
             )
         except Exception as exc:
-            # Keep serialization on the loop and drain owned Redis I/O on cancel.
+            # 将序列化保留在事件循环中, 并在取消时排空所属 Redis I/O。
             logger.warning("[cache] write failed: error_type={}", type(exc).__name__)
 
     def __call__(self, func: Callable[_P, _R]) -> CachedFunction[_P, _R]:
@@ -285,7 +285,7 @@ class _Cacheable(Generic[_P]):
             if inspect.iscoroutinefunction(func)
             else self._wrap_sync(func)
         )
-        # The actual wrapper is a function, so assigning its attribute is supported.
+        # 实际包装器是一个函数, 支持为其设置自定义属性。
         cached = cast("CachedFunction[_P, _R]", chosen)
         cached.cache_prefix = self.params.prefix
         return cached
@@ -338,25 +338,25 @@ def cacheable(
     generation_key: Callable[..., str] | None = None,
     cache_allowed: Callable[..., bool] | None = None,
 ) -> _CacheableDecorator | _Cacheable[...]:
-    """Read-through cache: serve Redis, else run the function and store.
+    """读穿缓存: 优先查 Redis, 未命中则执行函数并写入缓存.
 
-    Only this decorator writes cache entries. Invalidation relies on the key
-    callbacks: ``key``/``generation_key`` bind entries to a durable SQL
-    revision or rotated namespace, so a committed write is visible without
-    deleting unsuffixed keys.
+    仅本装饰器写入缓存条目。失效机制依赖键回调函数:
+    ``key``/``generation_key`` 将条目绑定到持久化 SQL
+    版本号或轮转命名空间, 从而确保已提交写入立即可见,
+    而无需删除无后缀的物理键。
 
-    ``CacheableParams`` holds the prefix, TTL and ``None`` policy.
-    ``key``, ``generation_key`` and ``cache_allowed`` receive the decorated
-    function's parameters.
+    ``CacheableParams`` 保存前缀、TTL 与 ``None`` 策略。
+    ``key``、``generation_key`` 以及 ``cache_allowed``
+    接收被装饰函数的参数。
     """
     return _Cacheable(
         params, key=key, generation_key=generation_key, cache_allowed=cache_allowed,
     )
 
 
-# ---------------------------------------------------------------------------
 # 按前缀批量失效
-# ---------------------------------------------------------------------------
+# 扫描并清理指定前缀的 Redis 缓存键
+# 供数据变更时批量清理关联缓存
 
 def _evict_pattern(prefix: str) -> int:
     """分批删除匹配键, 返回成功提交删除请求的键数."""
@@ -375,7 +375,7 @@ def _evict_pattern(prefix: str) -> int:
             redis_client.delete(*batch)
             completed += len(batch)
     except Exception as exc:
-        # Keep completed batches when an adapter/iterator fails partway through.
+        # 当适配层/迭代器中途失败时, 保留已完成处理的批次。
         logger.warning(
             "[cache] pattern evict failed: error_type={}", type(exc).__name__,
         )

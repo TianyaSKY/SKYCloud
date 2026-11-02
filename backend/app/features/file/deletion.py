@@ -1,7 +1,7 @@
-"""File deletion and search-cache invalidation shared with folder deletion.
+"""与文件夹删除共享的文件删除及搜索缓存失效逻辑.
 
-The folder cascade imports these helpers, so this module stays below the file
-service in the import graph and never imports the folder service.
+文件夹级联删除会导入这些辅助函数; 本模块在依赖图上位于文件服务下方,
+且绝不循环导入文件夹服务。
 """
 
 from sqlalchemy.orm import Session
@@ -18,7 +18,7 @@ from app.infra.file_object_deletion import stage_object_deletion_fallback
 
 
 def clear_search_cache(workspace_id: int | None) -> None:
-    """Drop the fuzzy and semantic search results cached for the workspace."""
+    """清除工作空间下缓存的模糊搜索与语义搜索结果."""
     if workspace_id is not None:
         invalidate_cache_generation(f"{SEARCH_GENERATION_PREFIX}:{workspace_id}")
         evict_cache_pattern(f"{SEARCH_CACHE_PREFIX}:{workspace_id}")
@@ -31,10 +31,10 @@ def delete_file(
     commit: bool = True,
     log_event: bool = True,
 ) -> None:
-    """Delete one file row and stage its object cleanup for the worker.
+    """删除单条文件记录并为 Worker 暂存其对象清理任务.
 
-    ``commit``/``log_event`` are false when a recursive batch delete owns the
-    transaction and writes the change log itself.
+    当递归批量删除持有主事务并自行记录变更流水时,
+    ``commit`` 与 ``log_event`` 参数传入 False。
     """
     file_obj = repository.find_file(session, file_id)
     if not file_obj:

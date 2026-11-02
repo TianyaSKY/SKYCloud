@@ -1,4 +1,4 @@
-"""MCP workspace scoping regression tests."""
+"""MCP 工作区范围隔离回归测试."""
 
 import asyncio
 import json

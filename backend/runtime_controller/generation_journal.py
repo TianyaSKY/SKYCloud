@@ -1,4 +1,4 @@
-"""Durable generation identities and retirement fences in Controller-owned state."""
+"""Controller 持有状态中的持久化世代标识与退役栅栏."""
 
 import fcntl
 import os
@@ -21,11 +21,11 @@ IDENTITY_COLUMNS: Final = ("workspace_id", "user_id", "runtime_id")
 
 
 class JournalIdentityError(ValueError):
-    """A generation belongs to another identity or is malformed."""
+    """世代属于其他标识或格式畸形异常."""
 
 
 def _generation_of(container: Mapping[str, Any]) -> str | None:
-    """Return the generation label of one visible container, if valid."""
+    """返回单个可见容器的世代标签, 若无效则返回 None."""
     labels: Mapping[str, Any] = container.get("Labels") or {}
     generation = labels.get("skycloud.generation")
     if not isinstance(generation, str) or not re.fullmatch(
@@ -36,14 +36,14 @@ def _generation_of(container: Mapping[str, Any]) -> str | None:
 
 
 class GenerationJournal:
-    """Durable intent, retirement and identity records for runtime generations."""
+    """运行时世代的持久化意图、退役状态与标识记录."""
 
     def __init__(self, directory: str | Path) -> None:
-        """Bind the journal to the Controller-owned state directory."""
+        """将日志绑定至 Controller 持有的状态目录."""
         self.directory = Path(directory)
 
     def connect(self) -> sqlite3.Connection:
-        """Open the journal database with its fixed durability settings."""
+        """以固定的持久化配置打开日志数据库."""
         self.directory.mkdir(mode=DIRECTORY_MODE, parents=True, exist_ok=True)
         path = self.directory / DATABASE_NAME
         db = sqlite3.connect(path, timeout=CONNECT_TIMEOUT_SECONDS)
@@ -71,9 +71,9 @@ class GenerationJournal:
         containers: Sequence[Mapping[str, Any]],
         limit: int = DEFAULT_SCAN_LIMIT,
     ) -> list[tuple[int, int, int, str]]:
-        """Return retired identities found by scanning visible containers."""
-        # Scan visible resources, not unbounded retirement history. A persisted
-        # cursor advances even over protected/mismatched identities.
+        """扫描可见容器返回已退役的实例标识列表."""
+        # 扫描可见资源, 而非无界的退役历史。持久化游标
+        # 即使跨越受保护/不匹配标识也会向前推进。
         rows = sorted(
             (
                 row
@@ -95,7 +95,7 @@ class GenerationJournal:
         rows: list[Mapping[str, Any]],
         limit: int,
     ) -> list[tuple[int, int, int, str]]:
-        """Read retired records around the persisted cursor and advance it."""
+        """围绕持久化游标读取已退役记录并推进游标."""
         cursor = db.execute(
             "SELECT container_id FROM reconciliation_cursor WHERE id=1",
         ).fetchone()
@@ -139,12 +139,12 @@ class GenerationJournal:
         *,
         nonblocking: bool = False,
     ) -> Generator["GenerationRecord", None, None]:
-        """Hold the generation shard lock and record the create intent."""
+        """持有世代分片锁并记录创建意图."""
         if not re.fullmatch(GENERATION_PATTERN, generation):
             message = "Invalid runtime generation"
             raise JournalIdentityError(message)
         self.directory.mkdir(mode=DIRECTORY_MODE, parents=True, exist_ok=True)
-        # Bounded lock files; shard collisions only serialize unrelated IDs.
+        # 有界锁文件; 分片碰撞仅会串行化无关的 ID。
         lock_name = "generation-" + generation[:LOCK_SHARD_LENGTH] + ".lock"
         fd = os.open(
             self.directory / lock_name,
@@ -163,7 +163,7 @@ class GenerationJournal:
                     "INSERT INTO generations VALUES (?,?,?,?,'preparing',NULL)",
                     (generation, *identity),
                 )
-                db.commit()  # Intent precedes every Docker create, including a crash.
+                db.commit()  # 意图优先于任何 Docker 创建操作, 包括崩溃情况。
             elif tuple(row[key] for key in IDENTITY_COLUMNS) != identity:
                 message = "Generation belongs to another identity"
                 raise JournalIdentityError(message)
@@ -176,23 +176,23 @@ class GenerationJournal:
 
 
 class GenerationRecord:
-    """One locked generation row that owns its journal connection."""
+    """持有其日志数据库连接的单个已锁定世代记录."""
 
     def __init__(self, db: sqlite3.Connection, generation: str) -> None:
-        """Bind the record to its locked generation."""
+        """将记录绑定至其锁定的世代标识."""
         self.db, self.generation = db, generation
 
     def read(self) -> sqlite3.Row:
-        """Return the journal row; the shard lock guarantees it exists."""
+        """返回日志数据库行; 分片锁保证该行必定存在."""
         row = self.db.execute(
             "SELECT * FROM generations WHERE generation=?", (self.generation,),
         ).fetchone()
-        # locked() inserts this row before yielding, and journal rows are never
-        # deleted. sqlite3.Row is the configured connection row factory.
+        # locked() 在 yield 前插入此行, 且日志行从不删除。
+        # sqlite3.Row 是配置的连接行工厂。
         return cast("sqlite3.Row", row)
 
     def ready(self, container_id: str) -> None:
-        """Record the created container identity for this generation."""
+        """为该世代记录已创建的容器标识."""
         self.db.execute(
             "UPDATE generations SET state='ready',container_id=? WHERE generation=?",
             (container_id, self.generation),
@@ -200,9 +200,9 @@ class GenerationRecord:
         self.db.commit()
 
     def retire(self) -> None:
-        """Commit the retirement fence before any container removal."""
-        # Commit the fence before removal. Failure must leave it retired so a
-        # delayed prepare can never recreate a deleted resource.
+        """在移除任何容器前提交退役栅栏."""
+        # 在移除前提交栅栏。即使失败也须保持退役状态,
+        # 以防延迟的 prepare 重建已删除资源。
         self.db.execute(
             "UPDATE generations SET state='retired' WHERE generation=?",
             (self.generation,),

@@ -1,4 +1,4 @@
-"""Controller policy/error responses and library logs omit private exception data."""
+"""控制器策略/错误响应与库日志省略私有异常数据测试."""
 import io
 import logging
 from unittest.mock import Mock

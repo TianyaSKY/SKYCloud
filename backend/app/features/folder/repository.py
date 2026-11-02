@@ -1,17 +1,17 @@
-"""Fresh folder reads and transaction-scoped serialization of tree mutations."""
+"""文件夹最新状态读取与事务作用域目录树变更串行化."""
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models.folder import Folder
 
-TREE_LOCK_NAMESPACE = 1179601988  # Separate from the organizer's execution lease.
+TREE_LOCK_NAMESPACE = 1179601988  # 与整理器自身的执行租约相互独立。
 
 
 def lock_tree(session: Session, workspace_id: int) -> None:
-    """Serialise tree mutations for one workspace until the transaction ends."""
-    # Production uses PostgreSQL. The transaction releases this lock on commit,
-    # rollback or connection loss, including process crashes.
+    """串行化单个工作空间的目录树变更, 直至事务结束."""
+    # 生产环境使用 PostgreSQL。事务会在 commit、rollback
+    # 或连接断开 (含进程崩溃) 时自动释放该锁。
     if session.get_bind().dialect.name == "postgresql":
         session.execute(
             text("SELECT pg_advisory_xact_lock(:namespace, :workspace)"),
@@ -20,7 +20,7 @@ def lock_tree(session: Session, workspace_id: int) -> None:
 
 
 def workspace_id_for_folder(session: Session, folder_id: int) -> int | None:
-    """Return the owning workspace of a folder without loading the row."""
+    """返回文件夹归属的工作空间 ID, 无需加载完整实体行."""
     return session.scalar(
         select(Folder.workspace_id)
         .where(Folder.id == folder_id)
@@ -29,12 +29,12 @@ def workspace_id_for_folder(session: Session, folder_id: int) -> int | None:
 
 
 def get_folder(session: Session, folder_id: int) -> Folder | None:
-    """Read a folder row, refreshing any identity-mapped instance."""
+    """读取文件夹行, 刷新当前会话中 identity-map 缓存的实例."""
     return session.get(Folder, folder_id, populate_existing=True)
 
 
 def lock_folder(session: Session, folder_id: int) -> Folder | None:
-    """Load a folder row under a row-level lock for the current transaction."""
+    """在当前事务中加行级排他锁加载文件夹记录."""
     return session.scalar(
         select(Folder)
         .where(Folder.id == folder_id)
@@ -44,8 +44,8 @@ def lock_folder(session: Session, folder_id: int) -> Folder | None:
 
 
 def root_id(session: Session, workspace_id: int) -> int | None:
-    """Return the workspace root folder id."""
-    # Deterministic selection also permits recovery of historical extra roots.
+    """返回工作空间的根文件夹 ID."""
+    # 确定性排序选择亦可兜底兼容历史多余根节点的恢复。
     return session.scalar(
         select(Folder.id)
         .where(Folder.workspace_id == workspace_id, Folder.parent_id.is_(None))

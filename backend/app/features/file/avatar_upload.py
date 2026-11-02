@@ -1,4 +1,4 @@
-"""HTTP avatar adaptation and SQL lifecycle owned by a single worker."""
+"""HTTP 头像适配与单 Worker 持有的 SQL 生命周期."""
 
 from fastapi import UploadFile
 
@@ -17,9 +17,9 @@ def upload_avatar_owned(
     upload: UploadFile | None = None,
     encoded: str | None = None,
 ) -> dict[str, object]:
-    """Check the actor role, then run the avatar upload on the SQL worker.
+    """校验操作者角色, 并在 SQL Worker 上执行头像上传.
 
-    Callers must provide either ``upload`` or the base64 ``encoded`` payload.
+    调用方必须提供 ``upload`` 文件对象或 Base64 ``encoded`` 载荷。
     """
     with session_factory() as session:
         role = account_repository.current_role(session, actor_id)

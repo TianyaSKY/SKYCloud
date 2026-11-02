@@ -1,4 +1,4 @@
-"""LLM token usage audit rows aggregated into per-user totals."""
+"""记录每次 LLM 调用详情并汇总为用户总消耗的 Token 审计模型."""
 
 from datetime import datetime
 from typing import TypedDict
@@ -12,7 +12,7 @@ from app.infra.utc_datetime import UTCDateTime
 
 
 class TokenUsageLogDict(TypedDict):
-    """Public representation of a token usage audit row."""
+    """Token 消耗审计记录的公开表示模型."""
 
     id: int
     user_id: int
@@ -27,7 +27,7 @@ class TokenUsageLogDict(TypedDict):
 
 
 class TokenUsageLog(Base):
-    """Token usage detail row audited per LLM call."""
+    """每次 LLM 调用审计记录的 Token 消耗明细模型."""
 
     __tablename__ = "token_usage_logs"
 
@@ -38,7 +38,7 @@ class TokenUsageLog(Base):
         nullable=False,
         index=True,
     )
-    # Call scenario: chat / embedding / rewrite / vl_describe / organize, etc.
+    # 调用场景: chat / embedding / rewrite / vl_describe / organize 等。
     action: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
@@ -48,9 +48,9 @@ class TokenUsageLog(Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
-    # Optional truncated user input for auditing.
+    # 仅供审计的可选截断后用户输入。
     query_summary: Mapped[str | None] = mapped_column(String(200), default=None)
-    # Optional extras such as retrieved file counts or rerank results.
+    # 可选附加信息, 如召回文件数或重排结果等。
     extra_info: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
@@ -58,7 +58,7 @@ class TokenUsageLog(Base):
     )
 
     def to_dict(self) -> TokenUsageLogDict:
-        """Return the public usage audit representation."""
+        """返回使用量审计记录的公开字典表示."""
         return {
             "id": self.id,
             "user_id": self.user_id,

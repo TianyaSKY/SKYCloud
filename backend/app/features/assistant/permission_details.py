@@ -1,4 +1,4 @@
-"""Bounded display contract for a durable, one-shot permission request."""
+"""持久化一次性权限请求的有界展示契约."""
 
 from runtime_common.json_types import JsonValue
 
@@ -11,7 +11,7 @@ def permission_details(
     value: JsonValue,
     permission_id: str | None,
 ) -> dict[str, str] | None:
-    """Project provider permission metadata onto the bounded UI contract."""
+    """将提供商权限元数据投影到有界的 UI 契约."""
     if not isinstance(permission_id, str) or not (
         0 < len(permission_id) <= MAX_PERMISSION_ID_LENGTH
     ):

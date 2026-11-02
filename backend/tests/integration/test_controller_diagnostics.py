@@ -1,4 +1,4 @@
-"""Rebuilt standalone Controller, actual Uvicorn/Docker SDK and synthetic daemon failure."""
+"""独立 Controller、实际 Uvicorn/Docker SDK 与合成守护进程故障测试."""
 import os
 import time
 import httpx
@@ -11,7 +11,7 @@ SECRET = 'private-controller-daemon-body-sentinel'
 
 @pytest.fixture
 def fault_controller(request, infrastructure, monkeypatch):
-    # This is a daemon protocol failure seam, never a real Docker management endpoint.
+    # 这是一个守护进程协议故障接缝, 并非真实 Docker 管理端点.
     name = infrastructure['target'] + '-fault-daemon'
     infrastructure['cleanup'].append(name)
     script = '''

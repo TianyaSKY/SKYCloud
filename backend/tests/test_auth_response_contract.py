@@ -1,4 +1,4 @@
-"""Verify FastAPI auth serialization, including filtering and invalid payloads."""
+"""验证 FastAPI 认证序列化, 包括过滤与无效负载测试."""
 from unittest.mock import AsyncMock
 import pytest
 from fastapi import FastAPI

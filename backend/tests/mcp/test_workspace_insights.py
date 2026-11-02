@@ -1,4 +1,4 @@
-"""Real SQL scope, read models and MCP worker ownership."""
+"""真实 SQL 范围、读取模型与 MCP worker 所有权测试."""
 import asyncio
 import json
 import threading

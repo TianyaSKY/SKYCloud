@@ -5,9 +5,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
 # converter 模块
-# ---------------------------------------------------------------------------
 
 from app.features.folder.organize.converter import (
     get_libreoffice_command,
@@ -161,9 +159,7 @@ def test_change_event_write_failure_rolls_back_and_closes():
     owned.close.assert_called_once_with()
 
 
-# ---------------------------------------------------------------------------
 # description 模块
-# ---------------------------------------------------------------------------
 
 from app.features.folder.organize.description import (
     image_to_base64,
@@ -285,9 +281,7 @@ class TestGenerateFileDescription:
 
 
 
-# ---------------------------------------------------------------------------
 # handler 工具函数
-# ---------------------------------------------------------------------------
 
 from app.features.folder.organize.handler import (
     get_llm_config,
@@ -374,9 +368,7 @@ class TestHandleOrganizeProcess:
         assert result == {}
 
 
-# ---------------------------------------------------------------------------
 # tools 内部函数
-# ---------------------------------------------------------------------------
 
 from app.features.folder.organize.tools import (
     _check_mixed_folders,

@@ -1,4 +1,4 @@
-"""HTTP validation, filtering and binary contracts for inbox/share/settings."""
+"""收件箱/分享/设置的 HTTP 校验、过滤与二进制契约测试."""
 from io import BytesIO
 from unittest.mock import Mock
 import pytest
@@ -98,7 +98,7 @@ def test_share_creation_cannot_publish_nonmember_file(client,session,test_worksp
     session.add(outsider);session.flush()
     row=File(name='private.txt',file_path='private-key',file_size=2,workspace_id=test_workspace.id,uploader_id=outsider.id)
     session.add(row);session.commit()
-    # The authenticated fixture user is removed before attempting to share.
+    # 在尝试分享前移除已认证的 fixture 用户.
     session.query(WorkspaceMember).filter_by(workspace_id=test_workspace.id).delete()
     session.commit()
     response=client.post('/share',json={'file_id':row.id})

@@ -1,4 +1,4 @@
-"""Each file route owns and freshly authorizes its business session."""
+"""每个文件路由持有并重新鉴权其业务会话测试."""
 import asyncio
 import threading
 from types import SimpleNamespace

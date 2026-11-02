@@ -1,4 +1,4 @@
-"""Context restoration requires acknowledged persistence before model dispatch."""
+"""上下文恢复在模型分发前需要确认持久化测试."""
 import asyncio
 import httpx
 import pytest

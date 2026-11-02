@@ -1,4 +1,4 @@
-"""Exercise typed workspace success envelopes with SQL state and controlled RPCs."""
+"""带 SQL 状态与受控 RPC 的类型化工作区成功封套测试."""
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient

@@ -1,4 +1,4 @@
-"""Current edit permission at upload admission and SQL publication boundaries."""
+"""上传准入与 SQL 发布边界上的实时编辑权限校验."""
 
 from sqlalchemy.orm import Session
 
@@ -9,7 +9,7 @@ from app.models.upload_reservation import UploadReservation
 
 
 def reserve(session: Session, params: ReserveParams) -> UploadReservation:
-    """Check current write access, then admit the reservation."""
+    """校验当前工作空间写权限, 随后执行预留记录准入."""
     assert_can_write_locked(session, params.workspace_id, params.user_id)
     return upload_quota.reserve(session, params)
 
@@ -21,8 +21,8 @@ def consume(
     reservation_id: str,
     size: int,
 ) -> UploadReservation:
-    """Check current write access, then mark the reservation completed."""
-    # The caller publishes File/outbox in this transaction, without an
-    # intervening commit. A role mutation must wait for that outcome.
+    """校验当前工作空间写权限, 随后将预留记录标记为已完成."""
+    # 调用方在本事务中发布文件及任务收件箱, 中间无额外提交。
+    # 任何角色权限变更都必须等待该事务决议后生效。
     assert_can_write_locked(session, workspace_id, user_id)
     return upload_quota.consume(session, workspace_id, user_id, reservation_id, size)

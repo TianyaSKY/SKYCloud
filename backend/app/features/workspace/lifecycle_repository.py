@@ -1,4 +1,4 @@
-"""Workspace deletion SQL in the caller's transaction."""
+"""在调用方事务中执行的工作空间删除 SQL 操作."""
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -7,7 +7,7 @@ from app.models.workspace import Workspace
 
 
 def lock_workspace(session: Session, workspace_id: int) -> Workspace | None:
-    """Lock the workspace row for the caller's deletion transaction."""
+    """为调用方的删除事务锁定工作空间行记录."""
     return session.scalar(
         select(Workspace)
         .where(Workspace.id == workspace_id)
@@ -17,7 +17,7 @@ def lock_workspace(session: Session, workspace_id: int) -> Workspace | None:
 
 
 def delete_workspace(session: Session, workspace_id: int) -> None:
-    """Delete the workspace and its cascading rows in the caller's transaction."""
+    """在调用方事务中删除工作空间及其级联关联记录."""
     session.execute(
         delete(Workspace)
         .where(Workspace.id == workspace_id)

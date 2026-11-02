@@ -1,1 +1,1 @@
-"""Scoped model gateway for untrusted agent runtimes."""
+"""为不可信 Agent 运行时提供受作用域限制的模型网关."""

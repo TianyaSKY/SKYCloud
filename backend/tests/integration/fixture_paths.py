@@ -1,9 +1,4 @@
-"""Diagnostic and fixture files for the opt-in integration harnesses.
-
-Docker Desktop hosts provide /private/tmp; Linux runners use the system temp
-directory. SKYCLOUD_TEST_FIXTURE_DIR overrides both, and the directory is created
-on demand so failure-path diagnostics never mask the real assertion.
-"""
+"""集成测试套件的诊断与 fixture 文件路径解析."""
 import os
 import tempfile
 from pathlib import Path

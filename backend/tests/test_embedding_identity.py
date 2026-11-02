@@ -1,4 +1,4 @@
-"""Exercise the real cached LangChain wrapper/SDK outside the mocked test process."""
+"""在 Mock 测试进程外执行真实带缓存 LangChain 包装器/SDK 测试."""
 import os
 from pathlib import Path
 import subprocess
@@ -74,8 +74,8 @@ with usage.SessionLocal() as db:
     db.add_all([User(id=i, username=f'user-{i}', password_hash='synthetic') for i in (1,2,3)])
     db.commit()
 
-# Keep the SQL retrieval adapter out of this identity/accounting regression.
-# Embedding requests and accounting Session/transactions are real.
+# 将 SQL 检索适配器排除在本次标识/记账回归测试之外.
+# 向量化请求与记账 Session/事务均为真实执行.
 rag._db_search_by_vector = lambda *args: []
 shared = rag.get_embeddings_model()
 

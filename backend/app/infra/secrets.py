@@ -1,4 +1,4 @@
-"""Validate configured secrets without logging their values."""
+"""校验配置的密钥而不打印或记录其明文取值."""
 
 import os
 from urllib.parse import unquote, urlsplit
@@ -22,7 +22,7 @@ MIN_SECRET_LENGTH = 32
 
 
 def configured_password(name: str, value: str | None) -> str:
-    """Require a non-default deployment password without exposing its value."""
+    """要求非默认的部署密码, 同时不泄露其明文值."""
     if (
         value is None
         or len(value) < MIN_PASSWORD_LENGTH
@@ -37,7 +37,7 @@ def configured_password(name: str, value: str | None) -> str:
 
 
 def check_deployment_secrets(database_url: URL) -> None:
-    """Validate independent service secrets and configured infrastructure passwords."""
+    """校验独立的服务密钥与配置的基础设施密码."""
     keys = [
         required_secret(name)
         for name in (
@@ -63,7 +63,7 @@ def check_deployment_secrets(database_url: URL) -> None:
 
 
 def required_secret(name: str) -> str:
-    """Require an explicitly configured random secret without exposing its value."""
+    """要求显式配置的随机密钥, 同时不泄露其明文值."""
     value = os.getenv(name, "").strip()
     if (
         len(value) < MIN_SECRET_LENGTH

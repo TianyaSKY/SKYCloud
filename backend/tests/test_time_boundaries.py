@@ -1,4 +1,4 @@
-"""Preserve absolute instants across the legacy Beijing-naive SQL boundary."""
+"""跨越旧版北京时间无时区 SQL 边界保持绝对瞬间测试."""
 from datetime import datetime, timezone
 from unittest.mock import patch
 

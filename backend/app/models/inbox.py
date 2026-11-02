@@ -1,4 +1,4 @@
-"""Inbox notifications with per-user read state and soft deletion."""
+"""支持按用户已读状态与软删除机制的收件箱站内通知模型."""
 
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class InboxDict(TypedDict):
-    """Public representation of an inbox notification row."""
+    """站内通知记录的公开表示模型."""
 
     id: int
     user_id: int
@@ -31,7 +31,7 @@ class InboxDict(TypedDict):
 
 
 class Inbox(Base):
-    """Inbox notification row with read state and soft deletion."""
+    """带有已读标记与软删除特性的站内通知模型."""
 
     __tablename__ = "inbox"
 
@@ -57,7 +57,7 @@ class Inbox(Base):
     )
 
     def to_dict(self) -> InboxDict:
-        """Return the public notification representation."""
+        """返回站内通知的公开字典表示."""
         return {
             "id": self.id,
             "user_id": self.user_id,
@@ -70,7 +70,7 @@ class Inbox(Base):
 
     @classmethod
     def from_cache(cls, d: InboxDict) -> "Inbox":
-        """Build a detached notification row from cached fields."""
+        """根据缓存字段构建游离态通知记录."""
         return cls(
             id=d.get("id"),
             user_id=d.get("user_id"),

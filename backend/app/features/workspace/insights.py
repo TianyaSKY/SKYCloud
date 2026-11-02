@@ -1,4 +1,4 @@
-"""Authorized read models shared by workspace protocol adapters."""
+"""工作空间协议适配器共享的只读鉴权数据模型."""
 
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
@@ -16,7 +16,7 @@ STATUS_KEYS = ("success", "pending", "processing", "fail")
 
 
 class FolderNode(TypedDict):
-    """One folder in the nested workspace tree."""
+    """工作空间嵌套目录树中的单个文件夹节点."""
 
     id: int
     name: str
@@ -24,7 +24,7 @@ class FolderNode(TypedDict):
 
 
 class StorageOverview(TypedDict):
-    """Storage usage of one workspace, raw and human readable."""
+    """单个工作空间的存储用量统计 (包含原始字节数与人类可读格式)."""
 
     total_files: int
     total_folders: int
@@ -47,7 +47,7 @@ def storage_overview(
     workspace_id: int,
     user_id: int,
 ) -> StorageOverview:
-    """Return storage totals for one member of the workspace."""
+    """为工作空间成员返回该空间的存储用量汇总数据."""
     assert_member(session, workspace_id, user_id)
     stats = repository.storage_stats(session, workspace_id)
     return StorageOverview(
@@ -67,7 +67,7 @@ def folder_tree(
     user_id: int,
     max_depth: int = 3,
 ) -> list[FolderNode]:
-    """Return the workspace folder tree bounded by ``max_depth``."""
+    """返回受 ``max_depth`` 深度约束的工作空间目录树."""
     assert_member(session, workspace_id, user_id)
     depth = max(1, min(max_depth, MAX_FOLDER_DEPTH))
     children: dict[int | None, list[Folder]] = {}

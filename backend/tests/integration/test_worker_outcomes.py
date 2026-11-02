@@ -1,4 +1,4 @@
-"""Real database rollback and file-index concurrency behavior."""
+"""真实数据库回滚与文件索引并发行为测试."""
 import concurrent.futures
 import os
 import threading

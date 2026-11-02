@@ -1,4 +1,4 @@
-"""Exercise SQL boundaries through real caller-owned transactions."""
+"""通过调用方持有的真实事务执行 SQL 边界测试."""
 from sqlalchemy.orm import Session
 
 from app.features.file import repository

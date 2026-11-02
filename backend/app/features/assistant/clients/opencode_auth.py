@@ -1,8 +1,8 @@
-"""OpenCode Server Basic Auth derivation.
+"""OpenCode Server Basic 认证派生.
 
-The password is deterministic for a runtime but is never returned to the
-browser or stored in the database.  The same derivation is used when Docker
-starts the server and when SKYCloud calls its internal HTTP API.
+密码对于特定运行时是确定性的, 但绝不返回给浏览器或存储在数据库中.
+当 Docker 启动服务器以及 SKYCloud 调用其内部 HTTP API 时,
+使用完全相同的派生算法.
 """
 
 import hashlib
@@ -14,12 +14,12 @@ from app.infra.secrets import required_secret
 
 
 def server_username() -> str:
-    """Return the configured provider username or its default."""
+    """返回配置的提供商用户名或其默认值."""
     return os.getenv("OPENCODE_SERVER_USERNAME", "skycloud")
 
 
 def server_password(runtime_id: int, user_id: int, workspace_id: int) -> str:
-    """Derive the provider password for one runtime identity."""
+    """为单个运行时身份派生提供商密码."""
     secret = required_secret("OPENCODE_SERVER_SECRET")
     if secret == SECRET_KEY:
         message = "OPENCODE_SERVER_SECRET must differ from SECRET_KEY"

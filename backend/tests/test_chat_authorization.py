@@ -1,4 +1,4 @@
-"""Authorization failures stop multi-query recall without private diagnostics."""
+"""鉴权失败终止多查询召回且不输出私有诊断信息测试."""
 from unittest.mock import AsyncMock
 import pytest
 from app.exceptions import PermissionDeniedError

@@ -1,4 +1,4 @@
-"""Stream cleanup preserves outcomes and stays on the owner thread."""
+"""流清理保留结果并保持在所有者线程上测试."""
 import asyncio
 import threading
 from types import SimpleNamespace

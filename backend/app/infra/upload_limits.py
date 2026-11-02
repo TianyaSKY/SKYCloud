@@ -1,4 +1,4 @@
-"""Finite upload limits, checked before parsing and while copying bytes."""
+"""有界的上传大小限制, 在解析前和复制字节流时执行校验."""
 
 import os
 from typing import IO
@@ -12,7 +12,7 @@ from app.exceptions import PayloadTooLargeError
 
 
 def positive_limit(name: str, default: int) -> int:
-    """Read a positive integer limit from the environment."""
+    """从环境变量读取正整数限制值."""
     message = f"{name} must be a positive integer"
     try:
         value = int(os.environ.get(name, str(default)))
@@ -30,7 +30,7 @@ REQUEST_LIMIT = positive_limit("UPLOAD_MAX_REQUEST_SIZE", 512 * 1024 * 1024)
 
 
 def copy_bounded(source: IO[bytes], target: IO[bytes], max_bytes: int) -> int:
-    """Read at most one byte past the limit, never write that extra byte."""
+    """最多读取超出限制一个字节的内容, 绝不写入该额外字节."""
     copied = 0
     while True:
         chunk = source.read(min(1024 * 1024, max_bytes - copied + 1))
@@ -75,7 +75,7 @@ async def _send_json_error(
 
 
 class _UploadBodyGuard:
-    """Count request bytes and replace the first response once overflowed."""
+    """统计请求字节数, 一旦溢出则替换首个响应."""
 
     __slots__ = (
         "_exceeded",
@@ -90,7 +90,7 @@ class _UploadBodyGuard:
     def __init__(
         self, scope: Scope, receive: Receive, send: Send, limit: int,
     ) -> None:
-        """Capture the ASGI channel and the per-request byte limit."""
+        """捕获 ASGI 通道及单个请求的字节配额限制."""
         self._scope = scope
         self._receive = receive
         self._send = send
@@ -100,20 +100,20 @@ class _UploadBodyGuard:
         self._replaced = False
 
     async def bounded_receive(self) -> Message:
-        """Forward one ASGI message, flagging any body overflow."""
+        """转发单条 ASGI 消息, 标记任何请求体溢出状态."""
         message = await self._receive()
         if message["type"] == "http.request":
             self._received += len(message.get("body", b""))
             if self._received > self._limit:
                 self._exceeded = True
-                # Starlette closes all partially parsed spooled files on this
-                # exception. Replace its 400 response with the intended 413.
+                # Starlette 在此异常发生时会关闭所有部分解析的缓冲文件。
+                # 将其默认的 400 响应替换为预期的 413 响应。
                 detail = "Upload request too large"
                 raise MultiPartException(detail)
         return message
 
     async def bounded_send(self, message: Message) -> None:
-        """Send through, but emit one 413 envelope after an overflow."""
+        """正常发送消息, 但在溢出后发送一次 413 响应外包."""
         if not self._exceeded:
             await self._send(message)
             return
@@ -125,16 +125,16 @@ class _UploadBodyGuard:
 
 
 class UploadBodyLimitMiddleware:
-    """Count actual ASGI bytes, including chunked bodies without Content-Length."""
+    """统计实际 ASGI 字节数, 包括不带 Content-Length 的分块请求体."""
 
     def __init__(self, app: ASGIApp, max_bytes: int = REQUEST_LIMIT) -> None:
-        """Wrap an ASGI app with the streaming upload byte limit."""
+        """为 ASGI 应用包装流式上传字节配额限制."""
         self.app = app
         self.max_bytes = max_bytes
         self.active_requests = 0
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Admit one bounded upload request at a time per concurrency slot."""
+        """按并发槽位每次准入一个有界上传请求."""
         if not _is_upload_request(scope):
             await self.app(scope, receive, send)
             return
@@ -172,7 +172,7 @@ def _is_upload_request(scope: Scope) -> bool:
 
 
 class _BufferedJsonGuard:
-    """Buffer one JSON body and replay it after the admission checks."""
+    """缓冲单个 JSON 请求体, 并在准入检查通过后进行回放."""
 
     __slots__ = (
         "_body",
@@ -186,7 +186,7 @@ class _BufferedJsonGuard:
     def __init__(
         self, scope: Scope, receive: Receive, send: Send, max_bytes: int,
     ) -> None:
-        """Capture the ASGI channel and the buffered-body byte limit."""
+        """捕获 ASGI 通道及缓冲请求体的字节配额限制."""
         self._scope = scope
         self._receive = receive
         self._send = send
@@ -195,7 +195,7 @@ class _BufferedJsonGuard:
         self._delivered = False
 
     async def buffer(self) -> bool:
-        """Read the whole body within the limit; False when it is rejected."""
+        """在限制范围内读取全部请求体; 被拒绝时返回 False."""
         chunks = bytearray()
         received = 0
         while True:
@@ -220,7 +220,7 @@ class _BufferedJsonGuard:
         return True
 
     async def replay(self) -> Message:
-        """Deliver the buffered body once, then delegate to the real receive."""
+        """投递一次缓冲的请求体, 随后委托给真实的 receive 函数."""
         if not self._delivered:
             self._delivered = True
             return {"type": "http.request", "body": self._body, "more_body": False}
@@ -228,19 +228,19 @@ class _BufferedJsonGuard:
 
 
 class BufferedJsonBodyLimitMiddleware:
-    """Bound JSON RPC before decoding; multipart uploads keep the streaming guard."""
+    """在解码前限制 JSON RPC 大小; 多部分上传保持使用流式防护."""
 
     def __init__(
         self, app: ASGIApp, max_bytes: int, max_concurrent: int = 4,
     ) -> None:
-        """Wrap an ASGI app with a buffered JSON body limit."""
+        """为 ASGI 应用包装缓冲 JSON 请求体限制."""
         self.app = app
         self.max_bytes = max_bytes
         self.max_concurrent = max_concurrent
         self.active_requests = 0
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Buffer one bounded POST body and replay it to the wrapped app."""
+        """缓冲单个有界 POST 请求体并回放给被包装的应用."""
         if scope["type"] != "http" or scope.get("method") != "POST":
             await self.app(scope, receive, send)
             return

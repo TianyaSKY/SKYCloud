@@ -1,4 +1,4 @@
-"""HTTP contracts for file/folder JSON, split uploads, and untouched download bytes."""
+"""文件/文件夹 JSON、分块上传及未修改下载字节的 HTTP 契约测试."""
 from io import BytesIO
 from unittest.mock import AsyncMock, Mock
 import pytest

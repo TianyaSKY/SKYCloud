@@ -1,4 +1,4 @@
-"""File indexing deliveries committed alongside file metadata."""
+"""与文件元数据一同提交的文件索引任务发件箱模型."""
 
 from datetime import datetime
 
@@ -11,7 +11,7 @@ from app.infra.utc_datetime import UTCDateTime
 
 
 class FileTaskOutbox(Base):
-    """Transactional outbox row for one file indexing delivery."""
+    """用于单个文件索引投递的事务型发件箱记录."""
 
     __tablename__ = "file_task_outbox"
 

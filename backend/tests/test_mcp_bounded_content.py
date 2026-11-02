@@ -1,4 +1,4 @@
-"""MCP text reads bound downloaded bytes before decoding or local staging."""
+"""MCP 文本读取在解码或本地暂存前限制下载字节测试."""
 import json
 from pathlib import Path
 from types import SimpleNamespace

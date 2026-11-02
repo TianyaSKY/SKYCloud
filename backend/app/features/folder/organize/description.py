@@ -88,8 +88,8 @@ VISUAL_PROMPT = (
     "不需要描述图片的顺序。"
 )
 
-# These are resource limits, not task-concurrency limits.  They protect the
-# local conversion tools when several indexing threads process large files.
+# 此处为本地工具资源限流而非任务并发控制,
+# 用于防止多个索引线程同时处理大文件时耗尽转换工具资源。
 _document_conversion_semaphore = threading.Semaphore(
     max(1, int(os.getenv("WORKER_DOCUMENT_CONVERSION_WORKERS", "2"))),
 )
@@ -111,7 +111,7 @@ def image_to_base64(image_path: str) -> str:
 
 
 def _document_uris(local_path: str, ext: str, workdir: str) -> list[str]:
-    """Convert an office document (or PDF) to per-page JPEG data URIs."""
+    """将 Office 文档或 PDF 转换为按页切分的 JPEG Data URI 列表."""
     with _document_conversion_semaphore:
         target_pdf = (
             local_path if ext == ".pdf" else convert_office_to_pdf(local_path, workdir)
@@ -121,7 +121,7 @@ def _document_uris(local_path: str, ext: str, workdir: str) -> list[str]:
 
 
 def _video_uris(local_path: str, workdir: str) -> list[str]:
-    """Extract evenly spaced video frames as JPEG data URIs."""
+    """提取等间隔视频抽帧并转换为 JPEG Data URI 列表."""
     with _video_processing_semaphore:
         frames = extract_video_frames(
             local_path,
@@ -132,7 +132,7 @@ def _video_uris(local_path: str, workdir: str) -> list[str]:
 
 
 def _visual_uris(local_path: str, ext: str, workdir: str) -> list[str]:
-    """Map one extension family to the VL payload it produces."""
+    """将文件扩展名家族映射为对应的 VL 多模态入参载荷."""
     if ext in DOCUMENT_EXTENSIONS:
         return _document_uris(local_path, ext, workdir)
     if ext in VIDEO_EXTENSIONS:
@@ -146,7 +146,7 @@ def _visual_uris(local_path: str, ext: str, workdir: str) -> list[str]:
 
 
 def _get_visual_urls(local_path: str) -> list[str]:
-    """Turn the file into VL-readable image URIs; audio is rejected."""
+    """将文件转换为 VL 可识别的图像 URI 列表; 音频格式将被拒绝."""
     ext = Path(local_path).suffix.lower()
 
     if ext in AUDIO_EXTENSIONS:
@@ -165,7 +165,7 @@ def _get_visual_urls(local_path: str) -> list[str]:
 
 
 def _require_answer(answer: str | None) -> str:
-    """Reject an empty model answer with a stable runtime error."""
+    """当模型返回空答案时抛出稳定的运行时异常."""
     if not answer:
         message = "未知错误 无法生成文件描述"
         raise RuntimeError(message)
@@ -173,7 +173,7 @@ def _require_answer(answer: str | None) -> str:
 
 
 def _truncate_content(text_content: str) -> str:
-    """Cap the prompt payload so the context window cannot be blown up."""
+    """截断 Prompt 载荷内容, 避免撑爆模型上下文窗口."""
     if len(text_content) > MAX_CONTENT_CHARS:
         return text_content[:MAX_CONTENT_CHARS] + "\n...(内容已截断)"
     return text_content
@@ -184,7 +184,7 @@ def _generate_text_description(
     config: dict[str, str],
     user_id: int = 0,
 ) -> str:
-    """Generate a text description with the Chat model (cheaper than VL)."""
+    """使用纯文本 Chat 模型生成描述 (调用成本低于 VL 多模态)."""
     text_content = _extract_text_content(local_path)
     if not text_content.strip():
         return "空文件"
@@ -275,7 +275,7 @@ def generate_file_description(
 
 
 def _video_text(path: Path) -> str:
-    """Summarise video metadata without decoding the frames."""
+    """汇总视频元数据信息, 无需对视频帧进行解码."""
     try:
         cap = cv2.VideoCapture(str(path))
         width, height = (
@@ -295,7 +295,7 @@ def _video_text(path: Path) -> str:
 
 
 def _docx_text(local_path: str) -> str:
-    """Flatten docx paragraphs and table cells into plain text."""
+    """将 docx 段落与表格单元格扁平化展开为纯文本."""
     try:
         doc = Document(local_path)
         content = [p.text for p in doc.paragraphs if p.text.strip()]
@@ -310,7 +310,7 @@ def _docx_text(local_path: str) -> str:
 
 
 def _pdf_text(local_path: str) -> str:
-    """Extract the whole PDF text stream."""
+    """提取整个 PDF 文件的文本流内容."""
     try:
         document = fitz.open(local_path)
         try:
@@ -323,7 +323,7 @@ def _pdf_text(local_path: str) -> str:
 
 
 def _table_text(local_path: str, ext: str) -> str:
-    """Render CSV/Excel content back to CSV text, sheet by sheet."""
+    """逐 Sheet 将 CSV/Excel 文件内容渲染为纯文本 CSV 格式."""
     try:
         if ext == ".csv":
             frame = pd.read_csv(local_path, dtype=str, keep_default_na=False)
@@ -340,7 +340,7 @@ def _table_text(local_path: str, ext: str) -> str:
 
 
 def _plain_text(path: Path) -> str:
-    """Read a text/code file, ignoring undecodable bytes."""
+    """读取文本或代码文件, 忽略无法解码的字节."""
     try:
         return path.read_text(encoding="utf-8", errors="ignore")
     except BaseException:
@@ -348,7 +348,7 @@ def _plain_text(path: Path) -> str:
 
 
 def _extract_text_content(local_path: str) -> str:
-    """Extract indexable text: video metadata / docx / plain text code."""
+    """提取可索引文本: 涵盖视频元数据、docx 与纯文本代码等."""
     path = Path(local_path)
     if not path.exists():
         return ""
@@ -366,7 +366,7 @@ def _extract_text_content(local_path: str) -> str:
 
 
 def _pdf_sections(local_path: str) -> list[TextSection]:
-    """Extract PDF text page by page, keeping the real page numbers."""
+    """逐页提取 PDF 文本, 并保留真实物理页码."""
     document = fitz.open(local_path)
     try:
         return [

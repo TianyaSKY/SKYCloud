@@ -1,4 +1,4 @@
-"""A bounded body has both idle and total ingestion deadlines before dispatch."""
+"""有界请求体在分发前同时受空闲与总摄入截止时间约束测试."""
 import asyncio
 import json
 import pytest

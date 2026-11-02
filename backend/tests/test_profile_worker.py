@@ -1,4 +1,4 @@
-"""HTTP profile SQL, fresh authorization and cached data stay on one worker."""
+"""HTTP 用户资料 SQL、最新授权与缓存数据保留在单个 worker 上测试."""
 import asyncio
 import threading
 from unittest.mock import Mock

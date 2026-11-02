@@ -54,7 +54,7 @@ RECURSION_LIMIT = 40
 
 
 def _organize_tools() -> list[BaseTool]:
-    """Return the organizer tools in their established order."""
+    """按既定顺序返回整理器所用的工具列表."""
     return [
         get_all_files,
         get_folder_tree,
@@ -72,13 +72,13 @@ def _organize_tools() -> list[BaseTool]:
 
 
 class AgentUpdate(TypedDict):
-    """One node's state delta emitted by `stream(..., stream_mode="updates")`."""
+    """由 `stream(..., stream_mode="updates")` 发射的单节点状态增量."""
 
     messages: list[BaseMessage]
 
 
 class StreamingAgent(Protocol):
-    """The narrow slice of the agent graph the organizer consumes."""
+    """整理器所消费的 Agent 图精简协议接口."""
 
     def stream(
         self,
@@ -87,23 +87,23 @@ class StreamingAgent(Protocol):
         *,
         stream_mode: Literal["updates"],
     ) -> Iterator[dict[str, AgentUpdate]]:
-        """Stream one graph run and yield per-node state updates."""
+        """流式执行单次图调用并生成各节点的状态更新."""
         ...
 
 
 class AgentFactory(Protocol):
-    """The organizer's used surface of the LangChain agent module."""
+    """整理器所使用的 LangChain Agent 模块接口子集."""
 
     def create_agent(
         self, model: BaseChatModel, tools: list[BaseTool],
     ) -> StreamingAgent:
-        """Create the graph that streams organizer updates."""
+        """创建流式输出整理器状态更新的图结构."""
         ...
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OrganizePlan:
-    """Prompt and checkpoint target chosen for one organizer run."""
+    """单次整理运行选定的 Prompt 与检查点目标."""
 
     messages: list[BaseMessage]
     checkpoint_target_event_id: int | None
@@ -112,7 +112,7 @@ class OrganizePlan:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StreamState:
-    """Run bookkeeping shared by the streaming and validation helpers."""
+    """流式处理与校验辅助函数共享的运行状态记录."""
 
     user_id: int
     model: str
@@ -122,7 +122,7 @@ class StreamState:
 
 
 def get_llm_config() -> tuple[str, str, str]:
-    """Read the chat model config triple (api, key, model)."""
+    """读取 Chat 模型配置三元组 (api, key, model)."""
     config = get_chat_model_config()
     return config["api"], config["key"], config["model"]
 
@@ -249,11 +249,11 @@ Always pass {workspace_id}.
 
 
 def _build_agent(model: BaseChatModel, tools: list[BaseTool]) -> StreamingAgent:
-    """Build the organizer agent graph over the bound tools.
+    """基于绑定的工具构建整理 Agent 图.
 
-    The SDK's overloads leave the unused checkpointer generic unknown. Project
-    the factory onto only the model/tools call and updates stream we consume;
-    no runtime wrapper or alternative graph implementation is introduced.
+    SDK 的类型重载使未使用的 checkpointer 保持泛型 unknown。
+    此处仅对消费的模型/工具调用与更新流进行投影,
+    不引入任何运行时包装层或替代图实现。
     """
     factory = cast("AgentFactory", agents)
     return factory.create_agent(model, tools)
@@ -263,7 +263,7 @@ def _load_incremental_context(
     session: Session,
     workspace_id: int,
 ) -> change_log_service.IncrementalContext:
-    """Load the incremental context, falling back to a full scan on failure."""
+    """加载增量上下文信息, 失败时回退至全量扫描."""
     try:
         return change_log_service.load_incremental_context(
             session,
@@ -297,7 +297,7 @@ def _prepare_plan(
     workspace_id: int,
     results: list[str],
 ) -> OrganizePlan | None:
-    """Choose the full or incremental prompt and the checkpoint target."""
+    """选择全量或增量 Prompt 以及检查点目标."""
     context = _load_incremental_context(session, workspace_id)
 
     if not context["has_changes"]:
@@ -339,7 +339,7 @@ def _prepare_plan(
 
 
 def _record_usage(message: AIMessage, state: StreamState) -> None:
-    """Accumulate one model message's usage and record it exactly once."""
+    """累加单条模型消息的用量, 并确保只精确记录一次."""
     if not message.usage_metadata:
         return
     usage = message.usage_metadata
@@ -368,14 +368,14 @@ def _stream_updates(
     config: RunnableConfig,
     state: StreamState,
 ) -> None:
-    """Consume one agent turn in `updates` mode, recording messages and usage."""
+    """以 `updates` 模式消费单轮 Agent 输出, 记录消息与用量."""
     for chunk in agent.stream(
         {"messages": messages},
         config,
         stream_mode="updates",
     ):
         if "model" in chunk:
-            # Model-node messages are AIMessage instances, in SDK order.
+            # 模型节点产生的消息为 AIMessage 实例, 按 SDK 顺序排列。
             for model_message in chunk["model"]["messages"]:
                 message = cast("AIMessage", model_message)
                 state.results.append(f"Agent: {message.tool_calls}")
@@ -388,7 +388,7 @@ def _stream_updates(
 
 
 def _validate_structure(workspace_id: int, results: list[str]) -> tuple[bool, str]:
-    """Check the single-content principle and emptiness, noting the outcome."""
+    """校验单一内容原则与空目录约束, 并记录校验结果."""
     is_mixed_clean, mixed_info = check_mixed_folders_internal(workspace_id)
     is_empty_clean, empty_info = check_empty_folders_internal(workspace_id)
 
@@ -406,7 +406,7 @@ def _validate_structure(workspace_id: int, results: list[str]) -> tuple[bool, st
 
 
 def _fix_message(error_details: str) -> HumanMessage:
-    """Build the follow-up turn that asks the agent to fix the violations."""
+    """构建要求 Agent 修复违规结构的跟进轮次 Prompt."""
     return HumanMessage(
         content=(
             "Organization is not yet complete. "
@@ -417,7 +417,7 @@ def _fix_message(error_details: str) -> HumanMessage:
 
 
 def _is_recursion_error(exc: Exception) -> bool:
-    """Detect LangGraph's recursion limit from the exception type name."""
+    """从异常类型名称中识别 LangGraph 的递归上限异常."""
     exc_name = type(exc).__name__
     return "RecursionError" in exc_name or "GraphRecursionError" in exc_name
 
@@ -428,7 +428,7 @@ def _run_validation_loop(
     workspace_id: int,
     current_messages: list[BaseMessage],
 ) -> bool:
-    """Stream the agent until the tree validates or retries are exhausted."""
+    """流式运行 Agent 直至目录树校验通过或重试次数耗尽."""
     for attempt in range(MAX_VALIDATION_RETRIES):
         config: RunnableConfig = {
             "configurable": {
@@ -468,7 +468,7 @@ def _commit_checkpoint(
     plan: OrganizePlan,
     results: list[str],
 ) -> None:
-    """Persist the advanced checkpoint for a validated run."""
+    """为通过校验的运行持久化推进后的检查点."""
     target_event_id = plan.checkpoint_target_event_id
     if target_event_id is None:
         return
@@ -493,7 +493,7 @@ def organize_files(
     task_id: str | None = None,
     execution_token: str | None = None,
 ) -> tuple[dict[str, int], str]:
-    """Bind task identity before constructing the model and its parallel tools."""
+    """在构建模型及并行工具前绑定任务身份作用域."""
     scope = OrganizeScope(
         workspace_id=workspace_id,
         user_id=user_id,
@@ -510,7 +510,7 @@ def _organize_files(
     user_id: int,
     scope: OrganizeScope,
 ) -> tuple[dict[str, int], str]:
-    """Run the ReAct organization flow synchronously in the worker thread."""
+    """在 Worker 线程中同步执行 ReAct 整理工作流."""
     url, key, model = get_llm_config()
     llm = ChatOpenAI(
         api_key=SecretStr(key),

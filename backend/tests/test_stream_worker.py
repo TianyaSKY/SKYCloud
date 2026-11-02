@@ -1,4 +1,4 @@
-"""Cancellation must drain SQL work before Session cleanup in its owner thread."""
+"""取消操作必须在其所有者线程中于 Session 清理前排干 SQL 工作测试."""
 import asyncio
 import threading
 

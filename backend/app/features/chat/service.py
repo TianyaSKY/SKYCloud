@@ -46,24 +46,24 @@ if TYPE_CHECKING:
 
 
 class _StructuredChat(Protocol):
-    """The typed SDK structured-output entry point used by this pipeline."""
+    """当前流水线使用的类型化 SDK 结构化输出入口协议."""
 
     def with_structured_output(
         self, schema: type[BaseModel], *, strict: bool,
     ) -> Runnable[Any, Any]:
-        """Bind the supplied Pydantic schema to a structured runnable."""
+        """将传入的 Pydantic 模型绑定至结构化可运行对象."""
         ...
 
 
 class _QuestionPayload(TypedDict, total=False):
-    """Inputs the parallel rewrite branch passes to the embedder."""
+    """并行改写分支传递给向量嵌入器的输入结构."""
 
     question: str
     user_id: int
 
 
 class _RetrievalPayload(TypedDict):
-    """Inputs the multi-query retrieval branch joins together."""
+    """多查询检索分支聚合处理的输入结构."""
 
     question: str
     workspace_id: int
@@ -88,7 +88,7 @@ RAG_FUSION_TOP_K = _env_int("RAG_FUSION_TOP_K", 30)
 
 @lru_cache(maxsize=1)
 def get_chat_model() -> ChatOpenAI:
-    """Return the cached chat model used for rewriting and answering."""
+    """返回用于改写和问答的已缓存聊天模型客户端."""
     config = get_chat_model_config()
 
     return ChatOpenAI(
@@ -101,7 +101,7 @@ def get_chat_model() -> ChatOpenAI:
 
 @lru_cache(maxsize=1)
 def get_embeddings_model() -> llm_client.TrackingOpenAIEmbeddings:
-    """Return the cached embeddings client that records token usage."""
+    """返回记录 Token 用量的已缓存嵌入模型客户端."""
     config = get_embedding_model_config()
 
     return llm_client.TrackingOpenAIEmbeddings(
@@ -168,7 +168,7 @@ def _retrieval_service(search: VectorSearch) -> RagRetrievalService:
 async def custom_db_retriever(
     query_text: str, workspace_id: int, *, user_id: int,
 ) -> list[Document]:
-    """Single recall/rerank; the SQL port checks current membership."""
+    """单路召回与重排; SQL 端口检查当前成员资格有效性."""
     service = _retrieval_service(_vector_search_docs)
     return await service.single_query(query_text, workspace_id, user_id=user_id)
 
@@ -181,7 +181,7 @@ async def multi_query_db_retriever(
     *,
     user_id: int,
 ) -> list[Document]:
-    """Parallel recall/fusion/rerank, optionally reusing the original embedding."""
+    """并行召回、融合与重排, 可选复用原始嵌入向量."""
     service = _retrieval_service(_db_search_by_vector)
     return await service.multi_query(
         question, workspace_id, dimensions, original_vector, user_id=user_id,
@@ -189,7 +189,7 @@ async def multi_query_db_retriever(
 
 
 def format_docs(docs: list[Document]) -> str:
-    """Render retrieved chunks for the final-answer prompt."""
+    """为最终问答提示词渲染检索出的分块内容."""
     formatted: list[str] = []
     for doc in docs:
         m = doc.metadata
@@ -210,7 +210,7 @@ def format_docs(docs: list[Document]) -> str:
 
 
 def format_history(history: list[dict[str, Any]] | str | None) -> str:
-    """Render the chat history for prompt interpolation."""
+    """渲染对话历史以便插值到提示词模板中."""
     if isinstance(history, list):
         return "\n".join([
             f"{h.get('role', 'user')}: {h.get('content', '')}" for h in history
@@ -231,7 +231,7 @@ async def embed_original_question(payload: _QuestionPayload) -> list[float]:
 
 
 async def retrieve_docs_with_rewrite(payload: _RetrievalPayload) -> list[Document]:
-    """Run multi-query retrieval for the rewritten keyword dimensions."""
+    """针对改写后的关键词维度执行多查询检索流水线."""
     question = str(payload.get("question", "") or "")
     rewrite_output = payload.get("rewrite_output")
     original_vector = payload.get("original_vector") or None
@@ -245,14 +245,14 @@ async def retrieve_docs_with_rewrite(payload: _RetrievalPayload) -> list[Documen
 
 
 def _record_chat_usage(usage: TokenUsage) -> None:
-    """Persist one chat usage record through the shared LLM accounting entry."""
+    """通过共享的 LLM 记账入口持久化一条对话用量记录."""
     llm_client.record_llm_usage(usage=usage)
 
 
 async def generate_chat_events(
     user_id: int, workspace_id: int, query: str, history: list[dict[str, str]],
 ) -> AsyncGenerator[AssistantEvent, None]:
-    """Yield structured RAG events and persist accepted usage."""
+    """生成结构化 RAG 事件流并在结束时持久化确认的用量."""
     llm = get_chat_model()
     formatted_history = format_history(history)
 

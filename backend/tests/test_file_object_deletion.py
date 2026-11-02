@@ -1,4 +1,4 @@
-"""File deletion must never discard physical bytes before metadata commit."""
+"""文件删除绝不能在元数据提交前丢弃物理字节数据测试."""
 from unittest.mock import MagicMock
 
 import pytest

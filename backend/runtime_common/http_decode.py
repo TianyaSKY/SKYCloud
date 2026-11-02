@@ -1,4 +1,4 @@
-"""Decode negotiated upstream content without an unbounded output chunk."""
+"""解码协商的上游响应内容, 并严格限制输出分块大小."""
 
 import asyncio
 import zlib
@@ -31,16 +31,16 @@ ReaderClose: TypeAlias = Callable[
 
 
 class ZlibDecoder(Protocol):
-    """The ``zlib.decompressobj`` surface used for bounded decoding."""
+    """用于有界解码的 ``zlib.decompressobj`` 接口规范."""
 
     @property
     def eof(self) -> bool:
-        """Whether the compressed stream ended cleanly."""
+        """压缩流是否已正常结束."""
         ...
 
     @property
     def unconsumed_tail(self) -> bytes:
-        """Input not yet consumed by the last bounded decompression."""
+        """尚未被最近一次有界解压消耗的输入尾部字节."""
         ...
 
     def decompress(
@@ -49,12 +49,12 @@ class ZlibDecoder(Protocol):
         /,
         max_length: int = 0,
     ) -> bytes:
-        """Decompress one chunk, returning at most ``max_length`` bytes."""
+        """解压单个数据分块, 至多返回 ``max_length`` 字节."""
         ...
 
 
 def content_encoding(response: httpx.Response) -> str:
-    """Return the negotiated encoding, rejecting anything unsupported."""
+    """获取协商的内容编码方式, 拒绝任何不受支持的编码."""
     encoding = response.headers.get("content-encoding", "").strip().lower()
     if encoding not in SUPPORTED_ENCODINGS:
         message = "Unsupported upstream content encoding"
@@ -68,7 +68,7 @@ def decoded_bytes(
     *,
     reader_close: ReaderClose = close_reader,
 ) -> AsyncIterator[bytes]:
-    """Return the decoded body stream, bounded by ``maximum`` output bytes."""
+    """返回解码后的响应体流, 受 ``maximum`` 输出字节上限约束."""
     encoding = content_encoding(response)
     if encoding in IDENTITY_ENCODINGS:
         return response.aiter_bytes()
@@ -76,14 +76,14 @@ def decoded_bytes(
 
 
 def _check_complete(decoder: ZlibDecoder) -> None:
-    """Require a clean stream end; a partial body is never a success."""
+    """要求流正常完结; 不完整的响应体绝对不能视为成功."""
     if not decoder.eof:
         message = "Incomplete upstream compressed response"
         raise httpx.DecodingError(message)
 
 
 def _deflate_decoder(data: bytes) -> tuple[ZlibDecoder, bytes]:
-    """Choose the zlib or raw inflate decoder from the deflate header."""
+    """根据 deflate 头部特征选择 zlib 或 raw inflate 解码器."""
     cmf, flg = data[:DEFLATE_HEADER_BYTES]
     wrapped = (
         cmf & ZLIB_METHOD_MASK == ZLIB_DEFLATE_METHOD
@@ -94,10 +94,10 @@ def _deflate_decoder(data: bytes) -> tuple[ZlibDecoder, bytes]:
 
 
 class DecodeState:
-    """Bounded decoder state for one compressed upstream body."""
+    """单个上游压缩响应体的有界解码器状态."""
 
     def __init__(self, maximum: int, encoding: str) -> None:
-        """Start with the decoder implied by the negotiated encoding."""
+        """根据协商的编码方式初始化对应的解码器."""
         wbits = GZIP_WBITS if encoding == "gzip" else ZLIB_WBITS
         self.maximum = maximum
         self.decoder: ZlibDecoder = zlib.decompressobj(wbits)
@@ -107,14 +107,14 @@ class DecodeState:
         self.prefix = b""
 
     def add_wire(self, size: int) -> None:
-        """Account one wire chunk before any decompression."""
+        """在执行任何解压前累计记录网络传输分块大小."""
         self.wire_size += size
         if self.wire_size > self.maximum + CHUNK_BYTES:
             message = "Upstream encoded response too large"
             raise httpx.DecodingError(message)
 
     def feed(self, data: bytes) -> Iterator[bytes]:
-        """Yield bounded decoded output for one wire chunk."""
+        """对单个网络分块生成有界解码输出."""
         while True:
             limit = min(CHUNK_BYTES, self.remaining + 1)
             output = self._decompress(data, limit)
@@ -143,7 +143,7 @@ async def compressed_bytes(
     encoding: str,
     reader_close: ReaderClose,
 ) -> AsyncGenerator[bytes, None]:
-    """Decode a compressed body while enforcing the wire and output limits."""
+    """在强制执行网络大小和输出大小上限的同时解码压缩响应体."""
     owned = closable(response.aiter_raw().__aiter__())
     state = DecodeState(maximum, encoding)
     failed = False
@@ -159,8 +159,8 @@ async def compressed_bytes(
                 state.prefix = b""
             for output in state.feed(data):
                 yield output
-        # Do not flush without an output limit: incomplete trailers must fail,
-        # rather than return a partial body as a successful decoded response.
+        # 禁止在没有输出限制的情况下 flush: 尾部不完整必须报错,
+        # 而不能将部分响应体作为成功解码的响应返回。
         _check_complete(state.decoder)
     except BaseException:
         failed = True

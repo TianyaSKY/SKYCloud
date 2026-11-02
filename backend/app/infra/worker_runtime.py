@@ -1,9 +1,9 @@
-"""Synchronous RabbitMQ worker runtime.
+"""同步 RabbitMQ worker 运行时.
 
-The API process is async, but this process is intentionally synchronous: each
-task is a normal call chain executed by a thread.  The runtime owns executor
-capacity and futures; business handlers do not know about semaphores or
-RabbitMQ.
+API 进程是异步的, 但本进程刻意设计为同步:
+每个任务都是由线程执行的常规调用链。
+运行时拥有执行器容量和 futures;
+业务处理器无须感知信号量或 RabbitMQ。
 """
 
 from __future__ import annotations
@@ -52,29 +52,29 @@ ORGANIZE_WORKERS = max(1, int(os.getenv("WORKER_ORGANIZE_THREADS", "1")))
 
 
 def _run_isolated(label: str, action: Callable[[], int | None]) -> None:
-    """Run one maintenance action without stopping unrelated scheduling."""
+    """运行单个维护动作而不中断其他无关的调度任务."""
     try:
         action()
     except Exception as exc:
-        # Each maintenance action crosses arbitrary SDK/business failure paths;
-        # isolate the whole subtask so later actions and ticks still run.
+        # 每个维护动作跨越不同的 SDK/业务异常路径;
+        # 隔离整个子任务, 以便后续动作与时钟周期仍能正常运行。
         logger.error("Error {} (error_type={})", label, type(exc).__name__)
 
 
 def _recover_assistant_sessions() -> None:
-    """Recover runs before retrying their remote session cleanup."""
+    """在重试远程会话清理前恢复运行任务."""
     recover_abandoned_runs()
     abort_pending_sessions()
 
 
 def _cleanup_uploads() -> int:
-    """Clean expired uploads within the existing short-lived SQL session."""
+    """在现有的短期 SQL 会话内清理过期上传."""
     with SessionLocal() as session:
         return cleanup_expired_uploads(max_age_hours=24, session=session)
 
 
 def run_scheduler() -> None:
-    """Run periodic upload cleanup in a daemon thread."""
+    """在守护线程中运行定期的上传清理任务."""
     logger.info("Scheduler thread started")
     next_cleanup = 0.0
     while True:
@@ -98,7 +98,7 @@ def run_scheduler() -> None:
 
 
 def process_task(file_id: int) -> None:
-    """Process one file; executor capacity is owned by :class:`WorkerRuntime`."""
+    """处理单个文件; 执行器容量由 :class:`WorkerRuntime` 管理."""
     handle_file_process(file_id)
 
 
@@ -107,7 +107,7 @@ def process_organize_task(
     user_id: int,
     lock_token: str | None = None,
 ) -> None:
-    """Run under a database lease; terminal replay never calls the model again."""
+    """在数据库租约下运行; 终态重放绝不会再次调用模型."""
     try:
         with task_execution(
             workspace_id,
@@ -132,13 +132,13 @@ def _report_task_failures(
     queue_name: str,
     futures: Iterable[Future[None]],
 ) -> None:
-    """Consume each completed result without letting a failed handler escape."""
+    """消费每个已完成的结果, 不让失败的处理器逃逸出去."""
     for future in futures:
         try:
             future.result()
         except Exception as exc:
-            # Arbitrary task handlers may raise any application/SDK exception;
-            # one completed task must never prevent reaping the other futures.
+            # 任意任务处理器可能抛出应用/SDK 异常;
+            # 单个已完成任务的失败绝不能阻碍回收其他 futures。
             logger.error(
                 "Worker task failed in {} executor (error_type={})",
                 queue_name,
@@ -147,14 +147,14 @@ def _report_task_failures(
 
 
 class WorkerRuntime:
-    """Own thread pools and in-flight futures for the worker process."""
+    """管理 worker 进程的线程池与运行中的 futures."""
 
     def __init__(
         self,
         index_workers: int,
         organize_workers: int = ORGANIZE_WORKERS,
     ) -> None:
-        """Create independent bounded pools for indexing and organizing."""
+        """创建用于索引和整理的独立有界线程池."""
         self.index_workers = max(1, index_workers)
         self.organize_workers = max(1, organize_workers)
         self.index_executor: ThreadPoolExecutor = ThreadPoolExecutor(
@@ -177,12 +177,12 @@ class WorkerRuntime:
         _report_task_failures(queue_name, done)
 
     def reap_completed(self) -> None:
-        """Reap finished tasks in both pools without propagating their failures."""
+        """回收两个线程池中已完成的任务, 且不传播其失败异常."""
         self._reap("index")
         self._reap("organize")
 
     def available_queues(self) -> list[str]:
-        """Only fetch work that can start without blocking the connection thread."""
+        """仅拉取可以立即启动的任务, 避免阻塞连接线程."""
         self.reap_completed()
         return [
             queue for queue, pool, capacity in (
@@ -192,7 +192,7 @@ class WorkerRuntime:
         ]
 
     def wait_for_capacity(self, queue_name: str) -> None:
-        """Block only at the runtime boundary until the selected pool has room."""
+        """仅在运行时边界阻塞, 直至所选线程池具备可用容量."""
         capacity = (
             self.index_workers if queue_name == "index" else self.organize_workers
         )
@@ -209,7 +209,7 @@ class WorkerRuntime:
         func: Callable[..., None],
         *args: object,
     ) -> Future[None]:
-        """Wait for capacity before tracking the newly submitted task."""
+        """在跟踪新提交的任务前等待线程池空出容量."""
         self.wait_for_capacity(queue_name)
         future = executor.submit(func, *args)
         self._running[queue_name].add(future)
@@ -220,7 +220,7 @@ class WorkerRuntime:
         func: Callable[..., None],
         *args: object,
     ) -> Future[None]:
-        """Submit an indexing task only when its pool has capacity."""
+        """仅在索引池具备容量时提交文件索引任务."""
         return self._submit("index", self.index_executor, func, *args)
 
     def submit_organize(
@@ -228,18 +228,18 @@ class WorkerRuntime:
         func: Callable[..., None],
         *args: object,
     ) -> Future[None]:
-        """Submit an organizer task only when its pool has capacity."""
+        """仅在整理池具备容量时提交文件整理任务."""
         return self._submit("organize", self.organize_executor, func, *args)
 
     def shutdown(self) -> None:
-        """Stop executors and release the sync LLM connection pool."""
+        """停止执行器并释放同步 LLM 连接池资源."""
         self.index_executor.shutdown(wait=True)
         self.organize_executor.shutdown(wait=True)
         close_sync_clients()
 
 
 def _organize_integer(value: JsonValue) -> int:
-    """Apply the original integer conversion to decoded JSON scalar values."""
+    """对解码后的 JSON 标量值应用原始的整数转换."""
     if isinstance(value, (str, int, float)):
         return int(value)
     message = "Organize integer field is not a numeric scalar"
@@ -247,7 +247,7 @@ def _organize_integer(value: JsonValue) -> int:
 
 
 def parse_organize_message(data: str) -> tuple[int, int, str | None]:
-    """Parse current JSON payloads and the legacy workspace-only payload."""
+    """解析当前 JSON 载荷以及遗留的仅工作区载荷."""
     try:
         payload: JsonValue = json.loads(data)
         if isinstance(payload, dict):
@@ -266,7 +266,7 @@ def dispatch_message(
     runtime: WorkerRuntime,
     message: QueueMessage,
 ) -> Future[None]:
-    """Decode one queue message and submit it to its dedicated executor."""
+    """解码单条队列消息并将其提交给对应的专用执行器."""
     if message.queue_name == FILE_PROCESS_QUEUE:
         return runtime.submit_index(process_task, int(message.body))
 
@@ -288,7 +288,7 @@ def worker_step(
     consumer: RabbitMQTaskConsumer,
     inflight: dict[Future[None], QueueMessage],
 ) -> None:
-    """Settle deliveries and fetch only available work, all on the connection thread."""
+    """在连接线程中结算投递状态并仅拉取可用任务."""
     for future, message in list(inflight.items()):
         if not future.done():
             continue
@@ -318,7 +318,7 @@ def worker_step(
 
 
 def run_worker(max_workers: int | None = None) -> None:
-    """Consume tasks forever using independent index and organize pools."""
+    """使用独立的索引池和整理池持续消费任务."""
     index_workers = max_workers or max(
         1, int(os.getenv("WORKER_MAX_THREADS", "5")),
     )

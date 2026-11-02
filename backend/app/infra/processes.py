@@ -1,4 +1,4 @@
-"""Bounded subprocess execution for private file converters."""
+"""私有文件转换器的有界子进程执行工具."""
 
 import os
 import signal
@@ -16,7 +16,7 @@ def run_converter(
     *,
     timeout: float | None,
 ) -> subprocess.CompletedProcess[None]:
-    """Discard converter output; terminate its POSIX group on interrupted waits."""
+    """丢弃转换器输出; 在等待中断时终止其 POSIX 进程组."""
     process = subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
@@ -26,8 +26,8 @@ def run_converter(
     try:
         returncode = process.wait(timeout=timeout)
     except BaseException:
-        # A separate session keeps the worker and unrelated conversions out of
-        # the group. Kill before reaping the leader so its ID remains owned.
+        # 独立的 session 使 worker 和不相关的转换操作脱离该进程组。
+        # 在回收 leader 前杀死进程, 保证其 ID 仍被持有。
         try:
             if os.name == "posix":
                 os.killpg(process.pid, signal.SIGKILL)

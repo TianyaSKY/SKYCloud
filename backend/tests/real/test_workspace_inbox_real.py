@@ -45,9 +45,7 @@ from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
 
 
-# ===========================================================================
 # workspace/permissions.py
-# ===========================================================================
 
 
 class TestWorkspacePermissions:
@@ -120,9 +118,7 @@ class TestWorkspacePermissions:
         assert check_role_level("unknown", "viewer") is False
 
 
-# ===========================================================================
 # workspace/service.py
-# ===========================================================================
 
 
 class TestWorkspaceService:
@@ -291,9 +287,7 @@ class TestWorkspaceService:
         assert "avatar" in members[0]
 
 
-# ===========================================================================
 # inbox/service.py
-# ===========================================================================
 
 
 class TestInboxService:

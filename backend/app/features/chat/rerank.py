@@ -12,7 +12,7 @@ from app.infra.llm.config import get_rerank_model_config, get_rerank_top_k
 
 @dataclass
 class _ClientHolder:
-    """Mutable holder for the process-wide rerank HTTP client."""
+    """进程级重排 HTTP 客户端的可变持有器."""
 
     client: httpx.AsyncClient | None = None
 
@@ -99,7 +99,7 @@ def _extract_ranked_indices(payload: dict[str, object]) -> list[int]:
 def _ranked_documents(
     result: dict[str, object], docs: list[Document],
 ) -> list[Document]:
-    """Project the provider ranking onto the input documents."""
+    """将供应商返回的排序投影到输入文档列表中."""
     ranked_indices = _extract_ranked_indices(result)
     if not ranked_indices:
         logger.warning(

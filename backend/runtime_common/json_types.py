@@ -1,4 +1,4 @@
-"""Recursive JSON type aliases shared by the Controller and application."""
+"""Controller 与应用间共享的递归 JSON 类型别名."""
 
 from typing import TypeAlias
 

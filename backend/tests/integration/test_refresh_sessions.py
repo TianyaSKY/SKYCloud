@@ -1,4 +1,4 @@
-"""Real Redis atomic rotation plus PostgreSQL authoritative account state."""
+"""真实 Redis 原子轮转与 PostgreSQL 权威账户状态测试."""
 import concurrent.futures
 import os
 import time

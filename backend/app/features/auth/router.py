@@ -45,7 +45,7 @@ def login(
     with session_factory() as session:
         refresh_sessions.check_origin(request)
         result = auth_service.login(session, payload.username, payload.password)
-        # authenticate_user minted this token, so it carries the required claims.
+        # authenticate_user 生成了此令牌, 故其携带了必需的声明。
         claims = cast(
             "refresh_sessions.AccessClaims",
             jwt.decode(result["token"], SECRET_KEY, algorithms=["HS256"]),
@@ -130,9 +130,7 @@ def refresh_mcp_token(
         )
 
 
-# ---------------------------------------------------------------------------
 # 用户资料 CRUD
-# ---------------------------------------------------------------------------
 
 
 @router.post(

@@ -1,4 +1,4 @@
-"""Worker-owned, currently authorized pgvector chunk retrieval."""
+"""Worker 拥有的、经实时鉴权的 pgvector 分块检索模块."""
 
 from __future__ import annotations
 
@@ -27,12 +27,12 @@ def vector_rows(
     user_id: int,
     limit: int,
 ) -> Sequence[Row[Any]]:
-    """Return workspace chunks nearest to ``vector`` for an authorized member."""
+    """为已授权成员返回工作区中与 ``vector`` 最接近的文本分块."""
     if type(user_id) is not int or user_id <= 0:
         message = "Authenticated retrieval identity is required"
         raise PermissionDeniedError(message)
     with _owned_session(session_factory) as session:
-        # Hold lifecycle identity/membership locks only during SQL, never model IO.
+        # 仅在 SQL 期间持有生命周期身份与成员锁, 不在模型 I/O 期间持有。
         assert_member_locked(session, workspace_id, user_id)
         return session.execute(text("""
             SELECT c.id, f.id, f.name, c.content, f.mime_type, c.chunk_index,
@@ -47,7 +47,7 @@ def vector_rows(
 
 @contextmanager
 def _owned_session(session_factory: SessionFactory) -> Generator[Session, None, None]:
-    """Yield one Session and close it on the thread that executed the query."""
+    """提供单次 Session 并在执行查询的线程上予以关闭."""
     session = session_factory()
     try:
         yield session

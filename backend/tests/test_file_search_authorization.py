@@ -1,4 +1,4 @@
-"""Semantic search must authorize before provider dispatch and attribute usage."""
+"""语义搜索在提供商分发与属性用量计费前必须鉴权测试."""
 import threading
 from types import SimpleNamespace
 import pytest

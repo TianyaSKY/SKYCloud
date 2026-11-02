@@ -27,9 +27,7 @@ from app.models.mcp_token import McpToken
 from app.models.workspace import Workspace, WorkspaceMember
 
 
-# ---------------------------------------------------------------------------
 # 异常类层级
-# ---------------------------------------------------------------------------
 
 
 class TestDomainErrors:
@@ -118,9 +116,7 @@ class TestExceptionHandlers:
         assert response.status_code == 500
 
 
-# ---------------------------------------------------------------------------
-# Folder service
-# ---------------------------------------------------------------------------
+# 文件夹服务
 
 
 class TestFolderService:
@@ -232,9 +228,7 @@ class TestFolderService:
 
 
 
-# ---------------------------------------------------------------------------
-# MCP token_service
-# ---------------------------------------------------------------------------
+# MCP 令牌服务
 
 
 class TestMcpTokenService:

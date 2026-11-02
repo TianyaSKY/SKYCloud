@@ -1,4 +1,4 @@
-"""Concurrent ASGI requests restore all context fields even on downstream failure."""
+"""并发 ASGI 请求在下游失败时仍恢复所有上下文数据测试."""
 import asyncio
 from unittest.mock import MagicMock
 import pytest
@@ -39,7 +39,7 @@ async def test_concurrent_selected_scopes_are_isolated_and_restore_parent_on_fai
             await middleware(scope, None, None)
         except ValueError:
             assert uid == 2
-        # Observe restoration in this same coroutine, not just its parent task.
+        # 在同一协程中观测恢复情况, 而非仅在其父任务中观测.
         assert context.get_mcp_context() is parent
         assert context.get_request_id() == 'parent'
         assert not context.is_mcp_request_active()

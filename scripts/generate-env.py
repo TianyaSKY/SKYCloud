@@ -1,4 +1,4 @@
-"""Create private deployment configuration without printing any secrets."""
+"""创建私有部署配置, 且不向终端打印任何机密信息."""
 
 import argparse
 import os
@@ -19,7 +19,7 @@ def generate(output: Path, template: Path):
         if name in SECRET_NAMES:
             line = name + "=" + secrets.token_urlsafe(48)
         lines.append(line)
-    # Exclusive creation prevents overwriting a live deployment's credentials.
+    # 独占创建防止意外覆盖运行中环境的已有凭据。
     fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
         stream.write("\n".join(lines) + "\n")

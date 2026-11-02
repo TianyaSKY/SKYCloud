@@ -107,7 +107,7 @@ def _compact_validation_errors(
             "string_too_short": "Value is too short",
             "string_too_long": "Value is too long",
         }.get(item_type, "Invalid value")
-        # Custom validator messages/context can echo submitted credentials.
+        # 自定义校验器消息/上下文可能回显已提交的凭据.
         compact.append(
             ValidationIssue(
                 loc=cast("list[str | int]", _to_json_safe(err.get("loc", []))),

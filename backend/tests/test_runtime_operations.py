@@ -1,4 +1,4 @@
-"""Actual SQL admission/switch/rollback and durable retirement contracts."""
+"""实际 SQL 准入/切换/回滚与持久退役契约测试."""
 from types import SimpleNamespace
 
 import pytest
@@ -192,8 +192,8 @@ def test_summary_observation_cannot_cancel_pending_start(session,test_workspace,
     session.commit()
     docker_service._sync_runtime_status(session,runtime)
     assert runtime.status == 'provisioning'
-    # Batch snapshot says candidate is stopped. The conditional SQL update
-    # must leave an admitted operation's identity/status untouched.
+    # 批量快照表明候选容器已停止. 条件 SQL 更新
+    # 绝不能篡改已准入操作的标识/状态.
     class Client:
         def user_snapshot(self,user): return []
     from unittest.mock import patch
@@ -237,7 +237,7 @@ def test_missing_candidate_cannot_replace_another_identity(session,test_workspac
 
 
 def test_stop_commits_cancellation_before_rpc_so_crash_cannot_resume(session,test_workspace,test_user,monkeypatch):
-    """A stop lost after the RPC must not leave the generation recoverable."""
+    """停止在 RPC 之后丢失不得使代系处于可恢复状态."""
     from app.features.workspace import docker_service
     from app.infra.runtime_operations import recover_runtime_operations
     events = []
@@ -269,7 +269,7 @@ def test_stop_commits_cancellation_before_rpc_so_crash_cannot_resume(session,tes
 
 
 def test_stop_keeps_the_container_and_stages_no_deletion(session,test_workspace,test_user,monkeypatch):
-    """A normal stop must not be treated as the physical-removal trigger."""
+    """正常停止绝不得被视为物理删除的触发条件."""
     from app.features.workspace import docker_service
     events=[]
     class Controller:
@@ -288,7 +288,7 @@ def test_stop_keeps_the_container_and_stages_no_deletion(session,test_workspace,
 
 
 def test_start_conflict_after_prepare_retires_candidate_instead_of_leaving_it(session,test_workspace,test_user,monkeypatch):
-    """A generation cancelled mid-prepare must be retired by the caller, not orphaned."""
+    """在准备中途取消的代系必须由调用方退役, 不能遗留游离代系."""
     from app.features.workspace import docker_service
     events = []
     prepared = {"id": 'b'*64}
@@ -296,7 +296,7 @@ def test_start_conflict_after_prepare_retires_candidate_instead_of_leaving_it(se
     class Controller:
         def prepare(self,workspace_id,user_id,runtime_id,generation):
             events.append(('prepare',generation))
-            # Another actor cancels the admitted operation while prepare is in flight.
+            # 在准备阶段进行期间, 另一行为体取消了已准入的操作.
             with Session(bind=session.get_bind(),join_transaction_mode='create_savepoint') as other:
                 other.query(RuntimeOperation).filter(RuntimeOperation.runtime_id==runtime_id,
                                                      RuntimeOperation.state=='preparing').one().state='cancelled'
@@ -316,7 +316,7 @@ def test_start_conflict_after_prepare_retires_candidate_instead_of_leaving_it(se
 def test_start_publication_conflict_survives_retirement_failure(
     session, test_workspace, test_user, monkeypatch
 ):
-    """Failed immediate compensation cannot replace the publication conflict."""
+    """失败的即时补偿不能取代发布冲突错误."""
     from app.features.workspace import docker_service
 
     candidates = {}
@@ -348,7 +348,7 @@ def test_start_publication_conflict_survives_retirement_failure(
 def test_recovery_defers_failed_generation_and_completes_later_generation(
     session, test_workspace, test_user, admin_user, provisioner, monkeypatch
 ):
-    """One unexpected Controller failure cannot strand another admitted owner."""
+    """非预期的 Controller 失败不能搁浅另一已准入的所有者."""
     from datetime import timedelta
 
     from app.features.workspace import docker_service
@@ -361,7 +361,7 @@ def test_recovery_defers_failed_generation_and_completes_later_generation(
     first = repository.admit(session, test_workspace.id, test_user.id)
     second = repository.admit(session, test_workspace.id, admin_user.id)
     first_generation, second_generation = first.generation, second.generation
-    # Ordering is explicit rather than dependent on UUIDs or clock resolution.
+    # 排序是显式的, 而非依赖 UUID 或时钟精度.
     first.next_attempt_at = utc_now() - timedelta(seconds=2)
     second.next_attempt_at = utc_now() - timedelta(seconds=1)
     session.commit()

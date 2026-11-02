@@ -8,9 +8,7 @@ import os
 import sys
 from tempfile import TemporaryDirectory
 
-# ---------------------------------------------------------------------------
 # 1. 环境变量（必须在 app 包导入前设置）
-# ---------------------------------------------------------------------------
 os.environ["SECRET_KEY"] = "test-secret-key-for-unit-tests-only-32"
 os.environ["OPENCODE_SERVER_SECRET"] = "test-opencode-server-secret-only-32"
 os.environ["RUNTIME_CONTROLLER_TOKEN"] = "test-runtime-controller-secret-only-32"
@@ -42,9 +40,7 @@ _backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-# ---------------------------------------------------------------------------
 # 1.5 Mock 重量级第三方库（langchain / openai / docker）避免版本冲突和不必要连接
-# ---------------------------------------------------------------------------
 from unittest.mock import MagicMock
 
 import langchain.agents
@@ -124,9 +120,7 @@ sys.modules["langchain"].tools = sys.modules["langchain.tools"]
 # 配置 mcp.server.fastmcp.FastMCP 为 fake 类
 sys.modules["mcp.server.fastmcp"].FastMCP = _FakeFastMCP
 
-# ---------------------------------------------------------------------------
 # 2. pgvector 兼容：让 Vector 类型在 SQLite 下可编译
-# ---------------------------------------------------------------------------
 from sqlalchemy.ext.compiler import compiles
 
 try:
@@ -139,9 +133,7 @@ try:
 except ImportError:
     pass
 
-# ---------------------------------------------------------------------------
 # 3. 导入 app 模块（此时环境变量已就位）
-# ---------------------------------------------------------------------------
 from unittest.mock import patch
 
 import pytest
@@ -170,9 +162,7 @@ from app.models import (  # noqa: F401
 # 确保 task_queue 模块已导入（供 patch 使用）
 import app.infra.task_queue  # noqa: F401
 
-# ---------------------------------------------------------------------------
 # 4. SQLite 测试引擎
-# ---------------------------------------------------------------------------
 _test_engine = create_engine(
     "sqlite://",
     connect_args={"check_same_thread": False},
@@ -232,9 +222,7 @@ class InMemoryStorageClient:
         return path
 
 
-# ---------------------------------------------------------------------------
 # 5. Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
@@ -242,8 +230,8 @@ def session():
     """每个测试独立的数据库会话，测试结束回滚并清表。"""
     connection = _test_engine.connect()
     transaction = connection.begin()
-    # SQLite legacy mode does not send BEGIN until DML. A real outer
-    # transaction plus savepoints keeps service commits/rollbacks isolated.
+    # SQLite legacy 模式在 DML 前不发送 BEGIN. 真实外部事务
+    # 结合保存点 (savepoint) 可隔离服务层的 commit/rollback.
     connection.exec_driver_sql("BEGIN")
     sess = _TestSessionLocal(bind=connection, join_transaction_mode="create_savepoint")
     yield sess

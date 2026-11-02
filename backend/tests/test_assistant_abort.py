@@ -198,8 +198,8 @@ def test_sweep_does_not_starve_dead_run_behind_older_live_run(seeded):
         new.started_at = utc_now()-timedelta(seconds=60)
         new.metadata_dict = {'worker_heartbeat_unix': time.time()-60}
         db.commit()
-        # SQL uniqueness permits one active run per conversation; give the
-        # live predecessor its own conversation for this scan ordering proof.
+        # SQL 唯一性约束保证每个对话只有一个活跃运行;
+        # 为活跃前序分配其独立对话以证明扫描顺序.
         other = repository.create_conversation(
             db,
             repository.CreateConversationParams(
@@ -247,8 +247,8 @@ def test_paused_expert_cannot_resume_provider_work_after_run_ends(seeded, state,
     with factory() as db:
         engine = ExpertEngine(session=db, conversation=db.get(AssistantConversation, identity[3]),
                               run=db.get(AssistantRun, identity[-1]))
-    # The engine predates the committed state change; its next SQL operation
-    # must validate the current row rather than trusting construction state.
+    # 引擎早于已提交的状态变更; 其下一次 SQL 操作
+    # 必须校验当前行状态, 而不是信任构造时的状态.
     with factory() as db:
         run = db.get(AssistantRun, identity[-1])
         if state == 'cancel-requested':

@@ -1,4 +1,4 @@
-"""Token usage route SQL and response preparation run on an owning worker."""
+"""Token 用量路由 SQL 与响应准备在所属 worker 上运行测试."""
 import asyncio
 import threading
 from types import SimpleNamespace

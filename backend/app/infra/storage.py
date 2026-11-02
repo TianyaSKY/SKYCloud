@@ -18,9 +18,9 @@ from urllib3.response import BaseHTTPResponse
 
 from app.infra.secrets import configured_password
 
-# ---------------------------------------------------------------------------
-# 配置读取
-# ---------------------------------------------------------------------------
+# MinIO 对象存储配置读取
+# 从环境变量读取端点、凭证、Bucket、安全标志与超时配置
+# 有界 I/O: 设置连接与读取超时以防止工作线程阻塞
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
@@ -44,7 +44,7 @@ class MinIOStorageClient:
         *,
         secure: bool = MINIO_SECURE,
     ) -> None:
-        """Validate the credentials and connect the bounded MinIO client."""
+        """校验凭证有效性并连接有界 MinIO 客户端."""
         configured_password("MINIO_SECRET_KEY", secret_key)
         if not access_key:
             message = "MINIO_ACCESS_KEY must be explicitly configured"
@@ -78,9 +78,9 @@ class MinIOStorageClient:
             logger.error("MinIO bucket 初始化失败 (error_type={})", type(e).__name__)
             raise
 
-    # ------------------------------------------------------------------
-    # 核心操作
-    # ------------------------------------------------------------------
+    # MinIO 对象存储核心操作
+    # 提供文件上传、下载、删除、元数据检索与存在性检查
+    # 所有调用均受有界连接与读取超时保护
 
     def upload_file(self, local_path: str, object_name: str) -> None:
         """将本地文件上传到 MinIO."""
@@ -150,7 +150,7 @@ class MinIOStorageClient:
             raise
 
     def read_file_prefix(self, object_name: str, max_bytes: int) -> bytes:
-        """Read an HTTP range into bounded memory and always release its response."""
+        """将 HTTP 范围读取至有界内存中, 并始终释放其响应."""
         if max_bytes <= 0:
             message = "max_bytes must be positive"
             raise ValueError(message)
@@ -165,8 +165,8 @@ class MinIOStorageClient:
     @staticmethod
     def close_file_stream(stream: BaseHTTPResponse) -> None:
         """关闭下载流并归还 HTTP 连接, 供流式响应结束后调用."""
-        # Always try to return the connection even if closing the body fails.
-        # Delivery is arbitrary for response bodies, so the failure set is open.
+        # 即使关闭响应体失败, 也始终尝试归还底层 HTTP 连接。
+        # 响应体投递可能出现任意网络异常, 失败类型集合是开放的。
         try:
             stream.close()
         except Exception as exc:
@@ -211,8 +211,8 @@ class MinIOStorageClient:
             logger.error("MinIO 获取文件大小失败 (error_type={})", type(e).__name__)
             raise
         if size is None:
-            # An existing object always reports a length; a missing one must not
-            # be silently reported as zero bytes.
+            # 存在的对象始终包含大小信息; 缺失的对象绝不能
+            # 被静默视为 0 字节。
             logger.error("MinIO stat 缺少对象大小 (error_type=ValueError)")
             message = "MinIO object size is unavailable"
             raise ValueError(message)
@@ -236,11 +236,11 @@ class MinIOStorageClient:
         return tmp_path
 
 
-# ---------------------------------------------------------------------------
-# 全局单例 (延迟初始化, 避免 import 时即连接)
-# ---------------------------------------------------------------------------
+# 全局单例持有者
+# 延迟初始化的进程级对象存储客户端单例容器
+# 避免在模块导入时即发起 MinIO 网络连接
 class _StorageClientHolder:
-    """Lazily initialized process-wide storage client."""
+    """延迟初始化的进程级对象存储客户端单例容器."""
 
     client: MinIOStorageClient | None = None
 

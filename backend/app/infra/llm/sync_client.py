@@ -1,8 +1,8 @@
-"""Synchronous OpenAI-compatible client used by the worker process.
+"""Worker 进程使用的同步 OpenAI 兼容客户端.
 
-The API process uses :mod:`app.infra.llm.client` and its async client cache.
-This module deliberately has an independent cache because ``OpenAI`` clients
-are synchronous and do not have an event-loop lifetime to manage.
+API 进程使用 :mod:`app.infra.llm.client` 及其异步客户端缓存。
+本模块刻意拥有独立的缓存, 因为 ``OpenAI`` 客户端
+是同步的, 不需要管理事件循环生命周期。
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ _client_lock = threading.Lock()
 
 
 def _get_client(api_base: str, api_key: str) -> OpenAI:
-    """Return a thread-safe, process-local sync client for one endpoint/key."""
+    """返回指定接口端点与 API 密钥的线程安全进程内同步客户端."""
     cache_key = (api_base, api_key)
     with _client_lock:
         client = _client_cache.get(cache_key)
@@ -38,7 +38,7 @@ def _get_client(api_base: str, api_key: str) -> OpenAI:
 
 
 def close_sync_clients() -> None:
-    """Close all cached sync HTTP clients during worker shutdown."""
+    """在 worker 关闭期间关闭所有已缓存的同步 HTTP 客户端."""
     with _client_lock:
         clients = list(_client_cache.values())
         _client_cache.clear()
@@ -47,8 +47,8 @@ def close_sync_clients() -> None:
         try:
             client.close()
         except Exception as exc:
-            # Shutdown cleanup must attempt every client; the SDK transport can
-            # raise an unbounded set, so one failure cannot abort the loop.
+            # 关闭清理操作必须尝试每个客户端; SDK 传输层可能
+            # 抛出任意异常, 单个客户端失败绝不能中止清理循环。
             logger.warning(
                 "Failed to close sync LLM client (error_type={})",
                 type(exc).__name__,
@@ -63,7 +63,7 @@ def chat_completion(
     action: str = "chat",
     query_summary: str | None = None,
 ) -> ChatCompletion:
-    """Create a synchronous chat completion and record returned usage."""
+    """创建同步聊天补全并记录返回的 Token 用量."""
     client = _get_client(config["api"], config["key"])
     model = config.get("model", "")
     response = client.chat.completions.create(model=model, messages=messages)
@@ -90,7 +90,7 @@ def embed_texts(
     user_id: int = 0,
     query_summary: str | None = None,
 ) -> list[list[float]]:
-    """Create synchronous embeddings, preserving input order and max dimension."""
+    """创建同步嵌入向量, 保留输入顺序与最大维度约束."""
     if isinstance(texts, str):
         texts = [texts]
     if not texts:
@@ -123,7 +123,7 @@ def embed_texts(
 
 
 def record_llm_usage(*, usage: TokenUsage) -> None:
-    """Record usage from synchronous LangChain worker flows."""
+    """记录来自同步 LangChain worker 流水线的 Token 用量."""
     if usage.total_tokens <= 0 and usage.prompt_tokens <= 0:
         return
     _safe_record(usage)

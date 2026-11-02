@@ -1,11 +1,4 @@
-"""Opt-in end-to-end checks for the official OpenCode expert runtime.
-
-These tests deliberately use the Docker CLI instead of the mocked ``docker``
-module installed by the unit-test conftest.  They are skipped by default and
-require ``RUN_OPENCODE_E2E=1``.  The model test additionally requires
-``RUN_OPENCODE_MODEL_E2E=1`` and the model gateway with a scoped runtime_llm
-credential reachable from inside Docker.
-"""
+"""官方 OpenCode 专家运行时自选端到端测试."""
 
 import asyncio
 import json
@@ -213,7 +206,7 @@ class _OpenCodeRuntime:
 
 
 def test_official_opencode_runtime_health_mcp_and_session() -> None:
-    """The official image accepts auth, MCP config, and session operations."""
+    """官方镜像接受认证、MCP 配置以及会话操作."""
 
     with _OpenCodeRuntime(chat=None) as runtime:
         assert runtime.base_url is not None
@@ -264,7 +257,7 @@ def test_expert_engine_streams_through_official_opencode_runtime(
     test_workspace,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A real ExpertEngine run reaches OpenCode and persists its answer."""
+    """真实的 ExpertEngine 运行连接 OpenCode 并持久化其回答."""
 
     chat = _chat_config()
     conversation = repository.create_conversation(

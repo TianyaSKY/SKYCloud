@@ -1,4 +1,4 @@
-"""Close prepared runs even when ASGI fails before entering their iterator."""
+"""即使 ASGI 在进入迭代器前失败也关闭准备好的运行."""
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Generator, Mapping
@@ -28,7 +28,7 @@ RunScope = tuple[int, int, int, int]
 def preparation_session(
     session_factory: SessionFactory,
 ) -> Generator[Session, None, None]:
-    """Yield the preparation Session and always close it on its owner."""
+    """产出准备 Session 并始终在所属 worker 上关闭."""
     session = session_factory()
     try:
         yield session
@@ -40,7 +40,7 @@ async def prepare_response_run(
     prepare: Callable[[Callable[[RunScope], None]], T],
     session_factory: SessionFactory,
 ) -> T:
-    """Drain SQL preparation before compensating an interrupted HTTP request."""
+    """在补偿中断的 HTTP 请求前排干 SQL 准备操作."""
     created_scope: RunScope | None = None
 
     def capture(scope: RunScope) -> None:
@@ -65,9 +65,9 @@ def cleanup_unclaimed_run(
     session_factory: SessionFactory,
     scope: RunScope,
 ) -> None:
-    """Compensate a prepared run whose HTTP request never started streaming."""
-    # Internal compensation uses exact prepared identities, and can still run
-    # after membership removal. This is not a user-facing cancellation API.
+    """补偿 HTTP 请求从未开始流式传输的已准备运行."""
+    # 内部补偿使用确切准备的标识, 即使移除成员身份后仍可运行.
+    # 此逻辑并非面向用户的取消 API.
     session = None
     try:
         session = session_factory()
@@ -98,7 +98,7 @@ def cleanup_unclaimed_run(
 
 
 class PreparedStreamResponse(StreamingResponse):
-    """Streaming response that releases an unclaimed prepared run."""
+    """释放未认领已准备运行的流式响应."""
 
     def __init__(
         self,
@@ -109,13 +109,13 @@ class PreparedStreamResponse(StreamingResponse):
         media_type: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> None:
-        """Bind the response to the identities it must compensate."""
+        """将响应绑定至其必须补偿的标识."""
         super().__init__(content, media_type=media_type, headers=headers)
         self.session_factory = session_factory
         self.run_scope = run_scope
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Stream content and release the prepared run in every outcome."""
+        """流式传输内容并在任何结果下释放已准备的运行."""
         failed = False
         try:
             await super().__call__(scope, receive, send)

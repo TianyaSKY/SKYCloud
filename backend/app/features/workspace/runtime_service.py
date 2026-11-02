@@ -1,4 +1,4 @@
-"""Persistence helpers for per-user OpenCode runtimes."""
+"""单用户 OpenCode 运行时实体的持久化辅助函数."""
 
 from sqlalchemy.orm import Session
 
@@ -10,7 +10,7 @@ def get_runtime(
     workspace_id: int,
     user_id: int,
 ) -> OpenCodeRuntime | None:
-    """Return the runtime owned by one workspace member, if it exists."""
+    """返回指定工作空间成员拥有的运行时实体 (若存在)."""
     return (
         session.query(OpenCodeRuntime)
         .filter_by(workspace_id=workspace_id, user_id=user_id)
@@ -23,7 +23,7 @@ def get_or_create_runtime(
     workspace_id: int,
     user_id: int,
 ) -> OpenCodeRuntime:
-    """Get the unique runtime for a member, creating it without a container."""
+    """获取成员唯一的运行时记录, 若不存在则创建无容器的记录."""
     runtime = get_runtime(session, workspace_id, user_id)
     if runtime:
         return runtime
@@ -40,7 +40,7 @@ def get_or_create_runtime(
 
 
 def list_runtimes(session: Session, workspace_id: int) -> list[OpenCodeRuntime]:
-    """Return every member runtime of the workspace ordered by owner."""
+    """按所有者排序返回工作空间下全部成员的运行时记录列表."""
     return (
         session.query(OpenCodeRuntime)
         .filter_by(workspace_id=workspace_id)

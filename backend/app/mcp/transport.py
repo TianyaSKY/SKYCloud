@@ -1,4 +1,4 @@
-"""Explicit SDK transport boundaries for the parent proxy and internal MCP host."""
+"""用于上级反向代理与内部 MCP 主机的显式 SDK 传输层边界."""
 
 import os
 from dataclasses import dataclass
@@ -33,7 +33,7 @@ _UNSAFE_ORIGIN_MESSAGE = "Configure a safe application/MCP origin"
 
 
 class TransportOptions(TypedDict):
-    """Keyword options accepted by ``FastMCP`` for streamable HTTP."""
+    """``FastMCP`` 为流式 HTTP 接受的关键字配置选项."""
 
     transport_security: TransportSecuritySettings
     max_request_body_size: int
@@ -41,7 +41,7 @@ class TransportOptions(TypedDict):
 
 @dataclass(frozen=True)
 class SafeOrigin:
-    """Validated application/MCP origin with a non-empty hostname."""
+    """经过校验且包含非空主机名的应用程序或 MCP Origin 来源."""
 
     scheme: str
     netloc: str
@@ -64,7 +64,7 @@ def _safe_origin(value: str) -> SafeOrigin:
 
 
 def transport_options() -> TransportOptions:
-    """Build SDK transport options with the existing Host/Origin allowlists."""
+    """基于现有 Host 与 Origin 白名单构建 SDK 传输层选项."""
     hosts = set(_DEFAULT_ALLOWED_HOSTS)
     port = positive_limit("MCP_PORT", 8001)
     hosts.update({f"backend-mcp:{port}", f"skycloud-backend-mcp:{port}"})
@@ -76,7 +76,7 @@ def transport_options() -> TransportOptions:
         if not value:
             continue
         origin = _safe_origin(value)
-        # nginx forwards $host without the port; direct SDK clients send netloc.
+        # nginx 转发不带端口的 $host; 直接 SDK 客户端发送包含端口的 netloc。
         hosts.update(
             {
                 origin.netloc,

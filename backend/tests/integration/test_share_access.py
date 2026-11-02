@@ -1,4 +1,4 @@
-"""Actual PostgreSQL share admission after membership changes."""
+"""成员变更后的实际 PostgreSQL 分享准入测试."""
 import os
 import pytest
 from sqlalchemy.orm import sessionmaker
@@ -34,7 +34,7 @@ def test_cached_member_cannot_publish_after_committed_removal(postgres):
         assert first.user_id==vid
         with pytest.raises(PermissionDeniedError):create_share_link(reader, CreateShareLinkParams(user_id=oid, file_id=fid))
         reader.rollback()
-        # Re-load and retain a stale ORM member across another transaction's removal.
+        # 在另一事务执行删除操作后重新加载并保留过期的 ORM 成员.
         cached=reader.get(WorkspaceMember,mid)
         with factory() as remover:
             remover.query(WorkspaceMember).filter_by(workspace_id=wid,user_id=vid).delete()

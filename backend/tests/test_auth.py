@@ -17,9 +17,7 @@ from app.models.workspace import Workspace, WorkspaceMember
 from app.models.folder import Folder
 
 
-# ---------------------------------------------------------------------------
-# auth service
-# ---------------------------------------------------------------------------
+# 认证服务
 
 
 class TestGenerateToken:
@@ -157,9 +155,7 @@ class TestRegisterUser:
             register_user(session, "", "pass")
 
 
-# ---------------------------------------------------------------------------
 # user_service
-# ---------------------------------------------------------------------------
 
 
 class TestCreateUser:

@@ -1,32 +1,4 @@
-"""Manual CUA verification against actual frontend/nginx, API, PG, Redis and MinIO.
-
-RUN_FULL_BROWSER=1 SKYCLOUD_TEST_RUNTIME_IMAGE=<builder output> SKYCLOUD_TEST_MINIO_IMAGE=<builder output> pytest tests/integration/test_full_browser.py
-Read the synthetic fixture URL from the fixture directory
-(SKYCLOUD_TEST_FIXTURE_DIR, default /private/tmp on Docker Desktop, else the system temp dir) skycloud-full-browser.json;
-record verified in its completion file only after browser checks succeed.
-SKYCLOUD_BROWSER_STARTUP_ONLY=1 validates fixture startup without claiming browser checks.
-
-The API is a real uvicorn child process (cwd=backend, production settings and
-lifespan/schema gate). It never imports tests.conftest: the parent process only
-prepares disposable data plus the surrounding Redis/MinIO/nginx/Controller
-containers and the synthetic model provider.
-Docker Desktop resolves host.docker.internal implicitly; the Linux engine needs an
-explicit gateway alias, which the fixture adds on Linux only.
-
-Fixture JSON fields:
-    url, username, password, workspace_id, workspace_ids, completion_file
-    admin_username, admin_password  independent administrator account
-    model_release_url   GET or POST releases the held BROWSER_PARTIAL answer, which
-                        then ends with BROWSER_STREAM_DONE and fixed usage
-    usage_fault_include host path of the read-only nginx include mounted inside the
-                        fixture container at /etc/nginx/fixture/usage-fault.conf;
-                        write the personal/admin usage-log 502 locations there and
-                        reload nginx_container, or use usage_fault_url
-    usage_fault_url     GET ?enabled=1|0 writes the fragment above and reloads only
-                        this fixture's nginx
-    nginx_container     this fixture's nginx container name (reload only this one)
-    usage_samples       seeded usage audit rows used by the usage pages
-"""
+"""针对实际前端/nginx、API、PG、Redis 和 MinIO 的手动 CUA 验证."""
 import asyncio
 import json
 import os
@@ -62,7 +34,7 @@ from app.models.workspace import Workspace, WorkspaceMember
 
 pytestmark = pytest.mark.skipif(os.getenv('RUN_FULL_BROWSER') != '1', reason='Opt-in manual full browser verification')
 
-# Fixed synthetic provider identity: only the external vendor is replaced.
+# 固定合成提供商标识: 仅替换外部供应商.
 PROVIDER_KEY = 'browser-fixture-model-key'
 CHAT_MODEL = 'browser-fixture-chat'
 EMB_MODEL = 'browser-fixture-embedding'
@@ -86,7 +58,7 @@ location = /api/admin/token-usage/logs {
     return 502;
 }
 '''
-# account, action, model, prompt, completion, total
+# 账户、操作、模型、提示词、补全、总量
 USAGE_SAMPLES = (
     ('normal', 'chat', CHAT_MODEL, 100, 50, 150),
     ('normal', 'embedding', EMB_MODEL, 20, 0, 20),
@@ -129,7 +101,7 @@ def _completion(content):
 
 
 def build_provider():
-    """Synthetic OpenAI-compatible vendor with a test-controlled stream barrier."""
+    """带测试控制流屏障的合成兼容 OpenAI 供应商."""
     released, closing = threading.Event(), threading.Event()
     fault = {'apply': None}
     provider = FastAPI()
@@ -155,7 +127,7 @@ def build_provider():
         assert request.headers.get('authorization') == 'Bearer ' + PROVIDER_KEY
         assert body['model'] == CHAT_MODEL
         if body.get('response_format', {}).get('type') == 'json_schema':
-            # The rewrite request may stream through LangChain's event pipeline.
+            # 重写请求可能通过 LangChain 事件流水线流式传输.
             content = json.dumps(REWRITE_KEYWORDS)
             if not body.get('stream'):
                 return JSONResponse(_completion(content))
@@ -230,8 +202,8 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
             Folder(name='/', workspace_id=second.id, parent_id=None),
         ])
         admin = user_service.create_user(db, {'username': admin_username, 'password': admin_password})
-        # The administrator role is disposable fixture data prepared inside this
-        # transaction; the product keeps no fixture-only elevation path.
+        # 管理员角色是在此事务内准备的一次性 fixture 数据;
+        # 生产产品不保留仅限 fixture 的提权路径.
         admin.role = 'admin'
         accounts = {'normal': user.id, 'admin': admin.id}
         db.add_all([
@@ -266,11 +238,11 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
         assert operation.state == 'complete' and operation.candidate_container_id == runtime.container_id
     bind_host = '127.0.0.1'
     if sys.platform.startswith('linux'):
-        # Docker Desktop forwards host.docker.internal to the host loopback. The Linux
-        # engine maps it to the bridge gateway address instead, where a loopback-only
-        # API is unreachable, so publish it on the infrastructure network's gateway.
-        # Docker's host-gateway alias is the default bridge gateway (172.17.0.1 by
-        # default), so bind there rather than on the fixture network's gateway.
+        # Docker Desktop 将 host.docker.internal 转发至主机环回口. Linux
+        # 引擎将其映射到桥接网关地址, 导致仅环回口的 API 不可达,
+        # 因此在基础设施网络的网关上发布.
+        # Docker 的 host-gateway 别名是默认网桥网关 (通常为 172.17.0.1),
+        # 因此绑定在此处, 而非 fixture 网络的网关.
         bind_host = docker('network', 'inspect', 'bridge', '--format',
                            '{{(index .IPAM.Config 0).Gateway}}').stdout.strip()
         assert bind_host, 'Default bridge network has no gateway address'
@@ -289,11 +261,11 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
     redis_port = infrastructure['redis'].connection_pool.connection_kwargs['port']
     with serve(provider) as provider_port:
         try:
-            # The child API never imports the test conftest: every fixture-owned
-            # dependency is passed explicitly, and the production startup gate runs.
-            # The fixture is loopback-only: a developer/system proxy would intercept
-            # model and object-storage calls (socks proxies even fail client
-            # construction), so no proxy variables reach the child.
+            # 子 API 进程绝不导入测试 conftest: 显式传递每个 fixture 持有的
+            # 依赖项, 并执行生产启动门禁.
+            # 该 fixture 仅限环回口: 开发环境/系统代理会拦截
+            # 模型和对象存储调用 (socks 代理甚至会导致客户端构造失败),
+            # 因此任何代理变量均不传递至子进程.
             child_env = {
                 key: value for key, value in os.environ.items()
                 if key.lower() not in {'http_proxy', 'https_proxy', 'all_proxy'}
@@ -303,8 +275,8 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
                 'NO_PROXY': f'127.0.0.1,localhost,{bind_host}',
                 'DATABASE_URL': postgres.url.render_as_string(hide_password=False),
                 'SECRET_KEY': 'browser-fixture-signing-secret-' + uuid.uuid4().hex,
-                # The controller fixture configured these two for the containers it
-                # built; the API must share them to reach the real runtime.
+                # controller fixture 为其构建的容器配置了这两项;
+                # API 必须共享它们才能连通真实运行时.
                 'OPENCODE_SERVER_SECRET': os.environ['OPENCODE_SERVER_SECRET'],
                 'RUNTIME_CONTROLLER_TOKEN': controller['token'],
                 'RUNTIME_CONTROLLER_URL': controller['url'],
@@ -349,11 +321,11 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
                 time.sleep(.2)
             else:
                 raise AssertionError('Child API did not start: ' + (tmp_path / 'api.log').read_text()[-4000:])
-            # Substitute the literal address: nginx resolves a variable-based proxy_pass through
-            # the container resolver (bypassing /etc/hosts), so the host alias is not reliable.
+            # 替换字面量地址: nginx 通过容器解析器解析基于变量的 proxy_pass
+            # (绕过 /etc/hosts), 因此主机别名不可靠.
             template = (root / 'frontend/nginx.conf').read_text().replace(
                 'backend-api:5000', f'{bind_host}:{api_port}')
-            # Only tests' own include: the production nginx.conf is never modified.
+            # 仅限测试专用的 include: 绝不修改生产 nginx.conf.
             template = template.replace(
                 '    resolver 127.0.0.11 ipv6=off;\n',
                 '    resolver 127.0.0.11 ipv6=off;\n    include /etc/nginx/fixture/usage-fault.conf;\n',
@@ -405,14 +377,14 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
                 fault_include.write_text(USAGE_FAULT_LOCATIONS if enabled else '')
                 reloaded = docker('exec', frontend, 'nginx', '-s', 'reload', check=False)
                 assert reloaded.returncode == 0, reloaded.stderr
-                # Reload swaps workers, so wait for the boundary to be observable.
+                # Reload 会轮换 worker, 因此等待边界可被观测.
                 target = (lambda status: status == 502) if enabled else (lambda status: status != 502)
                 observed = wait_for_usage_logs(target)
                 assert all(target(status) for status in observed), (
                     'Fixture nginx usage-fault reload did not take effect', enabled, observed)
             fault['apply'] = apply_usage_fault
-            # Prove the mounted include is live before handing the boundary to the
-            # browser, then leave it disabled with the empty fragment.
+            # 在将边界移交浏览器前证明挂载的 include 已生效,
+            # 随后使用空片段将其禁用.
             apply_usage_fault(True)
             apply_usage_fault(False)
             if os.getenv('SKYCLOUD_BROWSER_STARTUP_ONLY')=='1':

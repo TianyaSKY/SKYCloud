@@ -1,4 +1,4 @@
-"""Unavailable identity stores deny access without pretending credentials expired."""
+"""不可用的身份存储拒绝访问且不假装凭据已过期测试."""
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock

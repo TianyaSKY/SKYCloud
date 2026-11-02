@@ -1,4 +1,4 @@
-"""Browser credential scope, rotation, replay, revocation and failure behavior."""
+"""浏览器凭据范围、轮转、重放、撤销与故障行为测试."""
 import json
 from unittest.mock import patch
 

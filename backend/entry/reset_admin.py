@@ -1,4 +1,4 @@
-"""Reset an existing administrator password from the deployment terminal."""
+"""在部署终端中重置已有管理员用户的密码."""
 
 import argparse
 import sys
@@ -16,7 +16,7 @@ _REJECTED_PASSWORDS = frozenset({"password1234", "123456789012"})
 
 
 def reset_admin(session: Session, username: str, password: str) -> None:
-    """Replace the administrator password and revoke previous credentials."""
+    """替换管理员密码并撤销之前的所有认证凭证."""
     if (
         not _MIN_PASSWORD_LENGTH <= len(password) <= _MAX_PASSWORD_LENGTH
         or password.lower() in _REJECTED_PASSWORDS
@@ -48,7 +48,7 @@ def reset_admin(session: Session, username: str, password: str) -> None:
 
 
 def main() -> None:
-    """Parse CLI arguments and reset the administrator password."""
+    """解析命令行参数并重置管理员密码."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--username", required=True)
     args = parser.parse_args()

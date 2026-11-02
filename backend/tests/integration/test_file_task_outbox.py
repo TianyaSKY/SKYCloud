@@ -1,4 +1,4 @@
-"""Real transaction/broker fault and concurrency checks for indexing handoff."""
+"""索引移交的真实事务/broker 故障与并发测试."""
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
@@ -132,8 +132,8 @@ def test_concurrent_dispatchers_do_not_send_a_committed_row_twice(file_database,
     def overlap_publish(file_ids):
         if not getattr(local, "started", False):
             local.started = True
-            # Both dispatchers must hold different rows concurrently. Without
-            # SKIP LOCKED, the second dispatcher cannot reach this barrier.
+            # 两个分发器必须并发持有不同行记录.
+            # 如果没有 SKIP LOCKED, 第二个分发器无法到达此屏障.
             barrier.wait(timeout=5)
         real_publish(file_ids)
     with concurrent.futures.ThreadPoolExecutor(2) as executor:

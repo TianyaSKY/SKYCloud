@@ -1,4 +1,4 @@
-"""Serialize lifecycle/configuration across commits on a pinned PG connection."""
+"""在固定的 PostgreSQL 连接上跨事务提交串行化生命周期与配置变更."""
 
 import hashlib
 import threading
@@ -21,7 +21,7 @@ _ExecutionKey: TypeAlias = tuple[int, int, int]
 
 
 class _ExecutionState(threading.local):
-    """Thread-local set of keys already holding the advisory lock."""
+    """已持有咨询锁的主键键名的线程本地集合."""
 
     active: set[_ExecutionKey] | None = None
 
@@ -54,7 +54,7 @@ def _sqlite_execution(
     key: _ExecutionKey,
     active: set[_ExecutionKey],
 ) -> Generator[None, None, None]:
-    # Test seam only: deployment startup requires PostgreSQL.
+    # 仅用于单元测试缝隙: 生产部署启动强制要求 PostgreSQL。
     with _guard:
         lock, count = _sqlite_locks.get(key, (threading.RLock(), 0))
         _sqlite_locks[key] = (lock, count + 1)
@@ -132,7 +132,7 @@ def execution(
     workspace_id: int,
     user_id: int,
 ) -> Generator[None, None, None]:
-    """Hold the Runtime lifecycle lock for this workspace member."""
+    """为该工作空间成员持有 Runtime 生命周期排他锁."""
     bind = session.get_bind()
     engine = bind if isinstance(bind, Engine) else bind.engine
     key = (id(engine), int(workspace_id), int(user_id))
@@ -161,7 +161,7 @@ def execution(
 def serialized(
     function: Callable[Concatenate[Session, Workspace, int, _P], _R],
 ) -> Callable[Concatenate[Session, Workspace, int, _P], _R]:
-    """Run a lifecycle function while holding the Runtime advisory lock."""
+    """在持有 Runtime 咨询锁的同时执行生命周期函数."""
 
     @wraps(function)
     def wrapper(

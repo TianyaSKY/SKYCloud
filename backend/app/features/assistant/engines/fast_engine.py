@@ -1,4 +1,4 @@
-"""Run the existing RAG pipeline through the assistant event contract."""
+"""通过助手事件契约运行现有 RAG 流水线."""
 
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
@@ -9,13 +9,13 @@ from app.features.chat.service import generate_chat_events
 
 
 class FastEngine:
-    """Run the existing multi-query/RRF/rerank RAG pipeline."""
+    """运行现有的多查询/RRF/重排 RAG 流水线."""
 
     async def stream(
         self,
         request: EngineRequest,
     ) -> AsyncGenerator[AssistantEvent, None]:
-        """Yield structured RAG events with the current run identity."""
+        """产出附带当前运行标识的结构化 RAG 事件."""
         iterator = generate_chat_events(
             request.user_id,
             request.workspace_id,

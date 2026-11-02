@@ -1,4 +1,4 @@
-"""Bounded audit metadata. Never serialize argument bodies, credentials or objects."""
+"""有界的审计元数据. 绝不序列化参数体、凭证或具体对象."""
 
 import inspect
 import json
@@ -29,21 +29,21 @@ _ENTITY_FIELDS = ("file_id", "folder_id", "id")
 
 @dataclass(frozen=True)
 class AuditArguments:
-    """Redacted call summary plus the single entity id it may expose."""
+    """脱敏调用摘要以及可能公开的单个实体 ID."""
 
     summary: str
     entity_id: int | None
 
 
 def _shape(value: object, *, numeric: bool = False) -> JsonObject:
-    """Describe a value's type; only whitelisted numeric fields keep a value."""
+    """描述值的类型; 仅白名单内的数值字段保留具体取值."""
     if value is None:
         return {"type": "null"}
     if type(value) is bool:
         return {"type": "bool"}
     if type(value) is int:
         result: JsonObject = {"type": "int"}
-        # Do not serialize arbitrary large integers or numeric credential values.
+        # 不序列化任意大整数或数值型凭证数据。
         if numeric and -(2**63) <= value < 2**63:
             result["value"] = value
         return result
@@ -61,7 +61,7 @@ def summarize_call(
     *args: _P.args,
     **kwargs: _P.kwargs,
 ) -> AuditArguments:
-    """Use declared parameter names; invalid/extra arguments disclose only counts."""
+    """使用声明的参数名; 无效或额外参数仅公开参数计数."""
     try:
         bound = inspect.signature(func).bind(*args, **kwargs)
         arguments = cast("dict[str, object]", dict(bound.arguments))

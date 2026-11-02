@@ -1,4 +1,4 @@
-"""Recover abandoned SQL runs and retry captured remote session cleanup."""
+"""恢复遗留的 SQL 运行任务, 并重试捕获的远程会话清理."""
 
 import asyncio
 import re
@@ -40,7 +40,7 @@ ABANDONED_AFTER_SECONDS = 30
 
 @dataclass(frozen=True)
 class AbortTarget:
-    """Captured remote identity a dead worker left behind."""
+    """异常终止的 worker 所遗留的捕获远程身份标识."""
 
     workspace_id: int
     user_id: int
@@ -52,18 +52,18 @@ class AbortTarget:
 
 
 def _clock(session: Session) -> datetime:
-    """Return the queue clock so defaults and Workers agree on time."""
+    """返回队列时钟基准, 确保默认值与 Worker 保持时间一致."""
     if session.get_bind().dialect.name == "postgresql":
-        # clock_timestamp() always yields exactly one non-null row.
+        # clock_timestamp() 始终返回恰好一行非空记录。
         return session.execute(select(func.clock_timestamp())).scalar_one()
     return utc_now()
 
 
 def abort_remote(target: AbortTarget) -> None:
-    """Abort one captured provider session through the runtime gateway."""
+    """通过运行时网关中止单个捕获的供应商会话."""
     session_id = target.session_id
     if session_id is None:
-        # Only an intent that recorded a provider session reaches this path.
+        # 仅记录了供应商会话信息的清理意图才会进入此处理路径。
         return
 
     async def abort() -> None:
@@ -81,14 +81,14 @@ def abort_remote(target: AbortTarget) -> None:
 
 
 def _exact_container_id(container_id: str) -> None:
-    """Refuse cleanup unless the captured container identity is exact."""
+    """拒绝清理操作, 除非捕获的容器身份标识完全精确."""
     if not re.fullmatch(CONTAINER_ID_PATTERN, container_id):
         message = "Remote cleanup requires exact container identity"
         raise ControllerError(message)
 
 
 def _expected_labels(target: AbortTarget) -> dict[str, str]:
-    """Return the labels that prove a container belongs to the intent."""
+    """返回证明容器归属于该清理意图的标签字典."""
     expected = {
         "skycloud.workspace_id": str(target.workspace_id),
         "skycloud.user_id": str(target.user_id),
@@ -100,7 +100,7 @@ def _expected_labels(target: AbortTarget) -> dict[str, str]:
 
 
 def _verify_target(target: AbortTarget, container: ContainerPayload) -> None:
-    """Refuse a container whose identity differs from the captured intent."""
+    """拒绝身份标识与捕获意图不一致的容器."""
     labels = container["labels"]
     expected = _expected_labels(target)
     if container["id"] != target.container_id or any(
@@ -115,7 +115,7 @@ def _abort_target(
     controller_factory: Callable[[], ControllerClient],
     abort_function: Callable[[AbortTarget], None],
 ) -> None:
-    """Abort one live provider session, then release its runtime lease."""
+    """中止单个活跃的供应商会话, 随后释放其运行时租约."""
     container: ContainerPayload | None
     try:
         container = controller_factory().inspect(target.container_id)
@@ -139,7 +139,7 @@ def _defer_abort(
     intent: AssistantRuntimeAbort,
     error: BaseException,
 ) -> None:
-    """Record a retryable cleanup failure without exposing its message."""
+    """记录可重试的清理失败错误, 同时不泄露其异常详情明文."""
     intent.last_error_type = type(error).__name__[:96]
     intent.next_attempt_at = _clock(session) + timedelta(
         seconds=min(300, 2 ** min(intent.attempts, 9)),
@@ -158,7 +158,7 @@ def abort_pending_sessions(
     abort_function: Callable[[AbortTarget], None] = abort_remote,
     limit: int = 20,
 ) -> int:
-    """Retry captured remote session cleanup one locked intent at a time."""
+    """每次锁定单个意图以重试捕获的远程会话清理."""
     completed = 0
     for _ in range(limit):
         with session_factory() as session:
@@ -189,8 +189,8 @@ def abort_pending_sessions(
                 _exact_container_id(target.container_id)
                 _abort_target(target, controller_factory, abort_function)
             except Exception as error:
-                # Best-effort per-intent isolation: the Controller RPC surface,
-                # the provider client and Redis raise unrelated families.
+                # 按意图尽最大努力隔离: Controller RPC 接口、
+                # 供应商客户端与 Redis 各自抛出不同的异常家族。
                 _defer_abort(session, intent, error)
             else:
                 intent.completed_at = _clock(session)
@@ -205,7 +205,7 @@ def recover_abandoned_runs(
     session_factory: SessionFactory = SessionLocal,
     limit: int = 100,
 ) -> int:
-    """Release runs left active after their SSE worker disappeared."""
+    """释放 SSE worker 异常消失后残留的活跃运行任务."""
     recovered = 0
     after = 0
     while recovered < limit:

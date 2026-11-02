@@ -1,1 +1,1 @@
-"""File management feature package."""
+"""文件管理功能模块."""

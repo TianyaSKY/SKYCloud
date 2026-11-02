@@ -1,4 +1,4 @@
-"""UTC storage must keep usage grouped by Beijing calendar day."""
+"""UTC 存储保持用量按北京时间日历日分组测试."""
 
 from datetime import datetime, timezone
 import os

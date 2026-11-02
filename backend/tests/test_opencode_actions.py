@@ -1,4 +1,4 @@
-"""Permission/abort control actions require explicit upstream acknowledgment."""
+"""权限/中止控制操作需要显式上游确认测试."""
 import asyncio
 import httpx
 import pytest

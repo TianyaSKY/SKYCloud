@@ -42,9 +42,9 @@ class UserPasswordUpdateRequest(BaseModel):
     new_password: str = Field(min_length=1, max_length=128)
 
 
-# Public response models whitelist fields independently of ORM/cache payloads.
+# 公开响应模型独立于 ORM/缓存载荷建立字段白名单。
 class SessionUser(BaseModel):
-    """Public account projection embedded in session responses."""
+    """嵌入在会话响应中的公开账户信息模型."""
 
     id: int = Field(gt=0)
     username: str
@@ -53,7 +53,7 @@ class SessionUser(BaseModel):
 
 
 class UserResponse(SessionUser):
-    """Public account profile with accumulated token totals."""
+    """包含累计 Token 统计总量的公开账户画像模型."""
 
     created_at: str | None
     total_prompt_tokens: int = Field(ge=0)
@@ -63,7 +63,7 @@ class UserResponse(SessionUser):
 
 
 class BrowserSessionResponse(BaseModel):
-    """Access session returned after login or refresh."""
+    """登录或刷新令牌后返回的访问会话模型."""
 
     token: str = Field(min_length=1)
     user_id: int = Field(gt=0)
@@ -73,25 +73,25 @@ class BrowserSessionResponse(BaseModel):
 
 
 class LoginResponse(BrowserSessionResponse):
-    """Login response adds a human-readable status message."""
+    """登录响应模型, 附加可读的状态提示信息."""
 
     message: str
 
 
 class MessageResponse(BaseModel):
-    """Single human-readable status message."""
+    """通用的单条可读状态消息模型."""
 
     message: str
 
 
 class RegistrationResponse(MessageResponse):
-    """Registration response adds the created account profile."""
+    """注册响应模型, 附加新创建的账户资料."""
 
     user: UserResponse
 
 
 class McpTokenMetadata(BaseModel):
-    """Public MCP token metadata without the raw credential."""
+    """不含原始凭据明文的公开 MCP 令牌元数据模型."""
 
     id: int = Field(gt=0)
     user_id: int = Field(gt=0)
@@ -106,7 +106,7 @@ class McpTokenMetadata(BaseModel):
 
 
 class McpTokenResponse(BaseModel):
-    """Query response; the metadata may be absent before first issuance."""
+    """查询响应模型; 在首次签发前元数据可能为空."""
 
     token: McpTokenMetadata | None
     user_id: int = Field(gt=0)
@@ -115,7 +115,7 @@ class McpTokenResponse(BaseModel):
 
 
 class McpTokenIssueResponse(BaseModel):
-    """Issue response keeps the credential and its metadata mandatory."""
+    """签发响应模型, 凭据明文与元数据均为必填项."""
 
     token: McpTokenMetadata
     user_id: int = Field(gt=0)

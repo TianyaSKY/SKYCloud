@@ -1,4 +1,4 @@
-"""Converter resource cleanup and safe failure diagnostics."""
+"""转换器资源清理与安全故障诊断测试."""
 from threading import Event
 from unittest.mock import Mock,MagicMock
 import subprocess
@@ -99,8 +99,8 @@ def test_worker_completed_failures_preserve_sibling_results_and_shutdown(
             other_failed.result(timeout=2)
         assert successful.result(timeout=2) is None
 
-        # All three futures are completed before either public boundary runs.
-        # Two distinct failures prove iteration continues regardless of set order.
+        # 在任何公共边界运行之前, 三个 Future 均已完成.
+        # 两个不同故障证明迭代不受集合顺序影响并继续执行.
         if completion_boundary == "reap_completed":
             runtime.reap_completed()
         else:

@@ -1,4 +1,4 @@
-"""Retire committed cancelled generations, retaining failures for replay."""
+"""退役已提交的已取消 generation, 保留失败记录以待重试."""
 
 from collections.abc import Callable
 from datetime import timedelta
@@ -18,7 +18,7 @@ def retire_cancelled_operations(
     controller_factory: Callable[[], RuntimeController] = ControllerClient,
     limit: int = 20,
 ) -> int:
-    """Retire each cancelled generation the Controller still owns."""
+    """退役 Controller 仍持有的每个已取消 generation."""
     completed = 0
     for _ in range(limit):
         with session_factory() as session:
@@ -40,7 +40,7 @@ def retire_cancelled_operations(
                 break
             operation.attempts += 1
             try:
-                # Never turn an unsupported retirement-route 404 into success.
+                # 绝不能将退役路由不支持导致的 404 错误视为成功。
                 controller_factory().retire_generation(
                     operation.workspace_id,
                     operation.user_id,
@@ -48,8 +48,8 @@ def retire_cancelled_operations(
                     operation.generation,
                 )
             except Exception as error:
-                # Best-effort retirement: the Controller client owns its own
-                # refusal taxonomy and every failure must remain replayable.
+                # 尽最大努力退役: Controller 客户端拥有其自身的
+                # 错误分类体系, 所有失败必须保持可重试状态。
                 operation.last_error_type = type(error).__name__[:96]
                 operation.next_attempt_at = clock(session) + timedelta(
                     seconds=min(300, 2 ** min(operation.attempts, 9)),

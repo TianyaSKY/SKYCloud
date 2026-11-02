@@ -114,7 +114,7 @@ class TestOrganizeFiles:
     def test_model_updates_preserve_usage_messages_and_checkpoint(
         self, session, test_workspace,
     ):
-        """Model/tool deltas survive validation retries without double billing."""
+        """模型/工具增量在验证重试中幸存且不重复计费."""
         from app.features.folder.organize.handler import organize_files
 
         usage = {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}

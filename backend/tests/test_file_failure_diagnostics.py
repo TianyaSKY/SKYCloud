@@ -1,4 +1,4 @@
-"""Storage/file/global/library diagnostics cannot render private exception data."""
+"""存储/文件/全局/库诊断信息不能渲染私有异常数据测试."""
 import logging
 from io import BytesIO
 from unittest.mock import Mock,AsyncMock

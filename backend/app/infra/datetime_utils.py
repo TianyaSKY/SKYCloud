@@ -1,4 +1,4 @@
-"""UTC instants with explicit conversion for legacy Beijing inputs and presentation."""
+"""带有时区感知的 UTC 时间工具, 显式转换遗留北京时间输入与展示."""
 
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
@@ -7,7 +7,7 @@ BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def utc_now() -> datetime:
-    """Return the current timezone-aware UTC instant."""
+    """返回当前带有时区感知的 UTC 时间点."""
     return datetime.now(UTC)
 
 
@@ -16,7 +16,7 @@ def to_utc_datetime(
     *,
     naive_is_utc: bool = False,
 ) -> datetime | None:
-    """Treat legacy naive inputs as Beijing time unless UTC is explicit."""
+    """将遗留 naive 时间输入视为北京时间, 除非显式指定为 UTC."""
     if value is None:
         return None
     if value.tzinfo is None or value.utcoffset() is None:
@@ -39,11 +39,11 @@ def to_beijing_naive(value: datetime | None) -> datetime | None:
 
 
 def local_isoformat(value: datetime | None) -> str | None:
-    """Serialize an instant as explicit UTC; legacy naive DB values are Beijing time."""
+    """将时间序列化为显式 UTC 格式; 遗留 naive 数据库时间视为北京时间."""
     value = to_utc_datetime(value)
     return value.isoformat() if value is not None else None
 
 
 def parse_legacy_datetime(value: str | None) -> datetime | None:
-    """Read old naive or new offset-bearing cache dates into UTC instants."""
+    """将缓存中的旧 naive 或带偏移量的时间字符串解析为 UTC 时间点."""
     return to_utc_datetime(datetime.fromisoformat(value)) if value else None

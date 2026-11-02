@@ -344,11 +344,11 @@ class TestLLMClient:
     def test_get_client_different_keys(self, no_proxy_env):
         from app.infra.llm import client
         client._client_cache.clear()
-        # Same key should return same cached client
+        # 相同键应返回相同的缓存客户端
         c1 = client._get_client("http://api", "key1")
         c1_again = client._get_client("http://api", "key1")
         assert c1 is c1_again
-        # Different key should create new entry
+        # 不同键应创建新条目
         c2 = client._get_client("http://api", "key2")
         assert len(client._client_cache) == 2
         client._client_cache.clear()

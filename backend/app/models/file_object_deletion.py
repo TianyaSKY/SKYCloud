@@ -1,4 +1,4 @@
-"""Object cleanup intents committed atomically with file metadata deletion."""
+"""与文件元数据删除原子性提交的对象存储物理清理意图模型."""
 
 from datetime import datetime
 
@@ -11,7 +11,7 @@ from app.infra.utc_datetime import UTCDateTime
 
 
 class FileObjectDeletion(Base):
-    """Pending object-store cleanup for one deleted file."""
+    """针对已删除文件的待处理对象存储清理记录."""
 
     __tablename__ = "file_object_deletions"
 

@@ -1,4 +1,4 @@
-"""Durable organize admission, delivery, and execution identity."""
+"""持久化的文件整理任务准入、投递与执行标识模型."""
 
 from datetime import datetime
 
@@ -11,7 +11,7 @@ from app.infra.utc_datetime import UTCDateTime
 
 
 class OrganizeTask(Base):
-    """Durable organize task with delivery and execution identity."""
+    """包含投递与执行状态标识的持久化文件整理任务记录."""
 
     __tablename__ = "organize_tasks"
 

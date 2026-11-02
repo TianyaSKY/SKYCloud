@@ -1,4 +1,4 @@
-"""Controller headers have a total admission deadline, independent of read timeout."""
+"""控制器请求头具有总准入截止时间, 独立于读取超时测试."""
 import asyncio
 from unittest.mock import Mock
 import httpx

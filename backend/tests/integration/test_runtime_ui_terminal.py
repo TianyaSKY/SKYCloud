@@ -1,4 +1,4 @@
-"""Real PostgreSQL/Redis/Controller/OpenCode interactive terminal and revocation."""
+"""真实 PostgreSQL/Redis/Controller/OpenCode 交互式终端与撤销测试."""
 import os
 import json
 import time
@@ -45,7 +45,7 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
     monkeypatch.setenv('RUNTIME_UI_ORIGIN_TEMPLATE', 'http://r{runtime_id}.skycloud.localhost:8081')
     user_id, ws_id, runtime_id = [int(uuid.uuid4().hex[:7], 16) + 1 for _ in range(3)]
     name = f'skycloud-opencode-w{ws_id}-u{user_id}'
-    # Never replace an existing container, including unrelated managed ones.
+    # 绝不替换现有容器, 包括无关的受托管容器.
     assert docker('inspect', name, check=False).returncode != 0
     infrastructure['cleanup'].append(name)
     with factory() as db:
@@ -60,7 +60,7 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
         try:
             docker_service.start(db, workspace, user_id)
         finally:
-            # Register exact candidates even when production start fails partway.
+            # 即使生产启动中途失败, 也要注册确切候选对象.
             with factory() as cleanup_db:
                 for generation,candidate in cleanup_db.query(RuntimeOperation.generation,
                         RuntimeOperation.candidate_container_id).filter_by(workspace_id=ws_id,user_id=user_id).all():
@@ -137,7 +137,7 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
             assert ticket.status_code == 200, ticket.text
             path += '&ticket=' + ticket.json()['ticket']
         with client.websocket_connect(path, headers=headers) as socket:
-            # The expected contiguous output isn't present in the input command.
+            # 预期的连续输出未出现在输入命令中.
             socket.send_text("printf 'SKYCLOUD_UID_%s\\n' \"$(id -u)\"\r")
             output = bytearray()
             watchdog = threading.Timer(10, lambda: socket.close(1000))

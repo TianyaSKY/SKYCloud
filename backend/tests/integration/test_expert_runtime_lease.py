@@ -1,4 +1,4 @@
-"""Native Redis proof of expert lease cancellation and token ownership."""
+"""专家租约取消与令牌所有权的原生 Redis 验证."""
 import asyncio
 import os
 import threading
@@ -84,7 +84,7 @@ async def test_native_lease_admission_and_atomic_token_release(infrastructure, m
     monkeypatch.setattr(engine.extensions, 'redis_client', Proxy())
     if outcome == 'successor':
         async with engine.runtime_lease(92002):
-            # Independent Redis ownership changed before the old task exits.
+            # 独立的 Redis 所有权在旧任务退出前发生变更.
             client.set(key, 'successor-worker', ex=60)
         assert client.get(key) == 'successor-worker'
     else:

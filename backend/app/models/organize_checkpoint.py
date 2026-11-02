@@ -1,4 +1,4 @@
-"""Organize progress checkpoints per workspace."""
+"""每个工作区的文件自动整理进度检查点模型."""
 
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 class OrganizeCheckpointDict(TypedDict):
-    """Public representation of an organize checkpoint row."""
+    """整理检查点记录的公开表示模型."""
 
     workspace_id: int
     last_event_id: int
@@ -24,7 +24,7 @@ class OrganizeCheckpointDict(TypedDict):
 
 
 class OrganizeCheckpoint(Base):
-    """Consumed change-event position and last full scan per workspace."""
+    """每个工作区已消费的变更事件位点与上次全量扫描记录."""
 
     __tablename__ = "organize_checkpoints"
 
@@ -54,7 +54,7 @@ class OrganizeCheckpoint(Base):
     )
 
     def to_dict(self) -> OrganizeCheckpointDict:
-        """Return the public checkpoint representation."""
+        """返回整理检查点的公开字典表示."""
         return {
             "workspace_id": self.workspace_id,
             "last_event_id": self.last_event_id,

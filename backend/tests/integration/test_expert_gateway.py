@@ -1,4 +1,4 @@
-"""Real isolated OpenCode -> model gateway -> synthetic provider flow."""
+"""真实隔离 OpenCode 到模型网关再到合成提供商调用流测试."""
 import asyncio
 from contextlib import contextmanager
 import json
@@ -56,8 +56,8 @@ def serve(app):
 def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
-        # Inject only the control acknowledgment boundary. Runtime, model/tool
-        # request, permission persistence and subsequent abort use real services.
+        # 仅注入控制确认边界. 运行时、模型/工具请求、
+        # 权限持久化与后续中止均使用真实服务.
         from app.features.assistant.clients.opencode_client import OpenCodeClient
         original_json = OpenCodeClient._json
         async def unconfirmed_permission(client, method, path, **kwargs):
@@ -137,8 +137,8 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
         assert body['model'] == model
         requests.append(body)
         if missing_candidate == 'lease-loss':
-            # All SQL, Controller, OpenCode and Redis operations are native.
-            # Only model output is synthetic, held until its caller aborts.
+            # 所有 SQL、Controller、OpenCode 和 Redis 操作均为原生.
+            # 仅模型输出为合成数据并保持至调用方中止.
             keys = list(infrastructure['redis'].scan_iter('assistant:expert:runtime:*'))
             assert len(keys) == 1
             replaced_lease_keys.extend(keys)
@@ -253,9 +253,8 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                         assert replacement.generation != old_generation and replacement.candidate_container_id != prepared["id"]
                 if crash_before_completion:
                     marker = tmp_path / 'configured-generation'
-                    # Interrupt an actual locked-SDK/API process after the
-                    # external config and its SQL version commit, before the
-                    # operation's completion transaction. No container mock.
+                    # 在外部配置及其 SQL 版本提交后、操作完成事务前
+                    # 中断实际 locked-SDK/API 进程. 无容器 Mock.
                     boot_code = """
 import json,sys,time
 from pathlib import Path
@@ -472,8 +471,8 @@ asyncio.run(run())
                         assert not infrastructure['redis'].exists(key)
                         return
                     if missing_candidate == 'command-crash':
-                        # Kill an actual streaming API worker after a native
-                        # permission grant and actual shell/child start.
+                        # 在原生权限授予和实际 shell/子进程启动后
+                        # 强杀实际流式 API worker.
                         stream_code = """
 import asyncio,json,sys
 from sqlalchemy import create_engine
@@ -535,8 +534,8 @@ asyncio.run(run())
                                 time.sleep(.05)
                             boot_process.kill()
                             assert boot_process.wait(5) < 0
-                        # Explicitly age durable SQL times to trigger the
-                        # production grace predicate without a 45-second wait.
+                        # 显式老化持久化 SQL 时间以触发生产宽限谓词,
+                        # 无需等待 45 秒.
                         from datetime import timedelta
                         from app.infra.datetime_utils import utc_now
                         with factory() as recovery:
@@ -913,8 +912,8 @@ asyncio.run(run())
                                 raise OpenCodeClientError('OpenCode returned HTTP 503',503)
                             return await original_json(client,method,path,**kwargs)
                         monkeypatch.setattr(OpenCodeClient,'_json',refuse_prompt)
-                        # Repeat the same question: content equality cannot
-                        # distinguish the old answer from this refused attempt.
+                        # 重复同一问题: 内容相等性无法将旧回答与此
+                        # 被拒绝的尝试区分开.
                         conversation, run, history = service.prepare_run(
                             db,
                             service.PrepareRunParams(
@@ -958,8 +957,8 @@ asyncio.run(run())
                         assert conversation.opencode_session_id == run.opencode_session_id != first_session
                         assert len(repository.get_messages(db,conversation.id)) == 4
                         assert 'E2E_GATEWAY_OK' in repository.get_messages(db,conversation.id)[-1].content
-                        # The new provider session receives committed SQL history
-                        # before the second user prompt, across the actual gateway.
+                        # 新提供商会话在第二个用户提示词前通过实际网关
+                        # 接收已提交的 SQL 历史.
                         replayed = json.dumps([body['messages'] for body in requests[request_count:]],ensure_ascii=False)
                         assert '只输出 E2E_GATEWAY_OK，不调用任何工具。' in replayed
                         assert '续接历史' in replayed
@@ -979,8 +978,8 @@ asyncio.run(run())
                     from app.features.runtime_llm import tokens
                     assert tokens.validate_token(db, raw)['type'] == 'runtime_llm'
                     assert list(infrastructure['redis'].scan_iter('runtime-llm-quota:*:requests'))
-                    # Exercise the existing-runtime credential refresh with
-                    # independent worker Sessions as well as cold startup.
+                    # 通过独立 worker Session 以及冷启动执行
+                    # 现有运行时凭据刷新.
                     from app.features.assistant.engines.expert_engine import ExpertEngine
                     async def refresh_existing():
                         engine = ExpertEngine(session=db, conversation=conversation, run=run)
@@ -995,11 +994,11 @@ asyncio.run(run())
                             return await client.get_mcp_status(), await client.get_messages(run.opencode_session_id)
                     connected, messages = asyncio.run(mcp_status())
                     assert connected['SKYCLOUD']['status'] == 'connected'
-                    # Call the actual MCP search tool over its protocol using
-                    # the latest scoped Runtime credential after live refresh.
+                    # 在热刷新后使用最新限定范围 Runtime 凭据
+                    # 通过其协议调用实际 MCP 搜索工具.
                     mcp_headers = docker_service._client().read_config(runtime.container_id)['mcp']['SKYCLOUD']['headers']
-                    # Parent unit conftest replaces the MCP package. Run the
-                    # locked SDK in an independent process, like the server.
+                    # 父级单元 conftest 替换了 MCP 包. 像服务器一样
+                    # 在独立进程中运行锁定 SDK.
                     client_code = """
 import asyncio, json, sys, httpx
 from mcp import ClientSession
@@ -1025,7 +1024,7 @@ asyncio.run(main())
                     with factory() as observer:
                         audit = observer.query(McpAuditLog).filter_by(workspace_id=ws_id, tool_name='search_files').one()
                         assert audit.success and audit.user_id == user_id and audit.runtime_id == runtime.id
-                    # Validate the public DTOs against actual persisted expert results.
+                    # 针对实际持久化的专家结果校验公开 DTO.
                     from app.features.assistant.schemas import (
                         AssistantConversationResponse, AssistantRunResponse, AssistantMessageResponse)
                     AssistantConversationResponse.model_validate(conversation.to_dict())
@@ -1038,8 +1037,8 @@ asyncio.run(main())
                         assert all('AUTHORIZED_ONLY' not in state.get('output', '') for state in states)
 
     finally:
-        # New startup names are durable generations. Retain every admitted
-        # name in fixture cleanup, including failures before candidate SQL.
+        # 新启动名称为持久化代系. 在 fixture 清理中保留每个
+        # 已准入名称, 包括候选 SQL 前的失败.
         with factory() as cleanup_db:
             generations = cleanup_db.query(RuntimeOperation.generation).filter_by(workspace_id=ws_id,user_id=user_id).all()
             for (generation,) in generations:
@@ -1064,7 +1063,7 @@ asyncio.run(main())
 def test_mcp_upload_is_scoped_over_streamable_http(
     infrastructure, postgres, minio_storage, tmp_path,
 ):
-    """Exercise upload, readback and role isolation through the real MCP protocol."""
+    """通过真实 MCP 协议测试上传、回读与角色隔离."""
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     with factory.begin() as db:

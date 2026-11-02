@@ -1,4 +1,4 @@
-"""Bounded OpenAI-compatible chat endpoint; no arbitrary upstream URLs or headers."""
+"""有界的 OpenAI 兼容聊天接口; 禁止任意上游 URL 或请求头."""
 
 import asyncio
 import json
@@ -67,7 +67,7 @@ RESPONSE_TOO_LARGE = "Model response too large"
 
 @dataclass(frozen=True, slots=True)
 class ModelRequest:
-    """Provider payload plus the bounds already validated from it."""
+    """供应商请求载荷以及从中完成校验的有界约束参数."""
 
     body: JsonObject
     output_tokens: int
@@ -79,16 +79,16 @@ async def _next_chunk(iterator: AsyncIterator[bytes]) -> bytes:
 
 
 def _require_time(remaining: float) -> None:
-    """Fail the response once its remaining time budget is exhausted."""
+    """一旦剩余时间预算耗尽, 则判定响应失败."""
     if remaining <= 0:
         raise HTTPException(status_code=502, detail=RESPONSE_TIMED_OUT)
 
 
 async def verify_connected(request: Request, session_factory: SessionFactory) -> None:
-    """Reject a disconnected client before any further upstream work.
+    """在执行后续上游工作前拒绝已断开的客户端连接.
 
-    Only called after the request body has been consumed. A receive probe
-    during body ingestion could discard an unread upload chunk.
+    仅在请求体被完整消费后调用。在读取请求体时若进行探测
+    可能会丢弃尚未读取的上传分块数据。
     """
     if await request.is_disconnected():
         raise HTTPException(status_code=499, detail=CLIENT_DISCONNECTED)
@@ -105,7 +105,7 @@ async def authorized_bytes(
     request: Request,
     session_factory: SessionFactory,
 ) -> AsyncGenerator[bytes, None]:
-    """Revalidate during quiet waits and before releasing every upstream chunk."""
+    """在静默等待期间以及释放每个上游分块之前重新验证有效性."""
     pending: asyncio.Task[bytes] | None = None
     iterator = closable(decoded_bytes(response, MAX_RESPONSE_BYTES).__aiter__())
     deadline = time.monotonic() + MAX_STREAM_SECONDS
@@ -143,7 +143,7 @@ async def current_credential(
     request: Request,
     session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> RuntimeLlmClaims:
-    """Return the caller's live runtime model credential or reject the request."""
+    """返回调用方的活跃运行时模型凭证, 若无效则拒绝请求."""
     return await run_owned(_validate_current_credential, request, session_factory)
 
 
@@ -173,8 +173,8 @@ def _validate_message(message: JsonValue) -> None:
         raise HTTPException(status_code=400, detail=INVALID_MESSAGE)
     content = message.get("content")
     if isinstance(content, list):
-        # URL/image/audio inputs have unbounded provider-side costs and
-        # fetch behavior. This gateway permits text and tool calls only.
+        # URL/图片/音频输入具有不可控的供应商端成本和网络
+        # 拉取行为。本网关仅允许纯文本和工具调用。
         if any(
             not isinstance(part, dict)
             or part.get("type") != "text"
@@ -207,7 +207,7 @@ def _apply_output_limit(data: JsonObject) -> int:
 
 
 def normalize_body(body: bytes, credential: RuntimeLlmClaims) -> ModelRequest:
-    """Validate a provider payload and bound it before quota or upstream use."""
+    """校验供应商载荷并在配额或上游调用前施加有界约束."""
     try:
         parsed: JsonValue = json.loads(body)
     except (ValueError, UnicodeDecodeError) as exc:
@@ -226,7 +226,7 @@ def normalize_body(body: bytes, credential: RuntimeLlmClaims) -> ModelRequest:
 
 
 def upstream_client() -> httpx.AsyncClient:
-    """Build the provider client; it never follows redirects or reads proxy env."""
+    """构建供应商客户端; 绝不跟随重定向或读取代理环境变量."""
     return httpx.AsyncClient(
         timeout=httpx.Timeout(60, connect=10),
         trust_env=False,
@@ -276,8 +276,8 @@ async def _open_upstream(
     lease: UpstreamLease,
 ) -> httpx.Response:
     opened = await client.send(request, stream=True)
-    # Capture ownership even if revocation wins before the waiter can
-    # accept a completed response with headers.
+    # 即使撤销操作在等待方接受带有 headers 的
+    # 完整响应之前完成, 也捕获其所有权。
     lease.upstream = opened
     return opened
 
@@ -315,7 +315,7 @@ def _streaming_completion(
                         break
                     yield part
         except (httpx.HTTPError, HTTPException):
-            # Never inject provider exception text into a user's SSE stream.
+            # 绝不将供应商异常明文文本注入到用户的 SSE 数据流中。
             return
         finally:
             await lease.close()
@@ -383,11 +383,11 @@ async def chat_completions(
     credential: Annotated[RuntimeLlmClaims, Depends(current_credential)],
     session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> Response:
-    """Proxy one bounded chat completion to the configured model provider."""
+    """将单次有界聊天补全请求代理转发至配置的模型供应商."""
     chunks = await _read_authorized_body(request, session_factory)
     payload = normalize_body(bytes(chunks), credential)
-    # Charge framing/message metadata as well as text; no reservation refund
-    # on upstream failure or disconnect, which would permit quota bypass.
+    # 计量框架/消息元数据以及文本内容; 上游失败或断开
+    # 连接时不退还预留配额, 避免恶意规避配额限制。
     await run_owned(
         quota.reserve,
         credential,

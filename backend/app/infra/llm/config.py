@@ -1,6 +1,6 @@
-"""Read Chat / Embedding / VL / Rerank model settings from the environment.
+"""从环境变量读取 Chat / Embedding / VL / Rerank 模型配置.
 
-Model configuration must never be persisted through sys_dict.
+模型配置绝不能通过 sys_dict 进行持久化存储。
 """
 
 import os
@@ -37,7 +37,7 @@ def is_model_config_sys_dict_key(key: str | None) -> bool:
 
 
 def _read_env(*keys: str, default: str = "") -> str:
-    # Accept case variants and historical key names, newest name first.
+    # 兼容大小写变体和历史键名, 优先使用最新名称。
     for key in keys:
         value = os.getenv(key)
         if value is not None and value.strip() != "":
@@ -59,7 +59,7 @@ def _read_env_int(*keys: str, default: int) -> int:
 
 
 def get_chat_model_config() -> dict[str, str]:
-    """Return the chat model endpoint, key and model name."""
+    """返回聊天模型端点、API 密钥与模型名称."""
     return {
         "api": _read_env(
             "CHAT_API_URL",
@@ -76,7 +76,7 @@ def get_chat_model_config() -> dict[str, str]:
 
 
 def get_embedding_model_config() -> dict[str, str]:
-    """Return the embedding model endpoint, key and model name."""
+    """返回嵌入向量模型端点、API 密钥与模型名称."""
     return {
         "api": _read_env(
             "EMB_API_URL",
@@ -93,7 +93,7 @@ def get_embedding_model_config() -> dict[str, str]:
 
 
 def get_vl_model_config() -> dict[str, str]:
-    """Return the vision-language model endpoint, key and model name."""
+    """返回视觉语言模型端点、API 密钥与模型名称."""
     return {
         "api": _read_env(
             "VL_API_URL",
@@ -106,7 +106,7 @@ def get_vl_model_config() -> dict[str, str]:
 
 
 def get_rerank_model_config() -> dict[str, str]:
-    """Return the rerank model endpoint, key and model name."""
+    """返回重排模型端点、API 密钥与模型名称."""
     return {
         "api": _read_env(
             "RERANK_API_URL",
@@ -127,5 +127,5 @@ def get_rerank_model_config() -> dict[str, str]:
 
 
 def get_rerank_top_k() -> int:
-    """Return the configured rerank candidate count."""
+    """返回配置的重排候选数量."""
     return _read_env_int("RERANK_TOP_K", "rerank_top_k", default=DEFAULT_RERANK_TOP_K)

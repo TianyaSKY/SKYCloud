@@ -1,4 +1,4 @@
-"""Fixed container policy; callers cannot supply Docker flags, mounts or commands."""
+"""固定的容器安全策略; 调用方无法提供额外的 Docker 参数、挂载或自定义命令."""
 
 import hashlib
 import hmac
@@ -26,13 +26,13 @@ GENERATION_PATTERN: Final = r"[0-9a-f]{32}"
 
 
 class RestartPolicy(TypedDict):
-    """Restart policy for managed runtimes; they never restart on their own."""
+    """托管运行时的重启策略; 容器从不自动重启."""
 
     Name: Literal["no"]
 
 
 class ContainerEnvironment(TypedDict):
-    """Fixed runtime environment; no caller-supplied variables."""
+    """固定运行时环境变量; 不允许调用方传入额外变量."""
 
     HOME: str
     TMPDIR: str
@@ -47,7 +47,7 @@ class ContainerEnvironment(TypedDict):
 
 
 class DockerRunOptions(TypedDict):
-    """Fixed keyword arguments for ``containers.run``; no caller input."""
+    """``containers.run`` 的固定关键字参数; 不接受调用方自定义输入."""
 
     image: str
     name: str
@@ -70,7 +70,7 @@ class DockerRunOptions(TypedDict):
 
 
 class DockerCreateOptions(TypedDict):
-    """Fixed keyword arguments for ``containers.create``; no ``detach``."""
+    """``containers.create`` 的固定关键字参数; 不含 ``detach``."""
 
     image: str
     name: str
@@ -92,7 +92,7 @@ class DockerCreateOptions(TypedDict):
 
 
 def secret_setting(name: str) -> str:
-    """Read one deployment secret, rejecting placeholders and short values."""
+    """读取单项部署机密, 拒绝占位符和过短的值."""
     value = os.getenv(name, "")
     if (
         len(value) < MIN_SECRET_LENGTH
@@ -108,7 +108,7 @@ def secret_setting(name: str) -> str:
 
 @dataclass(frozen=True)
 class Settings:
-    """Fixed Controller and runtime container policy."""
+    """Controller 与运行时容器的固定安全策略配置."""
 
     token: str
     server_secret: str
@@ -121,7 +121,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        """Build the policy from the deployment environment."""
+        """从部署环境变量构建策略配置."""
         image = os.getenv("OPENCODE_IMAGE", "")
         if not re.fullmatch(IMAGE_PATTERN, image):
             message = "OPENCODE_IMAGE must be pinned to a sha256 digest"
@@ -151,7 +151,7 @@ class Settings:
         )
 
     def password(self, runtime_id: int, user_id: int, workspace_id: int) -> str:
-        """Derive the runtime server credential from the Controller secret."""
+        """根据 Controller 根机密派生运行时服务鉴权凭证."""
         material = (
             f"runtime:{runtime_id}:user:{user_id}:workspace:{workspace_id}".encode()
         )
@@ -162,7 +162,7 @@ class Settings:
     def container_options(
         self, workspace_id: int, user_id: int, runtime_id: int,
     ) -> DockerRunOptions:
-        """Return the complete fixed container policy; callers add no options."""
+        """返回完整的固定容器策略; 调用方不得添加任何配置选项."""
         return {
             "image": self.image,
             "name": container_name(workspace_id, user_id),
@@ -225,7 +225,7 @@ class Settings:
 def container_create_options(
     run_options: DockerRunOptions, *, name: str, generation: str,
 ) -> DockerCreateOptions:
-    """Derive ``containers.create`` arguments from the fixed run policy."""
+    """根据固定运行策略派生 ``containers.create`` 参数."""
     labels = run_options["labels"]
     labels["skycloud.generation"] = generation
     return {
@@ -250,12 +250,12 @@ def container_create_options(
 
 
 def container_name(workspace_id: int, user_id: int) -> str:
-    """Return the fixed name of a workspace runtime container."""
+    """返回工作区运行时容器的固定名称."""
     return f"skycloud-opencode-w{workspace_id}-u{user_id}"
 
 
 def generation_name(workspace_id: int, user_id: int, generation: str) -> str:
-    """Return the fixed name of one runtime generation container."""
+    """返回单个运行时世代容器的固定名称."""
     if not re.fullmatch(GENERATION_PATTERN, generation):
         message = "Invalid runtime generation"
         raise ValueError(message)
@@ -265,7 +265,7 @@ def generation_name(workspace_id: int, user_id: int, generation: str) -> str:
 def matches_runtime_name(
     name: str, workspace_id: int, user_id: int, labels: dict[str, str],
 ) -> bool:
-    """Check the container name against the identity its labels declare."""
+    """根据容器标签声明的身份核验容器名称."""
     generation = labels.get("skycloud.generation")
     if generation is None:
         return name == container_name(workspace_id, user_id)

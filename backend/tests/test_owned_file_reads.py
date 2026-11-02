@@ -1,4 +1,4 @@
-"""A cancelled file read must not finish before its worker closes its Session."""
+"""取消的文件读取在其 worker 关闭 Session 前不得完成测试."""
 import asyncio
 import threading
 import pytest

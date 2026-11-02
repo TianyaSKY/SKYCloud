@@ -1,1 +1,1 @@
-"""Repository maintenance scripts."""
+"""代码仓库维护脚本包."""

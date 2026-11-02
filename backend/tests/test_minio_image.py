@@ -1,4 +1,4 @@
-"""Reject tampered source before Docker build or private configuration changes."""
+"""在 Docker 构建或私有配置变更前拒绝篡改的源码测试."""
 from io import BytesIO
 import importlib.util
 from pathlib import Path

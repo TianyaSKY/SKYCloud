@@ -1,4 +1,4 @@
-"""Assistant persistence, event mapping, and security regression tests."""
+"""助手持久化、事件映射与安全回归测试."""
 
 import asyncio
 from datetime import timedelta

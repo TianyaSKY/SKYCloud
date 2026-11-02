@@ -16,7 +16,7 @@ _NOT_FOUND = "SysDict not found"
 
 
 class SysDictCreateData(TypedDict):
-    """Fields required to create one dictionary entry."""
+    """创建单条数据字典条目所需的入参结构."""
 
     key: str
     value: str
@@ -25,7 +25,7 @@ class SysDictCreateData(TypedDict):
 
 
 class SysDictUpdateData(TypedDict, total=False):
-    """Fields a partial dictionary update may change."""
+    """部分更新数据字典条目允许修改的字段定义."""
 
     key: str
     value: str
@@ -39,7 +39,7 @@ def _ensure_non_model_config_key(key: str | None) -> None:
 
 
 def create_sys_dict(session: Session, data: SysDictCreateData) -> SysDict:
-    """Create one dictionary entry unless it names model configuration."""
+    """创建单条数据字典条目, 禁止写入模型配置键."""
     _ensure_non_model_config_key(data.get("key"))
     new_dict = SysDict(
         key=data["key"], value=data["value"], des=data["des"], enable=data["enable"],
@@ -52,7 +52,7 @@ def create_sys_dict(session: Session, data: SysDictCreateData) -> SysDict:
 def update_sys_dict(
     session: Session, dict_id: int, data: SysDictUpdateData,
 ) -> SysDict:
-    """Update one dictionary entry, guarding model configuration keys."""
+    """更新单条数据字典条目, 对模型配置键进行防护拦截."""
     sys_dict = session.get(SysDict, dict_id)
     if not sys_dict:
         raise ResourceNotFoundError(_NOT_FOUND)
@@ -69,7 +69,7 @@ def update_sys_dict(
 
 
 def delete_sys_dict(session: Session, dict_id: int) -> None:
-    """Delete one dictionary entry."""
+    """删除单条数据字典条目."""
     sys_dict = session.get(SysDict, dict_id)
     if not sys_dict:
         raise ResourceNotFoundError(_NOT_FOUND)
@@ -78,7 +78,7 @@ def delete_sys_dict(session: Session, dict_id: int) -> None:
 
 
 def get_sys_dict_all_sync(session: Session) -> list[SysDictDict]:
-    """Return every non model-configuration entry straight from SQL."""
+    """直接从 SQL 查询返回所有非模型配置的数据字典条目."""
     sys_dicts = session.query(SysDict).all()
     return [
         sys_dict.to_dict()
@@ -88,7 +88,7 @@ def get_sys_dict_all_sync(session: Session) -> list[SysDictDict]:
 
 
 def get_sys_dict_sync(session: Session, dict_id: int) -> SysDictDict:
-    """Return one dictionary entry by id synchronously."""
+    """根据 ID 同步返回单条数据字典条目."""
     for item in get_sys_dict_all_sync(session):
         if item["id"] == int(dict_id):
             return item

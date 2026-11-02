@@ -83,9 +83,9 @@ def get_mcp_app(mcp_instance: FastMCP) -> ASGIApp:
     )
 
 
-# ---------------------------------------------------------------------------
-# 工具辅助
-# ---------------------------------------------------------------------------
+# FastMCP 工具辅助函数
+# 在工作线程池中执行同步操作并在执行完毕后关闭 Session
+# 包含统一错误载荷封装与领域异常转换
 async def _run_sync(
     fn: Callable[Concatenate[Session, _P], _R],
     *args: _P.args,
@@ -109,12 +109,12 @@ def _error_json(msg: str) -> str:
 
 
 def _detail_text(detail: object) -> str:
-    """Keep only text error details; structured payloads stay internal."""
+    """仅保留纯文本错误详情; 结构化载荷保持内部私有."""
     return detail if isinstance(detail, str) else "Request failed"
 
 
 def _service_error_json(exc: Exception) -> str:
-    """Expose only client-facing domain errors; retain internal diagnostics in logs."""
+    """仅公开面向客户端的领域错误; 内部诊断信息留存于日志中."""
     if isinstance(exc, DomainError) and exc.status_code < _SERVER_ERROR_STATUS:
         return _error_json(str(exc))
     if isinstance(exc, HTTPException) and exc.status_code < _SERVER_ERROR_STATUS:
@@ -123,9 +123,9 @@ def _service_error_json(exc: Exception) -> str:
     return _error_json(_UNAVAILABLE_MESSAGE)
 
 
-# ---------------------------------------------------------------------------
-# FastMCP 实例
-# ---------------------------------------------------------------------------
+# FastMCP 服务实例初始化
+# 绑定传输安全选项、请求体体积限制与工具并发限制
+# 声明 SKYCloud 智能云盘 MCP 协议使用说明
 _transport = transport_options()
 
 mcp = FastMCP(
@@ -143,9 +143,9 @@ mcp = FastMCP(
 )
 
 
-# ---------------------------------------------------------------------------
-# Tools
-# ---------------------------------------------------------------------------
+# FastMCP 工具函数列表
+# 注册供客户端调用的异步云盘操作工具
+# 支持当前用户查询、文件夹浏览、文件搜索与读写
 @mcp.tool()
 @audited_tool("get_current_user")
 async def get_current_user() -> str:
@@ -407,9 +407,9 @@ async def delete_file(file_id: int) -> str:
     return await run_owned(_work)
 
 
-# ---------------------------------------------------------------------------
-# 文本可读性判定 for read_file_content
-# ---------------------------------------------------------------------------
+# 文本可读性判定支持
+# 供 read_file_content 工具判定是否为文本内容
+# 依据 MIME 类型前缀判定文件是否可作为纯文本读取
 _TEXT_MIME_PREFIXES: tuple[str, ...] = (
     "text/",
 )
@@ -550,10 +550,10 @@ def _authorized_text_file(
     context: McpRequestContext,
     file_id: int,
 ) -> tuple[str, str, str] | str:
-    """Authorize and describe a text file under a worker-owned Session.
+    """在 worker 拥有的 Session 下鉴权并描述文本文件.
 
-    Returns immutable scalars so object storage can be read after the Session is
-    closed, or a JSON error payload when the file is not readable as text.
+    返回不可变标量以便在 Session 关闭后读取对象存储,
+    或者在文件无法作为文本读取时返回 JSON 错误载荷。
     """
     with worker_session(SessionLocal) as session:
         file_obj = get_authorized_file(session, context, file_id)
@@ -573,9 +573,9 @@ def _read_bounded_object_bytes(
     object_name: str,
     legacy_path: str | None,
 ) -> tuple[int, bool, bytes] | None:
-    """Read a bounded byte prefix without holding a database Session.
+    """在不持有数据库 Session 的情况下读取有界字节前缀.
 
-    Returns ``(file_size, truncated, raw)`` or ``None`` when the object is absent.
+    返回 ``(file_size, truncated, raw)``, 若对象不存在则返回 ``None``。
     """
     storage = get_storage_client()
     if storage.file_exists(object_name):
@@ -588,8 +588,8 @@ def _read_bounded_object_bytes(
         )
         return file_size, truncated, raw
     if not is_mcp_request_active() and get_optional_mcp_context() is None:
-        # Compatibility for pre-object-storage direct unit tests. It is
-        # intentionally unavailable through the HTTP MCP boundary.
+        # 为存量对象存储之前的直接单元测试提供兼容。
+        # 按设计不可通过 HTTP MCP 边界访问。
         if not legacy_path:
             return None
         legacy = Path(legacy_path)
@@ -625,8 +625,8 @@ async def read_file_content(
         try:
             snapshot = _authorized_text_file(context, file_id)
         except Exception as exc:
-            # Authorization and SQL session cleanup span driver/plugin failures;
-            # keep client-facing errors while sanitizing unknown backend errors.
+            # 鉴权与 SQL 会话清理跨越驱动/插件层异常;
+            # 在脱敏未知后端错误的同时保留面向客户端的错误。
             return _service_error_json(exc)
         if isinstance(snapshot, str):
             return snapshot
@@ -635,15 +635,15 @@ async def read_file_content(
         try:
             payload = _read_bounded_object_bytes(object_name, legacy_path)
         except Exception as exc:
-            # Storage SDK and filesystem failures must share the same sanitized
-            # tool error without changing authorization or the byte-read limit.
+            # 存储 SDK 与文件系统失败必须共享相同的脱敏
+            # 工具错误, 且不改变鉴权或字节读取限制。
             return _service_error_json(exc)
         if payload is None:
             return _error_json("File not found on server")
         file_size, truncated, raw = payload
 
-        # A byte boundary may bisect a character. Retain complete
-        # characters without fabricating a replacement for that suffix.
+        # 字节边界可能会切分多字节字符。保留完整的
+        # 字符而不为该后缀伪造替代字符。
         decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
         content = decoder.decode(raw, final=not truncated)
         return json.dumps(
@@ -965,15 +965,15 @@ async def upload_file(
     try:
         result = await _run_sync(_work)
     except Exception as exc:
-        # Upload publication/compensation and session cleanup can fail outside
-        # domain errors; preserve the tool's established sanitized JSON result.
+        # 上传发布/补偿与会话清理可能抛出领域异常之外的错误;
+        # 保留该工具既定的脱敏 JSON 结果。
         return _service_error_json(exc)
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
-# ---------------------------------------------------------------------------
 # Resources(只读资源 URI)
-# ---------------------------------------------------------------------------
+# 注册 skycloud:// 只读资源供客户端直接访问
+# 提供当前用户文件夹结构的只读资源 URI
 @mcp.resource("skycloud://folders")
 async def get_user_folders() -> str:
     """获取当前认证用户的所有文件夹列表."""
@@ -1010,9 +1010,9 @@ async def get_user_file(file_id: int) -> str:
     return await run_owned(_work)
 
 
-# ---------------------------------------------------------------------------
-# Prompts 引导客户端如何组合工具
-# ---------------------------------------------------------------------------
+# Prompts 引导模版
+# 引导客户端与模型如何组合并调度云盘工具
+# 提供按自然语言描述查找文件的标准操作流程
 @mcp.prompt()
 async def find_file(description: str) -> str:
     """根据用户的自然语言描述,帮助定位和查找文件.

@@ -1,4 +1,4 @@
-"""Per-user, per-workspace OpenCode runtime records."""
+"""按用户、按工作区隔离的 OpenCode 运行时实例记录模型."""
 
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 class OpenCodeRuntimeDict(TypedDict):
-    """Public representation of an OpenCode runtime row."""
+    """OpenCode 运行时记录的公开表示模型."""
 
     id: int
     workspace_id: int
@@ -33,7 +33,7 @@ class OpenCodeRuntimeDict(TypedDict):
 
 
 class OpenCodeRuntime(Base):
-    """A Dockerized OpenCode instance owned by one workspace member."""
+    """由单个工作区成员拥有的容器化 OpenCode 实例记录."""
 
     __tablename__ = "opencode_runtimes"
 
@@ -103,7 +103,7 @@ class OpenCodeRuntime(Base):
     )
 
     def to_dict(self) -> OpenCodeRuntimeDict:
-        """Return the public runtime representation."""
+        """返回运行时实例的公开字典表示."""
         return {
             "id": self.id,
             "workspace_id": self.workspace_id,

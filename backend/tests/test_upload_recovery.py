@@ -1,4 +1,4 @@
-"""Cleanup faults preserve caller errors and never log private SQL details."""
+"""清理故障保留调用方错误且绝不记录私有 SQL 详情测试."""
 from unittest.mock import MagicMock
 import pytest
 from loguru import logger

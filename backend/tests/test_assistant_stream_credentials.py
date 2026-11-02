@@ -1,4 +1,4 @@
-"""Assistant authorization is checked on its SQL worker during quiet waits."""
+"""在静默等待期间在 SQL worker 上检查助手授权测试."""
 import asyncio
 import threading
 import pytest
@@ -59,7 +59,7 @@ async def test_credential_loss_cancels_durable_run_and_upstream(session,test_use
     assert 'private-' not in str([e.payload for e in received])
     if phase!='initial':assert 'abort' in calls and 'closed' in calls
     assert service.run_registry.get(scope[-1]) is None
-    # SQL finish occurs before owned close; reload using fixture Session.
+    # SQL finish 早于所属 close; 使用 fixture Session 重新加载.
     from app.models.assistant import AssistantRun
     assert session.get(AssistantRun,scope[-1]).status=='cancelled'
     assert session.get(AssistantMessage,message_id).status=='cancelled'

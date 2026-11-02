@@ -1,4 +1,4 @@
-"""Transactional fallback and cleanup identity contracts using actual SQLite."""
+"""使用真实 SQLite 的事务性回退与清理身份契约测试."""
 from sqlalchemy.orm import Session
 from app.features.workspace.docker_service import remove_runtime
 from app.infra.datetime_utils import utc_now

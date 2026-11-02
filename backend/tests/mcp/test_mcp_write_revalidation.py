@@ -1,4 +1,4 @@
-"""A captured administrator context must not authorize a later database write."""
+"""捕获的管理员上下文绝不能授权后续数据库写入测试."""
 import asyncio
 import json
 from unittest.mock import MagicMock

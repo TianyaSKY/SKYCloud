@@ -11,7 +11,7 @@ _NOT_FOUND = "Inbox message not found"
 
 
 class InboxCreateData(TypedDict, total=False):
-    """Fields accepted when creating an inbox notification."""
+    """创建收件箱站内通知时接受的字段定义."""
 
     user_id: Required[int | None]
     title: str | None
@@ -20,7 +20,7 @@ class InboxCreateData(TypedDict, total=False):
 
 
 class InboxPage(TypedDict):
-    """One page of inbox rows with its paging metadata."""
+    """包含分页元数据的单页收件箱记录."""
 
     items: list[Inbox]
     total: int
@@ -30,7 +30,7 @@ class InboxPage(TypedDict):
 
 
 def create_inbox_message(session: Session, data: InboxCreateData) -> Inbox:
-    """Create and commit one notification."""
+    """创建并提交单条站内通知."""
     new_message = Inbox(
         user_id=data["user_id"],
         title=data.get("title"),
@@ -66,7 +66,7 @@ def get_user_inbox(
 
 
 def get_inbox_message(session: Session, message_id: int) -> Inbox:
-    """Load one notification or report it missing."""
+    """加载单条站内通知, 若不存在则抛出未找到异常."""
     message = session.get(Inbox, message_id)
     if not message:
         raise ResourceNotFoundError(_NOT_FOUND)
@@ -74,7 +74,7 @@ def get_inbox_message(session: Session, message_id: int) -> Inbox:
 
 
 def mark_as_read(session: Session, message_id: int, user_id: int) -> Inbox:
-    """Mark one message of the user as read."""
+    """将用户的单条消息标记为已读."""
     message = session.query(Inbox).filter_by(id=message_id, user_id=user_id).first()
     if not message:
         raise ResourceNotFoundError(_NOT_FOUND)
@@ -84,7 +84,7 @@ def mark_as_read(session: Session, message_id: int, user_id: int) -> Inbox:
 
 
 def delete_inbox_message(session: Session, message_id: int, user_id: int) -> None:
-    """Soft delete one message of the user."""
+    """软删除用户的单条消息."""
     message = session.query(Inbox).filter_by(id=message_id, user_id=user_id).first()
     if not message:
         raise ResourceNotFoundError(_NOT_FOUND)
@@ -93,7 +93,7 @@ def delete_inbox_message(session: Session, message_id: int, user_id: int) -> Non
 
 
 def mark_all_as_read(session: Session, user_id: int) -> None:
-    """Mark every unread message of the user as read."""
+    """将当前用户的所有未读消息全部标记为已读."""
     session.query(Inbox).filter_by(user_id=user_id, is_read=False).update(
         {"is_read": True},
     )

@@ -1,8 +1,4 @@
-"""Real PostgreSQL/Controller/Docker cleanup; disposable managed Redis containers.
-
-The container process is a fixture, not an OpenCode/model workflow. Controller
-identity checks, authenticated RPC and Docker removal are production code.
-"""
+"""真实 PostgreSQL/Controller/Docker 清理与一次性托管 Redis 容器测试."""
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -140,8 +136,8 @@ def test_overlapping_duplicate_intents_idempotently_remove_one_container(graph):
         results = list(pool.map(lambda _:cleanup(graph,controller_factory=Client,limit=1),range(2)))
     assert sorted(results) in ([0,1],[1,1])
     if sum(results) == 1:
-        # Docker can reject a second overlapping removal as already in progress.
-        # That refusal must remain pending until a 404 replay completes it.
+        # Docker 可能会以正在进行为由拒绝第二次重叠删除.
+        # 该拒绝必须保持挂起, 直至 404 重放完成它.
         with graph['db'].begin() as db:
             assert db.execute(text('SELECT attempts,last_error_type FROM runtime_container_deletions WHERE completed_at IS NULL')).all() == [(1,'ControllerError')]
             db.execute(text('UPDATE runtime_container_deletions SET next_attempt_at=now() WHERE completed_at IS NULL'))
@@ -274,9 +270,9 @@ def test_overlapping_generation_prepares_create_only_one_stopped_container(gener
 @pytest.fixture
 def generation_graph(request,monkeypatch):
     import json
-    # Redis declares an anonymous /data volume, incompatible with runtime
-    # policy. Prepare uses our volume-free Controller image without starting
-    # its process; pre-existing fixture processes continue to run Redis.
+    # Redis 声明了匿名 /data 卷, 与运行时策略不兼容.
+    # 准备阶段使用无卷 Controller 镜像而不启动其进程;
+    # 先前存在的 fixture 进程继续运行 Redis.
     info = json.loads(docker('image','inspect',os.getenv('SKYCLOUD_TEST_GENERATION_IMAGE',os.getenv('SKYCLOUD_TEST_CONTROLLER_IMAGE','skycloud-runtime-controller:remediation-test'))).stdout)[0]
     assert not info['Config'].get('Volumes')
     monkeypatch.setenv('SKYCLOUD_TEST_PROCESS_IMAGE',os.environ['SKYCLOUD_TEST_RUNTIME_IMAGE'])
@@ -623,7 +619,7 @@ def test_killed_controller_retirement_collects_create_delayed_until_after_fence(
             except httpx.HTTPError: pass
             time.sleep(0.1)
         else: raise AssertionError('Killed Controller failed to recover')
-        # The accepted downstream create is still held and physically absent.
+        # 已接受的下游创建仍被挂起且物理上不存在.
         graph['client'].retire_generation(graph['id'],graph['id'],graph['id'],generation)
         assert docker('inspect',name,check=False).returncode!=0
         docker('exec',graph['proxy'],'python','-c',"from pathlib import Path; Path('/tmp/release-create').write_text('release')")
@@ -670,8 +666,8 @@ def test_detached_completed_generation_is_fenced_even_when_physical_id_already_m
     with graph['factory']() as session:
         operations.record_candidate(session,generation,prepared["id"]); session.commit()
         operations.switch_candidate(session,generation); session.commit()
-        # Configuration isn't exercised here: mark the lifecycle as completed
-        # so this tests ID-queue retirement independent of active cancellation.
+        # 此处不测试配置: 将生命周期标记为已完成,
+        # 以便测试 ID 队列退役而独立于活跃取消.
         operation=session.get(RuntimeOperation,generation)
         operation.state='complete'
         from app.infra.datetime_utils import utc_now
@@ -710,9 +706,9 @@ def test_lifecycle_controller_auth_rejection_keeps_sql_identity_and_private_logs
             assert secret not in runtime.error_message
             if action == 'stop':
                 assert observer.scalar(text('SELECT revoked_at IS NOT NULL FROM mcp_runtime_tokens WHERE runtime_id=:id'), {'id':graph['id']}) is True
-        # Restore the observer credential before checking container existence.
+        # 在检查容器存在性前恢复观察者凭据.
         monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN', graph['token'])
-        # HTTP authorization failure cannot stop, replace or remove any container.
+        # HTTP 认证失败绝不能停止、替换或删除任何容器.
         assert all(exists(graph, runtime) for runtime in graph['containers'])
     finally:
         logger.remove(sink)

@@ -1,4 +1,4 @@
-"""WebSocket scoping, transparent frames, quotas and idle revocation."""
+"""WebSocket 作用域、透明帧、配额与空闲撤销测试."""
 import asyncio
 import time
 import threading

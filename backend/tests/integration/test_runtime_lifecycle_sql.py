@@ -1,9 +1,4 @@
-"""Real PostgreSQL recovery semantics for stop/replace identity transitions.
-
-The Controller is a recording seam: the assertions are about committed SQL state,
-the database triggers that cancel generations, and the recovery worker's decision,
-not about Docker.
-"""
+"""停止/替换身份转换的真实 PostgreSQL 恢复语义测试."""
 import os
 from types import SimpleNamespace
 from typing import Literal
@@ -49,7 +44,7 @@ def graph(postgres):  # noqa: F811
 
 
 class RecordingController(RuntimeController):
-    """Recording implementation of the explicit Controller RPC contract."""
+    """显式 Controller RPC 契约的记录实现."""
 
     def __init__(self, recorder):
         self.events = recorder['events']
@@ -126,8 +121,8 @@ def runtime_id(postgres):
 
 
 def test_stop_cancellation_commits_before_the_rpc_and_survives_lost_commit(graph, controller, postgres):
-    # Publish the running container before admission: updating container_id/status with an
-    # active generation would (correctly) cancel it through the 0015 trigger.
+    # 在准入前发布运行中容器: 在拥有活跃代系时更新 container_id/status
+    # 会 (正确地) 通过 0015 触发器将其取消.
     with postgres.begin() as db:
         db.execute(text("UPDATE opencode_runtimes SET container_id=:container,status='running'"),
                    {'container': 'a' * 64})
@@ -149,7 +144,7 @@ def test_stop_cancellation_commits_before_the_rpc_and_survives_lost_commit(graph
         runtime_token_service.revoke_runtime_tokens = original
 
     assert ('stop', 'a' * 64) in controller['events']
-    # The stop lost its final commit, so only the durable cancellation can prevent recovery.
+    # 停止操作丢失了最终 commit, 因此只有持久化取消能阻止恢复.
     assert operation_state(graph, generation) == 'cancelled'
     assert recover_runtime_operations(session_factory=graph) == 0
     assert operation_state(graph, generation) == 'cancelled'
@@ -160,8 +155,8 @@ def test_losing_edit_permission_during_prepare_retires_generation_and_denies(gra
     expected_runtime = runtime_id(postgres)
 
     def demote(runtime):
-        # A concurrent administrator demotes the caller while prepare is in flight;
-        # the 0015 trigger cancels the admitted generation in the same transaction.
+        # 并发管理员在准备进行期间降级了调用方;
+        # 0015 触发器在同一事务中取消已准入的代系.
         with postgres.begin() as db:
             db.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=:id AND user_id=:id"),
                        {'id': WORKSPACE})

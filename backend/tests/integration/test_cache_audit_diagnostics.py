@@ -1,4 +1,4 @@
-"""Actual isolated PostgreSQL/Redis failures preserve outcomes and private diagnostics."""
+"""隔离 PostgreSQL/Redis 故障保留业务结果与私有诊断信息测试."""
 import os
 import pytest
 from loguru import logger
@@ -48,7 +48,7 @@ async def test_actual_redis_acl_rejection_preserves_cache_fallback(infrastructur
         assert await read(SECRET) == {'result': SECRET}
         assert cache.evict_cache_pattern(SECRET) == 0
         safe(diagnostics, 'NoPermissionError')
-        # The denied writer did not silently store data under the caller's key.
+        # 被拒绝的写入方未在调用方的键下静默存储数据.
         assert list(admin.scan_iter(match=SECRET + '*')) == []
     finally:
         client.close()
@@ -107,8 +107,8 @@ async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, 
     async def work():
         business.append('accepted')
         return {'updated': True}
-    # Pause only the owned fixture Redis server, then release it through its
-    # real administrative connection after repeated caller cancellation.
+    # 仅暂停所属 fixture Redis 服务器, 在多次调用方取消后
+    # 通过真实管理连接释放它.
     admin.execute_command('CLIENT', 'PAUSE', 3000, 'ALL')
     pending = asyncio.create_task(work())
     try:
@@ -192,7 +192,7 @@ def test_actual_redis_generation_fences_late_search_write(infrastructure, monkey
         assert old.result()['items'][0]['name'] == 'old-name'
     assert search_service._search_files_fuzzy(None, 1, 'name', 1, 10)['items'][0]['name'] == 'new-name'
     assert reads == ['old-name', 'new-name']
-    # Eviction of only the generation marker must never resurrect old keys.
+    # 仅驱逐代系标记绝不能复活旧键.
     admin.delete('cache:generation:search:fuzzy:1')
     names[0] = 'latest-name'
     assert search_service._search_files_fuzzy(None, 1, 'name', 1, 10)['items'][0]['name'] == 'latest-name'
@@ -214,8 +214,8 @@ def test_actual_sql_commit_invalidates_search_without_redis_cleanup(postgres, in
         db.add(item); db.commit()
         workspace_id, file_id = workspace.id, item.id
         assert search_service._search_files_fuzzy(db, workspace_id, 'name', 1, 10)['items'][0]['name'] == 'old-name'
-    # Simulates process exit immediately after the authoritative SQL commit:
-    # no file-service Redis generation rotation or physical deletion runs.
+    # 模拟在权威 SQL 提交后立即退出进程:
+    # 不运行文件服务 Redis 代系轮转或物理删除.
     with factory() as db:
         db.get(File, file_id).name = 'new-name'
         db.commit()
@@ -439,7 +439,7 @@ def test_root_file_id_cache_tracks_committed_tree_and_bypasses_writes(postgres, 
     assert {key: admin.get(key) for key in admin.scan_iter()} == before
     with factory() as db:
         assert files.get_root_file_id(db, wid) == (None if phase == 'commit' else original_id)
-    # Obsolete unversioned cache entries must not override a fresh SQL read.
+    # 废弃的无版本缓存条目绝不能覆盖新鲜的 SQL 读取.
     admin.set(f'workspace:root:file:{wid}', 999999)
     with factory() as db:
         assert files.get_root_file_id(db, wid) == (None if phase == 'commit' else original_id)

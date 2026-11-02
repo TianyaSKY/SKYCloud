@@ -1,4 +1,4 @@
-"""Bounded admission waits with ongoing credential checks and drained cleanup."""
+"""带有持续凭据校验和排空清理机制的有界准入等待."""
 
 import asyncio
 import logging
@@ -21,7 +21,7 @@ DEFAULT_INTERVAL: Final = 1.0
 
 @dataclass(frozen=True)
 class WaitPolicy:
-    """Bounded admission wait: deadline, identity checks and abort hook."""
+    """有界准入等待策略: 截止时间、身份检查与中止钩子."""
 
     check: Callable[[], Awaitable[None]]
     seconds: float
@@ -33,14 +33,14 @@ class WaitPolicy:
 
 @dataclass(frozen=True)
 class WaitCleanup:
-    """Caller-owned cleanup policy for an abandoned admission wait."""
+    """放弃准入等待时由调用方拥有的清理策略."""
 
     cleanup_drain: Callable[[Coroutine[Any, Any, Any]], Awaitable[bool]]
     report_abort_error: Callable[[BaseException], None] | None = None
 
 
 def _own(operation: Awaitable[R]) -> asyncio.Task[R]:
-    """Own the awaited operation as one cancellable task."""
+    """将等待的操作包装为一个可取消的单一任务."""
     return asyncio.ensure_future(operation)
 
 
@@ -49,7 +49,7 @@ def _raise_timeout(policy: WaitPolicy) -> None:
 
 
 async def _abort(policy: WaitPolicy, cleanup: WaitCleanup) -> None:
-    """Run the abandoned operation's abort hook, isolating its failure."""
+    """执行被放弃操作的中止钩子, 并隔离其抛出的异常."""
     on_abort = policy.on_abort
     if on_abort is None:
         return
@@ -57,7 +57,7 @@ async def _abort(policy: WaitPolicy, cleanup: WaitCleanup) -> None:
     try:
         await on_abort()
     except (Exception, asyncio.CancelledError) as exc:
-        # The operation was already abandoned; only its own abort can fail here.
+        # 该操作已被放弃; 此处仅其自身的中止钩子可能引发异常。
         error = exc
     if error is None:
         return
@@ -70,13 +70,13 @@ async def _abort(policy: WaitPolicy, cleanup: WaitCleanup) -> None:
 
 
 async def _settle(policy: WaitPolicy, cleanup: WaitCleanup, *, cancelled: bool) -> None:
-    """Deliver a cancellation that the shielded cleanup already observed."""
+    """传递受保护清理已观测到的取消信号."""
     if cancelled:
         await cleanup.cleanup_drain(_abort(policy, cleanup))
         raise asyncio.CancelledError
     try:
-        # An outer AnyIO scope may already be cancelled, with no checkpoint
-        # outside shielded cleanup to deliver it yet.
+        # 外部 AnyIO 作用域可能已被取消,
+        # 但在受保护清理外部尚未遇到检查点来交付取消信号。
         await anyio.lowlevel.checkpoint_if_cancelled()
     except asyncio.CancelledError:
         await cleanup.cleanup_drain(_abort(policy, cleanup))
@@ -89,7 +89,7 @@ async def guarded_wait(
     *,
     cleanup: WaitCleanup | None = None,
 ) -> R:
-    """Await one bounded admission operation, re-checking identity as it waits."""
+    """等待单次有界准入操作, 在等待过程中持续复核调用者身份."""
     active = cleanup if cleanup is not None else WaitCleanup(drain_cleanup)
     pending = _own(operation)
     deadline = time.monotonic() + policy.seconds

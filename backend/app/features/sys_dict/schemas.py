@@ -13,7 +13,7 @@ class SysDictPayload(BaseModel):
 
 
 class SysDictResponse(BaseModel):
-    """Public dictionary entry projection."""
+    """公开的数据字典条目投影模型."""
 
     id: int
     key: str

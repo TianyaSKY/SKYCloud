@@ -1,4 +1,4 @@
-"""Common engine protocol and the per-run request contract."""
+"""公共引擎协议与单次运行请求契约."""
 
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
@@ -10,7 +10,7 @@ from app.features.assistant.run_control import RunController
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class EngineRequest:
-    """Inputs shared by every assistant engine for one prepared run."""
+    """单次准备好的运行中所有助手引擎共享的输入."""
 
     run_id: int
     user_id: int
@@ -21,8 +21,8 @@ class EngineRequest:
 
 
 class AssistantEngine(Protocol):
-    """Streaming assistant engine contract."""
+    """流式助手引擎契约."""
 
     def stream(self, request: EngineRequest) -> AsyncGenerator[AssistantEvent, None]:
-        """Yield ordered assistant events until the run settles."""
+        """产出有序的助手事件, 直至运行结算."""
         ...

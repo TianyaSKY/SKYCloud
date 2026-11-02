@@ -15,9 +15,7 @@ from app.infra.cache import CacheableParams
 from app.infra.datetime_utils import beijing_now, to_beijing_naive, local_isoformat, BEIJING_TZ
 
 
-# ---------------------------------------------------------------------------
 # datetime_utils
-# ---------------------------------------------------------------------------
 
 
 class TestBeijingNow:
@@ -70,9 +68,7 @@ class TestLocalIsoformat:
         assert result == "2025-06-01T04:00:00+00:00"
 
 
-# ---------------------------------------------------------------------------
 # cache 装饰器
-# ---------------------------------------------------------------------------
 
 
 class TestCacheBuildKey:
@@ -178,9 +174,7 @@ class TestEvictCachePattern:
         mock_redis.delete.assert_called_once_with("prefix:1", "prefix:2")
 
 
-# ---------------------------------------------------------------------------
 # upload_adapter
-# ---------------------------------------------------------------------------
 
 
 class TestFastAPIUploadAdapter:
@@ -259,9 +253,7 @@ class TestBase64UploadAdapter:
         assert adapter.content_type == "image/gif"
 
 
-# ---------------------------------------------------------------------------
-# LLM config
-# ---------------------------------------------------------------------------
+# 大语言模型配置
 
 
 class TestLLMConfig:

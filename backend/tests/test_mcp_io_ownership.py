@@ -1,4 +1,4 @@
-"""MCP authentication/search own their sessions on workers, not on the loop."""
+"""MCP 认证/搜索在 worker 上持有其会话, 而非事件循环上测试."""
 import asyncio
 import json
 import threading
@@ -103,7 +103,7 @@ async def test_mcp_search_worker_owned_session_scope_and_revocation(monkeypatch,
 
 
 async def test_text_read_closes_session_before_touching_object_storage(monkeypatch):
-    """Authorization must own its Session; storage I/O must not run inside it."""
+    """鉴权必须持有其 Session; 存储 I/O 绝不能在其内部运行."""
     state = {'closed': False, 'storage_saw_closed': None}
     class Session:
         def close(self):

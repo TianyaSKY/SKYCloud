@@ -1,4 +1,4 @@
-"""UI admission waits revalidate on workers and drain abandoned operations."""
+"""UI 准入等待在 worker 上重新校验并排干遗弃操作测试."""
 import asyncio
 import threading
 import time

@@ -1,4 +1,4 @@
-"""Audit records for MCP tool calls."""
+"""MCP 工具调用的审计日志记录模型."""
 
 from datetime import datetime
 from typing import TypedDict
@@ -12,7 +12,7 @@ from app.infra.utc_datetime import UTCDateTime
 
 
 class McpAuditLogDict(TypedDict):
-    """Public representation of an MCP audit log row."""
+    """MCP 审计日志记录的公开表示模型."""
 
     id: int
     request_id: str
@@ -31,7 +31,7 @@ class McpAuditLogDict(TypedDict):
 
 
 class McpAuditLog(Base):
-    """Audit record for one MCP tool call."""
+    """单个 MCP 工具调用的审计记录."""
 
     __tablename__ = "mcp_audit_logs"
 
@@ -76,7 +76,7 @@ class McpAuditLog(Base):
     )
 
     def to_dict(self) -> McpAuditLogDict:
-        """Return the public audit record representation."""
+        """返回审计记录的公开字典表示."""
         return {
             "id": self.id,
             "request_id": self.request_id,

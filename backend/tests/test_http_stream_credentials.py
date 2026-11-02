@@ -1,4 +1,4 @@
-"""Continued HTTP stream authorization checks signed scope and live state."""
+"""持续 HTTP 流鉴权检查签名范围与存活状态测试."""
 import time
 import jwt
 import pytest

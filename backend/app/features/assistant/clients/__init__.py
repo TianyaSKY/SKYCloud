@@ -1,2 +1,2 @@
-"""External provider clients used by the assistant engines."""
+"""助手引擎使用的外部提供商客户端."""
 

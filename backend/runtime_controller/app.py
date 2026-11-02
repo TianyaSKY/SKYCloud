@@ -1,4 +1,4 @@
-"""Authenticated, bounded RPC and HTTP relay; no general Docker or exec endpoint."""
+"""经过鉴权且有界的 RPC 与 HTTP 中继; 不提供通用的 Docker 或 exec 端点."""
 
 import asyncio
 import base64
@@ -116,7 +116,7 @@ WS_TRY_AGAIN_LATER: Final = 1013
 
 
 class PrepareRequest(BaseModel):
-    """Fixed runtime identity plus the generation to prepare."""
+    """固定的运行时标识及待准备的世代."""
 
     model_config = ConfigDict(extra="forbid")
     workspace_id: int = Field(gt=0, le=2**63 - 1)
@@ -126,7 +126,7 @@ class PrepareRequest(BaseModel):
 
 
 async def _idle_check() -> None:
-    """Return without further checks; the bounded wait owns progress."""
+    """无需额外校验直接返回; 有界等待机制自行把控进度."""
 
 
 def _raise_request_timeout() -> None:
@@ -134,7 +134,7 @@ def _raise_request_timeout() -> None:
 
 
 def _request_headers(scope: Scope) -> dict[bytes, bytes]:
-    """Return the lowercased ASGI request headers."""
+    """返回小写形式的 ASGI 请求头字典."""
     headers: dict[bytes, bytes] = {}
     for key, value in scope.get("headers", []):
         headers[key.lower()] = value
@@ -155,14 +155,14 @@ def _replay(receive: Receive, body: bytes) -> Callable[[], Awaitable[Message]]:
 
 
 class AuthAndBodyLimit:
-    """Authenticate every HTTP request and bound its body read."""
+    """对每个 HTTP 请求进行鉴权并限制请求体读取大小."""
 
     def __init__(self, app: ASGIApp, token: str) -> None:
-        """Wrap the Controller application with its fixed credential."""
+        """使用固定的凭证包装 Controller 应用程序."""
         self.app, self.token = app, token.encode()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Authenticate, bound and replay one ASGI request."""
+        """对单个 ASGI 请求执行鉴权、有界读取与重放."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -183,7 +183,7 @@ class AuthAndBodyLimit:
     async def _read_body(
         self, receive: Receive, scope: Scope, send: Send,
     ) -> bytes | None:
-        """Read the bounded body, or answer with the fixed error response."""
+        """读取有界请求体, 或返回固定的错误响应."""
         body = bytearray()
         deadline = monotonic() + MAX_BODY_SECONDS
         try:
@@ -235,7 +235,7 @@ def _lifespan(
                 try:
                     await run_in_threadpool(engine.reconcile_retired)
                 except Exception as error:
-                    # One failed Docker scan must never stop the retired sweep.
+                    # 单次失败的 Docker 扫描绝不能中断退役清理轮询。
                     logger.warning(
                         "Runtime retirement scan deferred (%s)", type(error).__name__,
                     )
@@ -249,7 +249,7 @@ def _lifespan(
             yield
         finally:
             stopping.set()
-            await task  # Drain bounded Docker RPCs before releasing the engine.
+            await task  # 在释放引擎前排空有界的 Docker RPC。
 
     return lifespan
 
@@ -348,15 +348,15 @@ def _register_config_routes(app: FastAPI, engine: Engine) -> None:
 
     @app.put("/containers/{ref}/config", response_model=None)
     def write_config(ref: str, payload: dict[str, Any]) -> dict[str, bool]:
-        # The request body is already parsed JSON; the fixed file writer owns
-        # its shape and never interprets caller input as a path or command.
+        # 请求体已经是解析后的 JSON; 固定的文件写入器负责其数据形状,
+        # 绝不会将调用方输入解释为路径或命令。
         engine.write_config(ref, cast("JsonObject", payload))
         return {"success": True}
 
 
 @dataclass(frozen=True, slots=True)
 class RelayTarget:
-    """One validated relay request and its runtime reference."""
+    """单个经过校验的中继请求及其运行时引用."""
 
     request: Request
     ref: str
@@ -365,7 +365,7 @@ class RelayTarget:
 
 
 def _relay_path_allowed(path: str, *, is_ui: bool) -> bool:
-    """Return whether the relay path stays inside the fixed endpoint set."""
+    """判断中继路径是否保持在固定的端点集合内."""
     if path.startswith("/") or "\\" in path or ":" in path:
         return False
     if any(part in {".", ".."} for part in path.split("/")):
@@ -377,7 +377,7 @@ def _relay_path_allowed(path: str, *, is_ui: bool) -> bool:
 
 def _disconnect_check(request: Request) -> Callable[[], Awaitable[None]]:
     async def check() -> None:
-        # Body is already consumed by admission middleware and Request.
+        # 请求体已被准入中间件和 Request 消耗。
         if await request.is_disconnected():
             raise HTTPException(STATUS_CLIENT_CLOSED, "Runtime client disconnected")
 
@@ -385,8 +385,8 @@ def _disconnect_check(request: Request) -> Callable[[], Awaitable[None]]:
 
 
 def _upstream_timeout(path: str) -> httpx.Timeout:
-    # Cold-start health requests must return promptly; leaving failed
-    # probes open for 90 seconds interferes with readiness retries.
+    # 冷启动健康检查必须迅速返回; 保持失败探测长达 90 秒
+    # 会干扰就绪重试逻辑。
     if path == "global/health":
         return httpx.Timeout(
             HEALTH_TIMEOUT_SECONDS, connect=HEALTH_CONNECT_TIMEOUT_SECONDS,
@@ -401,7 +401,7 @@ async def _open_upstream(
     target: str,
     check: Callable[[], Awaitable[None]],
 ) -> httpx.Response:
-    """Send the relayed request through the bounded admission wait."""
+    """通过有界准入等待机制发送中继请求."""
     request = relay.request
     headers = {
         key: request.headers[key] for key in FORWARDED_HEADERS if key in request.headers
@@ -449,7 +449,7 @@ async def _buffered_response(
     lease: UpstreamLease,
     check: Callable[[], Awaitable[None]],
 ) -> Response:
-    """Collect one bounded non-event body and release the lease."""
+    """收集单次有界的非事件响应体并释放租约."""
     try:
         output = bytearray()
         parts = deadline_reader(
@@ -480,7 +480,7 @@ def _event_response(
     lease: UpstreamLease,
     check: Callable[[], Awaitable[None]],
 ) -> UpstreamResponse:
-    """Stream one bounded event body and release the lease on teardown."""
+    """流式传输单次有界事件响应体并在拆卸时释放租约."""
 
     async def events() -> AsyncIterator[bytes]:
         total = 0
@@ -511,7 +511,7 @@ def _event_response(
 
 
 async def _relay_response(relay: RelayTarget, engine: Engine) -> Response:
-    """Relay one bounded request to its managed runtime."""
+    """将单个有界请求中继发送至其受管运行时."""
     target, auth = await run_in_threadpool(engine.target, relay.ref)
     client = httpx.AsyncClient(
         auth=auth,
@@ -537,7 +537,7 @@ async def _relay_response(relay: RelayTarget, engine: Engine) -> Response:
 
 
 def _terminal_allowed(websocket: WebSocket, token: str, path: str) -> bool:
-    """Return whether the WebSocket carries a valid, bounded terminal request."""
+    """判断 WebSocket 是否携带有效且有界限的终端请求."""
     provided = websocket.headers.get("x-runtime-controller-token", "").encode()
     if not hmac.compare_digest(provided, token.encode()):
         return False
@@ -576,7 +576,7 @@ async def _run_terminal(
     engine: Engine,
     slots: SocketSlots,
 ) -> None:
-    """Open one bounded terminal relay and always release its slot."""
+    """打开一个有界终端中继并在结束时始终释放其槽位."""
     acquired = False
     try:
         target, auth = await run_in_threadpool(engine.target, ref)
@@ -599,7 +599,7 @@ async def _run_terminal(
     except asyncio.CancelledError:
         raise
     except Exception:
-        # A failed relay must close the client with the fixed error code.
+        # 失败的中继连接必须使用固定的错误代码关闭客户端。
         with contextlib.suppress(RuntimeError):
             await websocket.close(code=WS_INTERNAL_ERROR)
     finally:
@@ -637,7 +637,7 @@ def _register_relay_routes(
 def create_app(
     settings: Settings | None = None, engine: Engine | None = None,
 ) -> FastAPI:
-    """Build the authenticated, bounded Controller application."""
+    """构建经过鉴权且有界限的 Controller 应用程序."""
     active_settings = settings or Settings.from_env()
     active_engine = engine or Engine(active_settings)
     slots = SocketSlots()
@@ -664,8 +664,8 @@ if __name__ == "__main__":
 
     setup_logging()
 
-    # Compose binds only the private control interface. Runtime containers
-    # cannot contact the RPC listener on its separate runtime interface.
+    # Compose 仅绑定私有控制接口。运行时容器
+    # 无法在其独立的运行时网络接口上访问 RPC 监听器。
     bind_host = os.getenv("RUNTIME_CONTROLLER_BIND_HOST", "127.0.0.1")
     if bind_host != "127.0.0.1":
         bind_host = socket.gethostbyname(bind_host)

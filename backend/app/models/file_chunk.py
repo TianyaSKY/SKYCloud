@@ -1,4 +1,4 @@
-"""File content chunk index rows used for retrieval."""
+"""用于向量检索的文件内容分块索引模型."""
 
 from datetime import datetime
 
@@ -13,7 +13,7 @@ from app.models.file import VectorValue
 
 
 class FileChunk(Base):
-    """Retrievable content slice with its source file and page metadata."""
+    """包含源文件与页码元数据的可检索内容切片."""
 
     __tablename__ = "file_chunks"
 

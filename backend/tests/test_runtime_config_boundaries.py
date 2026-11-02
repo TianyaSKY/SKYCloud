@@ -1,4 +1,4 @@
-"""Configuration policy remains independent and does not mutate source state."""
+"""配置策略保持独立且不变更源状态测试."""
 import copy
 import pytest
 from app.features.workspace import runtime_config

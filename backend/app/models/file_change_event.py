@@ -1,4 +1,4 @@
-"""File and folder change log entries used by organize scans and audits."""
+"""用于文件整理扫描和审计的文件与文件夹变更日志模型."""
 
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 class FileChangeEventDict(TypedDict):
-    """Public representation of a file change event row."""
+    """文件变更事件记录的公开表示模型."""
 
     id: int
     workspace_id: int
@@ -31,7 +31,7 @@ class FileChangeEventDict(TypedDict):
 
 
 class FileChangeEvent(Base):
-    """Change log entry for incremental organize scans and audits."""
+    """用于增量文件整理扫描和审计的变更日志条目."""
 
     __tablename__ = "file_change_events"
 
@@ -63,7 +63,7 @@ class FileChangeEvent(Base):
     )
 
     def to_dict(self) -> FileChangeEventDict:
-        """Return the public change event representation."""
+        """返回变更事件的公开字典表示."""
         return {
             "id": self.id,
             "workspace_id": self.workspace_id,

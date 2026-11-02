@@ -1,4 +1,4 @@
-"""Recover admitted runtime generations after API/Worker process interruption."""
+"""在 API/Worker 进程中断后恢复已准入的运行时 generation."""
 
 from datetime import timedelta
 
@@ -17,7 +17,7 @@ def defer_operation(
     generation: str,
     error: BaseException,
 ) -> None:
-    """Record one interrupted generation for a later recovery attempt."""
+    """记录单个中断的 generation 以便后续尝试恢复."""
     statement = (
         select(RuntimeOperation)
         .where(
@@ -43,7 +43,7 @@ def recover_runtime_operations(
     session_factory: SessionFactory = SessionLocal,
     limit: int = 20,
 ) -> int:
-    """Restart interrupted generations whose admission is still active."""
+    """重启准入依然有效的被中断 generation."""
     with session_factory() as session:
         statement = (
             select(
@@ -80,8 +80,8 @@ def recover_runtime_operations(
                 if operation is not None and operation.state == "complete":
                     recovered += 1
             except Exception as error:
-                # Best-effort per-generation isolation: the Docker lifecycle
-                # and its SQL bookkeeping raise unrelated exception families.
+                # 按 generation 尽力隔离: Docker 生命周期与
+                # 其 SQL 记账操作各自抛出不同的异常家族。
                 session.rollback()
                 defer_operation(session, generation, error)
     return recovered

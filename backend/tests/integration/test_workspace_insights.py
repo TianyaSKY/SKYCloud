@@ -1,4 +1,4 @@
-"""Opt-in real PostgreSQL MCP reads and independently committed revocation."""
+"""自选真实 PostgreSQL MCP 读取与独立提交撤销测试."""
 import asyncio
 import json
 import os
@@ -16,9 +16,9 @@ from tests.integration.test_runtime_security import infrastructure
 
 
 def warmed(redis, prefix):
-    """The synchronous read must have cached its result under this prefix.
+    """同步读取必须在此前缀下缓存其结果.
 
-    Cache keys carry a durable SQL revision suffix, so only the prefix is asserted.
+    缓存键携带持久化 SQL 修订版本后缀, 因此仅断言前缀.
     """
     return bool(redis.keys(prefix + '*'))
 
@@ -68,8 +68,8 @@ async def test_disconnected_cancel_drains_native_sql_lock_and_signals_only_commi
                 closed.set()
     app = FastAPI()
     app.include_router(router.router)
-    # Only HTTP identity snapshots are supplied; authorization, cancellation
-    # writes, commit rejection and registry signaling use production code.
+    # 仅提供 HTTP 身份快照; 鉴权、取消写入、
+    # 提交拒绝与注册表信号均使用生产代码.
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[get_current_workspace] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[get_session_factory] = lambda: owned_factory
@@ -129,7 +129,7 @@ def test_scoped_read_then_independent_membership_removal(postgres, monkeypatch, 
             assert response == [{"id":1,"name":"/"}]
         with postgres.begin() as independent:
             independent.execute(text("DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1"))
-        # Same verified request identity; fresh transaction must reject it now.
+        # 相同校验后的请求标识; 新事务此刻必须拒绝它.
         assert json.loads(asyncio.run(tool())) == {"error":"您不是该工作空间的成员"}
     finally:
         reset_mcp_context(token)
@@ -269,7 +269,7 @@ async def test_search_scope_and_committed_revocation_before_cached_or_vector_rea
 
 
 async def test_worker_cleanup_invalidation_preserves_commit_and_rolls_back_uncommitted_work(postgres, monkeypatch):
-    """Explicit close fault seam; real PG transactions and SQLAlchemy invalidation."""
+    """显式关闭故障接缝; 真实 PG 事务与 SQLAlchemy 销毁."""
     from sqlalchemy.orm import Session
     from sqlalchemy.exc import StatementError
     from loguru import logger
@@ -307,7 +307,7 @@ async def test_worker_cleanup_invalidation_preserves_commit_and_rolls_back_uncom
 
 @pytest.mark.parametrize('mode', ['fuzzy','semantic','status'])
 async def test_http_worker_reads_revalidate_committed_removal(postgres, infrastructure, monkeypatch, mode):
-    """Real SQL/cache behind explicit stale HTTP identity dependency snapshots."""
+    """在显式过期 HTTP 身份依赖快照背后的真实 SQL/缓存."""
     import httpx
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -969,7 +969,7 @@ async def test_settings_owned_routes_reject_stale_admin(postgres, change):
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin')"))
         db.execute(text("INSERT INTO sys_dict(id,key,value,des,enable) VALUES (1,'original','value','description',true)"))
     app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
-    # Explicit stale identity seam; current SQL authorization is real.
+    # 显式过期身份接缝; 当前 SQL 鉴权为真实执行.
     app.dependency_overrides[require_admin] = lambda: SimpleNamespace(id=1, role='admin')
     app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
@@ -1073,7 +1073,7 @@ async def test_usage_owned_http_rejects_stale_admin_and_preserves_self_reads(pos
         db.execute(text("INSERT INTO users(id,username,password_hash,role,total_prompt_tokens,total_completion_tokens,total_tokens) VALUES (1,'actor','x','admin',2,3,5),(2,'other','x','common',7,11,18)"))
         db.execute(text("INSERT INTO token_usage_logs(user_id,action,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES (1,'chat',2,3,5,now()),(2,'chat',7,11,18,now())"))
     app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
-    # Explicit stale authenticated identity; permissions and aggregate SQL are real.
+    # 显式过期已认证身份; 权限与聚合 SQL 为真实执行.
     identity = SimpleNamespace(id=1, role='admin')
     app.dependency_overrides[get_current_user] = lambda: identity
     app.dependency_overrides[require_admin] = lambda: identity
@@ -1137,7 +1137,7 @@ async def test_assistant_owned_http_rechecks_committed_membership(postgres, chan
         source = service.create_conversation(owned, workspace, 1, 'fast', 'source')
         sid = source.id
     app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
-    # Explicit identity/workspace snapshots; all service SQL and permission checks are real.
+    # 显式身份/工作区快照; 所有服务 SQL 与权限检查均为真实执行.
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[get_current_workspace] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[get_session_factory] = lambda: factory
@@ -1261,8 +1261,8 @@ async def test_runtime_model_owned_dependency_rejects_independent_revocation(pos
         raw = tokens.issue_token(owned, runtime)
     app = FastAPI()
     app.dependency_overrides[get_session_factory] = lambda: factory
-    # Production authentication dependency with actual signed/hash-bound token.
-    # Probe avoids a provider request; it proves dependency admission only.
+    # 生产认证依赖项包含实际签名/哈希绑定的令牌.
+    # 探测避免发起提供商请求; 仅证明依赖项准入.
     @app.get('/credential')
     async def credential(payload=Depends(router.current_credential)):
         return {'user_id':int(payload['sub']), 'workspace_id':payload['workspace_id']}
@@ -1309,7 +1309,7 @@ def test_accounting_faults_preserve_business_and_recover_actual_postgres(postgre
             return super().invalidate()
     monkeypatch.setattr(service, 'SessionLocal', sessionmaker(bind=postgres, class_=FaultSession))
     monkeypatch.setattr(service.logger, 'error', lambda message,*args: logged.append(message.format(*args)))
-    # SQL rejection is native varchar(50) enforcement after the aggregate UPDATE.
+    # SQL 拒绝是在聚合 UPDATE 后由原生 varchar(50) 强制执行.
     action = 'x'*51 if phase in {'sql-reject','rollback-fault'} else 'chat'
     assert service.record_usage(service.RecordUsageParams(user_id=1, action=action, prompt_tokens=2, completion_tokens=3, query_summary=private)) is None
     assert logged and private not in str(logged)
@@ -1319,7 +1319,7 @@ def test_accounting_faults_preserve_business_and_recover_actual_postgres(postgre
     with postgres.connect() as db:
         assert db.scalar(text('SELECT total_tokens FROM users WHERE id=1')) == initial
         assert db.scalar(text('SELECT count(*) FROM token_usage_logs')) == (0 if initial == 0 else 1)
-    # A later accounting call succeeds on the same real engine/pool without retries.
+    # 后续记账调用在同一真实引擎/连接池上成功执行且无需重试.
     active[0] = False
     assert service.record_usage(service.RecordUsageParams(user_id=1, action='chat', prompt_tokens=2, completion_tokens=3)) is None
     with postgres.connect() as db:
@@ -2047,7 +2047,7 @@ async def test_model_native_client_disconnect_releases_wait(postgres,monkeypatch
         client=httpx.AsyncClient(timeout=10,trust_env=False);clients.append(client);return client
     monkeypatch.setattr(router,'upstream_client',upstream)
     monkeypatch.setattr(router.quota,'reserve',lambda *args:charges.append(True))
-    # A failure must also leave these disposable servers able to shut down.
+    # 即使失败也必须让这些一次性服务器能够关闭.
     monkeypatch.setattr(router,'MAX_HEADER_SECONDS',5)
     monkeypatch.setattr(router,'MAX_STREAM_SECONDS',5)
     body=json.dumps({'model':model,'messages':[{'role':'user','content':'question'}],'stream':False}).encode()
@@ -2284,7 +2284,7 @@ async def test_http_completed_header_teardown_cancel_closes_native_upstream(post
 
 @pytest.mark.parametrize('stage,end',[('body','disconnect'),('headers','disconnect'),('response','disconnect'),('response','membership-ready'),('response','membership'),('response','version'),('response','family'),('response','stop'),('response','expiry')])
 async def test_ui_native_chain_current_identity_and_disconnect(postgres,infrastructure,monkeypatch,stage,end):
-    """Canonical SQL/Redis credentials over native UI, Controller and provider sockets."""
+    """通过原生 UI、Controller 与提供商 Socket 验证规范 SQL/Redis 凭据."""
     import threading
     import time
     import jwt
@@ -2361,8 +2361,8 @@ async def test_ui_native_chain_current_identity_and_disconnect(postgres,infrastr
         client.send=opened
         return client
     monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',upstream)
-    # Failure-only bounds allow isolated servers to shut down even if the
-    # disconnect assertion fails; the production one-second checks remain.
+    # 仅限故障边界允许隔离服务器关闭 (即使断开连接断言失败);
+    # 生产 1 秒检查依然保留.
     monkeypatch.setattr(ui_gateway,'MAX_HEADER_SECONDS',5)
     body=b'question'
     async def exercise(controller_port,gateway_port):
@@ -2373,8 +2373,8 @@ async def test_ui_native_chain_current_identity_and_disconnect(postgres,infrastr
             writer.write(headers+(body[:3] if stage=='body' else body));await writer.drain()
             assert await asyncio.to_thread((received if stage=='body' else provider_ready).wait,3)
             if stage=='response':
-                # Actual downstream TCP bytes establish that delivery started,
-                # before closing the caller while the native provider is quiet.
+                # 实际下游 TCP 字节表明投递已启动,
+                # 随后在原生提供商静默时关闭调用方.
                 delivered=await asyncio.wait_for(reader.readuntil(b'data: allowed\n\n'),3)
                 assert b'200 OK' in delivered
                 if end!='disconnect':

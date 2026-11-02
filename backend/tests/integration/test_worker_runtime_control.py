@@ -1,4 +1,4 @@
-"""Prove the production Compose Worker can remove an API-deleted Runtime."""
+"""验证生产 Compose Worker 能删除 API 已删除的运行时."""
 
 import json
 import os
@@ -162,7 +162,7 @@ def _runtime_ids(
     short_id: str,
     project: str,
 ) -> list[str]:
-    """Find only a matching full Docker identity for precise failed-test cleanup."""
+    """仅查找匹配的完整 Docker 标识以进行精确的失败测试清理."""
     result = subprocess.run(
         [
             "docker",
@@ -394,8 +394,7 @@ def test_worker_removes_runtime_after_workspace_deletion(tmp_path):
             assert len(full_container_id) == 64
             assert full_container_id.startswith(short_id)
 
-            # A normal stop must only stop the container; only workspace deletion
-            # may hand it to the Worker for physical removal.
+            # 正常停止仅停止容器; 仅工作区删除可将其移交给 Worker 进行物理删除.
             stopped = client.post(
                 api_url + f"/api/workspace/{workspace_id}/opencode/runtime/stop",
                 headers=headers,

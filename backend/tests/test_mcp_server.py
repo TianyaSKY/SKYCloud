@@ -21,9 +21,7 @@ from app.exceptions import DomainError, ResourceNotFoundError
 from fastapi import HTTPException
 
 
-# ---------------------------------------------------------------------------
 # 工具辅助函数
-# ---------------------------------------------------------------------------
 
 
 class TestErrorJson:
@@ -117,9 +115,7 @@ class TestIsTextFile:
         assert _is_text_file(None, None) is False
 
 
-# ---------------------------------------------------------------------------
 # JWT 中间件
-# ---------------------------------------------------------------------------
 
 
 class TestJWTAuthMiddleware:
@@ -136,7 +132,7 @@ class TestJWTAuthMiddleware:
         scope = {"type": "http", "headers": []}
         await middleware(scope, None, None)
         mock_app.assert_called_once()
-        # user_id should be None
+        # user_id 应当为 None
         assert current_user_id.get() is None
 
     async def test_valid_token(self):
@@ -175,9 +171,7 @@ class TestGetMcpApp:
         assert isinstance(result, JWTAuthMiddleware)
 
 
-# ---------------------------------------------------------------------------
 # MCP 工具函数（直接调用底层 async 函数）
-# ---------------------------------------------------------------------------
 
 from app.mcp.server import (
     get_current_user as mcp_get_current_user,

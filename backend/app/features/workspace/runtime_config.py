@@ -1,6 +1,6 @@
-"""Pure Runtime configuration transforms; credentials/policy are supplied by the caller.
+"""纯 Runtime 配置转换逻辑; 凭据与策略由调用方传入.
 
-No SQL sessions, environment lookup or external RPC belongs in this module.
+本模块不包含 SQL 会话、环境变量读取或外部 RPC 调用。
 """
 
 import copy
@@ -12,7 +12,7 @@ def merge_opencode_mcp_config(
     existing: "JsonObject | None",
     mcp_config: JsonObject,
 ) -> JsonObject:
-    """Merge only ``mcp.SKYCLOUD`` while preserving all other config."""
+    """仅合并 ``mcp.SKYCLOUD`` 配置块, 同时完整保留所有其他现有配置."""
     result: JsonObject = copy.deepcopy(existing) if isinstance(existing, dict) else {}
     mcp = result.get("mcp")
     merged_mcp: JsonObject = copy.deepcopy(mcp) if isinstance(mcp, dict) else {}
@@ -29,8 +29,8 @@ def _build_opencode_chat_provider(
 ) -> JsonObject:
     options: JsonObject = {"baseURL": chat_config["base_url"]}
     if chat_config["api_key"]:
-        # This is a revocable model-only Runtime credential, never the
-        # provider key used by the gateway.
+        # 此处为可吊销的模型专用 Runtime 凭据,
+        # 绝非网关使用的供应商原始密钥。
         options["apiKey"] = chat_config["api_key"]
     if output_limit <= 0 or context_limit <= 0:
         message = "Runtime model token limits must be positive"
@@ -60,7 +60,7 @@ def merge_opencode_chat_provider(
     output_limit: int,
     context_limit: int,
 ) -> JsonObject:
-    """Configure OpenCode to use SKYCloud's existing Chat API provider."""
+    """配置 OpenCode 以使用 SKYCloud 现有的 Chat API 供应商."""
     result: JsonObject = copy.deepcopy(existing) if isinstance(existing, dict) else {}
     provider = result.get("provider")
     providers: JsonObject = (
@@ -87,7 +87,7 @@ def opencode_chat_provider_needs_reload(
     output_limit: int,
     context_limit: int,
 ) -> bool:
-    """Whether the live Runtime provider block differs from the desired one."""
+    """运行中的 Runtime 供应商配置块是否与预期配置存在差异."""
     expected_provider = _build_opencode_chat_provider(
         chat_config,
         output_limit=output_limit,
@@ -109,10 +109,10 @@ def merge_opencode_expert_agent(
     *,
     agent_name: str,
 ) -> JsonObject:
-    """Install the least-privilege expert agent without replacing user config.
+    """安装最小权限专家 Agent, 同时不覆盖用户自定义配置.
 
-    The provider still asks for high-risk operations; the MCP server remains
-    the final workspace and role boundary.
+    供应商仍会对高风险操作发起确认; MCP 服务端保持为
+    工作空间与角色权限的最终安全边界。
     """
     result: JsonObject = copy.deepcopy(existing) if isinstance(existing, dict) else {}
     agents = result.get("agent")

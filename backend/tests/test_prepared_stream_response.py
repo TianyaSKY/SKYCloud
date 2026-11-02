@@ -1,4 +1,4 @@
-"""Prepared HTTP runs must not remain active after delivery fails."""
+"""已准备的 HTTP 运行在交付失败后不得保持活跃状态测试."""
 import asyncio
 import threading
 

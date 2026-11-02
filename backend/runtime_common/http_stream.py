@@ -1,4 +1,4 @@
-"""Cancellation-safe teardown of an owned async iterator and its active read."""
+"""具备取消安全特性的所属异步迭代器及其活动读取 teardown 机制."""
 
 import asyncio
 import logging
@@ -34,7 +34,7 @@ DEFAULT_INTERVAL: Final = 1.0
 
 
 def closable(iterator: AsyncIterator[T]) -> AsyncClosableIterator[T]:
-    """Project a known async-generator iterator onto its closable surface."""
+    """将已知异步生成器迭代器映射为其可关闭接口."""
     return cast("AsyncClosableIterator[T]", iterator)
 
 
@@ -42,7 +42,7 @@ async def close_reader(
     pending: asyncio.Task[T] | None,
     iterator: AsyncClosableIterator[T],
 ) -> bool:
-    """Drain the owned read before closing its iterator, despite cancellation."""
+    """在关闭迭代器前排空所属读取任务, 即使发生取消也能保证安全释放."""
 
     async def release() -> None:
         if pending is not None:
@@ -53,8 +53,8 @@ async def close_reader(
         try:
             await iterator.aclose()
         except (Exception, asyncio.CancelledError) as exc:
-            # Any iterator teardown failure is isolated here: the stream is
-            # already finished and only its own close can fail this call.
+            # 任何迭代器拆卸失败在此隔离: 流已结束,
+            # 只有其自身关闭可能引发失败。
             error = exc
         if error is not None:
             logger.error(
@@ -65,7 +65,7 @@ async def close_reader(
 
 
 async def drain_cleanup(operation: Coroutine[Any, Any, Any]) -> bool:
-    """Wait for owned teardown without cancelling it when its caller is cancelled."""
+    """等待持有的拆卸逻辑完成, 当调用方被取消时不会取消该拆卸任务."""
     cancelled = False
     with anyio.CancelScope(shield=True):
         released = asyncio.create_task(operation)
@@ -79,24 +79,24 @@ async def drain_cleanup(operation: Coroutine[Any, Any, Any]) -> bool:
 
 
 class AsyncCloseable(Protocol):
-    """An upstream resource that can release its transport asynchronously."""
+    """能够异步释放底层传输通道的上游资源接口."""
 
     async def aclose(self) -> None:
-        """Close the resource."""
+        """异步关闭资源."""
         ...
 
 
 class UpstreamLease:
-    """Owned upstream response and client whose teardown survives cancellation."""
+    """具有所有权且能在取消后安全完成清理的上游响应与客户端租约."""
 
     def __init__(self, client: AsyncCloseable) -> None:
-        """Own one upstream client; the relay attaches its response later."""
+        """持有上游客户端; 中继层稍后附加对应的响应对象."""
         self.client = client
         self.upstream: AsyncCloseable | None = None
         self.cleanup: asyncio.Task[None] | None = None
 
     async def close(self) -> None:
-        """Release the upstream response and client exactly once."""
+        """确保上游响应和客户端仅被释放一次."""
         if self.cleanup is None:
             self.cleanup = asyncio.create_task(self._release())
         cancelled = False
@@ -118,8 +118,8 @@ class UpstreamLease:
             try:
                 await resource.aclose()
             except (Exception, asyncio.CancelledError) as exc:
-                # Closing an upstream SDK object is the last step of the lease;
-                # keep the other resource closeable whatever this one raises.
+                # 关闭上游 SDK 对象是租约清理的最后一步;
+                # 保持另一资源无论此处抛出何种异常均可关闭。
                 error = exc
             if error is not None:
                 logger.error(
@@ -130,7 +130,7 @@ class UpstreamLease:
 
 
 class ResponseOptions(TypedDict, total=False):
-    """Streaming response options actually used by the upstream relay."""
+    """上游中继实际使用的流式响应配置选项."""
 
     status_code: int
     headers: Mapping[str, str] | None
@@ -139,7 +139,7 @@ class ResponseOptions(TypedDict, total=False):
 
 
 class UpstreamResponse(StreamingResponse):
-    """Streaming relay response that owns and closes its upstream lease."""
+    """持有并负责关闭其上游租约的流式中继响应."""
 
     def __init__(
         self,
@@ -148,13 +148,13 @@ class UpstreamResponse(StreamingResponse):
         lease: UpstreamLease,
         **options: Unpack[ResponseOptions],
     ) -> None:
-        """Attach the owned lease and the closed-by-this-response iterator."""
+        """附加所持有的租约以及由本响应负责关闭的迭代器."""
         super().__init__(content, **options)
         self.lease = lease
         self.iterator = cast("AsyncClosableIterator[str | bytes]", self.body_iterator)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Send the relayed stream and always release the upstream lease."""
+        """发送中继数据流并始终释放上游租约."""
         failed = False
         try:
             await super().__call__(scope, receive, send)
@@ -183,7 +183,7 @@ async def _wait_ready(
     check: Callable[[], Awaitable[None]] | None,
     interval: float,
 ) -> bool:
-    """Wait one bounded interval for a chunk and re-check the caller identity."""
+    """等待一个有界时间间隔以获取数据分块, 并重新校验调用方身份凭证."""
     remaining = deadline - monotonic()
     if remaining <= 0:
         raise HTTPException(TIMEOUT_STATUS, TIMEOUT_DETAIL)
@@ -205,7 +205,7 @@ async def deadline_reader(
     check: Callable[[], Awaitable[None]] | None = None,
     interval: float = DEFAULT_INTERVAL,
 ) -> AsyncGenerator[T, None]:
-    """Enforce a total lifetime even when a read produces no bytes."""
+    """即使读取未产出任何字节, 也强制执行总生命周期超时约束."""
     owned = closable(iterator.__aiter__())
     deadline = monotonic() + seconds
     pending: asyncio.Task[T] | None = None

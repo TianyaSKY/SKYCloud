@@ -83,12 +83,12 @@ def ensure_user_mcp_token(
     session: Session,
     user_id: int,
 ) -> tuple[McpToken, str | None]:
-    """Compatibility issuance helper; existing credentials cannot be recovered."""
+    """兼容性签发辅助函数; 已有历史凭据无法恢复明文."""
     active = get_active_record(session, user_id)
     if active:
         return active, None
 
-    # First explicit issuance only; existing credentials cannot be revealed again.
+    # 仅在首次显式签发时返回; 已有凭据无法再次查看明文。
     return refresh_user_mcp_token(session, user_id)
 
 
@@ -113,7 +113,7 @@ def refresh_user_mcp_token(session: Session, user_id: int) -> tuple[McpToken, st
 
 
 def get_user_mcp_token_payload(session: Session, user_id: int) -> dict[str, Any]:
-    """Read metadata without issuing, rotating or revealing credentials."""
+    """读取元数据而不签发、轮转或泄露凭据明文."""
     record = get_active_record(session, user_id)
     return {
         "token": record.to_dict() if record else None,
@@ -124,7 +124,7 @@ def get_user_mcp_token_payload(session: Session, user_id: int) -> dict[str, Any]
 
 
 def is_active_http_token(session: Session, token: str, user_id: int) -> bool:
-    """Read-only continued HTTP authorization, bypassing ORM identity state."""
+    """只读的持续 HTTP 鉴权验证, 绕过 ORM 实例状态."""
     return (
         session.scalar(
             select(McpToken.id).where(
@@ -152,9 +152,7 @@ def get_active_mcp_token(session: Session, token: str) -> McpToken | None:
     return token_record
 
 
-# ---------------------------------------------------------------------------
 # 旧接口兼容 - 工作区与历史调用
-# ---------------------------------------------------------------------------
 
 
 def create_mcp_token(

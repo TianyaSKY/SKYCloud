@@ -1,7 +1,7 @@
-"""Caller-owned transactions for durable runtime admission and identity switch.
+"""调用方持有事务的持久化 Runtime 准入与代际身份切换仓库.
 
-No Docker calls and no commits here. Admission must be committed before prepare;
-candidate identity must be committed before its SQL publication is attempted.
+本层不发起 Docker 调用且不执行 commit。准入必须在 prepare 前提交;
+候选代际身份必须在尝试 SQL 发布之前完成提交。
 """
 
 import re
@@ -29,7 +29,7 @@ _ACTIVE_STATES = ("preparing", "switched")
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CurrentRuntimeParams:
-    """Published runtime identity that the caller believes is current."""
+    """调用方认为处于当前有效状态的已发布运行时身份."""
 
     workspace_id: int
     user_id: int
@@ -57,8 +57,8 @@ def runtime_with_write_access(
     workspace_id: int,
     user_id: int,
 ) -> OpenCodeRuntime | None:
-    """Return the caller's runtime while holding current edit permission."""
-    # Match lifecycle deletion order. Fresh reads defeat an earlier cached role.
+    """在持有当前编辑权限的同时返回调用方的运行时记录."""
+    # 遵循生命周期删除顺序。强制最新读取以绕过历史缓存的角色。
     if _locked(session, User, User.id == user_id) is None:
         message = "Runtime owner no longer exists"
         raise ResourceNotFoundError(message)
@@ -83,7 +83,7 @@ def runtime_with_write_access(
 
 
 def admit(session: Session, workspace_id: int, user_id: int) -> RuntimeOperation:
-    """Return the active generation, admitting one when none is active."""
+    """返回活跃代际标识, 当不存在活跃代际时准入新代际."""
     runtime = runtime_with_write_access(session, workspace_id, user_id)
     if runtime is None:
         runtime = OpenCodeRuntime(
@@ -118,7 +118,7 @@ def record_candidate(
     generation: str,
     container_id: object,
 ) -> RuntimeOperation:
-    """Record the prepared container identity of one active generation."""
+    """记录单个活跃代际已准备好的容器身份信息."""
     if not isinstance(container_id, str) or not _CONTAINER_ID.fullmatch(container_id):
         message = "Candidate requires a full container identity"
         raise ConflictError(message)
@@ -139,8 +139,8 @@ def record_candidate(
 
 
 def switch_candidate(session: Session, generation: str) -> OpenCodeRuntime:
-    """Atomically publish the recorded candidate as the runtime identity."""
-    # Read IDs first, then acquire parent/runtime locks before the operation lock.
+    """原子性地将记录在案的候选容器发布为正式运行时身份."""
+    # 先读取相关 ID, 随后在获取操作锁前先获取父级/运行时锁。
     identity = session.execute(
         select(RuntimeOperation.workspace_id, RuntimeOperation.user_id).where(
             RuntimeOperation.generation == generation,
@@ -185,7 +185,7 @@ def switch_candidate(session: Session, generation: str) -> OpenCodeRuntime:
 
 
 def cancel_runtime(session: Session, runtime_id: int) -> int:
-    """Cancel active operations; returns how many the caller must commit durably."""
+    """取消活跃操作; 返回调用方必须持久化提交的已取消数量."""
     operations = session.scalars(
         select(RuntimeOperation)
         .where(
@@ -205,7 +205,7 @@ def current_runtime(
     session: Session,
     params: CurrentRuntimeParams,
 ) -> OpenCodeRuntime:
-    """Prove the runtime still carries the identity the caller prepared."""
+    """确认运行时依然承载着调用方所准备的代际身份."""
     runtime = runtime_with_write_access(
         session,
         params.workspace_id,
@@ -248,7 +248,7 @@ def current_runtime(
 
 
 def complete(session: Session, generation: str) -> None:
-    """Mark one switched generation complete and its runtime running."""
+    """将已切换的代际标记为已完成并将运行时置为 running 状态."""
     row = session.execute(
         select(
             RuntimeOperation.workspace_id,
@@ -259,7 +259,7 @@ def complete(session: Session, generation: str) -> None:
     ).one()
     container_id = row[3]
     if container_id is None:
-        # Same failure current_runtime reports for a missing published identity.
+        # 与 current_runtime 在缺少已发布代际身份时返回的失败保持一致。
         message = "Runtime identity is no longer current"
         raise ConflictError(message)
     runtime = current_runtime(
@@ -292,7 +292,7 @@ def replace_missing(
     generation: str,
     missing_container_id: object,
 ) -> RuntimeOperation:
-    """Drop a vanished candidate and admit the replacement generation."""
+    """丢弃已消失的候选代际记录并准入替代的全新代际."""
     if (
         not isinstance(missing_container_id, str)
         or not _CONTAINER_ID.fullmatch(missing_container_id)
@@ -337,5 +337,5 @@ def replace_missing(
         revoke_runtime_tokens(session, int(runtime.id))
         runtime.container_id = None
         runtime.status = "stopped"
-    session.flush()  # Lifecycle triggers cannot cancel the new admission.
+    session.flush()  # 生命周期触发器不能取消新准入的操作。
     return admit(session, workspace_id, user_id)

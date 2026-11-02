@@ -1,8 +1,8 @@
-"""RAG vector recall, fusion and reranking behind explicit resource contracts.
+"""显式资源契约下的 RAG 向量召回、融合与重排服务.
 
-The SQL search port returns detached Documents and owns its Session. Every
-started search drains before cancellation returns; request identity is passed
-per call and is never stored in a cached embeddings client.
+SQL 检索端口返回脱离态的 Documents 并管理自身 Session。每次
+已启动的检索操作在取消返回前均会排空退出; 请求身份按每次
+调用传入, 绝不存储在已缓存的 embeddings 客户端中。
 """
 
 import asyncio
@@ -21,12 +21,12 @@ from app.infra.owned_work import run_owned
 
 
 class EmbeddingsClient(Protocol):
-    """Embedding client that accepts request identity as a keyword argument."""
+    """在关键字参数中接收请求身份的 Embedding 客户端协议."""
 
     async def aembed_query(
         self, text: str, **kwargs: str | float | None,
     ) -> list[float]:
-        """Embed one query text."""
+        """对单条查询文本生成嵌入向量."""
         ...
 
     async def aembed_documents(
@@ -35,7 +35,7 @@ class EmbeddingsClient(Protocol):
         chunk_size: int | None = None,
         **kwargs: str | float | None,
     ) -> list[list[float]]:
-        """Embed a batch of document texts."""
+        """对一批文档文本生成嵌入向量."""
         ...
 
 
@@ -43,26 +43,26 @@ VectorSearch = Callable[[list[float], str, int, int, int], list[Document]]
 
 
 class QueryBuilder(Protocol):
-    """Build the multi-query variants used for parallel recall."""
+    """构建用于并行召回的多查询变体协议."""
 
     def __call__(self, question: str, dimensions: RewriteKeywordDimensions,
                  *, max_queries: int) -> list[str]:
-        """Return ordered, de-duplicated retrieval queries."""
+        """返回有序且去重的检索查询列表."""
         ...
 
 
 class DocumentFusion(Protocol):
-    """Fuse ranked document lists into one ordering."""
+    """将已排序的文档列表融合成单一排序的协议."""
 
     def __call__(self, result_sets: list[list[Document]],
                  *, rrf_k: int, top_k: int) -> list[Document]:
-        """Return the fused document ranking."""
+        """返回融合后的文档排序结果."""
         ...
 
 
 @dataclass(frozen=True)
 class RetrievalSettings:
-    """Recall depth, fusion width and rerank policy for one deployment."""
+    """单次部署的召回深度、融合宽度与重排策略配置."""
 
     vector_fetch_k: int
     max_queries: int
@@ -72,7 +72,7 @@ class RetrievalSettings:
 
 @dataclass(frozen=True)
 class RetrievalOperations:
-    """External ports the retrieval service calls."""
+    """检索服务调用的外部接口端口定义."""
 
     embeddings: Callable[[], EmbeddingsClient]
     search: VectorSearch
@@ -115,12 +115,12 @@ def fuse_docs_with_rrf(
 
 
 class RagRetrievalService:
-    """Single- and multi-query recall with fusion and reranking."""
+    """支持多路与单路召回、RRF 融合与重排序的检索服务."""
 
     def __init__(
         self, settings: RetrievalSettings, operations: RetrievalOperations,
     ) -> None:
-        """Bind retrieval policy to its embedding, SQL and rerank ports."""
+        """将检索策略绑定到其对应的嵌入、SQL 与重排端口."""
         self.settings = settings
         self.operations = operations
 
@@ -185,7 +185,7 @@ class RagRetrievalService:
     def _plan_queries(
         self, question: str, dimensions: RewriteKeywordDimensions,
     ) -> list[str]:
-        """Build query variants, falling back to the trimmed question."""
+        """构建查询变体, 若无则回退到清理后的原始问题."""
         queries = self.operations.build_queries(
             question,
             dimensions,
@@ -202,7 +202,7 @@ class RagRetrievalService:
         original_vector: list[float] | None,
         user_id: int,
     ) -> list[list[float]]:
-        """Embed query variants, reusing the precomputed original vector."""
+        """对查询变体生成嵌入向量, 复用预先计算的原始向量."""
         t1 = time.perf_counter()
         if original_vector and queries:
             additional_queries = queries[1:]  # queries[0] 始终是原始问题
@@ -235,7 +235,7 @@ class RagRetrievalService:
         workspace_id: int,
         user_id: int,
     ) -> tuple[list[list[Document]], float]:
-        """Run every vector search concurrently and keep partial recall."""
+        """并发执行所有向量检索, 并保留部分召回结果."""
         t2 = time.perf_counter()
 
         async def _search_one(
@@ -247,8 +247,8 @@ class RagRetrievalService:
                     self.settings.vector_fetch_k, user_id,
                 )
             except Exception as exc:
-                # Keep partial recall on ordinary failures. Cancellation still
-                # propagates, and TaskGroup waits for every owned worker to drain.
+                # 普通失败时保留部分召回结果。取消信号依然
+                # 正常传播, TaskGroup 等待所有所属 worker 排空退出。
                 return exc
 
         async with asyncio.TaskGroup() as group:

@@ -1,4 +1,4 @@
-"""Opt-in source-built MinIO persistence and cached legacy-volume compatibility."""
+"""自选源码构建 MinIO 持久化与旧卷兼容性测试."""
 from io import BytesIO
 import json
 import os

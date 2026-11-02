@@ -1,4 +1,4 @@
-"""Object storage calls must be bounded: no unbounded connect/read and no silent retry storm."""
+"""对象存储调用必须有界: 无无界连接/读取且无静默重试风暴测试."""
 import urllib3
 
 from app.infra import storage

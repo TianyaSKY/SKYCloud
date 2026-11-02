@@ -18,7 +18,7 @@ _NOT_FOUND = "User not found"
 
 
 class TokenStatsPayload(TypedDict):
-    """Accumulated token totals for one account."""
+    """单个账户的累计 Token 统计总量."""
 
     user_id: int
     total_prompt_tokens: int
@@ -28,7 +28,7 @@ class TokenStatsPayload(TypedDict):
 
 
 class UserTokenStatsPayload(TokenStatsPayload):
-    """Account identity plus its accumulated token totals."""
+    """账户身份标识及其累计 Token 统计总量."""
 
     username: str
     role: str | None
@@ -37,7 +37,7 @@ class UserTokenStatsPayload(TokenStatsPayload):
 
 
 class DailyStatsPayload(TypedDict):
-    """One day of aggregated usage."""
+    """单日聚合用量数据统计."""
 
     date: str
     prompt_tokens: int
@@ -47,14 +47,14 @@ class DailyStatsPayload(TypedDict):
 
 
 class PerUserDailyStatsPayload(DailyStatsPayload):
-    """One day of aggregated usage for a single account."""
+    """单个账户在单日内的聚合用量统计."""
 
     user_id: int
     username: str
 
 
 class UsagePagePayload(TypedDict):
-    """One page of usage audit rows."""
+    """用量审计日志单页数据."""
 
     total: int
     page: int
@@ -63,13 +63,13 @@ class UsagePagePayload(TypedDict):
 
 
 class AdminUsageEntryPayload(TokenUsageLogDict):
-    """Usage audit row enriched with the owning account name."""
+    """附带所属账户用户名的用量审计记录."""
 
     username: str
 
 
 class AdminUsagePagePayload(TypedDict):
-    """One page of site-wide usage audit rows."""
+    """全站用量审计日志单页数据."""
 
     total: int
     page: int
@@ -79,7 +79,7 @@ class AdminUsagePagePayload(TypedDict):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RecordUsageParams:
-    """One LLM call's token accounting record."""
+    """单次 LLM 调用的 Token 记账记录模型."""
 
     user_id: int
     action: str
@@ -93,7 +93,7 @@ class RecordUsageParams:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetUsageLogsParams:
-    """Filters for one account's usage audit page."""
+    """单个账户用量审计日志分页查询过滤参数."""
 
     user_id: int
     page: int = 1
@@ -105,7 +105,7 @@ class GetUsageLogsParams:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AdminUsageLogsParams:
-    """Filters for the site-wide usage audit page."""
+    """全站用量审计日志分页查询过滤参数."""
 
     page: int = 1
     page_size: int = 20
@@ -116,7 +116,7 @@ class AdminUsageLogsParams:
 
 
 def _usage_day(session: Session) -> ColumnElement[dt.date]:
-    """Return the local (Asia/Shanghai) calendar day expression."""
+    """返回本地 (Asia/Shanghai) 日历日表达式."""
     if session.get_bind().dialect.name == "postgresql":
         return func.date(func.timezone("Asia/Shanghai", TokenUsageLog.created_at))
     return func.date(TokenUsageLog.created_at, "+8 hours")
@@ -170,8 +170,8 @@ def record_usage(params: RecordUsageParams) -> None:
         )
         session.commit()
     except Exception as exc:
-        # Accounting crosses session factories, SQLAlchemy and driver callbacks.
-        # Any failure stays best-effort, with rollback/close still attempted.
+        # 记账过程跨越会话工厂、SQLAlchemy 与驱动回调。
+        # 任何失败均保持尽力而为, 仍会尝试回滚与关闭会话。
         logger.error(
             "Failed to record token usage for user {} (error_type={})",
             params.user_id,
@@ -185,12 +185,12 @@ def record_usage(params: RecordUsageParams) -> None:
 
 
 def _cleanup_usage_session(session: Session, operation: str) -> None:
-    """Keep accounting cleanup best-effort and discard a damaged connection."""
+    """保持记账清理尽最大努力执行, 并在连接损坏时将其废弃."""
     try:
         getattr(session, operation)()
     except Exception as exc:
-        # Driver/pool cleanup exceptions are not a closed set. Keep the original
-        # business result and invalidate a connection whose cleanup failed.
+        # 驱动/连接池清理异常无法穷举。保留原始业务
+        # 处理结果, 并将清理失败的连接句柄置为失效。
         logger.error(
             "Token usage session {} failed (error_type={})",
             operation,
@@ -199,8 +199,8 @@ def _cleanup_usage_session(session: Session, operation: str) -> None:
         try:
             session.invalidate()
         except Exception as invalidation_exc:
-            # Invalidation is the last cleanup attempt; it must not replace the
-            # accounting outcome or expose connection details.
+            # 失效处理是最后的清理手段; 绝不能替换记账
+            # 结果或对外暴露数据库连接细节。
             logger.error(
                 "Token usage session invalidation failed (error_type={})",
                 type(invalidation_exc).__name__,
@@ -225,7 +225,7 @@ def _date_bounds(
     start_date: str | None,
     end_date: str | None,
 ) -> tuple[dt.datetime | None, dt.datetime | None]:
-    """Reject invalid filters rather than silently widening the requested audit."""
+    """拒绝非法的日期过滤条件, 而非静默放宽所请求的审计范围."""
     try:
         start = (
             to_utc_datetime(dt.datetime.fromisoformat(start_date))
@@ -235,9 +235,9 @@ def _date_bounds(
         if end_date:
             parsed_end = dt.datetime.fromisoformat(end_date)
             if parsed_end.date().isoformat() == end_date:
-                # Date-only filters include the whole selected calendar day.
-                # Use the date's own maximum instant: incrementing the date would
-                # overflow on 9999-12-31 while the input itself is valid.
+                # 仅包含日期的过滤条件应涵盖所选的整个日历日。
+                # 使用该日期自身的最大时间点: 若采用递增日期的方式,
+                # 则在极端上限年份时会溢出, 而输入本身是完全合法的。
                 parsed_end = dt.datetime.combine(
                     parsed_end.date(),
                     dt.time.max,
@@ -318,9 +318,7 @@ def get_daily_stats(
     ]
 
 
-# ---------------------------------------------------------------------------
 # 管理员接口
-# ---------------------------------------------------------------------------
 
 
 def get_all_users_token_stats(session: Session) -> list[UserTokenStatsPayload]:

@@ -1,4 +1,4 @@
-"""Isolated PostgreSQL checks for cross-worker execution heartbeat/recovery."""
+"""跨 worker 执行心跳与恢复的隔离 PostgreSQL 测试."""
 import concurrent.futures
 from datetime import timedelta
 import os

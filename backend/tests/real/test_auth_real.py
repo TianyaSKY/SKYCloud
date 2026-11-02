@@ -50,9 +50,7 @@ from app.models.mcp_token import McpToken
 from app.models.user import User
 
 
-# ===========================================================================
-# auth/service.py — generate_token
-# ===========================================================================
+# auth/service.py — 生成令牌 (generate_token)
 
 
 class TestGenerateToken:
@@ -83,9 +81,7 @@ class TestGenerateToken:
         assert t1 != t2
 
 
-# ===========================================================================
-# auth/service.py — generate_mcp_token
-# ===========================================================================
+# auth/service.py — 生成 MCP 令牌 (generate_mcp_token)
 
 
 class TestGenerateMcpToken:
@@ -121,9 +117,7 @@ class TestGenerateMcpToken:
         assert p1["jti"] != p2["jti"]
 
 
-# ===========================================================================
-# auth/service.py — decode_token
-# ===========================================================================
+# auth/service.py — 解析令牌 (decode_token)
 
 
 class TestDecodeToken:
@@ -175,9 +169,7 @@ class TestDecodeToken:
         assert "revoked" in result.lower() or "expired" in result.lower()
 
 
-# ===========================================================================
-# auth/service.py — authenticate_user
-# ===========================================================================
+# auth/service.py — 用户认证 (authenticate_user)
 
 
 class TestAuthenticateUser:
@@ -209,9 +201,7 @@ class TestAuthenticateUser:
         assert uid == admin_user.id
 
 
-# ===========================================================================
-# auth/service.py — login
-# ===========================================================================
+# auth/service.py — 登录 (login)
 
 
 class TestLogin:
@@ -246,9 +236,7 @@ class TestLogin:
         assert record is None
 
 
-# ===========================================================================
-# auth/service.py — register_user
-# ===========================================================================
+# auth/service.py — 用户注册 (register_user)
 
 
 class TestRegisterUser:
@@ -302,9 +290,7 @@ class TestRegisterUser:
         assert user.avatar == "http://img.png"
 
 
-# ===========================================================================
-# auth/service.py — get_mcp_token / refresh_mcp_token / issue_mcp_token
-# ===========================================================================
+# auth/service.py — MCP 令牌查询/刷新/签发
 
 
 class TestMcpTokenEndpoints:
@@ -347,9 +333,7 @@ class TestMcpTokenEndpoints:
         assert "usage" in result
 
 
-# ===========================================================================
-# auth/user_service.py — create_user
-# ===========================================================================
+# auth/user_service.py — 创建用户 (create_user)
 
 
 class TestCreateUser:
@@ -386,9 +370,7 @@ class TestCreateUser:
         assert user.role == "common"
 
 
-# ===========================================================================
-# auth/user_service.py — get_user / update_user / delete_user
-# ===========================================================================
+# auth/user_service.py — 用户查询/更新/删除
 
 
 class TestUserCRUD:
@@ -439,9 +421,7 @@ class TestUserCRUD:
             delete_user(session, 99999)
 
 
-# ===========================================================================
-# auth/user_service.py — change_password
-# ===========================================================================
+# auth/user_service.py — 修改密码 (change_password)
 
 
 class TestChangePassword:
@@ -475,9 +455,7 @@ class TestChangePassword:
             change_password(session, ChangePasswordParams(actor_id=admin_user.id, actor_role="admin", user_id=99999, old_password="", new_password="new"))
 
 
-# ===========================================================================
-# auth/user_service.py — ensure_user_access
-# ===========================================================================
+# auth/user_service.py — 确保用户访问权限 (ensure_user_access)
 
 
 class TestEnsureUserAccess:
@@ -497,9 +475,7 @@ class TestEnsureUserAccess:
             ensure_user_access(1, "common", 2)
 
 
-# ===========================================================================
 # mcp/token_service.py — 完整生命周期
-# ===========================================================================
 
 
 class TestMcpTokenService:

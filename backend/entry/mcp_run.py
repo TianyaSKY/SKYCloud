@@ -15,7 +15,7 @@ from loguru import logger
 
 setup_logging()
 
-# Read-only database version check; schema upgrades run separately.
+# 数据库版本只读检查; 数据模式升级操作单独执行。
 initialize_application()
 logger.info("MCP Server: Application initialized successfully.")
 

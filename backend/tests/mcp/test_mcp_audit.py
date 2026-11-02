@@ -1,4 +1,4 @@
-"""MCP audit regression tests."""
+"""MCP 审计日志与追溯回归测试."""
 
 import asyncio
 import json
@@ -82,7 +82,7 @@ def test_argument_metadata_never_serializes_sensitive_values_or_objects():
         assert metadata.entity_id == 42
     invalid = summarize_call(tool, **{secret: secret})
     assert secret not in invalid.summary and invalid.entity_id is None
-    # max_depth is a control, never the entity ID, and bool is never an ID.
+    # max_depth 是控制参数而非实体 ID, bool 也绝非 ID.
     def tree(max_depth):
         pass
     assert summarize_call(tree, 3).entity_id is None

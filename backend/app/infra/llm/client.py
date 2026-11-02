@@ -1,7 +1,6 @@
-"""Unified async LLM and embedding entry points with token accounting.
+"""统一的异步 LLM 与嵌入向量调用入口, 集成 Token 计量与记录.
 
-LangChain paths that cannot be intercepted still record usage through
-``record_llm_usage``.
+无法被中间拦截的 LangChain 路径仍可通过 ``record_llm_usage`` 进行用量记录。
 """
 
 from __future__ import annotations
@@ -23,21 +22,18 @@ if TYPE_CHECKING:
 
     from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
-# ---------------------------------------------------------------------------
-# Connection pool
-# ---------------------------------------------------------------------------
+# 连接池
 _client_cache: dict[tuple[str, str, int], AsyncOpenAI] = {}
 
 
 def _get_client(api_base: str, api_key: str) -> AsyncOpenAI:
-    """Reuse an async OpenAI client per endpoint, key and event loop."""
-    # The AsyncClient connection pool is bound to an event loop. API processes
-    # normally own one loop; the worker uses the independent sync client.
+    """按接口端点、API 密钥与事件循环复用异步 OpenAI 客户端."""
+    # AsyncClient 连接池绑定到特定事件循环。API 进程
+    # 通常拥有一个主循环; worker 进程则使用独立的同步客户端。
     try:
         loop_id = id(asyncio.get_running_loop())
     except RuntimeError:
-        # Allow command-line/test pre-creation; network calls still run in a
-        # coroutine.
+        # 允许命令行/测试预先创建; 网络调用仍运行在协程中。
         loop_id = 0
     cache_key = (api_base, api_key, loop_id)
     if cache_key not in _client_cache:
@@ -50,16 +46,14 @@ def _get_client(api_base: str, api_key: str) -> AsyncOpenAI:
 
 
 async def close_llm_clients() -> None:
-    """Close the process-wide async HTTP connection pools."""
+    """关闭进程级的异步 HTTP 连接池."""
     clients = list(_client_cache.values())
     _client_cache.clear()
     for client in clients:
         await client.close()
 
 
-# ---------------------------------------------------------------------------
-# Public interface
-# ---------------------------------------------------------------------------
+# 公共接口
 
 
 async def chat_completion(
@@ -70,7 +64,7 @@ async def chat_completion(
     action: str = "chat",
     query_summary: str | None = None,
 ) -> ChatCompletion:
-    """Run an async chat completion and record its token usage."""
+    """执行异步聊天补全并记录其 Token 用量."""
     client = _get_client(config["api"], config["key"])
     model = config.get("model", "")
 
@@ -100,7 +94,7 @@ async def embed_texts(
     user_id: int = 0,
     query_summary: str | None = None,
 ) -> list[list[float]]:
-    """Embed texts and truncate vectors to the 1024 dimensions storage expects."""
+    """对文本生成嵌入向量, 并将向量截断至存储所需的 1024 维度."""
     if isinstance(texts, str):
         texts = [texts]
     if not texts:
@@ -131,29 +125,26 @@ async def embed_texts(
 
 
 def record_llm_usage(*, usage: TokenUsage) -> None:
-    """Record usage from streaming LangChain paths that cannot be intercepted."""
+    """记录无法直接拦截的流式 LangChain 路径的用量."""
     if usage.total_tokens <= 0 and usage.prompt_tokens <= 0:
         return
     _safe_record(usage)
 
 
-# ---------------------------------------------------------------------------
-# LangChain compatibility layer
-# ---------------------------------------------------------------------------
+# LangChain 兼容层
 
 
 class TrackingOpenAIEmbeddings(OpenAIEmbeddings):
-    """LangChain embeddings wrapper that routes through ``embed_texts``.
+    """经由 ``embed_texts`` 路由调用的 LangChain embeddings 包装器.
 
-    Request identity is passed per call; the cached object keeps no identity.
+    请求身份按每次调用传入; 缓存的对象不保留任何请求身份。
     """
 
-    # The base accepts arbitrary kwargs; retain that contract. At the SDK
-    # boundary int() still performs the original runtime conversion/validation
-    # of user_id, so the cast neither rejects nor normalizes extra kwargs.
+    # 基类接受任意 kwargs; 保留该契约。在 SDK
+    # 边界处 int() 仍会执行 user_id 的原始运行时转换与校验。
 
     def _as_config(self) -> dict[str, str]:
-        """Project the LangChain client settings onto the shared config shape."""
+        """将 LangChain 客户端设置映射到共享的配置结构."""
         api_key = self.openai_api_key
         if isinstance(api_key, SecretStr):
             key_str = api_key.get_secret_value()
@@ -171,10 +162,10 @@ class TrackingOpenAIEmbeddings(OpenAIEmbeddings):
         chunk_size: int | None = None,
         **kwargs: object,
     ) -> list[list[float]]:
-        """Embed document batches through the shared accounting entry point."""
+        """通过共享的计量入口对批量文档生成嵌入向量."""
         if not texts:
             return []
-        del chunk_size  # embed_texts sends one batch; base batching is unused.
+        del chunk_size  # embed_texts 发送单个批次; 基类的批处理逻辑未使用。
         return await embed_texts(
             texts=texts,
             config=self._as_config(),
@@ -192,7 +183,7 @@ class TrackingOpenAIEmbeddings(OpenAIEmbeddings):
         text: str,
         **kwargs: object,
     ) -> list[float]:
-        """Embed one query through the shared accounting entry point."""
+        """通过共享的计量入口对单条查询生成嵌入向量."""
         result = await embed_texts(
             texts=[text],
             config=self._as_config(),

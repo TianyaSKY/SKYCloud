@@ -1,4 +1,4 @@
-"""Assistant orchestration: ownership, persistence, cancellation, and SSE."""
+"""助手编排: 所有权、持久化、取消与流生命周期."""
 
 import asyncio
 import math
@@ -64,7 +64,7 @@ HEARTBEAT_FUTURE_TOLERANCE_SECONDS = 5
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PrepareRunParams:
-    """Durable inputs needed before opening one SSE run."""
+    """打开 SSE 运行前所需的持久化输入."""
 
     workspace: Workspace
     user_id: int
@@ -76,7 +76,7 @@ class PrepareRunParams:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class UpdateConversationParams:
-    """Partial update of one owned conversation."""
+    """所属对话的部分更新参数."""
 
     workspace: Workspace
     user_id: int
@@ -88,7 +88,7 @@ class UpdateConversationParams:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StreamRunParams:
-    """Request identity for a stream that owns its Session."""
+    """拥有自身 Session 的流请求标识."""
 
     session_factory: SessionFactory
     workspace_id: int
@@ -101,7 +101,7 @@ class StreamRunParams:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RespondPermissionParams:
-    """One owner's one-shot permission response."""
+    """单个所有者的一次性权限响应."""
 
     workspace: Workspace
     user_id: int
@@ -112,7 +112,7 @@ class RespondPermissionParams:
 
 
 def _grace_seconds() -> int:
-    """Read the abandoned-run grace period with its historical floor."""
+    """读取废弃运行宽限期并施加历史保底值."""
     try:
         return max(
             int(os.getenv("ASSISTANT_ABANDONED_RUN_GRACE_SECONDS", "45")),
@@ -127,7 +127,7 @@ def _has_live_heartbeat(
     now: datetime,
     grace_seconds: int,
 ) -> bool:
-    """Return whether the durable worker heartbeat is still fresh."""
+    """返回持久化工作线程心跳是否依然新鲜."""
     heartbeat = run.metadata_dict.get("worker_heartbeat_unix")
     if (
         isinstance(heartbeat, (float, int))
@@ -146,18 +146,18 @@ def recover_abandoned_run(
     *,
     commit: bool = True,
 ) -> bool:
-    """Release a run left active after its SSE worker has disappeared.
+    """释放因 SSE 工作线程消失而遗留的活跃运行.
 
-    A browser disconnect normally cancels the generator and records a terminal
-    status.  A process restart or an exception before the generator starts can
-    leave a durable ``running`` row behind, which would otherwise permanently
-    block its conversation.  Keep a short grace period so a duplicate submit
-    still receives the normal conflict response.
+    浏览器断开连接通常会取消生成器并记录终态.
+    进程重启或生成器启动前的异常可能会遗留持久化的
+    ``running`` 行记录, 从而导致其对话被永久阻塞.
+    保留简短的宽限期, 使得重复提交
+    仍能收到正常的冲突响应.
     """
     if run_registry.get(int(run.id)) is not None:
         return False
-    # Read and lock the latest durable heartbeat. A process-local registry
-    # cannot establish that a worker on another host has disappeared.
+    # 读取并锁定最新的持久化心跳. 进程本地注册表
+    # 无法确认另一台主机上的 worker 是否已消失.
     locked = repository.lock_run(session, int(run.id))
     if locked is None or locked.status in repository.TERMINAL_RUN_STATUSES:
         return False
@@ -224,7 +224,7 @@ def create_conversation(
     mode: str,
     title: str | None = None,
 ) -> AssistantConversation:
-    """Create one owned conversation after membership checks."""
+    """在成员身份检查后创建所属对话."""
     assert_member_locked(session, int(workspace.id), int(user_id))
     if mode == "expert":
         assert_can_write(session, int(workspace.id), int(user_id))
@@ -249,13 +249,13 @@ def list_user_conversations(
     *,
     include_archived: bool = False,
 ) -> list[AssistantConversation]:
-    """List conversations the caller may see in this workspace."""
+    """列出调用方在当前工作区可见的对话."""
     role = assert_member(session, int(workspace.id), int(user_id))
     if mode == "expert":
         assert_can_write(session, int(workspace.id), int(user_id))
     elif mode is None and role.value == "viewer":
-        # Do not leak expert session/runtime metadata through the unfiltered
-        # list endpoint.  Editors/admins may intentionally list both modes.
+        # 不通过未过滤列表端点泄漏专家会话/运行时元数据.
+        # 编辑者/管理员可能有意列出两种模式.
         mode = "fast"
     return repository.list_conversations(
         session,
@@ -272,7 +272,7 @@ def get_active_run_for_conversation(
     user_id: int,
     conversation_id: int,
 ) -> AssistantRun | None:
-    """Read a conversation's active run without recovering worker state."""
+    """读取对话活跃运行而不触发工作线程恢复副作用."""
     assert_member(session, int(workspace.id), int(user_id))
     conversation = get_user_conversation(
         session,
@@ -288,7 +288,7 @@ def get_active_expert_run_for_member(
     workspace: Workspace,
     user_id: int,
 ) -> AssistantRun | None:
-    """Read a member's active expert run without worker recovery side effects."""
+    """读取成员活跃专家运行而不触发工作线程恢复副作用."""
     assert_can_write(session, int(workspace.id), int(user_id))
     return repository.active_expert_run_for_member(
         session,
@@ -303,7 +303,7 @@ def get_user_conversation(
     user_id: int,
     conversation_id: int,
 ) -> AssistantConversation:
-    """Return one conversation after membership and mode checks."""
+    """在成员身份与模式检查后返回单个对话."""
     assert_member(session, int(workspace.id), int(user_id))
     conversation = _conversation_or_404(
         session,
@@ -322,7 +322,7 @@ def get_conversation_messages(
     user_id: int,
     conversation_id: int,
 ) -> list[AssistantMessage]:
-    """Return the ordered messages of one owned conversation."""
+    """返回所属对话的有序消息列表."""
     conversation = get_user_conversation(
         session,
         workspace,
@@ -336,7 +336,7 @@ def update_conversation(
     session: Session,
     params: UpdateConversationParams,
 ) -> AssistantConversation:
-    """Rename or archive one owned conversation."""
+    """重命名或归档所属的单个对话."""
     assert_member_locked(
         session,
         int(params.workspace.id),
@@ -394,7 +394,7 @@ def delete_conversation(
     user_id: int,
     conversation_id: int,
 ) -> None:
-    """Delete one owned conversation that has no live run."""
+    """删除没有活跃运行的所属对话."""
     assert_member_locked(session, int(workspace.id), int(user_id))
     get_user_conversation(session, workspace, user_id, conversation_id)
     conversation = repository.lock_conversation(
@@ -423,7 +423,7 @@ def _prepare_conversation(
     session: Session,
     params: PrepareRunParams,
 ) -> AssistantConversation:
-    """Lock the conversation and enforce the one-active-run rule."""
+    """锁定对话并强制单活跃运行规则."""
     assert_member_locked(session, int(params.workspace.id), int(params.user_id))
     get_user_conversation(
         session,
@@ -487,9 +487,9 @@ def prepare_run(
     session: Session,
     params: PrepareRunParams,
 ) -> tuple[AssistantConversation, AssistantRun, list[dict[str, str]]]:
-    """Create the durable message/run records before opening the SSE stream."""
+    """在打开 SSE 流之前创建持久化消息/运行记录."""
     conversation = _prepare_conversation(session, params)
-    # The history excludes the new user message and pending assistant shell.
+    # 历史记录排除了新用户消息和待处理的助手外壳.
     history = [
         {"role": message.role, "content": message.content}
         for message in repository.get_messages(
@@ -527,8 +527,8 @@ def prepare_run(
     repository.update_run_status(session, run, "running")
     assistant_message.status = "streaming"
     if params.on_run_created is not None:
-        # create_run has flushed its ID. Capture internal identity before commit
-        # so a lost acknowledgement can be compensated in a fresh transaction.
+        # create_run 已刷新其 ID. 在 commit 前捕获内部标识,
+        # 以便在丢失确认时可在全新事务中执行补偿.
         params.on_run_created(
             (
                 int(params.workspace.id),
@@ -547,7 +547,7 @@ def _event_content(event: AssistantEvent) -> str:
 
 
 def _annotate_event(event: AssistantEvent, run_id: int, message_id: int) -> None:
-    """Attach durable identities without touching heartbeat payloads."""
+    """附加持久化标识且不触碰心跳负载."""
     if event.run_id is None:
         event.run_id = run_id
     if event.message_id is None and event.type != "heartbeat":
@@ -555,7 +555,7 @@ def _annotate_event(event: AssistantEvent, run_id: int, message_id: int) -> None
 
 
 def _merge_event(progress: StreamProgress, event: AssistantEvent) -> None:
-    """Fold one engine event into the persisted answer state."""
+    """将单个引擎事件折叠到持久化回答状态中."""
     if event.type == "token":
         progress.answer_parts.append(_event_content(event))
     elif event.type in {"title", "keywords"}:
@@ -576,7 +576,7 @@ def _merge_event(progress: StreamProgress, event: AssistantEvent) -> None:
 
 @dataclass(slots=True)
 class _StreamState:
-    """Runtime collaborators for one persisted stream."""
+    """单个持久化流的运行时协作者."""
 
     worker: StreamWorker
     persistence: StreamPersistence
@@ -594,7 +594,7 @@ async def _finish(
     status: str,
     error_code: str | None = None,
 ) -> str | None:
-    """Persist the terminal snapshot on the owning SQL worker."""
+    """在所属 SQL worker 上持久化终态快照."""
     outcome = FinalOutcome(
         status=status,
         content=progress.content,
@@ -607,7 +607,7 @@ async def _finish(
 
 
 async def _finish_cancelled(state: _StreamState) -> AssistantEvent | None:
-    """Persist cancellation and return the event the client may see."""
+    """持久化取消状态并返回客户端可见的事件."""
     status = await _finish(
         state.worker,
         state.persistence,
@@ -620,7 +620,7 @@ async def _finish_cancelled(state: _StreamState) -> AssistantEvent | None:
 
 
 async def _finish_completed(state: _StreamState) -> AssistantEvent | None:
-    """Persist completion and return the final status event."""
+    """持久化完成状态并返回最终状态事件."""
     status = await _finish(
         state.worker,
         state.persistence,
@@ -637,7 +637,7 @@ async def _finish_failed(
     state: _StreamState,
     error_code: str,
 ) -> AssistantEvent | None:
-    """Persist failure and return the sanitized error event."""
+    """持久化失败状态并返回脱敏后的错误事件."""
     status = await _finish(
         state.worker,
         state.persistence,
@@ -672,7 +672,7 @@ def _status_event(
 
 
 async def _poll_state(state: _StreamState) -> tuple[bool, bool]:
-    """Refresh the lease at most every ten seconds and read run state."""
+    """至多每 10 秒刷新一次租约并读取运行状态."""
     progress = state.progress
     renew = time.monotonic() - progress.last_lease >= LEASE_RENEW_SECONDS
     terminal, cancelled = await state.worker.call(
@@ -685,7 +685,7 @@ async def _poll_state(state: _StreamState) -> tuple[bool, bool]:
 
 
 async def _poll_idle(state: _StreamState) -> None:
-    """Authorize the idle producer without leaving checkpoints unflushed."""
+    """授权空闲生产者且不保留未刷新的检查点."""
     progress = state.progress
     renew = time.monotonic() - progress.last_lease >= LEASE_RENEW_SECONDS
     terminal, cancelled = await state.worker.call(
@@ -703,7 +703,7 @@ async def _checkpoint_event(
     state: _StreamState,
     event: AssistantEvent,
 ) -> bool:
-    """Persist one checkpoint and report whether the run is still current."""
+    """持久化单个检查点并报告运行是否仍可继续."""
     progress = state.progress
     progress.event_count += 1
     now = time.monotonic()
@@ -732,7 +732,7 @@ async def _run_engine_events(
     state: _StreamState,
     request: EngineRequest,
 ) -> AsyncGenerator[AssistantEvent, None]:
-    """Consume one engine stream while persisting its checkpoints."""
+    """消费单个引擎流, 同时持久化其检查点."""
     worker = state.worker
     persistence = state.persistence
     progress = state.progress
@@ -831,7 +831,7 @@ async def _stream_with_state(
     state: _StreamState,
     request: EngineRequest,
 ) -> AsyncGenerator[AssistantEvent, None]:
-    """Stream one engine run and persist every terminal outcome."""
+    """流式传输单个引擎运行并持久化所有终态结果."""
     persistence = state.persistence
     progress = state.progress
     controller = state.controller
@@ -869,7 +869,7 @@ async def _stream_with_state(
 
 
 def cleanup_stream_session(session: Session, operation: str) -> None:
-    """Run cleanup on the owning worker without replacing the stream outcome."""
+    """在所属 worker 上运行清理且不替换流执行结果."""
     try:
         getattr(session, operation)()
     except Exception as exc:
@@ -891,7 +891,7 @@ def cleanup_stream_session(session: Session, operation: str) -> None:
 async def stream_run(
     params: StreamRunParams,
 ) -> AsyncGenerator[AssistantEvent, None]:
-    """Own the streaming Session entirely within its dedicated worker thread."""
+    """在专用工作线程内部完全持有流式 Session."""
     async with StreamWorker() as worker:
         owned_sessions: list[Session] = []
 
@@ -935,7 +935,7 @@ def request_cancel(
     user_id: int,
     run_id: int,
 ) -> AssistantRun:
-    """Persist cancellation and stage any required remote cleanup."""
+    """持久化取消状态并暂存所需的远程清理."""
     assert_member_locked(session, int(workspace.id), int(user_id))
     run = repository.get_owned_run(
         session,
@@ -964,7 +964,7 @@ def respond_permission(
     session: Session,
     params: RespondPermissionParams,
 ) -> AssistantRun:
-    """Commit one one-shot permission response before waking the worker."""
+    """在唤醒 worker 之前提交一次性权限响应."""
     assert_member_locked(session, int(params.workspace.id), int(params.user_id))
     run = repository.get_owned_run(
         session,
@@ -1018,7 +1018,7 @@ def handoff_to_expert(
     source_conversation_id: int,
     message_id: int | None = None,
 ) -> AssistantConversation:
-    """Create the expert conversation that continues a fast conversation."""
+    """创建接续快速对话的专家对话."""
     assert_can_write_locked(session, int(workspace.id), int(user_id))
     source = get_user_conversation(
         session,

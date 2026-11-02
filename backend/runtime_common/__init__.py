@@ -1,1 +1,1 @@
-"""Shared Runtime transport and contracts; intentionally no re-exports."""
+"""共享 Runtime 传输层与协议契约; 按设计不进行符号重导出."""

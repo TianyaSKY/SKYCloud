@@ -1,4 +1,4 @@
-"""Opaque, one-use UI tickets and host-bound, revocable runtime sessions."""
+"""单次使用的非透明 UI 访问票据与绑定主机的可吊销运行时会话."""
 
 import hashlib
 import json
@@ -43,7 +43,7 @@ NOT_RUNNING = "Runtime is not running"
 
 
 class UiTicket(TypedDict):
-    """The launch credential returned to the browser."""
+    """返回给前端浏览器的启动凭据结构."""
 
     launch_url: str
     expires_in: int
@@ -68,7 +68,7 @@ class _Claims:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeIdentity:
-    """Authoritative runtime identity used by one UI credential check."""
+    """单次 UI 凭据校验所使用的权威运行时身份."""
 
     runtime_id: int
     container_id: str
@@ -79,7 +79,7 @@ class RuntimeIdentity:
 
 @dataclass(frozen=True, slots=True)
 class CredentialFields:
-    """Fields of an already validated session credential."""
+    """已通过校验的会话凭据字段字典."""
 
     user_id: int
     container_id: str
@@ -118,7 +118,7 @@ def _canonical(origin: _Origin) -> str:
 
 
 def ui_origin(runtime_id: int) -> str:
-    """Return the canonical per-runtime UI origin or reject unsafe config."""
+    """返回规范的每个运行时专有 UI Origin, 拒绝不安全的配置."""
     template = os.getenv("RUNTIME_UI_ORIGIN_TEMPLATE", DEFAULT_ORIGIN_TEMPLATE)
     parent = os.getenv("APP_ORIGIN", DEFAULT_APP_ORIGIN)
     if template.count("{runtime_id}") != 1 or runtime_id <= 0:
@@ -136,7 +136,7 @@ def ui_origin(runtime_id: int) -> str:
 
 
 def cookie_name(origin: str) -> str:
-    """Return the cookie name that is safe for this origin's scheme."""
+    """返回适用于该 Origin 协议的安全 Cookie 名称."""
     return "__Host-" + COOKIE if origin.startswith("https://") else COOKIE
 
 
@@ -197,7 +197,7 @@ def _identity(
     workspace_id: int,
     runtime_id: int | None = None,
 ) -> RuntimeIdentity:
-    # Scalar authoritative reads avoid stale ORM/profile caches after revocation.
+    # 标量权威读取可避免在凭据吊销后读取到陈旧的 ORM/资料缓存。
     query = session.query(
         OpenCodeRuntime.id,
         OpenCodeRuntime.container_id,
@@ -261,7 +261,7 @@ def issue(
     *,
     parent_session: str | None = None,
 ) -> UiTicket:
-    """Issue one opaque launch ticket for the caller's running runtime."""
+    """为调用方正在运行的 Runtime 签发单次使用的非透明启动票据."""
     identity = _identity(session, user_id, workspace_id)
     origin = ui_origin(identity.runtime_id)
     payload: JsonObject = {
@@ -282,7 +282,7 @@ def issue(
 
 
 def validate(session: Session, payload: JsonObject, host: str) -> JsonObject:
-    """Prove a credential still matches current runtime identity and host."""
+    """证明凭据依然与当前运行时身份和主机保持匹配."""
     claims = _claims(payload)
     origin = ui_origin(claims.runtime_id)
     if (
@@ -310,23 +310,23 @@ def validate(session: Session, payload: JsonObject, host: str) -> JsonObject:
 
 
 def redeem(session: Session, raw: str, host: str) -> tuple[str, JsonObject]:
-    """Consume one launch ticket and issue its host-bound session."""
+    """消费单次启动票据并签发其绑定主机的会话凭据."""
     payload = validate(session, _load("ticket", raw, consume=True), host)
     return _store("session", payload, SESSION_TTL), payload
 
 
 def authenticate(session: Session, raw: str, host: str) -> JsonObject:
-    """Validate a host-bound session credential."""
+    """校验绑定主机的会话凭据合法性."""
     return validate(session, _load("session", raw), host)
 
 
 def credential_origin(payload: JsonObject) -> str:
-    """Return the origin of an already validated UI credential."""
+    """返回已通过校验的 UI 凭据所归属的 Origin."""
     return _credential_str(payload, "origin")
 
 
 def credential_fields(payload: JsonObject) -> CredentialFields:
-    """Project an already validated session credential for the gateway."""
+    """为网关投影并提取已校验通过的会话凭据字段."""
     expires_at = payload.get("expires_at")
     if not isinstance(expires_at, (int, float)):
         raise HTTPException(status_code=401, detail=INVALID_CREDENTIAL)

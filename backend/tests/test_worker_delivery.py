@@ -1,4 +1,4 @@
-"""Failure boundaries that must preserve unacknowledged deliveries."""
+"""必须保留未确认投递的故障边界测试."""
 from concurrent.futures import Future
 from contextlib import contextmanager
 from types import SimpleNamespace

@@ -1,4 +1,4 @@
-"""Admission and publication independently read current edit permission."""
+"""准入与发布独立读取当前编辑权限测试."""
 import pytest
 from sqlalchemy import update, delete
 from app.exceptions import PermissionDeniedError
@@ -10,7 +10,7 @@ from app.models.upload_reservation import UploadDailyUsage
 @pytest.mark.parametrize('phase', ['admit', 'publish-demote', 'publish-remove'])
 def test_upload_boundary_rejects_current_permission_loss(session, test_workspace, test_user, phase):
     wid, uid = test_workspace.id, test_user.id
-    # Keep a stale admin ORM identity to ensure locked reads refresh it.
+    # 保留过期的管理员 ORM 标识以确保加锁读取能刷新它.
     member = session.query(WorkspaceMember).filter_by(workspace_id=wid, user_id=uid).one()
     if phase != 'admit':
         reservation_id = upload_quota.reserve(session, upload_quota.ReserveParams(workspace_id=wid, user_id=uid, size=3)).id

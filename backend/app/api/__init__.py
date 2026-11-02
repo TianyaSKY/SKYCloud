@@ -1,4 +1,4 @@
-"""HTTP API boundary: dependency injection and the application factory.
+"""HTTP API 边界: 依赖注入与应用程序工厂.
 
-Routes and schemas live in the feature modules.
+具体的路由和数据模型定义在各个 feature 模块中.
 """

@@ -1,4 +1,4 @@
-"""Workspace context dependencies create/query/close on their executing worker."""
+"""工作区上下文依赖项在其执行 worker 上创建/查询/关闭测试."""
 import asyncio
 import threading
 from types import SimpleNamespace

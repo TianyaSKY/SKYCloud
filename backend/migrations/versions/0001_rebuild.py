@@ -1,4 +1,4 @@
-"""Initialize the final schema in a clean PostgreSQL database."""
+"""在干净的 PostgreSQL 数据库中初始化最终架构."""
 
 from pathlib import Path
 

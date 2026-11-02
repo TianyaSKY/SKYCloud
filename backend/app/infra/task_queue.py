@@ -36,7 +36,7 @@ RABBITMQ_RECONNECT_DELAY_SECONDS = float(
 
 
 class OrganizeTaskMessage(TypedDict):
-    """Describe the existing organize-task JSON body."""
+    """描述现有的整理任务 JSON 消息体结构."""
 
     workspace_id: int
     user_id: int
@@ -44,7 +44,7 @@ class OrganizeTaskMessage(TypedDict):
 
 
 class FailedTaskMessage(TypedDict):
-    """Describe the durable copy of a failed queue delivery."""
+    """描述失败队列投递的持久化副本数据结构."""
 
     queue: str
     body_base64: str
@@ -148,7 +148,7 @@ class RabbitMQTaskConsumer:
     """多队列轮询消费者: 空队列 sleep, AMQP 错误后退避重连."""
 
     def __init__(self, poll_interval_seconds: float = 0.5) -> None:
-        """Create a consumer without establishing its lazy broker connection."""
+        """创建消费者实例而不立即建立延迟代理连接."""
         self.poll_interval_seconds = poll_interval_seconds
         self._connection: BlockingConnection | None = None
         self._channel: BlockingChannel | None = None
@@ -170,8 +170,8 @@ class RabbitMQTaskConsumer:
             if self._connection and self._connection.is_open:
                 self._connection.close()
         except Exception as exc:
-            # Pika teardown crosses transport callbacks; cleanup must drop handles
-            # even when an unenumerable transport/protocol failure interrupts close.
+            # Pika 清理跨越传输层回调; 即使不可穷举的传输/协议
+            # 失败中断了关闭过程, 清理逻辑也必须丢弃连接句柄。
             logger.warning(
                 "RabbitMQ connection close failed: error_type={}",
                 type(exc).__name__,
@@ -195,7 +195,7 @@ class RabbitMQTaskConsumer:
         return self._channel
 
     def _require_connection(self) -> BlockingConnection:
-        """Reconnect when needed and return the live connection."""
+        """在需要时重连并返回活跃连接."""
         self._ensure_channel()
         if self._connection is None:
             message = "RabbitMQ connection is not available"
@@ -213,8 +213,8 @@ class RabbitMQTaskConsumer:
         method_frame, _, body = channel.basic_get(queue=queue_name, auto_ack=False)
         if not method_frame or body is None:
             return None
-        # types-pika declares the body as str, but the blocking channel hands
-        # back bytes for auto_ack=False; normalize whichever arrived.
+        # types-pika 将 body 标注为 str, 但阻塞 channel 在
+        # auto_ack=False 时返回 bytes; 规范化两者。
         raw_body = body if isinstance(body, bytes) else body.encode("utf-8")
         return QueueMessage(
             queue_name=queue_name,
@@ -228,7 +228,7 @@ class RabbitMQTaskConsumer:
         self,
         message: QueueMessage,
     ) -> tuple[BlockingChannel, int] | None:
-        """Return the live delivery (channel, tag) or None once ownership is lost."""
+        """返回活跃的投递元组 (channel, tag), 若所有权丢失则返回 None."""
         channel = self._channel
         if (
             message.generation != self._generation
@@ -240,11 +240,11 @@ class RabbitMQTaskConsumer:
         return channel, message.delivery_tag
 
     def owns_delivery(self, message: QueueMessage) -> bool:
-        """Report whether the current channel still owns this delivery."""
+        """返回当前通道是否仍然拥有该投递."""
         return self._owned_delivery(message) is not None
 
     def acknowledge(self, message: QueueMessage) -> bool:
-        """Confirm on the receiving channel only; old tags cannot survive reconnect."""
+        """仅在接收通道上确认; 旧的 tag 无法在重连后继续存活."""
         owned = self._owned_delivery(message)
         if owned is None:
             return False
@@ -253,7 +253,7 @@ class RabbitMQTaskConsumer:
         return True
 
     def retry(self, message: QueueMessage) -> bool:
-        """Leave busy/transient work available to another attempt."""
+        """将繁忙或瞬态失败的任务重新放回队列以供再次尝试."""
         owned = self._owned_delivery(message)
         if owned is None:
             return False
@@ -262,7 +262,7 @@ class RabbitMQTaskConsumer:
         return True
 
     def park_failed(self, message: QueueMessage, error: BaseException) -> None:
-        """Keep failed payloads durably; only ack after the broker confirms the copy."""
+        """持久化保存失败的载荷; 仅在 broker 确认副本后才执行 ack."""
         if not self.owns_delivery(message):
             return
         payload: FailedTaskMessage = {
@@ -276,7 +276,7 @@ class RabbitMQTaskConsumer:
         self.acknowledge(message)
 
     def poll(self, queue_names: Iterable[str]) -> QueueMessage | None:
-        """One fair polling round; the caller can settle futures between rounds."""
+        """单轮公平轮询; 调用方可在各轮之间处理 futures."""
         enabled = set(queue_names)
         for offset in range(len(TASK_QUEUES)):
             index = (self._next_queue_index + offset) % len(TASK_QUEUES)
@@ -289,7 +289,7 @@ class RabbitMQTaskConsumer:
         return None
 
     def idle(self) -> None:
-        """Service heartbeats even when all executor slots are occupied."""
+        """即使所有执行器槽位均被占用, 也保持心跳维护."""
         self._require_connection().sleep(self.poll_interval_seconds)
 
     def get_next_message(self) -> QueueMessage:

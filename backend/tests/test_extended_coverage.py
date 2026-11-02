@@ -6,9 +6,7 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
 
-# ---------------------------------------------------------------------------
 # file/service.py 补充测试
-# ---------------------------------------------------------------------------
 
 class TestFileServiceMultipart:
     """分片上传用例与搜索测试。"""
@@ -162,9 +160,7 @@ class TestFileServiceCleanup:
         assert not upload_dir.exists()
 
 
-# ---------------------------------------------------------------------------
 # mcp/server.py 补充测试
-# ---------------------------------------------------------------------------
 
 from app.mcp.context import current_user_id
 from app.mcp.server import (
@@ -389,9 +385,7 @@ class TestMcpGetUploadUrl:
             current_user_id.reset(token)
 
 
-# ---------------------------------------------------------------------------
 # chat/service.py 补充测试
-# ---------------------------------------------------------------------------
 
 class TestChatServiceFunctions:
     """chat service 辅助函数测试。"""

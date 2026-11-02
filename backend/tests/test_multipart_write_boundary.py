@@ -1,4 +1,4 @@
-"""Multipart writes cannot escape through a replaced parent directory."""
+"""分块写入不能通过被替换的父目录逃逸测试."""
 from io import BytesIO
 from types import SimpleNamespace
 

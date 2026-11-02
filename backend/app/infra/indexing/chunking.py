@@ -1,11 +1,11 @@
-"""Split extractable text into retrieval-friendly chunks with source pages."""
+"""将提取的文本切分为利于检索的文本块, 并附带来源页码."""
 
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class TextSection:
-    """A contiguous region of source text; the page is unknown when ``None``."""
+    """连续的源文本区域; 为 ``None`` 时表示页码未知."""
 
     text: str
     page_number: int | None = None
@@ -13,7 +13,7 @@ class TextSection:
 
 @dataclass(frozen=True)
 class TextChunk:
-    """A text fragment that can be written to the vector store."""
+    """可写入向量存储的文本切片."""
 
     content: str
     chunk_index: int
@@ -25,7 +25,7 @@ def build_text_chunks(
     chunk_size: int = 900,
     overlap: int = 150,
 ) -> list[TextChunk]:
-    """Split on natural breaks first and characters second, never across pages."""
+    """优先在自然断句处分块, 其次按字符切分, 绝不跨页."""
     if chunk_size <= 0 or overlap < 0 or overlap >= chunk_size:
         message = "chunk_size 必须大于 overlap, 且 overlap 不能为负数"
         raise ValueError(message)

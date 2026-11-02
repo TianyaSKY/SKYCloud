@@ -11,7 +11,7 @@ class ShareCreateRequest(BaseModel):
 
 
 class ShareResponse(BaseModel):
-    """Public share link metadata."""
+    """公开的分享链接元数据."""
 
     id: int
     token: str
@@ -23,6 +23,6 @@ class ShareResponse(BaseModel):
 
 
 class ShareAcknowledgment(BaseModel):
-    """Acknowledgment returned after cancelling a share."""
+    """取消分享后返回的确认响应模型."""
 
     message: str

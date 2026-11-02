@@ -1,4 +1,4 @@
-"""File share link rows with optional expiry."""
+"""支持可选过期时间的文件外链分享模型."""
 
 import uuid
 from datetime import datetime
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class ShareDict(TypedDict):
-    """Public representation of a file share row."""
+    """文件分享记录的公开表示模型."""
 
     id: int
     token: str
@@ -33,7 +33,7 @@ class ShareDict(TypedDict):
 
 
 class Share(Base):
-    """External file share: token link with an optional expiry."""
+    """外部文件分享: 包含唯一口令链接与可选有效期的模型."""
 
     __tablename__ = "shares"
 
@@ -67,7 +67,7 @@ class Share(Base):
     user: Mapped["User"] = relationship("User")
 
     def to_dict(self) -> ShareDict:
-        """Return the public share representation."""
+        """返回文件分享的公开字典表示."""
         return {
             "id": self.id,
             "token": self.token,
@@ -80,7 +80,7 @@ class Share(Base):
 
     @classmethod
     def from_cache(cls, d: ShareDict) -> "Share":
-        """Build a detached share row from cached fields."""
+        """根据缓存字段构建游离态分享记录."""
         return cls(
             id=d.get("id"),
             token=d.get("token"),

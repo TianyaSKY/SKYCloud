@@ -1,4 +1,4 @@
-"""SQL-only remote cleanup staging and admission guard."""
+"""仅限 SQL 的远程清理暂存与准入防线."""
 
 from sqlalchemy.orm import Session
 
@@ -9,7 +9,7 @@ from app.models.runtime_operation import RuntimeOperation
 
 
 def stage(session: Session, run: AssistantRun) -> None:
-    """Stage one idempotent remote cleanup for a cancelled or failed run."""
+    """为已取消或失败的运行暂存一次幂等的远程清理."""
     if run.engine != "expert" or (
         not run.opencode_session_id and not run.runtime_lease_token
     ):
@@ -25,7 +25,7 @@ def stage(session: Session, run: AssistantRun) -> None:
         runtime.container_id if runtime else None
     )
     if runtime_id is None or not container_id:
-        return  # Detached/deleted runtime resources use the cleanup outbox.
+        return  # 游离或已删除的运行时资源使用清理 outbox.
     if runtime is not None and (
         runtime.user_id != conversation.user_id
         or runtime.workspace_id != conversation.workspace_id
@@ -55,7 +55,7 @@ def stage(session: Session, run: AssistantRun) -> None:
 
 
 def pending_for_member(session: Session, workspace_id: int, user_id: int) -> bool:
-    """Return whether one member still owns unfinished remote cleanup."""
+    """返回指定成员是否仍持有未完成的远程清理."""
     return (
         session.query(AssistantRuntimeAbort.run_id)
         .filter(

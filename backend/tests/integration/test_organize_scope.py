@@ -1,4 +1,4 @@
-"""Real locked LangChain tool invocation with PostgreSQL scope/role enforcement."""
+"""带 PostgreSQL 范围/角色强制的真实锁定 LangChain 工具调用测试."""
 import json
 import os
 from pathlib import Path
@@ -51,7 +51,7 @@ with concurrent.futures.ThreadPoolExecutor(2) as pool:
     assert 'worker.txt' in first.result() and 'FOREIGN_SECRET' not in first.result()
     assert 'FOREIGN_SECRET' in second.result() and 'worker.txt' not in second.result()
 a['rename_folder'].invoke({'folder_id':data['own_folder'], 'new_name':'allowed', 'workspace_id':data['ws_a']})
-# Historical inconsistent parent links cannot cause recursive moves or cascade deletes.
+# 历史不一致的父链接绝不能引发递归移动或级联删除.
 with SessionLocal() as db:
     db.get(File, data['foreign_file']).parent_id = data['own_folder']
     db.commit()

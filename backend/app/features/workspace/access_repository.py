@@ -1,4 +1,4 @@
-"""Current workspace identity locks in account/lifecycle deletion order."""
+"""按账户/生命周期删除顺序执行当前工作空间身份行级锁."""
 
 from typing import TypeVar
 
@@ -30,7 +30,7 @@ def lock_write_identity(
     workspace_id: int,
     user_id: int,
 ) -> WorkspaceMember | None:
-    """Lock the user, workspace and membership in deletion order."""
+    """按生命周期删除顺序对用户、工作空间及成员记录加行级锁."""
     user = _lock(session, User, User.id == user_id)
     if user is None:
         return None

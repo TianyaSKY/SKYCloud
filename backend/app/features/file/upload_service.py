@@ -1,4 +1,4 @@
-"""Single and batch upload use cases with explicit transaction ownership."""
+"""单文件与批量上传用例, 具备显式事务归属与管理."""
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -45,7 +45,7 @@ from app.models.file import File, VectorValue
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CloneSourceParams:
-    """Inputs for cloning an existing object into a new file row."""
+    """将现有存储对象秒传克隆为新文件记录所需的输入参数."""
 
     source_file: File
     filename: str
@@ -62,7 +62,7 @@ def _validate_live_source(
     object_name: str,
     file_exists: Callable[[str], bool],
 ) -> File:
-    """Return the refreshed clone source or raise when it is no longer usable."""
+    """返回刷新后的秒传克隆源, 若源对象已不可用则抛出异常."""
     if live_source is None:
         message = "Reusable file no longer available; retry upload"
         raise ConflictError(message)
@@ -76,7 +76,7 @@ def _validate_live_source(
 
 
 class FileUploadService:
-    """Single and batch object publication over durable reservations."""
+    """基于持久化配额预留机制实现的单文件与批量对象发布服务."""
 
     def __init__(
         self,
@@ -84,7 +84,7 @@ class FileUploadService:
         *,
         storage_factory: Callable[[], UploadStorage] = get_storage_client,
     ) -> None:
-        """Bind upload settings and the minimal object-store boundary."""
+        """绑定上传配置与精简对象存储契约边界."""
         self.settings = settings
         self.storage_factory = storage_factory
 
@@ -96,7 +96,7 @@ class FileUploadService:
         upload: UploadSource,
         parent_id: int | None = None,
     ) -> File:
-        """Stage, reserve, store and commit one file publication."""
+        """执行单文件发布的暂存、预留、存储写入与事务提交全流程."""
         if not upload.filename:
             message = "No selected file"
             raise BusinessRuleError(message)
@@ -145,7 +145,7 @@ class FileUploadService:
         uploads: list[UploadSource],
         parent_id: int | None = None,
     ) -> list[File]:
-        """Store every valid upload and publish all rows in one transaction."""
+        """存储所有合法上传内容, 并在单笔事务中批量发布所有文件记录."""
         valid_uploads = [upload for upload in uploads if upload and upload.filename]
         if not valid_uploads:
             message = "No selected files"
@@ -205,7 +205,7 @@ class FileUploadService:
     def reusable_source(
         self, session: Session, content_hash: str, file_size: int, workspace_id: int,
     ) -> File | None:
-        """Return a stored object that can satisfy the upload without a PUT."""
+        """查询可满足秒传条件的已有对象, 免于执行实际 PUT 存储操作."""
         source_file = repository.find_reusable_file(
             session, content_hash, file_size, workspace_id,
         )
@@ -216,7 +216,7 @@ class FileUploadService:
         return source_file
 
     def clone_source(self, session: Session, params: CloneSourceParams) -> File:
-        """Commit an instant-upload row while preserving its shared source object."""
+        """提交秒传文件记录, 同时保持其引用的共享源对象."""
         source_file = params.source_file
         if source_file.workspace_id != params.workspace_id:
             message = "Reusable file belongs to another workspace"
@@ -234,9 +234,9 @@ class FileUploadService:
                 kind="instant",
             ),
         )
-        # Cache the identity now: a failed flush/commit expires this row, and
-        # reading reservation.id inside the handler would raise before the
-        # compensation could reset the transaction.
+        # 提前缓存预留 ID: flush/commit 失败会使该 ORM 实体失效,
+        # 在异常处理中读取 reservation.id 会在执行补偿
+        # 重置事务之前抛出异常。
         reservation_id = reservation.id
         try:
             assert_can_write_locked(
@@ -307,7 +307,7 @@ class FileUploadService:
         uploader_id: int,
         data: PreflightData,
     ) -> dict[str, object]:
-        """Clone a stored object when the hash matches; skip the chunk transfer."""
+        """哈希匹配时直接秒传克隆已有对象; 从而跳过分片传输流程."""
         filename = (data.get("filename") or "").strip()
         if not filename:
             message = "filename is required"
@@ -350,5 +350,5 @@ class FileUploadService:
 
 
 def get_upload_service() -> FileUploadService:
-    """Build the upload use case through its sole settings assembly point."""
+    """通过唯一配置装配点构建上传服务用例实例."""
     return FileUploadService(upload_settings())

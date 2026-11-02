@@ -21,9 +21,7 @@ from app.features.file.bloom import (
 )
 
 
-# ---------------------------------------------------------------------------
 # Bloom 工具函数
-# ---------------------------------------------------------------------------
 
 
 class TestBloomUtils:
@@ -64,9 +62,7 @@ class TestBloomUtils:
         assert pos1 != pos2
 
 
-# ---------------------------------------------------------------------------
 # Bloom 构建与查询（mock redis）
-# ---------------------------------------------------------------------------
 
 
 class TestBloomBuild:
@@ -216,9 +212,7 @@ class TestPublicAPI:
             m.assert_called_once_with(None, 10)
 
 
-# ---------------------------------------------------------------------------
 # change_log_summary
-# ---------------------------------------------------------------------------
 
 from app.features.folder.change_log_summary import summarize_events, _event_value
 
@@ -266,9 +260,7 @@ class TestSummarizeEvents:
         assert result["summary_text"] is not None
 
 
-# ---------------------------------------------------------------------------
 # change_log 核心函数
-# ---------------------------------------------------------------------------
 
 from app.features.folder.change_log import (
     _build_folder_path,

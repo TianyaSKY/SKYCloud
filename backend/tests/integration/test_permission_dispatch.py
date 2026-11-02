@@ -1,4 +1,4 @@
-"""Real SQL ordering; provider acknowledgment is an explicit test seam."""
+"""真实 SQL 排序; 提供商确认作为显式测试接缝测试."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import os

@@ -1,4 +1,4 @@
-"""Real PostgreSQL migration checks, isolated from any existing deployment."""
+"""与现有部署隔离的真实 PostgreSQL 迁移测试."""
 
 import concurrent.futures
 import os
@@ -181,7 +181,7 @@ def test_old_revision_upgrade_is_rejected_without_changes(postgres):
 
 
 def test_concurrent_upgrade_is_serialized(postgres):
-    # Alembic's Python context is process-global; exercise separate processes.
+    # Alembic 的 Python 上下文是进程全局的; 在独立进程中执行.
     import subprocess
     import sys
     root = Path(__file__).resolve().parents[2]

@@ -21,9 +21,7 @@ from app.features.chat.query_rewrite import (
 )
 
 
-# ---------------------------------------------------------------------------
 # 内部工具函数
-# ---------------------------------------------------------------------------
 
 
 class TestDedupeTerms:
@@ -98,9 +96,7 @@ class TestParseJsonPayload:
         assert _parse_json_payload("") is None
 
 
-# ---------------------------------------------------------------------------
 # validate_keyword_dimensions
-# ---------------------------------------------------------------------------
 
 
 class TestValidateKeywordDimensions:
@@ -150,9 +146,7 @@ class TestValidateKeywordDimensions:
             assert getattr(result, key) == []
 
 
-# ---------------------------------------------------------------------------
 # parse_keyword_dimensions
-# ---------------------------------------------------------------------------
 
 
 class TestParseKeywordDimensions:
@@ -180,9 +174,7 @@ class TestParseKeywordDimensions:
         assert result.topic_terms == []
 
 
-# ---------------------------------------------------------------------------
 # coerce_keyword_dimensions
-# ---------------------------------------------------------------------------
 
 
 class TestCoerceKeywordDimensions:
@@ -212,9 +204,7 @@ class TestCoerceKeywordDimensions:
         assert isinstance(result, RewriteKeywordDimensions)
 
 
-# ---------------------------------------------------------------------------
 # require_keyword_dimensions
-# ---------------------------------------------------------------------------
 
 
 class TestRequireKeywordDimensions:
@@ -236,9 +226,7 @@ class TestRequireKeywordDimensions:
             require_keyword_dimensions({"invalid_extra_key": ["x"]})
 
 
-# ---------------------------------------------------------------------------
 # build_multi_queries
-# ---------------------------------------------------------------------------
 
 
 class TestBuildMultiQueries:
@@ -277,9 +265,7 @@ class TestBuildMultiQueries:
         assert len(lower_queries) == len(set(lower_queries))
 
 
-# ---------------------------------------------------------------------------
 # build_retrieval_query
-# ---------------------------------------------------------------------------
 
 
 class TestBuildRetrievalQuery:
@@ -306,9 +292,7 @@ class TestBuildRetrievalQuery:
         assert result == ""
 
 
-# ---------------------------------------------------------------------------
 # format_keyword_dimensions
-# ---------------------------------------------------------------------------
 
 
 class TestFormatKeywordDimensions:
@@ -329,9 +313,7 @@ class TestFormatKeywordDimensions:
         assert result == "未提取到有效关键词"
 
 
-# ---------------------------------------------------------------------------
 # _fallback_dimensions
-# ---------------------------------------------------------------------------
 
 
 class TestFallbackDimensions:

@@ -1,4 +1,4 @@
-"""MCP request-context and membership authentication regression tests."""
+"""MCP 请求上下文与成员认证回归测试."""
 
 import asyncio
 from unittest.mock import patch

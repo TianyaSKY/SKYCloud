@@ -1,4 +1,4 @@
-"""Single configuration assembly point for ordinary and multipart uploads."""
+"""普通上传与分片上传的统一配置装配点."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +16,7 @@ MAX_TOTAL_CHUNKS = positive_limit("UPLOAD_MAX_TOTAL_CHUNKS", 10000)
 
 @dataclass(frozen=True, slots=True)
 class UploadSettings:
-    """Filesystem staging root and default byte ceiling for one upload."""
+    """单文件上传的文件系统暂存根目录与默认字节上限."""
 
     upload_root: str
     max_upload_size: int
@@ -24,7 +24,7 @@ class UploadSettings:
 
 @dataclass(frozen=True, slots=True)
 class MultipartSettings:
-    """Filesystem roots and chunk ceilings for multipart uploads."""
+    """分片上传的文件系统根目录与分片参数上限."""
 
     upload_root: str
     multipart_root: str
@@ -35,7 +35,7 @@ class MultipartSettings:
 
 
 def upload_settings() -> UploadSettings:
-    """Build ordinary-upload settings from the current upload root."""
+    """基于当前上传根目录构建普通上传配置."""
     return UploadSettings(
         upload_root=UPLOAD_FOLDER,
         max_upload_size=MAX_UPLOAD_SIZE,
@@ -43,7 +43,7 @@ def upload_settings() -> UploadSettings:
 
 
 def multipart_settings() -> MultipartSettings:
-    """Build multipart settings, deriving its root from the current upload root."""
+    """构建分片上传配置, 从当前上传根目录派生其分片根路径."""
     return MultipartSettings(
         upload_root=UPLOAD_FOLDER,
         multipart_root=str(Path(UPLOAD_FOLDER) / ".multipart"),

@@ -1,7 +1,4 @@
-"""Opt-in real Docker/Redis checks. All resources are uniquely named and removed.
-
-RUN_RUNTIME_SECURITY_TESTS=1 python -m pytest tests/integration/test_runtime_security.py
-"""
+"""自选真实 Docker/Redis 检查. 所有资源均具唯一命名并清理."""
 
 from tests.integration.fixture_paths import FIXTURE_DIR
 import concurrent.futures
@@ -106,7 +103,7 @@ def test_internal_runtime_cannot_reach_infrastructure_by_name_or_ip(infrastructu
                         "-c", f"timeout 2 redis-cli -h {host} ping", check=False)
         assert result.returncode != 0
         assert "PONG" not in result.stdout
-    # A dedicated gateway with both interfaces can reach infrastructure.
+    # 拥有双网卡的专用网关可连通基础设施.
     docker("run", "-d", "--name", infrastructure["bridge"], "--network", infrastructure["infra"], IMAGE)
     docker("network", "connect", infrastructure["runtime"], infrastructure["bridge"])
     assert docker("exec", infrastructure["bridge"], "redis-cli", "-h", target, "ping").stdout.strip() == "PONG"
@@ -170,8 +167,8 @@ def test_development_public_port_override_is_rejected(tmp_path, monkeypatch):
     actual_run = subprocess.run
 
     def render_override(args, **kwargs):
-        # Only substitute this disposable Compose input; real Docker still
-        # merges and validates the configuration, without starting containers.
+        # 仅替换此一次性 Compose 输入; 真实 Docker 仍然
+        # 合并并校验配置, 而不启动容器.
         if args[:2] == ['docker', 'compose']:
             args = [str(unsafe) if arg == str(root / 'docker-compose.dev.yml') else arg for arg in args]
         return actual_run(args, **kwargs)
@@ -250,9 +247,8 @@ def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
 def controller(infrastructure, monkeypatch):
     import httpx
     from runtime_controller.client import ControllerClient
-    # Generation/sandbox checks need the built OpenCode runtime image: the generation
-    # policy rejects images that declare implicit volumes, which the cheap Redis
-    # stand-in (SKYCLOUD_TEST_RUNTIME_IMAGE) does.
+    # 代系/沙箱检查需要构建的 OpenCode 运行时镜像: 代系策略
+    # 会拒绝声明隐式卷的镜像 (轻量 Redis 替代镜像就会声明隐式卷).
     image = os.getenv("SKYCLOUD_TEST_OPENCODE_IMAGE") or os.getenv("SKYCLOUD_TEST_RUNTIME_IMAGE", "")
     assert image, ("Build scripts/build-runtime-image.py and set SKYCLOUD_TEST_OPENCODE_IMAGE to its immutable "
                    "ID (or SKYCLOUD_TEST_RUNTIME_IMAGE when only the stand-in is needed)")
@@ -388,9 +384,8 @@ def test_runtime_network_cannot_contact_controller_rpc_listener(infrastructure, 
     inspect = json.loads(docker("inspect", controller["name"]).stdout)[0]
     networks = inspect["NetworkSettings"]["Networks"]
     image = inspect["Image"]
-    # Supplying the valid service credential still cannot bypass binding the
-    # listener to the separate control interface. Reuse the built image and
-    # prove the same probe reaches the listener from its permitted network.
+    # 提供有效服务凭据仍无法绕过监听器绑定至独立控制接口的要求.
+    # 复用构建的镜像并证明相同的探测能从允许的网络触达监听器.
     script = """import http.client, sys
 connection = http.client.HTTPConnection(sys.argv[1], 5003, timeout=2)
 blocked = sys.argv[3] == 'blocked'

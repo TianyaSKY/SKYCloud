@@ -1,4 +1,4 @@
-"""FastAPI application factory: assemble routers and exception handling."""
+"""FastAPI 应用工厂: 组装路由分发与全局异常处理."""
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -30,7 +30,7 @@ from app.infra.upload_limits import UploadBodyLimitMiddleware
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
-    """Run startup validation and shutdown resource cleanup."""
+    """执行启动阶段校验并在关闭时清理相关资源."""
     initialize_application()
     try:
         yield
@@ -40,7 +40,7 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def create_fastapi_app() -> FastAPI:
-    """Create the app and mount every HTTP router."""
+    """创建 FastAPI 实例并挂载所有 HTTP 业务路由."""
     app = FastAPI(
         title="SKYCloud API",
         version="1.0.0",
@@ -62,7 +62,7 @@ def create_fastapi_app() -> FastAPI:
 
     @app.get("/api/health", response_model=SuccessResponse[HealthResponse])
     def health() -> SuccessEnvelope[HealthResponse]:
-        """Report process liveness without touching the database."""
+        """报告进程存活状态, 无需连接数据库."""
         return success_payload(HealthResponse(status="ok"))
 
     return app

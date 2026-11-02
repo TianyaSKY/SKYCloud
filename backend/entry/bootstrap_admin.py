@@ -1,4 +1,4 @@
-"""Explicit first-administrator bootstrap; password is read from a terminal."""
+"""显式首个管理员初始化引导程序; 密码从终端安全输入."""
 
 import argparse
 import sys
@@ -19,7 +19,7 @@ _REJECTED_PASSWORDS = frozenset({"admin123", "password1234", "123456789012"})
 
 
 def bootstrap_admin(session: Session, username: str, password: str) -> int:
-    """Create the first administrator, its workspace, and the root folder."""
+    """创建首个管理员用户、其默认工作区及根文件夹."""
     username = username.strip()
     if not username or len(username) > _MAX_USERNAME_LENGTH:
         message = "Username must contain 1 to 80 characters"
@@ -33,7 +33,7 @@ def bootstrap_admin(session: Session, username: str, password: str) -> int:
         )
         raise ValueError(message)
     with session.begin():
-        # Serialize initial bootstrap across concurrent PostgreSQL processes.
+        # 在多个并发 PostgreSQL 进程间串行化首个管理员初始化引导。
         if session.get_bind().dialect.name == "postgresql":
             session.execute(text("SELECT pg_advisory_xact_lock(731948210)"))
         if session.scalar(select(User.id).where(User.role == "admin").limit(1)):
@@ -61,7 +61,7 @@ def bootstrap_admin(session: Session, username: str, password: str) -> int:
 
 
 def main() -> None:
-    """Parse CLI arguments and create the first administrator."""
+    """解析命令行参数并创建首个管理员用户."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--username", required=True)
     args = parser.parse_args()

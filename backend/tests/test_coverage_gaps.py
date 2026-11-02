@@ -20,9 +20,7 @@ from app.infra.cache import CacheableParams
 from app.models.token_usage_log import TokenUsageLog
 
 
-# ---------------------------------------------------------------------------
 # token_usage admin 接口
-# ---------------------------------------------------------------------------
 class TestTokenUsageAdmin:
     def test_record_usage_exception(self):
         """record_usage 写库异常应被吞掉只记日志。"""
@@ -99,9 +97,7 @@ class TestTokenUsageAdmin:
         assert isinstance(result, list)
 
 
-# ---------------------------------------------------------------------------
 # infra/extensions.py
-# ---------------------------------------------------------------------------
 class TestExtensions:
     def test_get_db_yields_session(self):
         from app.infra.extensions import get_db
@@ -125,9 +121,7 @@ class TestExtensions:
         assert UPLOAD_FOLDER is not None
 
 
-# ---------------------------------------------------------------------------
 # folder/change_log.py
-# ---------------------------------------------------------------------------
 class TestChangeLog:
     def test_build_folder_path_root(self):
         from app.features.folder.change_log import _build_folder_path
@@ -264,9 +258,7 @@ class TestChangeLog:
         assert result["changed_folders_detail"][0]["name"] == "根目录"
 
 
-# ---------------------------------------------------------------------------
 # infra/cache.py 剩余分支
-# ---------------------------------------------------------------------------
 class TestCacheRemaining:
     def test_cacheable_prefix_attribute(self):
         from app.infra.cache import cacheable

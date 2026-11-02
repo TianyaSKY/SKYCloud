@@ -1,7 +1,7 @@
-"""Small async client for the OpenCode HTTP server.
+"""OpenCode HTTP 服务器轻量异步客户端.
 
-Only provider calls live here.  Response interpretation belongs to
-``opencode_events.py`` and expert orchestration belongs to ``ExpertEngine``.
+此处仅包含提供商调用. 响应解析归属于 ``opencode_events.py``,
+专家编排归属于 ``ExpertEngine``.
 """
 
 from __future__ import annotations
@@ -26,28 +26,28 @@ HTTP_NOT_FOUND = 404
 
 
 class OpenCodeClientError(RuntimeError):
-    """A provider call failed or answered with an unusable payload."""
+    """提供商调用失败或返回不可用的负载."""
 
     def __init__(self, message: str, status_code: int | None = None) -> None:
-        """Record the provider message and any HTTP status it answered with."""
+        """记录提供商消息及其返回的 HTTP 状态码."""
         super().__init__(message)
         self.status_code = status_code
 
 
 class OpenCodeActionError(OpenCodeClientError):
-    """An explicit control action was not acknowledged by the provider."""
+    """显式控制操作未获提供商确认."""
 
 
 class _SseBuffer:
-    """Accumulate SSE fields until a blank line completes one record."""
+    """累积 SSE 字段直至空行完成一条记录."""
 
     def __init__(self) -> None:
-        """Start an empty record."""
+        """启动空记录."""
         self._event_name: str | None = None
         self._data_lines: list[str] = []
 
     def feed(self, line: str) -> JsonObject | None:
-        """Consume one raw line, returning a record when one completes."""
+        """消费单行原始数据, 当记录完成时返回."""
         if line.startswith(":"):
             return None
         if line.startswith("event:"):
@@ -61,7 +61,7 @@ class _SseBuffer:
         return self.flush()
 
     def flush(self) -> JsonObject | None:
-        """Return the pending record, if any, and reset the buffer."""
+        """返回挂起的记录 (若存在) 并重置缓冲区."""
         if not self._data_lines:
             return None
         record = _decode_sse_record(self._event_name, self._data_lines)
@@ -74,7 +74,7 @@ def _decode_sse_record(
     event_name: str | None,
     data_lines: list[str],
 ) -> JsonObject | None:
-    """Decode one buffered record, ignoring non-object provider payloads."""
+    """解码单条缓冲记录, 忽略非对象类型的提供商负载."""
     raw = "\n".join(data_lines)
     try:
         decoded: JsonValue = json.loads(raw)
@@ -89,7 +89,7 @@ def _decode_sse_record(
 
 
 def _object_list(result: JsonValue) -> list[JsonObject]:
-    """Return the object members of a provider list response."""
+    """返回提供商列表响应中的对象成员."""
     if not isinstance(result, list) or not all(
         isinstance(item, dict) for item in result
     ):
@@ -99,7 +99,7 @@ def _object_list(result: JsonValue) -> list[JsonObject]:
 
 
 class OpenCodeClient:
-    """Typed async client for the internal OpenCode HTTP API."""
+    """内部 OpenCode HTTP API 的类型化异步客户端."""
 
     def __init__(
         self,
@@ -109,7 +109,7 @@ class OpenCodeClient:
         *,
         timeout: float | None = None,
     ) -> None:
-        """Bind one runtime base URL and its derived basic credentials."""
+        """绑定单运行时基地址及其派生的 Basic 凭据."""
         self.base_url = base_url.rstrip("/")
         default_timeout = float(os.getenv("OPENCODE_HTTP_TIMEOUT", "30"))
         self._client = httpx.AsyncClient(
@@ -125,7 +125,7 @@ class OpenCodeClient:
         )
 
     async def __aenter__(self) -> Self:
-        """Return this client for ``async with`` use."""
+        """返回当前客户端用于 ``async with`` 上下文."""
         return self
 
     async def __aexit__(
@@ -134,11 +134,11 @@ class OpenCodeClient:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        """Release the provider connection pool."""
+        """释放提供商连接池."""
         await self.aclose()
 
     async def aclose(self) -> None:
-        """Release the underlying HTTP connection pool."""
+        """释放底层 HTTP 连接池."""
         await self._client.aclose()
 
     @staticmethod
@@ -178,7 +178,7 @@ class OpenCodeClient:
         return payload
 
     async def health(self) -> JsonObject:
-        """Return the provider health document."""
+        """返回提供商健康检查文档."""
         result = await self._json("GET", "/global/health")
         if not isinstance(result, dict) or not isinstance(
             result.get("healthy"), bool,
@@ -188,7 +188,7 @@ class OpenCodeClient:
         return result
 
     async def create_session(self, title: str | None = None) -> str:
-        """Create one provider session and return its identifier."""
+        """创建单个提供商会话并返回其标识符."""
         payload: JsonObject = {"title": title} if title else {}
         result = await self._json("POST", "/session", json=payload)
         if (
@@ -201,7 +201,7 @@ class OpenCodeClient:
         return str(result["id"])
 
     async def get_session(self, session_id: str) -> JsonObject | None:
-        """Return one provider session, or ``None`` when it is absent."""
+        """返回单个提供商会话, 若不存在则返回 ``None``."""
         try:
             result = await self._json(
                 "GET", f"/session/{self._path_value(session_id)}",
@@ -224,7 +224,7 @@ class OpenCodeClient:
         no_reply: bool = False,
         system: str | None = None,
     ) -> None:
-        """Send one prompt, optionally persisting context without a reply."""
+        """发送单个提示词, 可选仅持久化上下文而不回复."""
         payload: JsonObject = {
             "parts": [{"type": "text", "text": text}],
             "agent": agent,
@@ -232,8 +232,8 @@ class OpenCodeClient:
         }
         if system:
             payload["system"] = system
-        # noReply does not enter the model loop or emit an idle event. Use
-        # synchronous persistence so the next prompt cannot overtake history.
+        # noReply 不进入模型循环且不发射空闲事件. 使用同步持久化,
+        # 确保后续提示词不会反超上下文历史.
         endpoint = "message" if no_reply else "prompt_async"
         result = await self._json(
             "POST",
@@ -253,7 +253,7 @@ class OpenCodeClient:
             raise OpenCodeClientError(message)
 
     async def abort_session(self, session_id: str) -> bool:
-        """Abort one provider session and report the acknowledgement."""
+        """中止单个提供商会话并报告确认结果."""
         return await self._control_action(
             f"/session/{self._path_value(session_id)}/abort",
         )
@@ -266,7 +266,7 @@ class OpenCodeClient:
         *,
         remember: bool = False,
     ) -> bool:
-        """Answer one permission request with a one-shot decision."""
+        """以一次性决策响应单个权限请求."""
         if remember or response not in {"once", "reject"}:
             message = "Only one-shot permission responses are supported"
             raise ValueError(message)
@@ -301,7 +301,7 @@ class OpenCodeClient:
         session_id: str,
         message_id: str | None = None,
     ) -> list[JsonObject]:
-        """Return the provider diffs for one session message."""
+        """返回单条会话消息的提供商 diff 变更."""
         params: JsonValue = {"messageID": message_id} if message_id else None
         result = await self._json(
             "GET",
@@ -311,14 +311,14 @@ class OpenCodeClient:
         return _object_list(result)
 
     async def get_messages(self, session_id: str) -> list[JsonObject]:
-        """Return the provider message history for one session."""
+        """返回单个会话的提供商消息历史."""
         result = await self._json(
             "GET", f"/session/{self._path_value(session_id)}/message",
         )
         return _object_list(result)
 
     async def get_mcp_status(self) -> JsonObject:
-        """Return the provider MCP server status document."""
+        """返回提供商 MCP 服务器状态文档."""
         result = await self._json("GET", "/mcp")
         if not isinstance(result, dict):
             message = "OpenCode returned invalid MCP response"
@@ -326,7 +326,7 @@ class OpenCodeClient:
         return result
 
     async def add_mcp(self, name: str, config: JsonObject) -> JsonObject:
-        """Register one MCP server and return the provider response."""
+        """注册单个 MCP 服务器并返回提供商响应."""
         result = await self._json(
             "POST", "/mcp", json={"name": name, "config": config},
         )
@@ -336,7 +336,7 @@ class OpenCodeClient:
         return result
 
     async def _open_event_stream(self, path: str) -> httpx.Response:
-        """Open a streaming SSE request against one provider path."""
+        """针对单个提供商路径打开流式 SSE 请求."""
         request = self._client.build_request(
             "GET",
             path,
@@ -346,11 +346,10 @@ class OpenCodeClient:
         return await self._client.send(request, stream=True)
 
     async def stream_events(self) -> AsyncIterator[JsonObject]:
-        """Yield decoded SSE records from ``/event``.
+        """从 ``/event`` 产出解码后的 SSE 记录.
 
-        A few older OpenCode builds exposed the global stream at
-        ``/global/event``; retrying that path on a 404 keeps the client useful
-        during a rolling runtime upgrade.
+        少数较早的 OpenCode 构建在 ``/global/event`` 暴露全局流;
+        在遇到 404 时重试该路径可在滚动升级期间保持客户端可用.
         """
         response: httpx.Response | None = None
         try:

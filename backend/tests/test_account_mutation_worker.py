@@ -1,4 +1,4 @@
-"""Account authorization and business SQL share the route worker's session."""
+"""账户授权与业务 SQL 共享路由 worker 的 session 测试."""
 import asyncio
 import threading
 from types import SimpleNamespace

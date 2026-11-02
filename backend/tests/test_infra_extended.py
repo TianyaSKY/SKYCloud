@@ -18,9 +18,7 @@ from app.infra.task_queue import (
 )
 
 
-# ---------------------------------------------------------------------------
 # task_queue 基础函数
-# ---------------------------------------------------------------------------
 
 
 class TestQueueMessage:
@@ -87,9 +85,7 @@ class TestPublishOrganizeTask:
             assert payload["lock_token"] == "token123"
 
 
-# ---------------------------------------------------------------------------
 # RabbitMQTaskConsumer
-# ---------------------------------------------------------------------------
 
 
 class TestRabbitMQTaskConsumer:
@@ -190,9 +186,7 @@ class TestRabbitMQTaskConsumer:
             mock_connect.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
 # llm/client
-# ---------------------------------------------------------------------------
 
 from app.infra.llm.client import (
     _get_client,
@@ -312,9 +306,7 @@ class TestEmbedTexts:
         assert len(result) == 3
 
 
-# ---------------------------------------------------------------------------
-# indexing handler
-# ---------------------------------------------------------------------------
+# 索引处理器
 
 from app.infra.indexing.handler import (
     handle_file_indexing,
@@ -344,7 +336,7 @@ class TestHandleFileIndexing:
         session.add(file)
         session.commit()
         file_id = file.id
-        # Separate sessions match the worker's bounded transactions.
+        # 独立 Session 与 worker 的有界事务相匹配.
         with patch("app.infra.indexing.handler.SessionLocal", side_effect=lambda: Session(session.get_bind())), \
              patch("app.infra.indexing.handler._download_file", return_value=str(source)), \
              patch("app.infra.indexing.handler.generate_file_description", return_value="desc"), \

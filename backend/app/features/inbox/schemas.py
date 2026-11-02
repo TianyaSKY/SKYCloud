@@ -1,10 +1,10 @@
-"""Public inbox response models."""
+"""公开的收件箱响应数据模型."""
 
 from pydantic import BaseModel
 
 
 class InboxMessage(BaseModel):
-    """One inbox notification row."""
+    """单条收件箱站内通知记录."""
 
     id: int
     user_id: int
@@ -16,7 +16,7 @@ class InboxMessage(BaseModel):
 
 
 class InboxPage(BaseModel):
-    """One page of inbox notifications."""
+    """单页收件箱站内通知列表."""
 
     items: list[InboxMessage]
     total: int
@@ -25,6 +25,6 @@ class InboxPage(BaseModel):
 
 
 class InboxAcknowledgment(BaseModel):
-    """Acknowledgment returned after marking messages read."""
+    """标记消息已读后返回的确认响应模型."""
 
     message: str

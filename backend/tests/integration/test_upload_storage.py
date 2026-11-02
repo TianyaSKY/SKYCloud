@@ -1,8 +1,4 @@
-"""Opt-in authenticated HTTP uploads with isolated PostgreSQL and real MinIO.
-
-Redis caching and RabbitMQ notifications retain the parent unit fixtures; these
-checks specifically cover upload bytes, SQL ownership/quotas and object storage.
-"""
+"""隔离 PostgreSQL 与真实 MinIO 的自选认证 HTTP 上传测试."""
 import hashlib
 import json
 import asyncio
@@ -38,7 +34,7 @@ pytestmark = pytest.mark.skipif(os.getenv('RUN_UPLOAD_STORAGE_TESTS') != '1', re
 @pytest.mark.parametrize('body', [b'a' * (512 * 1024 + 100), ('中' * 200000).encode(), b''],
                          ids=['ascii', 'utf8', 'empty'])
 async def test_mcp_text_read_uses_bounded_minio_range(upload_api, postgres, minio_storage, monkeypatch, body):
-    """Real SQL/MinIO tool worker; explicit context, without SDK transport claims."""
+    """真实 SQL/MinIO 工具 worker; 显式上下文, 无 SDK 传输断言."""
     from app.mcp import server
     from app.mcp.context import McpRequestContext, set_mcp_context, reset_mcp_context
     minio_storage.upload_data(body, 'prefix-object', 'text/plain')
@@ -243,8 +239,8 @@ def upload_api(postgres, minio_storage, monkeypatch, tmp_path):
     app.dependency_overrides[get_db] = database
     app.dependency_overrides[get_session_factory] = lambda: factory
     headers = {'authorization': 'Bearer ' + generate_token(1), 'X-Workspace-Id': '1'}
-    # Startup gating has separate real-PG tests; no unrelated global deployment
-    # connection is used by this HTTP fixture.
+    # 启动门禁有单独的真实 PG 测试;
+    # 此 HTTP fixture 不使用无关的全局部署连接.
     return TestClient(app), headers, tmp_path
 
 
@@ -593,8 +589,8 @@ def test_real_storage_rejection_holds_capacity_until_reconciliation(upload_api, 
     from app.exceptions import BusinessRuleError
     client, headers, root = upload_api
     original_client = minio_storage._client
-    # Exercise a real S3 authentication failure, including failed cleanup, without
-    # replacing any storage operation with a mock.
+    # 执行真实的 S3 认证失败 (包括清理失败),
+    # 而不使用 Mock 替换任何存储操作.
     minio_storage._client = Minio(minio_storage.integration_endpoint,
         access_key='invalid-test-user', secret_key='invalid-test-password', secure=False)
     monkeypatch.setattr(upload_quota, 'USER_CAPACITY', 5)
@@ -672,7 +668,7 @@ with Session(engine) as session:
 
 @pytest.mark.parametrize('delete_failure', [False, True])
 def test_real_batch_staging_failure_compensation_and_worker_recovery(upload_api, postgres, minio_storage, monkeypatch, delete_failure):
-    """An input stream failure compensates earlier object writes and quota."""
+    """输入流失败补偿先前的对象写入与配额."""
     from io import BytesIO
     from fastapi import UploadFile
     from app.exceptions import BusinessRuleError, ServiceOperationError
@@ -738,7 +734,7 @@ def test_real_batch_staging_failure_compensation_and_worker_recovery(upload_api,
 
 @pytest.mark.parametrize('kind', ['single', 'batch', 'multipart'])
 def test_real_upload_committed_before_ack_failure_keeps_downloadable_objects(upload_api, postgres, minio_storage, kind):
-    """Committed publication survives a lost acknowledgement on each upload seam."""
+    """已提交的发布在每个上传接缝丢失确认时仍幸存."""
     from io import BytesIO
     from fastapi import UploadFile
     from app.exceptions import ServiceOperationError
@@ -805,7 +801,7 @@ def test_real_upload_committed_before_ack_failure_keeps_downloadable_objects(upl
 
 @pytest.mark.parametrize('rollback_fault', [False, True])
 def test_real_batch_cancel_sql_rejection_preserves_error_and_recovers_remaining_entries(upload_api, postgres, minio_storage, monkeypatch, rollback_fault):
-    """PostgreSQL cancellation rejection preserves the input error and recovery state."""
+    """PostgreSQL 取消拒绝保留输入错误与恢复状态."""
     from io import BytesIO
     from fastapi import UploadFile
     from app.exceptions import BusinessRuleError
@@ -997,7 +993,7 @@ def test_real_upload_cleanup_close_fault_does_not_replace_sql_outcome(upload_api
 
 @pytest.mark.parametrize('kind', ['single', 'batch', 'multipart', 'instant'])
 def test_upload_publication_rejects_committed_role_loss(upload_api, postgres, minio_storage, monkeypatch, kind):
-    """Actual SQL/object bytes; explicit boundary hook commits role loss."""
+    """真实 SQL/对象字节数据; 显式边界钩子提交角色丢失."""
     client, headers, root = upload_api
     baseline_files = baseline_tasks = baseline_objects = 0
     if kind == 'instant':
@@ -1038,8 +1034,8 @@ def test_upload_publication_rejects_committed_role_loss(upload_api, postgres, mi
         chunk = client.post('/api/files/multipart/chunk', headers=headers, data={'upload_id': upload_id, 'chunk_index': '0'},
                             files={'chunk': ('part', b'abc')})
         assert chunk.status_code == 200, chunk.text
-        # HTTP entry already holds membership through completion. Exercise the
-        # shared service boundary directly without that extra request lock.
+        # HTTP 入口在完成前已持有成员身份.
+        # 直接执行共享服务边界而无需额外请求锁.
         from app.exceptions import PermissionDeniedError
         from app.features.file.multipart_service import get_multipart_service
         with Session(postgres) as db:

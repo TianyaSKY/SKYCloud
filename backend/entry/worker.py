@@ -1,4 +1,4 @@
-"""Worker process entry point."""
+"""Worker 后台异步任务处理进程入口."""
 
 import threading
 
@@ -8,7 +8,7 @@ from app.infra.worker_runtime import run_scheduler, run_worker
 
 
 def main() -> None:
-    """Initialize the application, start maintenance, and consume tasks."""
+    """初始化应用程序, 启动定时调度器并消费处理后台任务."""
     setup_logging()
     initialize_application()
 

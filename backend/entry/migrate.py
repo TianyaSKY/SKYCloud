@@ -1,4 +1,4 @@
-"""Run explicit versioned database upgrades before starting application processes."""
+"""在启动应用程序进程前执行显式的数据库版本化迁移升级."""
 
 import os
 import sys
@@ -15,14 +15,14 @@ _DEFAULT_REVISION = "head"
 
 
 def migration_config(connection: Connection) -> Config:
-    """Build an Alembic config bound to the already opened connection."""
+    """构建绑定到已开启连接的 Alembic 配置对象."""
     config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
     config.attributes["connection"] = connection
     return config
 
 
 def _validate_database_state(connection: Connection) -> None:
-    """Allow only a pristine database or this exact initialized baseline."""
+    """仅允许全新的空数据库或精确匹配当前初始化基线的数据库."""
     version_table = connection.scalar(
         text("SELECT to_regclass('public.alembic_version')"),
     )
@@ -51,7 +51,7 @@ def _validate_database_state(connection: Connection) -> None:
 
 
 def upgrade(database_engine: Engine, revision: str = _DEFAULT_REVISION) -> None:
-    """Apply the baseline under one advisory-locked transaction."""
+    """在咨询锁保护的事务内应用数据模式基线升级."""
     with database_engine.begin() as connection:
         if connection.dialect.name != "postgresql":
             message = "Deployment migrations require PostgreSQL"
@@ -62,7 +62,7 @@ def upgrade(database_engine: Engine, revision: str = _DEFAULT_REVISION) -> None:
         command.upgrade(migration_config(connection), revision)
 
 def main() -> None:
-    """Load configuration and apply migrations to the configured database."""
+    """加载环境配置并对目标数据库执行迁移."""
     load_dotenv()
     url = os.getenv("DATABASE_URL")
     if not url:

@@ -1,4 +1,4 @@
-"""Request form files must outlive started upload workers, even on cancellation."""
+"""请求表单文件生命周期必须长于已启动的上传 worker (即使被取消) 测试."""
 import asyncio
 import threading
 from types import SimpleNamespace

@@ -1,4 +1,4 @@
-"""Exercise the real list route, SQL counts, runtime ownership and reconciliation."""
+"""真实列表路由、SQL 计数、运行时所有权与对齐测试."""
 from datetime import timedelta
 from unittest.mock import Mock, patch
 
@@ -38,7 +38,7 @@ def test_http_list_has_constant_sql_and_controller_calls(session, test_user, adm
         snapshot.append(dict(id=runtime.container_id, runtime_id=runtime.id,
                              workspace_id=workspace.id, user_id=user_id, status='running'))
     session.commit()
-    # Expire identities to expose accidental lazy loading during commit/serialization.
+    # 使标识过期以暴露 commit/序列化期间非预期的惰性加载.
     session.expire_all()
     app = FastAPI(); app.include_router(router, prefix='/api')
     app.dependency_overrides[get_db] = lambda: session
@@ -98,8 +98,8 @@ def test_old_list_snapshot_does_not_overwrite_recreated_runtime(session, test_us
     rows = get_user_workspace_rows(session, test_user.id)
     runtime_id, user_id = runtime.id, test_user.id
     def snapshot(_):
-        # Model a concurrent committed recreation between observation and write.
-        # Leave this Session's identity map stale, as a second Session would.
+        # 模拟观测与写入之间并发提交的重新创建.
+        # 保持此 Session 的身份映射过期, 模拟第二个 Session 的行为.
         session.execute(update(OpenCodeRuntime).where(OpenCodeRuntime.id == runtime_id)
             .values(container_id='b' * 64, status='running', config_version=5),
             execution_options={'synchronize_session': False})

@@ -1,4 +1,4 @@
-"""Short-lived MCP tokens bound to one OpenCode runtime."""
+"""绑定至单个 OpenCode 运行时实例的短期 MCP 令牌模型."""
 
 import hashlib
 from datetime import datetime
@@ -19,12 +19,12 @@ if TYPE_CHECKING:
     from app.models.opencode_runtime import OpenCodeRuntime
     from app.models.user import User
 
-# Tokens at or below this length are returned verbatim by the preview helper.
+# 小于或等于该长度的令牌在脱敏预览时按原样返回。
 _TOKEN_PREVIEW_THRESHOLD = 16
 
 
 class McpRuntimeTokenDict(TypedDict):
-    """Public representation of a runtime-scoped MCP token row."""
+    """限定于运行时作用域的 MCP 令牌公开表示模型."""
 
     id: int
     runtime_id: int
@@ -41,7 +41,7 @@ class McpRuntimeTokenDict(TypedDict):
 
 
 class McpRuntimeToken(Base):
-    """Revocable token record for an OpenCode runtime."""
+    """用于 OpenCode 运行时的可撤销令牌记录模型."""
 
     __tablename__ = "mcp_runtime_tokens"
 
@@ -98,34 +98,34 @@ class McpRuntimeToken(Base):
 
     @staticmethod
     def hash_token(token: str) -> str:
-        """Return the SHA-256 digest of a token."""
+        """返回令牌明文的 SHA-256 摘要值."""
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     @staticmethod
     def preview_token(token: str) -> str:
-        """Return a masked preview that keeps only the outer characters."""
+        """返回仅保留首尾字符的脱敏预览字符串."""
         if len(token) <= _TOKEN_PREVIEW_THRESHOLD:
             return token
         return f"{token[:8]}...{token[-8:]}"
 
     @property
     def is_revoked(self) -> bool:
-        """Return whether the token was explicitly revoked."""
+        """返回该令牌是否已被显式撤销."""
         return self.revoked_at is not None
 
     @property
     def is_expired(self) -> bool:
-        """Return whether the token expiry instant has passed."""
+        """返回令牌是否已过有效期截止时间点."""
         expires_at = to_utc_datetime(self.expires_at)
         return expires_at is not None and expires_at <= utc_now()
 
     @property
     def is_active(self) -> bool:
-        """Return whether the token is neither revoked nor expired."""
+        """返回该令牌是否未撤销且未过期 (有效状态)."""
         return not self.is_revoked and not self.is_expired
 
     def to_dict(self) -> McpRuntimeTokenDict:
-        """Return the public runtime token representation."""
+        """返回运行时令牌的公开字典表示."""
         return {
             "id": self.id,
             "runtime_id": self.runtime_id,

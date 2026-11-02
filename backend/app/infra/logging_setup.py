@@ -19,7 +19,7 @@ class InterceptHandler(logging.Handler):
     """把标准库 logging 记录转发到 Loguru."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Forward one record, redacting exception messages and traceback chains."""
+        """转发单条日志记录, 脱敏异常信息与堆栈追踪链."""
         level: str | int
         try:
             level = logger.level(record.levelname).name
@@ -31,8 +31,8 @@ class InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
         if record.exc_info and record.exc_info[1] is not None:
-            # Library traceback chains can contain SQL binds, provider bodies
-            # and request data, even when diagnose/backtrace are disabled.
+            # 第三方库的堆栈链可能包含 SQL 绑定参数、供应商请求体
+            # 和请求敏感数据, 即使已禁用 diagnose/backtrace。
             logger.opt(depth=depth).log(
                 level,
                 "Library failure in {} (error_type={})",

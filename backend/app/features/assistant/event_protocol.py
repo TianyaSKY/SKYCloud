@@ -1,8 +1,7 @@
-"""Internal assistant events and the HTTP SSE encoder.
+"""内部助手事件与 HTTP SSE 编码器.
 
-Engines emit these stable events instead of leaking provider-specific payloads
-to the browser.  This keeps the frontend compatible when the RAG pipeline or
-OpenCode changes independently.
+引擎发射这些稳定的事件, 而不是将提供商特有的负载泄漏给浏览器.
+这样当 RAG 流水线或 OpenCode 独立演进时, 前端仍能保持兼容.
 """
 
 import json
@@ -11,13 +10,13 @@ from typing import Any
 
 
 def _empty_payload() -> dict[str, Any]:
-    """Return a fresh event payload mapping."""
+    """返回全新的事件负载字典."""
     return {}
 
 
 @dataclass(slots=True)
 class AssistantEvent:
-    """One stable event emitted by an assistant engine."""
+    """助手引擎发射的单个稳定事件."""
 
     type: str
     payload: dict[str, Any] = field(default_factory=_empty_payload)
@@ -25,7 +24,7 @@ class AssistantEvent:
     message_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize this event for the browser SSE contract."""
+        """为浏览器 SSE 契约序列化此事件."""
         result: dict[str, Any] = {
             "type": self.type,
             "payload": self.payload,
@@ -38,10 +37,10 @@ class AssistantEvent:
 
 
 def encode_sse(event: AssistantEvent) -> str:
-    """Encode one internal event as a compact, browser-safe SSE record."""
+    """将单个内部事件编码为紧凑且浏览器安全的 SSE 记录."""
     return f"data: {json.dumps(event.to_dict(), ensure_ascii=False)}\n\n"
 
 
 def heartbeat_event(run_id: int | None = None) -> AssistantEvent:
-    """Build the keep-alive event sent while the provider is idle."""
+    """构建提供商空闲时发送的心跳保活事件."""
     return AssistantEvent(type="heartbeat", run_id=run_id)

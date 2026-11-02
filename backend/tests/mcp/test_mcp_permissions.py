@@ -1,4 +1,4 @@
-"""MCP role and cross-uploader authorization regression tests."""
+"""MCP 角色与跨上传者鉴权回归测试."""
 
 import asyncio
 import json

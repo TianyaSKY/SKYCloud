@@ -1,4 +1,4 @@
-"""A caller's already-handled exception must not hide a fresh cleanup cancellation."""
+"""调用方已处理的异常不得掩盖新的清理取消测试."""
 import asyncio
 import pytest
 from app.features.assistant import stream_response

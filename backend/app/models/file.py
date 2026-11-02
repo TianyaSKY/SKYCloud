@@ -1,4 +1,4 @@
-"""User file metadata rows, including AI descriptions and vectors."""
+"""用户文件元数据模型, 包含 AI 描述与向量信息."""
 
 from collections.abc import Sequence
 from datetime import datetime
@@ -24,12 +24,12 @@ if TYPE_CHECKING:
     from app.models.share import Share
     from app.models.user import User
 
-# pgvector binds Python sequences and returns a numpy float32 array.
+# pgvector 绑定 Python 序列并返回 numpy float32 数组。
 VectorValue: TypeAlias = Sequence[float] | NDArray[float32]
 
 
 class FileDict(TypedDict):
-    """Public representation of a file metadata row."""
+    """文件元数据记录的公开表示模型."""
 
     id: int
     name: str
@@ -45,7 +45,7 @@ class FileDict(TypedDict):
 
 
 class File(Base):
-    """File metadata row: storage path, AI description, vector, index state."""
+    """文件元数据模型: 包含存储路径、AI 摘要、特征向量及索引状态."""
 
     __tablename__ = "files"
 
@@ -56,10 +56,10 @@ class File(Base):
     mime_type: Mapped[str | None] = mapped_column(String(255))
     content_hash: Mapped[str | None] = mapped_column(String(64))
 
-    # ---- AI indexing ----
-    # pending / processing / success / fail
+    # ---- AI 索引状态 ----
+    # 状态包括待处理、处理中、成功或失败等状态。
     status: Mapped[str | None] = mapped_column(String(20), default="pending")
-    # Semantic retrieval vector (cosine distance index).
+    # 语义检索向量 (基于余弦距离索引)。
     vector_info: Mapped[VectorValue | None] = mapped_column(Vector(1024))
     description: Mapped[str | None] = mapped_column(String(4096))
 
@@ -84,7 +84,7 @@ class File(Base):
     )
 
     uploader: Mapped["User | None"] = relationship("User", backref="files")
-    # Sharing rows cascade with the file.
+    # 分享记录级联随文件一同删除。
     shares: Mapped[list["Share"]] = relationship(
         "Share",
         back_populates="file",
@@ -109,11 +109,11 @@ class File(Base):
     )
 
     def get_abs_path(self) -> str:
-        """Return the legacy local upload path for this file."""
+        """返回该文件的历史遗留本地上传路径."""
         return str(Path(UPLOAD_FOLDER) / self.file_path)
 
     def to_dict(self) -> FileDict:
-        """Return the public file metadata representation."""
+        """返回公开的文件元数据字典表示."""
         return {
             "id": self.id,
             "name": self.name,
@@ -130,7 +130,7 @@ class File(Base):
 
     @classmethod
     def from_cache(cls, d: FileDict) -> "File":
-        """Build a detached file row from cached metadata fields."""
+        """根据缓存的元数据字段构建游离态文件记录."""
         return cls(
             id=d.get("id"),
             name=d.get("name"),

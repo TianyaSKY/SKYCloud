@@ -1,4 +1,4 @@
-"""Public REST error contract; provider/MCP wire protocols remain separate."""
+"""公共 REST 错误响应契约; 第三方服务商与 MCP 传输协议保持独立."""
 
 from typing import Generic, Literal, NotRequired, TypedDict, TypeVar, cast
 
@@ -7,7 +7,7 @@ from runtime_common.json_types import JsonValue
 
 
 class ValidationIssue(BaseModel):
-    """A compact, non-sensitive request validation issue."""
+    """精简且不包含敏感信息的请求校验问题明细."""
 
     model_config = ConfigDict(extra="forbid")
     loc: list[str | int]
@@ -16,7 +16,7 @@ class ValidationIssue(BaseModel):
 
 
 class ErrorDetail(BaseModel):
-    """The stable error object returned to HTTP clients."""
+    """返回给 HTTP 客户端的稳定错误对象."""
 
     model_config = ConfigDict(extra="forbid")
     code: str
@@ -25,7 +25,7 @@ class ErrorDetail(BaseModel):
 
 
 class ErrorResponse(BaseModel):
-    """The public JSON error envelope."""
+    """公开的 JSON 错误信封响应模型."""
 
     model_config = ConfigDict(extra="forbid")
     success: Literal[False] = False
@@ -33,7 +33,7 @@ class ErrorResponse(BaseModel):
 
 
 class ErrorDetailEnvelope(TypedDict):
-    """The JSON-safe error object produced from ErrorDetail."""
+    """由 ErrorDetail 生成的 JSON 安全错误字典对象."""
 
     code: str
     message: str
@@ -41,7 +41,7 @@ class ErrorDetailEnvelope(TypedDict):
 
 
 class ErrorEnvelope(TypedDict):
-    """The JSON-safe public error envelope."""
+    """公开的 JSON 安全错误信封字典."""
 
     success: Literal[False]
     error: ErrorDetailEnvelope
@@ -69,7 +69,7 @@ def error_payload(
     code: str | None = None,
     issues: list[ValidationIssue] | None = None,
 ) -> ErrorEnvelope:
-    """Build a validated, JSON-safe error envelope."""
+    """构建经过校验的 JSON 安全错误信封."""
     response = ErrorResponse(
         error=ErrorDetail(
             code=code or HTTP_ERROR_CODES.get(status, "HTTP_ERROR"),
@@ -84,25 +84,25 @@ DataT = TypeVar("DataT")
 
 
 class SuccessResponse(BaseModel, Generic[DataT]):
-    """Typed JSON success contract; streams, downloads and 204 have no envelope."""
+    """类型化 JSON 成功契约; 数据流、文件下载和 204 响应不使用此信封."""
 
     success: Literal[True] = True
     data: DataT
 
 
 class SuccessEnvelope(TypedDict, Generic[DataT]):
-    """The JSON-safe success envelope around a typed data value."""
+    """包装了类型化数据值的 JSON 安全成功信封."""
 
     success: Literal[True]
     data: DataT
 
 
 def success_payload(data: DataT) -> SuccessEnvelope[DataT]:
-    """Wrap data in the public success envelope."""
+    """将数据包装在公开的成功信封中."""
     return {"success": True, "data": data}
 
 
 class HealthResponse(BaseModel):
-    """The dependency-free process health payload."""
+    """无外部依赖的进程健康检查响应载荷."""
 
     status: Literal["ok"]

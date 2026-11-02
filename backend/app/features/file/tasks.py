@@ -1,4 +1,4 @@
-"""Transactional task staging and broker-confirmed, retryable delivery."""
+"""事务性任务暂存以及经消息代理确认的幂等重试投递."""
 
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
@@ -12,7 +12,7 @@ from app.models.file_task_outbox import FileTaskOutbox
 
 
 def stage_file_tasks(session: Session, file_ids: Iterable[int]) -> None:
-    """Add deliveries to the caller's transaction; never commit independently."""
+    """将待投递任务追加至调用方事务中; 绝不独立执行 commit."""
     session.add_all([FileTaskOutbox(file_id=int(file_id)) for file_id in file_ids])
 
 
@@ -22,7 +22,7 @@ def deliver_pending_file_tasks(
     limit: int = 20,
     publisher: Callable[[Iterable[int]], None] | None = None,
 ) -> int:
-    """Lock one due row per transaction; an uncertain delivery can safely repeat."""
+    """每笔事务锁定一条到期记录; 投递状态不确定时可安全重复尝试."""
     publish = publisher or task_queue.publish_file_tasks
     delivered = 0
     for _ in range(limit):
@@ -44,8 +44,8 @@ def deliver_pending_file_tasks(
             try:
                 publish([row.file_id])
             except Exception as error:
-                # Best-effort delivery: the broker client raises its own types
-                # and an uncertain publish must stay pending for a replay.
+                # 尽力投递: 消息代理客户端会抛出其专有异常类型,
+                # 投递状态不确定的任务必须保持 pending 状态以便后续重试。
                 row.last_error_type = type(error).__name__[:96]
                 row.next_attempt_at = now + timedelta(
                     seconds=min(300, 2 ** min(row.attempts, 9)),

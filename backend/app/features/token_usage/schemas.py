@@ -1,4 +1,4 @@
-"""Public token accounting response contracts and query filters."""
+"""公开的 Token 记账响应契约与查询过滤条件."""
 
 from typing import Generic, Literal, TypeVar
 
@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class TokenStats(BaseModel):
-    """Accumulated token totals for one account."""
+    """单个账户的累计 Token 统计总量."""
 
     user_id: int
     total_prompt_tokens: int
@@ -16,7 +16,7 @@ class TokenStats(BaseModel):
 
 
 class UserTokenStats(TokenStats):
-    """Account identity plus its accumulated token totals."""
+    """账户身份标识及其累计 Token 统计总量."""
 
     username: str
     role: Literal["admin", "common"]
@@ -25,7 +25,7 @@ class UserTokenStats(TokenStats):
 
 
 class TokenUsageEntry(BaseModel):
-    """One usage audit row."""
+    """单条用量审计记录."""
 
     id: int
     user_id: int
@@ -40,7 +40,7 @@ class TokenUsageEntry(BaseModel):
 
 
 class AdminTokenUsageEntry(TokenUsageEntry):
-    """Usage audit row enriched with the owning account name."""
+    """附带所属账户用户名的用量审计记录."""
 
     username: str
 
@@ -49,7 +49,7 @@ EntryT = TypeVar("EntryT")
 
 
 class UsagePage(BaseModel, Generic[EntryT]):
-    """One page of usage audit rows."""
+    """单页用量审计记录列表."""
 
     total: int
     page: int
@@ -58,7 +58,7 @@ class UsagePage(BaseModel, Generic[EntryT]):
 
 
 class DailyStats(BaseModel):
-    """One day of aggregated usage."""
+    """单日聚合用量数据统计."""
 
     date: str
     prompt_tokens: int
@@ -68,14 +68,14 @@ class DailyStats(BaseModel):
 
 
 class PerUserDailyStats(DailyStats):
-    """One day of aggregated usage for a single account."""
+    """单个账户在单日内的聚合用量统计."""
 
     user_id: int
     username: str
 
 
 class MyUsageLogsQuery(BaseModel):
-    """Query filters for the caller's usage audit page."""
+    """调用方自身用量审计分页查询的过滤参数."""
 
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
@@ -85,7 +85,7 @@ class MyUsageLogsQuery(BaseModel):
 
 
 class UserUsageLogsQuery(BaseModel):
-    """Query filters for another account's usage audit page."""
+    """查询其他账户用量审计分页的过滤参数."""
 
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
@@ -95,7 +95,7 @@ class UserUsageLogsQuery(BaseModel):
 
 
 class AdminAllLogsQuery(BaseModel):
-    """Query filters for the site-wide usage audit page."""
+    """全站用量审计分页查询的过滤参数."""
 
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)

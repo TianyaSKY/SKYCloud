@@ -1,4 +1,4 @@
-"""Test-only private-network Docker proxy delaying one already received create."""
+"""仅限测试的专用网络 Docker 代理, 用于延迟已接收的容器创建."""
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json

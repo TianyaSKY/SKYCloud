@@ -1,4 +1,4 @@
-"""Real filesystem fault boundaries: failed writes must retain published bytes."""
+"""真实文件系统故障边界: 失败写入必须保留已发布字节测试."""
 from io import BytesIO
 
 import pytest

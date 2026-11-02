@@ -1,4 +1,4 @@
-"""Standalone rebuilt Controller and native HTTP; engine target is a synthetic seam."""
+"""独立 Controller 与原生 HTTP; 引擎目标为合成接缝测试."""
 import os
 import time
 import uuid
@@ -142,7 +142,7 @@ async def main():
     class Stream(httpx.AsyncByteStream):
         async def __aiter__(self):yield wire
     response=httpx.Response(200,headers={'content-encoding':'gzip'},stream=Stream())
-    # Exclude first-use AnyIO cleanup backend/module initialization.
+    # 排除首次使用 AnyIO 清理后端/模块的初始化.
     warm=httpx.Response(200,headers={'content-encoding':'gzip'},stream=httpx.ByteStream(gzip.compress(b'warm')))
     async for _ in decoded_bytes(warm,100):pass
     await warm.aclose()
@@ -169,8 +169,8 @@ def test_native_controller_quiet_deadline_disconnects_upstream(relay_controller,
         assert response.status_code==(200 if event else 502)
         if event:assert response.content==b''
         else:assert response.json()=={'detail':'Runtime response timed out'}
-        # Independently prove that Controller closed the actual native provider
-        # connection; no injected reader cancellation or transport here.
+        # 独立证明 Controller 关闭了实际原生提供商连接;
+        # 此处无注入的读取器取消或传输.
         deadline=time.monotonic()+1
         while True:
             status=client.get(url+'/runtimes/'+'a'*64+'/http/global/status',headers=headers)
@@ -202,7 +202,7 @@ def test_native_controller_caller_disconnect_during_headers(relay_controller):
     with socket.create_connection((location.hostname,location.port),timeout=2) as downstream:
         raw=('GET /runtimes/'+'a'*64+'/http/session/headerquiet HTTP/1.1\r\nHost: controller.test\r\nX-Runtime-Controller-Token: '+headers['X-Runtime-Controller-Token']+'\r\n\r\n')
         downstream.sendall(raw.encode())
-        # Confirm native upstream admission independently before closing the caller.
+        # 在关闭调用方之前独立确认原生上游准入.
         with httpx.Client(trust_env=False,timeout=2) as observer:
             deadline=time.monotonic()+1
             while True:

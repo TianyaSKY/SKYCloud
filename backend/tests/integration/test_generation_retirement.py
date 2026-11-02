@@ -1,4 +1,4 @@
-"""Completed generations must retire after their last reference, including history."""
+"""已完成代系在最后一个引用 (包括历史记录) 后必须退役测试."""
 import os
 import pytest
 from sqlalchemy import text, inspect
@@ -122,5 +122,5 @@ def test_cancelled_generation_is_retired_after_last_reference_detaches(
 
 
 
-# Fixtures are imported explicitly so collection does not include their tests.
+# 显式导入 fixture, 避免收集过程包含其测试.
 from tests.integration.test_runtime_security import infrastructure, controller

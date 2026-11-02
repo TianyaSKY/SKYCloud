@@ -1,4 +1,4 @@
-"""Read-only startup gate. Schema changes belong to entry.migrate."""
+"""只读启动校验门禁. 数据库架构变更属于 entry.migrate."""
 
 from sqlalchemy import Connection, Engine, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -13,7 +13,7 @@ def _revisions(connection: Connection) -> set[str]:
 
 
 def check_schema(database_engine: Engine | Connection) -> None:
-    """Reject unavailable or mismatched schemas without changing the database."""
+    """在不改变数据库的前提下, 拒绝不可用或版本不匹配的数据库架构."""
     try:
         if isinstance(database_engine, Connection):
             revisions = _revisions(database_engine)

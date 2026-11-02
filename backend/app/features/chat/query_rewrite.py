@@ -60,7 +60,7 @@ TERM_SPLIT_PATTERN = re.compile(r"[,;|/\n]+")
 
 
 class RewriteKeywordDimensions(BaseModel):
-    """Structured retrieval keyword dimensions returned by the rewriter."""
+    """改写器返回的结构化检索关键词维度模型."""
 
     model_config = ConfigDict(extra="forbid")
 

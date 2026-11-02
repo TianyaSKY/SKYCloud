@@ -1,4 +1,4 @@
-"""Actual PostgreSQL timezone independence for legacy timestamp columns."""
+"""旧版时间戳列的原生 PostgreSQL 时区无关性测试."""
 import os
 
 import pytest

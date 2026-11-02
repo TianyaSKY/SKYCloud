@@ -26,14 +26,14 @@ MAX_DESCRIPTION_CHARS = 200
 
 
 class FolderSummary(TypedDict):
-    """Folder identity reported by the structural validators."""
+    """结构校验器上报的轻量文件夹标识与状态信息."""
 
     id: int
     name: str
 
 
 def get_session() -> Session:
-    """Return the tool session; the caller closes it in `finally`."""
+    """返回工具专属会话; 调用方在 `finally` 块中负责关闭."""
     scope = current_scope()
     if scope is None:
         message = "Organize tools require a bound task identity"
@@ -49,7 +49,7 @@ def get_session() -> Session:
 
 
 def clear_workspace_cache(workspace_id: int) -> None:
-    """Clear folder and search caches; SCAN instead of KEYS keeps Redis free."""
+    """清除文件夹与搜索缓存; 使用 SCAN 代替 KEYS 避免阻塞 Redis."""
     try:
         redis_client.delete(f"workspace:folders:{workspace_id}")
         cursor = 0
@@ -73,7 +73,7 @@ def clear_workspace_cache(workspace_id: int) -> None:
 
 
 def _folder_child_counts(session: Session) -> dict[int, int]:
-    """Count child folders per parent id."""
+    """按父目录 ID 统计子文件夹数量."""
     rows = (
         session.query(Folder.parent_id, func.count(Folder.id))
         .filter(Folder.parent_id.isnot(None))
@@ -84,7 +84,7 @@ def _folder_child_counts(session: Session) -> dict[int, int]:
 
 
 def _file_child_counts(session: Session) -> dict[int, int]:
-    """Count files per parent folder id."""
+    """按父目录 ID 统计子文件数量."""
     rows = (
         session.query(File.parent_id, func.count(File.id))
         .filter(File.parent_id.isnot(None))
@@ -98,9 +98,9 @@ def _check_mixed_folders(
     session: Session,
     workspace_id: int,
 ) -> tuple[bool, list[FolderSummary]]:
-    """Find folders mixing files and subfolders (single-content principle).
+    """查找同时包含文件与子文件夹的目录 (违背单一内容原则).
 
-    Returns `(is_clean, mixed_folders)`; aggregate counts avoid N+1 queries.
+    返回 `(is_clean, mixed_folders)`; 聚合计数避免 N+1 查询.
     """
     mixed_folders: list[FolderSummary] = []
 
@@ -137,7 +137,7 @@ def _check_empty_folders(
     session: Session,
     workspace_id: int,
 ) -> tuple[bool, list[FolderSummary]]:
-    """Find empty folders; aggregate counts avoid N+1 queries."""
+    """查找空文件夹; 聚合计数避免 N+1 查询."""
     subfolder_counts = _folder_child_counts(session)
     file_counts = _file_child_counts(session)
 
@@ -153,7 +153,7 @@ def _check_empty_folders(
 
 
 def check_mixed_folders_internal(workspace_id: int) -> tuple[bool, str]:
-    """Validate the single-content principle; return `(is_clean, message)`."""
+    """校验单一内容原则; 返回 `(is_clean, message)` 元组."""
     session = get_session()
     try:
         is_clean, mixed_folders = _check_mixed_folders(session, workspace_id)
@@ -172,7 +172,7 @@ def check_mixed_folders_internal(workspace_id: int) -> tuple[bool, str]:
 
 
 def check_empty_folders_internal(workspace_id: int) -> tuple[bool, str]:
-    """Validate that no empty folder is left in the workspace."""
+    """校验工作空间中没有遗留任何空文件夹."""
     session = get_session()
     try:
         is_clean, empty_folders = _check_empty_folders(session, workspace_id)
@@ -189,7 +189,7 @@ def check_empty_folders_internal(workspace_id: int) -> tuple[bool, str]:
 
 
 def _list_all_files(session: Session, workspace_id: int) -> str:
-    """Render every file of the workspace with its parent folder id."""
+    """渲染工作空间下的全部文件及其父目录 ID 列表."""
     files = session.query(File).filter_by(workspace_id=workspace_id).all()
     if not files:
         return "没有找到文件。"
@@ -211,7 +211,7 @@ def get_all_files(workspace_id: int) -> str:
 
 
 def _list_folder_tree(session: Session, workspace_id: int) -> str:
-    """Render every folder of the workspace as a flat id/name/parent list."""
+    """将工作空间下的全部文件夹渲染为扁平的 id/name/parent 列表."""
     folders = session.query(Folder).filter_by(workspace_id=workspace_id).all()
     return "\n".join(
         f"ID: {folder.id}, Name: {folder.name}, Parent ID: {folder.parent_id}"
@@ -237,7 +237,7 @@ def _create_folder(
     parent_id: int,
     workspace_id: int,
 ) -> str:
-    """Create the folder unless a sibling with the same name exists."""
+    """创建文件夹, 除非已存在同名兄弟文件夹."""
     folder_repository.lock_tree(session, workspace_id)
     folder_tree.validate_name(name)
     pid = folder_tree.validate_parent(session, workspace_id, parent_id or None)
@@ -278,7 +278,7 @@ def _rename_folder(
     new_name: str,
     workspace_id: int,
 ) -> str:
-    """Rename a folder after ownership and sibling-name checks."""
+    """在完成归属与兄弟重名校验后重命名文件夹."""
     folder_repository.lock_tree(session, workspace_id)
     folder = folder_repository.get_folder(session, folder_id)
     if not folder:
@@ -327,7 +327,7 @@ def _move_file(
     target_folder_id: int,
     workspace_id: int,
 ) -> str:
-    """Move a file after checking file and target ownership."""
+    """在校验文件及目标归属后移动文件."""
     folder_repository.lock_tree(session, workspace_id)
     file = session.get(File, file_id)
     if not file:
@@ -362,7 +362,7 @@ def move_file(file_id: int, target_folder_id: int, workspace_id: int) -> str:
 
 
 def _file_information(session: Session, file_id: int) -> str:
-    """Render file metadata with a truncated description."""
+    """渲染文件元数据以及截断后的描述文本."""
     scope = current_scope()
     query = session.query(File).filter(File.id == file_id)
     if scope:
@@ -399,7 +399,7 @@ def get_file_information(file_id: int) -> str:
 
 
 def _delete_empty_folder(session: Session, folder_id: int, workspace_id: int) -> str:
-    """Delete the folder only when it has neither files nor subfolders."""
+    """仅在文件夹既无文件也无子目录时执行删除."""
     folder_repository.lock_tree(session, workspace_id)
     folder = folder_repository.get_folder(session, folder_id)
     if not folder:
@@ -441,7 +441,7 @@ def _merge_rejection(
     scope: tuple[Folder, Folder],
     workspace_id: int,
 ) -> str | None:
-    """Return the refusal message when the two folders cannot be merged."""
+    """当两个文件夹无法合并时返回拒绝原因字符串."""
     source, target = scope
     if source.workspace_id != workspace_id:
         return f"权限错误: 源文件夹 {source.id} 不属于工作空间 {workspace_id}"
@@ -470,7 +470,7 @@ def _merge_tree(
     target: Folder,
     workspace_id: int,
 ) -> None:
-    """Move all content of `source` into `target`, merging duplicate names."""
+    """将 `source` 的全部内容移入 `target`, 递归合并同名目录."""
     _assert_consistent_tree(session, source, workspace_id)
     _assert_consistent_tree(session, target, workspace_id)
 
@@ -498,7 +498,7 @@ def _merge_folders(
     folder_ids: tuple[int, int],
     workspace_id: int,
 ) -> str:
-    """Merge the source folder into the target folder and drop the source."""
+    """将源文件夹内容合并至目标文件夹并删除源文件夹."""
     source_folder_id, target_folder_id = folder_ids
     folder_repository.lock_tree(session, workspace_id)
     source = folder_repository.get_folder(session, source_folder_id)
@@ -540,7 +540,7 @@ def merge_folders(
 
 
 def _assert_consistent_tree(session: Session, root: Folder, workspace_id: int) -> None:
-    """Reject historical cross-workspace parent links before recursive mutation."""
+    """在执行递归变更前拒绝历史遗留的跨工作空间父级关联."""
     pending = [root]
     seen: set[int] = set()
     while pending:
@@ -576,7 +576,7 @@ def _merge_folder_contents(session: Session, source: Folder, target: Folder) -> 
 
 
 def _find_duplicates(session: Session, workspace_id: int) -> str:
-    """Render sibling folders that share a name."""
+    """查找并渲染同父目录下共享同一名称的重名兄弟文件夹."""
     folders = session.query(Folder).filter_by(workspace_id=workspace_id).all()
     grouped: dict[tuple[str, int | None], list[Folder]] = {}
     for folder in folders:
@@ -617,7 +617,7 @@ def _move_folder(
     target_folder_id: int,
     workspace_id: int,
 ) -> str:
-    """Move a folder under the target, rejecting self-descendant moves."""
+    """将文件夹移动到目标目录下, 拒绝移入自身或其后代."""
     folder_repository.lock_tree(session, workspace_id)
     folder = folder_repository.get_folder(session, folder_id)
     if not folder:

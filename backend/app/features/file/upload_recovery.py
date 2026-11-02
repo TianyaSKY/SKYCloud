@@ -1,4 +1,4 @@
-"""Best-effort upload compensation; durable reservations retain unfinished cleanup."""
+"""尽力而为的上传失败补偿机制; 持久化预留表可靠保留未决清理状态."""
 
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -13,7 +13,7 @@ from app.features.file.upload_types import UploadStorage
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReleaseFailedUploadParams:
-    """Identity of one failed upload whose reservation needs cleanup."""
+    """需要执行清理补偿的失败上传任务标识信息."""
 
     workspace_id: int
     uploader_id: int
@@ -26,11 +26,11 @@ def _release_failed_upload(
     params: ReleaseFailedUploadParams,
     storage: UploadStorage | None,
 ) -> None:
-    """Release one reservation and delete its object when nothing references it."""
+    """释放单条上传预留记录并在该对象无其他引用时将其删除."""
     if params.reservation_id is None:
         return
-    # COMMIT may have succeeded even when its acknowledgement failed. Refresh
-    # durable reservation state before compensating any remote side effect.
+    # 即使客户端未收到 ACK, 事务也可能已成功提交。在补偿
+    # 远程副作用之前, 必须重新刷新持久化预留状态。
     reservation = upload_quota.lock_for_cancellation(
         session,
         params.workspace_id,
@@ -47,8 +47,8 @@ def _release_failed_upload(
     deleted = False
     if storage is not None and not referenced:
         try:
-            # A failed PUT response may still have created the object. Delete the
-            # reserved unique key even when upload_file never reported success.
+            # 即使 PUT 请求失败, 对象也可能已在存储端创建。删除
+            # 预留的唯一对象键, 哪怕 upload_file 未报告成功。
             storage.delete_file(params.object_name)
             deleted = True
         except Exception:
@@ -68,7 +68,7 @@ def _release_failed_upload(
 
 
 def _reset_failed_transaction(session: Session) -> bool:
-    """Discard the failed transaction, falling back to connection invalidation."""
+    """丢弃失败的数据库事务, 必要时回退至底层数据库连接作废."""
     try:
         session.rollback()
     except Exception as exc:
@@ -76,8 +76,8 @@ def _reset_failed_transaction(session: Session) -> bool:
     else:
         return True
     try:
-        # SQLAlchemy invalidation discards the failed connection; the same
-        # Session can then start a fresh transaction for journal reconciliation.
+        # SQLAlchemy 作废机制会直接丢弃坏连接; 随后同一
+        # 会话可开启全新事务以执行流水对账。
         session.invalidate()
     except Exception as exc:
         logger.warning(
@@ -94,7 +94,7 @@ def compensate_failed_uploads(
     uploads: Iterable[tuple[str | None, str]],
     storage: UploadStorage | None,
 ) -> None:
-    """Preserve the caller's error and continue independent reservation cleanup."""
+    """保留调用方原有异常并在独立事务中继续完成预留资源清理."""
     if not _reset_failed_transaction(session):
         return
     for reservation_id, object_name in uploads:
@@ -110,7 +110,7 @@ def compensate_failed_uploads(
             logger.warning(
                 "Upload compensation deferred: error_type={}", type(exc).__name__,
             )
-            # The admission journal was committed before object IO. Keep failed
-            # entries for the expiration worker, and try the remaining entries.
+            # 准入流水已在对象 IO 前提交。保留失败条目交由
+            # 过期清理 Worker 兜底, 并继续尝试处理其余条目。
             if not _reset_failed_transaction(session):
                 break

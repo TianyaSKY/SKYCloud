@@ -1,4 +1,4 @@
-"""Database access for Assistant conversations, messages, and runs."""
+"""助手对话、消息与运行的数据库访问层."""
 
 import json
 from collections.abc import Mapping
@@ -31,7 +31,7 @@ TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateConversationParams:
-    """Inputs for one owned assistant conversation."""
+    """单个所属助手对话的输入参数."""
 
     workspace_id: int
     user_id: int
@@ -42,7 +42,7 @@ class CreateConversationParams:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateMessageParams:
-    """Inputs for one durable assistant message."""
+    """单条持久化助手消息的输入参数."""
 
     role: str
     content: str = ""
@@ -54,7 +54,7 @@ class CreateMessageParams:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PermissionDispatchParams:
-    """Identity of one permission response that a worker may dispatch."""
+    """工作线程可分发的单个权限响应标识."""
 
     workspace_id: int
     user_id: int
@@ -74,7 +74,7 @@ def cancel_unclaimed_run(
     conversation_id: int,
     run_id: int,
 ) -> bool:
-    """Compensate a prepared HTTP run whose worker never acquired its lease."""
+    """补偿工作线程从未获取其租约的已准备 HTTP 运行."""
     run = (
         session.query(AssistantRun)
         .join(
@@ -111,7 +111,7 @@ def get_conversation(
     workspace_id: int,
     user_id: int,
 ) -> AssistantConversation | None:
-    """Return one owned conversation."""
+    """返回单个所属对话."""
     return (
         session.query(AssistantConversation)
         .filter(
@@ -129,12 +129,11 @@ def lock_conversation(
     workspace_id: int,
     user_id: int,
 ) -> AssistantConversation | None:
-    """Lock an owned conversation for the duration of a run preparation.
+    """在运行准备期间锁定所属对话.
 
-    The lock closes the check-then-insert window for message sequence numbers
-    and the one-active-run rule.  SQLite ignores ``FOR UPDATE`` while
-    PostgreSQL enforces it, which keeps the repository usable in the test
-    fixture as well as in production.
+    该锁消除了消息序列号与单活跃运行规则的检查插入窗口.
+    SQLite 忽略 ``FOR UPDATE`` 而 PostgreSQL 严格执行,
+    保证测试与生产环境的一致可用性.
     """
     return (
         session.query(AssistantConversation)
@@ -154,7 +153,7 @@ def lock_workspace_member(
     workspace_id: int,
     user_id: int,
 ) -> WorkspaceMember | None:
-    """Serialize expert-run preparation for one workspace member."""
+    """为单个工作区成员序列化专家运行准备流程."""
     return (
         session.query(WorkspaceMember)
         .filter(
@@ -174,7 +173,7 @@ def list_conversations(
     *,
     include_archived: bool = False,
 ) -> list[AssistantConversation]:
-    """List conversations visible to one workspace member."""
+    """列出单个工作区成员可见的对话."""
     query = session.query(AssistantConversation).filter(
         AssistantConversation.workspace_id == workspace_id,
         AssistantConversation.user_id == user_id,
@@ -193,7 +192,7 @@ def create_conversation(
     session: Session,
     params: CreateConversationParams,
 ) -> AssistantConversation:
-    """Insert one owned conversation and flush its identity."""
+    """插入单个所属对话并刷新其标识."""
     conversation = AssistantConversation(
         workspace_id=params.workspace_id,
         user_id=params.user_id,
@@ -212,12 +211,12 @@ def get_messages(
     *,
     limit: int | None = None,
 ) -> list[AssistantMessage]:
-    """Return messages in conversation order."""
+    """按对话顺序返回消息列表."""
     query = session.query(AssistantMessage).filter(
         AssistantMessage.conversation_id == conversation_id,
     )
     if limit:
-        # Fetch the most recent messages while returning them in conversation order.
+        # 获取最近的消息, 同时按对话时间正序返回.
         return list(
             reversed(
                 query.order_by(AssistantMessage.sequence.desc()).limit(limit).all(),
@@ -231,7 +230,7 @@ def create_message(
     conversation: AssistantConversation,
     params: CreateMessageParams,
 ) -> AssistantMessage:
-    """Insert one message with the conversation's next sequence number."""
+    """插入单条消息并赋予对话下一个序号."""
     max_sequence = (
         session.query(func.max(AssistantMessage.sequence))
         .filter(AssistantMessage.conversation_id == conversation.id)
@@ -262,7 +261,7 @@ def create_run(
     *,
     request_id: str | None = None,
 ) -> AssistantRun:
-    """Insert the pending run that owns one streaming exchange."""
+    """插入拥有单次流式交互的待处理运行."""
     run = AssistantRun(
         conversation_id=conversation.id,
         user_message_id=user_message.id,
@@ -277,7 +276,7 @@ def create_run(
 
 
 def lock_run(session: Session, run_id: int) -> AssistantRun | None:
-    """Lock and refresh one run row."""
+    """锁定并刷新单条运行行记录."""
     return (
         session.query(AssistantRun)
         .filter(AssistantRun.id == run_id)
@@ -288,11 +287,10 @@ def lock_run(session: Session, run_id: int) -> AssistantRun | None:
 
 
 def touch_run_lease(session: Session, run_id: int, now: float) -> bool:
-    """Refresh the worker heartbeat under the run row lock.
+    """在运行行锁保护下刷新工作线程心跳.
 
-    The caller owns the transaction and must commit (or roll back) to release
-    the row lock; an uncommitted heartbeat must never look renewed to another
-    worker.
+    调用方持有事务并必须提交 (或回滚) 以释放行锁;
+    未提交的心跳绝不能向其他工作线程显示为已续约.
     """
     run = lock_run(session, run_id)
     if run is None or run.status in TERMINAL_RUN_STATUSES:
@@ -307,7 +305,7 @@ def register_permission(
     run: AssistantRun,
     payload: Mapping[str, object],
 ) -> AssistantPermission:
-    """Persist one provider request without replacing an existing decision."""
+    """持久化单个提供商请求且不替换现有决策."""
     locked = lock_run(session, run.id)
     if locked is None:
         message = "Assistant run is no longer available"
@@ -371,7 +369,7 @@ def permission_for_run(
     run_id: int,
     permission_id: str,
 ) -> AssistantPermission | None:
-    """Read and refresh one permission record owned by a run."""
+    """读取并刷新单次运行所拥有的权限记录."""
     return (
         session.query(AssistantPermission)
         .filter(
@@ -389,7 +387,7 @@ def answer_permission(
     permission_id: str,
     response: Literal["once", "reject"],
 ) -> bool:
-    """Claim the pending permission once while its run is still waiting."""
+    """当运行仍在等待时认领一次待决权限."""
     locked = lock_run(session, run.id)
     if (
         locked is None
@@ -431,7 +429,7 @@ def mark_permission_dispatched(
     run: AssistantRun,
     permission: AssistantPermission,
 ) -> None:
-    """Record provider acknowledgment without deleting the decision."""
+    """记录提供商确认且不删除决策记录."""
     if (
         permission.run_id != run.id
         or permission.state != "answered"
@@ -449,7 +447,7 @@ def mark_permission_dispatched(
 
 
 def cancel_open_permissions(session: Session, run_id: int) -> None:
-    """Close pending or answered decisions without erasing their response."""
+    """关闭待决或已答复的决策且不擦除其响应."""
     session.query(AssistantPermission).filter(
         AssistantPermission.run_id == run_id,
         AssistantPermission.state.in_(("pending", "answered")),
@@ -467,7 +465,7 @@ def update_run_status(
     error_code: str | None = None,
     error_message: str | None = None,
 ) -> None:
-    """Apply one status transition and its terminal bookkeeping."""
+    """应用单个状态转换及其终态簿记."""
     run.status = status
     if status == "running" and run.started_at is None:
         run.started_at = utc_now()
@@ -486,7 +484,7 @@ def active_run_for_conversation(
     session: Session,
     conversation_id: int,
 ) -> AssistantRun | None:
-    """Return the newest non-terminal run of one conversation."""
+    """返回单个对话中最新的非终态运行."""
     return (
         session.query(AssistantRun)
         .filter(
@@ -504,7 +502,7 @@ def get_owned_run(
     workspace_id: int,
     user_id: int,
 ) -> AssistantRun | None:
-    """Return one run owned through its conversation."""
+    """返回通过对话验证所有权的单次运行."""
     return (
         session.query(AssistantRun)
         .join(
@@ -525,7 +523,7 @@ def active_expert_run_for_member(
     workspace_id: int,
     user_id: int,
 ) -> AssistantRun | None:
-    """Return the member's live expert run; one runtime per member/space."""
+    """返回成员活跃的专家运行; 每成员/空间限一个运行时."""
     return (
         session.query(AssistantRun)
         .join(
@@ -544,7 +542,7 @@ def active_expert_run_for_member(
 
 
 def is_run_cancel_requested(session: Session, run_id: int) -> bool:
-    """Read the durable cancel flag without relying on a stale ORM instance."""
+    """读取持久化取消标志而不依赖过期的 ORM 实例."""
     value = (
         session.query(AssistantRun.cancel_requested)
         .filter(AssistantRun.id == run_id)
@@ -559,7 +557,7 @@ def get_message_for_conversation(
     message_id: int,
     conversation_id: int,
 ) -> AssistantMessage | None:
-    """Return a message only when it belongs to the given conversation."""
+    """仅当消息属于指定对话时返回该消息."""
     return (
         session.query(AssistantMessage)
         .filter(
@@ -571,7 +569,7 @@ def get_message_for_conversation(
 
 
 def serialize_events_metadata(events: list[AssistantEvent]) -> dict[str, Any]:
-    """Keep a small, safe summary rather than persisting provider payloads."""
+    """保留紧凑安全摘要, 而非持久化提供商原始负载."""
     tools: list[dict[str, Any]] = []
     for event in events:
         if event.type not in {"tool_started", "tool_updated", "tool_completed"}:
@@ -599,9 +597,9 @@ def lock_permission_dispatch(
     session: Session,
     params: PermissionDispatchParams,
 ) -> AssistantRun:
-    """Lock the runtime, run, and conversation a permission response targets.
+    """锁定权限响应所针对的运行时、运行和对话.
 
-    Caller keeps lifecycle/member/run locks until bounded dispatch completes.
+    调用方保持生命周期/成员/运行锁, 直至有界分发完成.
     """
     runtime: OpenCodeRuntime = runtime_operation_repository.current_runtime(
         session,

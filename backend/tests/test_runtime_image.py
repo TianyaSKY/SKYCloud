@@ -1,4 +1,4 @@
-"""Immutable runtime selection and private configuration update regressions."""
+"""不可变运行时选择与私有配置更新回归测试."""
 import importlib.util
 from pathlib import Path
 from unittest.mock import Mock
@@ -80,7 +80,7 @@ def test_restart_recreates_runtime_using_previous_policy(session, test_workspace
 def test_start_reuses_the_current_container_after_a_completed_generation(
     session, test_workspace, test_user,
 ):
-    """A finished generation must not force a new one on the next start."""
+    """已完成的代系在下次启动时不得强行创建新代系."""
     from unittest.mock import patch
     from app.features.workspace import docker_service
     from app.models.opencode_runtime import OpenCodeRuntime

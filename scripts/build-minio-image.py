@@ -1,4 +1,4 @@
-"""Build MinIO from checksum-locked official source and save its local image ID."""
+"""从校验和锁定的官方源码构建 MinIO 镜像并保存其本地镜像 ID."""
 import argparse
 import hashlib
 import json

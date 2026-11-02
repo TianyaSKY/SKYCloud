@@ -1,4 +1,4 @@
-"""Shared, best-effort token usage recording for sync and async clients."""
+"""同步与异步客户端共享的尽力而为 Token 用量记录器."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from app.features.token_usage import service as token_usage_service
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TokenUsage:
-    """One token-usage record shared by the sync and async LLM clients."""
+    """同步与异步 LLM 客户端通用的单条 Token 用量记录."""
 
     user_id: int
     action: str
@@ -23,7 +23,7 @@ class TokenUsage:
 
 
 def safe_record(usage: TokenUsage) -> None:
-    """Write usage without allowing accounting failures to break the request."""
+    """写入 Token 用量记录, 确保计量失败不会导致业务请求失败."""
     try:
         token_usage_service.record_usage(
             token_usage_service.RecordUsageParams(
@@ -37,8 +37,8 @@ def safe_record(usage: TokenUsage) -> None:
             ),
         )
     except Exception as exc:
-        # Accounting crosses SQLAlchemy, session and driver layers, so no
-        # bounded exception set exists; the request result must still survive.
+        # 记账过程跨越 SQLAlchemy、会话与驱动层, 无法预先穷举异常;
+        # 无论记账是否失败, 业务请求结果必须保持正常返回。
         logger.warning(
             "Failed to record token usage (error_type={})",
             type(exc).__name__,

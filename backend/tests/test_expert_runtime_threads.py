@@ -1,4 +1,4 @@
-"""Runtime provisioning has independent worker-owned DB sessions."""
+"""运行时配置具有独立的 worker 持有数据库会话测试."""
 import asyncio
 import threading
 from contextlib import contextmanager
@@ -57,7 +57,7 @@ async def test_runtime_setup_uses_independent_sessions_and_keeps_loop_responsive
     pending = asyncio.create_task(anext(events))
     try:
         assert await asyncio.to_thread(entered.wait, 2)
-        # This coroutine can run while Controller work blocks the worker.
+        # 当 Controller 操作阻塞 worker 时, 此协程仍可运行.
         async def probe():
             assert not release.is_set()
             return True

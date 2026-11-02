@@ -37,8 +37,8 @@ def get_member_role(
     user_id: int,
 ) -> WorkspaceRole | None:
     """查询用户在指定工作空间中的角色; 非成员返回 None."""
-    # A role column read sees current SQL state even when this Session has
-    # an older WorkspaceMember ORM instance in its identity map.
+    # 直接读取 role 列可观测到最新 SQL 状态, 即使当前 Session
+    # 的 identity map 中残留了旧的 WorkspaceMember 实例。
     role = (
         session.query(WorkspaceMember.role)
         .filter_by(
@@ -91,7 +91,7 @@ def assert_member_locked(
     workspace_id: int,
     user_id: int,
 ) -> WorkspaceRole:
-    """Hold current membership through the caller's publication transaction."""
+    """在调用方的发布事务内保持当前成员资格锁定."""
     member = lock_write_identity(session, workspace_id, user_id)
     if member is None:
         message = "您不是该工作空间的成员"
@@ -100,7 +100,7 @@ def assert_member_locked(
 
 
 def assert_can_write_locked(session: Session, workspace_id: int, user_id: int) -> None:
-    """Hold edit authorization through the caller's mutation transaction."""
+    """在调用方的变更事务内保持编辑授权锁定."""
     role = assert_member_locked(session, workspace_id, user_id)
     if role not in (WorkspaceRole.editor, WorkspaceRole.admin):
         message = "需要编辑者或管理员权限"

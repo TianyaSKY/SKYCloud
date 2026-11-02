@@ -1,7 +1,7 @@
-"""File routes: uploads, chunks, listing, download and index retry.
+"""文件路由接口: 上传、分片、列表、下载与索引重试.
 
-``GET /files/{id}`` must stay registered after every concrete ``/files/*`` path
-so the ``{id}`` segment cannot swallow ``list`` or ``search``.
+``GET /files/{id}`` 必须在所有具体 ``/files/*`` 路径之后注册,
+避免 ``{id}`` 路径参数误匹配 ``list`` 或 ``search``。
 """
 
 from typing import TYPE_CHECKING, Annotated, cast
@@ -82,7 +82,7 @@ router = APIRouter(tags=["file"])
 
 
 def _update_data(payload: FileUpdateRequest) -> FileUpdateData:
-    """Translate the request model into the present metadata fields."""
+    """将请求模型转换为实际提供的元数据字段字典."""
     data: FileUpdateData = {}
     if payload.name is not None:
         data["name"] = payload.name
@@ -104,7 +104,7 @@ async def create_file(
     file: Annotated[UploadFile, FastAPIFile(...)],
     parent_id: Annotated[int | None, Form()] = None,
 ) -> SuccessEnvelope[FileDict]:
-    """Upload one file; without parent_id it lands in the workspace root."""
+    """上传单个文件; 未指定 parent_id 时默认放入工作空间根目录."""
 
     def upload() -> SuccessEnvelope[FileDict]:
         with ctx.session_factory() as session:
@@ -132,7 +132,7 @@ async def batch_upload_files(
     files: Annotated[list[UploadFile] | None, FastAPIFile()] = None,
     parent_id: Annotated[int | None, Form()] = None,
 ) -> SuccessEnvelope[list[FileDict]]:
-    """Upload several files; without parent_id they land in the workspace root."""
+    """批量上传文件; 未指定 parent_id 时默认放入工作空间根目录."""
 
     def upload() -> SuccessEnvelope[list[FileDict]]:
         with ctx.session_factory() as session:
@@ -154,7 +154,7 @@ def preflight_file_upload(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
 ) -> SuccessEnvelope[dict[str, object]]:
-    """Check the hash and quota before any chunk transfer is started."""
+    """在分片传输开始前检查文件哈希秒传命中与配额."""
     data: PreflightData = {
         "filename": payload.filename,
         "total_size": payload.total_size,
@@ -181,7 +181,7 @@ def init_multipart_upload(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
 ) -> SuccessEnvelope[dict[str, object]]:
-    """Open the multipart session that will receive the chunks."""
+    """开启用于接收后续上传分片的分片上传会话."""
     data: MultipartInitData = {
         "filename": payload.filename,
         "total_size": payload.total_size,
@@ -215,7 +215,7 @@ async def upload_multipart_chunk(
     workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
     ctx: Ctx,
 ) -> SuccessEnvelope[dict[str, object]]:
-    """Store one chunk of an open multipart session."""
+    """保存进行中分片会话的单个上传分片数据."""
 
     def upload() -> SuccessEnvelope[dict[str, object]]:
         with ctx.session_factory() as session:
@@ -252,7 +252,7 @@ def complete_multipart_upload(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
 ) -> SuccessEnvelope[FileDict]:
-    """Assemble the chunks, persist the file and queue its indexing."""
+    """合并全部已上传分片, 持久化文件记录并触发异步索引任务."""
     with ctx.session_factory() as session:
         assert_can_write_locked(session, workspace.id, ctx.user.id)
         new_file = get_multipart_service().complete_multipart_upload(
@@ -270,7 +270,7 @@ def get_multipart_upload_status(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(get_current_workspace)],
 ) -> SuccessEnvelope[dict[str, object]]:
-    """Report the chunks already received by the session."""
+    """上报当前分片上传会话中已成功接收的分片编号列表."""
     with ctx.session_factory() as session:
         assert_member(session, workspace.id, ctx.user.id)
         return success_payload(
@@ -290,7 +290,7 @@ def abort_multipart_upload(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
 ) -> Response:
-    """Abort the session and delete its unfinished chunk directory."""
+    """中止分片上传会话并清理未完成的分片暂存目录."""
     with ctx.session_factory() as session:
         assert_can_write_locked(session, workspace.id, ctx.user.id)
         get_multipart_service().abort_multipart_upload(
@@ -305,7 +305,7 @@ def list_files(
     workspace: Annotated[Workspace, Depends(get_current_workspace)],
     query: Annotated[FileListQuery, Query()],
 ) -> SuccessEnvelope[dict[str, object]]:
-    """Browse a directory: folders first, then one page of files."""
+    """浏览目录内容: 文件夹置顶, 其后紧跟单页文件列表."""
     with ctx.session_factory() as session:
         assert_member(session, workspace.id, ctx.user.id)
         return success_payload(
@@ -330,7 +330,7 @@ async def search_files(
     workspace: Annotated[Workspace, Depends(get_current_workspace)],
     query: Annotated[FileSearchQuery, Query()],
 ) -> SuccessEnvelope[dict[str, object]]:
-    """Search by name or embedding; an empty term returns an empty page."""
+    """基于文件名或向量嵌入搜索; 检索词为空时返回空结果页."""
     if not query.q:
         return success_payload(
             {
@@ -365,7 +365,7 @@ def update_file(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
 ) -> SuccessEnvelope[FileDict]:
-    """Rename, move or re-status one file."""
+    """重命名、移动或更新单个文件的状态."""
     with ctx.session_factory() as session:
         assert_can_write_locked(session, workspace.id, ctx.user.id)
         file_service.get_authorized_file(
@@ -383,7 +383,7 @@ def delete_file(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
 ) -> Response:
-    """Delete one file record and stage its object cleanup."""
+    """删除单条文件记录并暂存其底层对象存储清理任务."""
     with ctx.session_factory() as session:
         assert_can_write_locked(session, workspace.id, ctx.user.id)
         file_service.get_authorized_file(
@@ -403,7 +403,7 @@ def download_file(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(get_current_workspace)],
 ) -> StreamingResponse:
-    """Stream the original object as an attachment after authorization."""
+    """完成权限校验后以附件形式流式传输原始对象数据."""
     with ctx.session_factory() as session:
         assert_member(session, workspace.id, ctx.user.id)
         file_obj = file_service.get_downloadable_file(
@@ -434,7 +434,7 @@ async def upload_avatar(
     avatar: Annotated[UploadFile | None, FastAPIFile()] = None,
     avatar_base64: Annotated[str | None, Form()] = None,
 ) -> SuccessEnvelope[dict[str, object]]:
-    """Upload an avatar from a multipart file, form base64 or JSON body."""
+    """从 multipart 表单、Base64 表单或 JSON 请求体中上传头像."""
     avatar_text: str | None = None
     if avatar is not None:
         if not avatar.filename:
@@ -469,7 +469,7 @@ async def upload_avatar(
         upload=avatar,
         encoded=avatar_text,
     )
-    # Keep the legacy avatar field name for older clients.
+    # 为兼容旧版前端客户端保留历史 avatar 响应字段名。
     if result.get("avatar_url") and "avatar" not in result:
         result["avatar"] = result["avatar_url"]
     return success_payload(result)
@@ -485,7 +485,7 @@ def batch_delete_files(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(require_workspace_role("editor"))],
 ) -> Response:
-    """Delete the listed files and folders."""
+    """批量删除指定列表中所包含的文件与文件夹."""
     with ctx.session_factory() as session:
         assert_can_write_locked(session, workspace.id, ctx.user.id)
         items: list[BatchDeleteItemData] = [
@@ -506,7 +506,7 @@ def retry_embedding(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(get_current_workspace)],
 ) -> Response:
-    """Re-queue one failed file for indexing."""
+    """将索引失败的单个文件重新加入索引任务队列."""
     with ctx.session_factory() as session:
         assert_can_write_locked(session, workspace.id, ctx.user.id)
         file_obj = file_service.get_authorized_file(
@@ -523,7 +523,7 @@ def rebuild_failed_indexes(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(get_current_workspace)],
 ) -> SuccessEnvelope[dict[str, int]]:
-    """Re-queue every failed index of the current workspace."""
+    """将当前工作空间下所有索引失败的文件批量重新加入队列."""
     with ctx.session_factory() as session:
         assert_can_write_locked(session, workspace.id, ctx.user.id)
         count = file_service.rebuild_failed_indexes(session, workspace.id)
@@ -537,7 +537,7 @@ async def process_status(
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(get_current_workspace)],
 ) -> SuccessEnvelope[dict[str, int]]:
-    """Aggregate the file processing status of the current workspace."""
+    """聚合统计当前工作空间下各类处理状态的文件数量分布."""
     return success_payload(
         await file_service.process_status(
             None,
@@ -548,14 +548,14 @@ async def process_status(
     )
 
 
-# Must stay after every concrete /files/* route so {id} cannot match them.
+# 必须置于所有具体 /files/* 路由之后, 防止 {id} 路径捕获它们。
 @router.get("/files/{id}", response_model=SuccessResponse[FileResponse])
 def get_file(
     file_id: Annotated[int, PathParam(alias="id")],
     ctx: Ctx,
     workspace: Annotated[Workspace, Depends(get_current_workspace)],
 ) -> SuccessEnvelope[FileDict]:
-    """Return one file's metadata after checking membership."""
+    """校验工作空间成员资格后返回单个文件的详细元数据."""
     with ctx.session_factory() as session:
         assert_member(session, workspace.id, ctx.user.id)
         file_obj = file_service.get_authorized_file(

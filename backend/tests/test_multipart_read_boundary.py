@@ -1,4 +1,4 @@
-"""Stored multipart bytes cannot be substituted with filesystem aliases."""
+"""存储的分块字节数据不能用文件系统别名替换测试."""
 import os
 from contextlib import contextmanager
 

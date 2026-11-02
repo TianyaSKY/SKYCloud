@@ -1,4 +1,4 @@
-"""System dictionary rows holding runtime switches and settings."""
+"""保存运行时开关与全局配置的系统字典表模型."""
 
 from datetime import datetime
 from typing import TypedDict
@@ -16,7 +16,7 @@ from app.infra.utc_datetime import UTCDateTime
 
 
 class SysDictDict(TypedDict):
-    """Public representation of a system dictionary row."""
+    """系统字典记录的公开表示模型."""
 
     id: int
     key: str
@@ -27,7 +27,7 @@ class SysDictDict(TypedDict):
 
 
 class SysDict(Base):
-    """System dictionary key/value row for runtime configuration."""
+    """用于运行时动态配置的系统字典键值对模型."""
 
     __tablename__ = "sys_dict"
 
@@ -42,7 +42,7 @@ class SysDict(Base):
     )
 
     def to_dict(self) -> SysDictDict:
-        """Return the public dictionary entry representation."""
+        """返回字典条目的公开字典表示."""
         return {
             "id": self.id,
             "key": self.key,
@@ -54,7 +54,7 @@ class SysDict(Base):
 
     @classmethod
     def from_cache(cls, d: SysDictDict) -> "SysDict":
-        """Build a detached dictionary row from cached fields."""
+        """根据缓存字段构建游离态字典记录."""
         return cls(
             id=d.get("id"),
             key=d.get("key"),

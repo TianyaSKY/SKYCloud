@@ -1,4 +1,4 @@
-"""Durable, immutable remote-session cleanup after an assistant worker dies."""
+"""助手 Worker 异常终止后用于远程会话清理的持久化不可变意图模型."""
 
 from datetime import datetime
 
@@ -11,7 +11,7 @@ from app.infra.utc_datetime import UTCDateTime
 
 
 class AssistantRuntimeAbort(Base):
-    """Cleanup intent for a remote session abandoned by a dead worker."""
+    """因 Worker 异常终止而被遗弃的远程会话清理意图记录."""
 
     __tablename__ = "assistant_runtime_aborts"
 

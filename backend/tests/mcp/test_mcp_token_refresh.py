@@ -1,4 +1,4 @@
-"""MCP/OpenCode token-refresh and runtime isolation regression tests."""
+"""MCP/OpenCode 令牌刷新与运行时隔离回归测试."""
 
 from unittest.mock import Mock, patch
 from types import SimpleNamespace

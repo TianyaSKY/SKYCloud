@@ -1,4 +1,4 @@
-"""Typed inputs and byte-storage contracts for file publication."""
+"""文件发布流程的类型化入参与字节存储契约接口."""
 
 from __future__ import annotations
 
@@ -11,39 +11,39 @@ if TYPE_CHECKING:
 
 
 class UploadSource(Protocol):
-    """Upload adapter following the ``save(path)`` contract."""
+    """遵循 ``save(path)`` 契约约定的上传输入适配器."""
 
     filename: str
 
     @property
     def mimetype(self) -> str | None:
-        """Return the upload's declared content type, when present."""
+        """返回上传请求中声明的 MIME 内容类型 (若提供)."""
         ...
 
     def save(self, destination: str) -> None:
-        """Write the payload to ``destination``."""
+        """将上传载荷写入 ``destination`` 目标路径."""
         ...
 
 
 class UploadStorage(Protocol):
-    """Object-store operations needed to publish or compensate an upload."""
+    """发布或补偿上传操作所需的对象存储基础操作接口."""
 
     def upload_file(self, local_path: str, object_name: str) -> None:
-        """Upload one staged object under its unique object name."""
+        """以唯一对象名称上传单个已暂存的对象数据."""
         ...
 
     def delete_file(self, object_name: str) -> None:
-        """Delete one object during upload compensation or cleanup."""
+        """在上传失败补偿或清理流程中删除单个对象."""
         ...
 
     def file_exists(self, object_name: str) -> bool:
-        """Check whether one object is available for instant reuse."""
+        """检查指定对象是否存在以用于秒传复用."""
         ...
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class UploadScope:
-    """Workspace, actor and target parent for one publication transaction."""
+    """单次上传发布事务涉及的工作空间、操作人与目标父目录."""
 
     workspace_id: int
     uploader_id: int
@@ -52,7 +52,7 @@ class UploadScope:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StagedFile:
-    """Bounded bytes and derived metadata held under a staging lease."""
+    """在暂存租约保护下的有界字节数据及派生元数据."""
 
     staging: StagedUpload
     name: str
@@ -63,14 +63,14 @@ class StagedFile:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StoredUpload:
-    """Durable reservation and file specification for a successfully PUT object."""
+    """成功执行 PUT 的对象的持久化预留记录与文件规格."""
 
     reservation_id: str
     spec: FileRecordSpec
 
 
 class PreflightData(TypedDict, total=False):
-    """Preflight inputs decoded from an upload request."""
+    """从上传请求中解析出的秒传预检参数."""
 
     filename: str
     total_size: int

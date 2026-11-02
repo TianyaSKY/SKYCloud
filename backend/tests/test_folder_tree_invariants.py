@@ -1,4 +1,4 @@
-"""Folder mutations preserve the canonical root and never admit cyclic moves."""
+"""文件夹变更保持规范根目录且绝不允许循环移动测试."""
 from unittest.mock import patch
 import pytest
 from app.exceptions import BusinessRuleError, PermissionDeniedError
@@ -44,7 +44,7 @@ def test_organizer_root_alias_and_guards_match_rest(session,test_workspace,test_
     root=test_folder.parent_id;workspace=test_workspace.id;folder=test_folder.id
     file=File(name='file',file_path='object',workspace_id=workspace,parent_id=folder)
     session.add(file);session.commit();file_id=file.id
-    # The seam supplies the SQL session; these are actual mutations and checks.
+    # 接缝提供 SQL session; 这些均为实际的数据变更与校验.
     with patch.object(tools,'get_session',return_value=session),patch.object(tools,'clear_workspace_cache'):
         result=tools.create_folder.invoke({'name':'organized','parent_id':0,'workspace_id':workspace})
         assert '已创建' in result

@@ -1,4 +1,4 @@
-"""Block the public password hash shipped by historical SQL initialization."""
+"""拦截由历史 SQL 初始化脚本所提供的公开默认管理员密码哈希."""
 
 from sqlalchemy import Engine, select
 
@@ -12,7 +12,7 @@ LEGACY_ADMIN_HASH = (
 
 
 def check_legacy_admin(database_engine: Engine) -> None:
-    """Fail startup when the historical default administrator still exists."""
+    """当历史默认管理员仍存在且未修改密码时拒绝服务启动."""
     with database_engine.connect() as conn:
         found = conn.scalar(
             select(User.id)

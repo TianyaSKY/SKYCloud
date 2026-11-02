@@ -1,4 +1,4 @@
-"""Restricted Docker controller.
+"""受限的 Docker 容器控制器.
 
-Deliberately independent of the application and database.
+按设计完全独立于主应用程序与业务数据库.
 """

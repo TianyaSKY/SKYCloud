@@ -1,7 +1,7 @@
-"""Redis-backed file access Bloom filter that rejects before touching SQL.
+"""基于 Redis 的文件访问布隆过滤器, 在访问 SQL 前执行快速拦截.
 
-False positives are safe: they fall through to the database. Rebuilds write a
-temporary key under a distributed lock, then rename both keys atomically.
+假阳性是安全的: 会直接穿透回退至数据库权威鉴权。重建流程在
+分布式锁保护下写入临时键, 随后原子性重命名两个键以完成替换。
 """
 
 import hashlib
@@ -64,7 +64,7 @@ def _iter_file_ids(user_id: int | None) -> Iterable[int]:
 
 
 def _build_filter(user_id: int | None) -> bool:
-    """Rebuild one scope; a lost lock returns False and callers fall back to SQL."""
+    """重建指定作用域的过滤器; 抢锁失败返回 False 且调用方回退至 SQL."""
     scope = _scope_name(user_id)
     token = uuid.uuid4().hex
     lock_key = _lock_key(user_id)
@@ -99,8 +99,8 @@ def _build_filter(user_id: int | None) -> bool:
         )
         pipe.execute()
 
-        # Write the temporary keys first, then rename, so readers never see a
-        # half-built bitmap.
+        # 先写入临时键再执行重命名原子替换, 确保并发读请求
+        # 绝不会观测到构建中途的半成品位图数据。
         pipe = redis_client.pipeline()
         pipe.delete(_bits_key(user_id), _meta_key(user_id))
         pipe.rename(temp_bits_key, _bits_key(user_id))
@@ -132,7 +132,7 @@ def _ensure_filter_ready(user_id: int | None) -> bool:
 
 
 def _maybe_contains(user_id: int | None, file_id: int) -> bool:
-    # An unavailable filter answers True so the database still authorizes.
+    # 过滤器不可用时保守返回 True, 由数据库执行权威鉴权。
     if not _ensure_filter_ready(user_id):
         return True
 
@@ -158,7 +158,7 @@ def _maybe_contains(user_id: int | None, file_id: int) -> bool:
 
 
 def add_file(file_id: int, user_id: int | None) -> None:
-    """Add one id to the user scope and to the global scope when present."""
+    """将单个文件 ID 添加至用户作用域, 若全局作用域存在亦一并写入."""
     scopes: list[int | None] = [None]
     if user_id is not None:
         scopes.append(user_id)
@@ -188,10 +188,10 @@ def add_file(file_id: int, user_id: int | None) -> None:
 
 
 def maybe_user_can_access_file(user_id: int, file_id: int) -> bool:
-    """Return whether the user may own the file; False is safe to reject."""
+    """返回用户是否可能拥有该文件; 返回 False 时可安全直接拒绝."""
     return _maybe_contains(user_id, file_id)
 
 
 def maybe_file_exists(file_id: int) -> bool:
-    """Return whether the file may exist; False is safe to answer 404."""
+    """返回文件是否可能存在; 返回 False 时可安全直接返回 404."""
     return _maybe_contains(None, file_id)

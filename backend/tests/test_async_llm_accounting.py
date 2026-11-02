@@ -1,4 +1,4 @@
-"""Database accounting must leave the event loop available to other requests."""
+"""数据库记账必须保持事件循环对其他请求可用测试."""
 
 import asyncio
 import threading

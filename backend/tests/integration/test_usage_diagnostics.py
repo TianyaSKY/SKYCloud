@@ -1,4 +1,4 @@
-"""Actual PostgreSQL rejected usage write must not emit bound prompt data."""
+"""实际 PostgreSQL 拒绝用量写入时绝不泄漏绑定提示词数据测试."""
 import os
 import pytest
 from loguru import logger
@@ -22,7 +22,7 @@ def test_rejected_write_rolls_back_counters_and_keeps_sql_binds_private(postgres
     captured=[]
     sink=logger.add(lambda message:captured.append((str(message),message.record['exception'])),format='{message}')
     try:
-        # PostgreSQL varchar(50) rejects this action during INSERT, after UPDATE.
+        # 在 UPDATE 之后的 INSERT 期间, PostgreSQL varchar(50) 拒绝此操作.
         service.record_usage(service.RecordUsageParams(user_id=uid, action='x'*51, prompt_tokens=2,completion_tokens=3,query_summary=secret,extra_info=secret))
     finally:logger.remove(sink)
     assert any('error_type=DataError' in message for message,_ in captured)

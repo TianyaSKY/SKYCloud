@@ -1,7 +1,7 @@
-"""HTTP authentication dependencies for JWT, admin, ownership and workspace checks.
+"""用于 JWT、管理员、所有权及工作区检查的 HTTP 认证依赖项.
 
-Only Authorization Bearer is accepted; URL parameters are never identity
-credentials. MCP-specific JWTs must still exist in the mcp_token table.
+仅接受 Authorization Bearer 格式; URL 参数绝不能作为身份凭证.
+MCP 专用的 JWT 必须在 mcp_token 表中处于活跃状态.
 """
 
 from collections.abc import Callable, Mapping
@@ -38,7 +38,7 @@ _WORKSPACE_MISSING = "Workspace not found"
 
 @dataclass(frozen=True, slots=True)
 class RequestContext:
-    """A request user and the factory that owns its SQL work."""
+    """封装请求用户及其持有 SQL 操作的 Session 工厂."""
 
     user: User
     session_factory: SessionFactory
@@ -52,7 +52,7 @@ def _claims(encoded: str) -> Mapping[str, object]:
 
 
 def _validate_token_scope(payload: Mapping[str, object]) -> None:
-    """Reject malformed subjects and tokens issued for another HTTP surface."""
+    """拒绝畸形主体以及针对其他 HTTP 接口表面签发的令牌."""
     user_id = payload.get("sub")
     try:
         valid_user_id = isinstance(user_id, str) and int(user_id) > 0
@@ -75,9 +75,9 @@ async def get_current_user(
     ],
     session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> User:
-    """Resolve the request user from an Authorization Bearer header.
+    """从 Authorization Bearer 请求头中解析当前请求用户.
 
-    MCP JWTs must still be active in the mcp_token table or they are rejected.
+    MCP JWT 必须在 mcp_token 表中处于有效激活状态, 否则会被拒绝.
     """
     token = None
     if credentials and credentials.scheme.lower() == "bearer":
@@ -115,7 +115,7 @@ def request_context(
     current_user: Annotated[User, Depends(get_current_user)],
     session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> RequestContext:
-    """Bundle the authenticated user and its Session factory for routers."""
+    """将已认证的用户及其 Session 工厂绑定为路由上下文."""
     return RequestContext(current_user, session_factory)
 
 
@@ -123,7 +123,7 @@ Ctx = Annotated[RequestContext, Depends(request_context)]
 
 
 def require_admin(current_user: Annotated[User, Depends(get_current_user)]) -> User:
-    """Require an administrator role."""
+    """要求当前用户具备管理员角色权限."""
     if current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=_ADMIN_REQUIRED,
@@ -135,7 +135,7 @@ def admin_request_context(
     current_user: Annotated[User, Depends(require_admin)],
     session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> RequestContext:
-    """Bundle an admin user and its Session factory for admin-only routers."""
+    """将管理员用户及其 Session 工厂绑定为仅限管理员路由的上下文."""
     return RequestContext(current_user, session_factory)
 
 
@@ -143,7 +143,7 @@ AdminCtx = Annotated[RequestContext, Depends(admin_request_context)]
 
 
 def ensure_owner_or_admin(current_user: User, owner_id: int) -> None:
-    """Reject non-owners who are not administrators."""
+    """拒绝非资源所有者且非管理员的访问请求."""
     if int(current_user.id) != int(owner_id) and current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=_PERMISSION_DENIED,
@@ -151,7 +151,7 @@ def ensure_owner_or_admin(current_user: User, owner_id: int) -> None:
 
 
 def _runtime_workspace(payload: Mapping[str, object]) -> int | None:
-    """Return a runtime token's bound workspace, or None when it is malformed."""
+    """返回运行时令牌绑定的工作区 ID, 若格式不合规返回 None."""
     if payload.get("type") != "mcp_runtime":
         return None
     try:
@@ -165,9 +165,9 @@ def get_current_workspace(
     current_user: Annotated[User, Depends(get_current_user)],
     session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> Workspace:
-    """Resolve X-Workspace-Id and verify the user is a member.
+    """解析 X-Workspace-Id 并验证当前用户是否为该工作区成员.
 
-    File and folder operations require this header.
+    文件和文件夹操作均需此请求头.
     """
     ws_id = request.headers.get("X-Workspace-Id")
     if not ws_id:
@@ -183,8 +183,8 @@ def get_current_workspace(
             detail=_WORKSPACE_HEADER_INVALID,
         ) from None
 
-    # Runtime tokens are cryptographically bound to one workspace. A caller
-    # may not reuse the token with a different HTTP workspace header.
+    # 运行时令牌通过密码学算法与特定工作区绑定。调用方
+    # 不得将该令牌与不同的 HTTP 工作区头组合复用。
     raw_token = request.headers.get("Authorization", "")
     if raw_token.lower().startswith("bearer "):
         raw_token = raw_token.split(" ", 1)[1].strip()
@@ -218,7 +218,7 @@ def get_current_workspace(
 def require_workspace_role(
     min_role: str,
 ) -> Callable[[Workspace, User, SessionFactory], Workspace]:
-    """Build a dependency that requires the current workspace role."""
+    """构建校验用户当前工作区角色的依赖项."""
 
     def checker(
         workspace: Annotated[Workspace, Depends(get_current_workspace)],

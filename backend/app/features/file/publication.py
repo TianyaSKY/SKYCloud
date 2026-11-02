@@ -1,4 +1,4 @@
-"""Pure file-publication stages over caller-owned SQL and object storage."""
+"""在调用方持有的 SQL 与对象存储之上执行的纯文件发布阶段函数."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ SHA256_HEX_LENGTH = 64
 
 
 def object_name(original_filename: str) -> str:
-    """Return a collision-free object key derived from the original name."""
+    """基于原始文件名生成无碰撞风险的唯一对象存储键."""
     extension = Path(original_filename).suffix
     base_name = original_filename[: len(original_filename) - len(extension)]
     safe_base_name = secure_filename(base_name)
@@ -52,14 +52,14 @@ def object_name(original_filename: str) -> str:
 
 
 def mime_type(path: str, provided: str | None = None) -> str | None:
-    """Return the declared MIME type or guess it from the path extension."""
+    """返回声明的 MIME 类型, 未提供时根据文件扩展名推断."""
     if provided:
         return provided
     return mimetypes.guess_type(path)[0]
 
 
 def normalize_hash(content_hash: str | None) -> str | None:
-    """Return the lowercase SHA-256 digest, rejecting malformed values."""
+    """返回规范的小写 SHA-256 哈希值, 拒绝格式非法的值."""
     if not content_hash:
         return None
     normalized = content_hash.strip().lower()
@@ -72,7 +72,7 @@ def normalize_hash(content_hash: str | None) -> str | None:
 
 
 def hash_file(path: str) -> str:
-    """Return the SHA-256 digest of the staged payload."""
+    """计算并返回已暂存载荷内容的 SHA-256 哈希值."""
     digest = hashlib.sha256()
     with Path(path).open("rb") as file_obj:
         while True:
@@ -86,7 +86,7 @@ def hash_file(path: str) -> str:
 def resolve_parent(
     session: Session, workspace_id: int, parent_id: int | None,
 ) -> int | None:
-    """Resolve the workspace root and reject parents from another workspace."""
+    """解析工作空间根目录, 并拒绝属于其他工作空间的父目录."""
     if parent_id is None:
         return get_root_folder_id(session, workspace_id)
     parent = repository.find_folder(session, parent_id)
@@ -103,7 +103,7 @@ def stage_source(
     *,
     max_bytes: int,
 ) -> Generator[StagedFile, None, None]:
-    """Write bounded upload bytes and derive metadata without accessing SQL."""
+    """写入有界上传字节流并提取元数据, 全程不访问 SQL 数据库."""
     Path(settings.upload_root).mkdir(parents=True, exist_ok=True)
     name = source.filename or "unknown"
     staging = StagedUpload(settings.upload_root, name)
@@ -126,7 +126,7 @@ def reserve_and_store(
     scope: UploadScope,
     storage: UploadStorage,
 ) -> StoredUpload:
-    """Durably reserve one object key before PUT; compensate uncertain failures."""
+    """在 PUT 前持久化预留对象键; 对不确定的失败执行补偿回滚."""
     key = object_name(staged.name)
     stage_id = staged.staging.directory.name
     reservation = upload_authorization.reserve(
@@ -170,7 +170,7 @@ def stage_stored_files(
     scope: UploadScope,
     stored: Sequence[StoredUpload],
 ) -> list[File]:
-    """Consume reservations and stage all file/outbox rows in one transaction."""
+    """消费预留记录并在单笔事务中暂存所有文件与任务外发收件箱行."""
     if not stored:
         return []
     for upload in stored:
@@ -205,7 +205,7 @@ def stage_stored_files(
 
 
 def stage_record(session: Session, spec: FileRecordSpec) -> File:
-    """Stage one existing-object File and its index task without committing."""
+    """为已有对象暂存 File 记录与其索引任务, 不执行提交."""
     parent_id = spec.parent_id
     if parent_id is not None:
         parent_id = resolve_parent(session, spec.workspace_id, parent_id)
@@ -229,7 +229,7 @@ def stage_record(session: Session, spec: FileRecordSpec) -> File:
 
 
 def record_created(file: File) -> None:
-    """Record one successfully committed file-creation event."""
+    """记录一条已成功提交的文件创建变更事件流水."""
     if not file.workspace_id:
         return
     change_log_service.log_event(
@@ -247,7 +247,7 @@ def record_created(file: File) -> None:
 
 
 def record_batch_created(workspace_id: int, files: Sequence[File]) -> None:
-    """Record batch creation events after the caller's commit."""
+    """在调用方提交事务后批量记录文件创建变更事件流水."""
     events: list[FileChangeEventSpec] = [
         {
             "entity_type": "file",

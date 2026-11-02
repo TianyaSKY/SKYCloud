@@ -1,4 +1,4 @@
-"""Runtime secret isolation, revocation, model binding and HTTP proxy regressions."""
+"""运行时秘密隔离、撤销、模型绑定与 HTTP 代理回归测试."""
 
 from unittest.mock import Mock, patch
 

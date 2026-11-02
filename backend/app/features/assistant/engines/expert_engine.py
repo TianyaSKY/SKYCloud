@@ -1,4 +1,4 @@
-"""OpenCode-backed expert execution engine."""
+"""基于 OpenCode 的专家执行引擎."""
 
 import asyncio
 import os
@@ -70,7 +70,7 @@ def _permission_ui_enabled() -> bool:
 
 
 def _mcp_unavailable(status: JsonObject) -> bool:
-    """Return whether the SKYCloud MCP server is unusable for this run."""
+    """返回 SKYCloud MCP 服务器对于此运行是否不可用."""
     skycloud = status.get("SKYCLOUD")
     if not isinstance(skycloud, dict):
         return False
@@ -79,7 +79,7 @@ def _mcp_unavailable(status: JsonObject) -> bool:
 
 
 def _merge_usage(info: JsonObject, usage: JsonObject) -> str | None:
-    """Merge one assistant message's token usage and return its provider id."""
+    """合并单条助手消息的 token 用量并返回其提供商 ID."""
     provider_id = info.get("id")
     tokens = info.get("tokens") or info.get("usage")
     if isinstance(tokens, dict):
@@ -90,7 +90,7 @@ def _merge_usage(info: JsonObject, usage: JsonObject) -> str | None:
 
 
 def _message_text(parts: Sequence[JsonValue]) -> tuple[str, str | None]:
-    """Return the joined text and first reasoning title of one message."""
+    """返回单条消息的拼接文本与首个推理标题."""
     pieces: list[str] = []
     title: str | None = None
     for part in parts:
@@ -111,7 +111,7 @@ def _message_text(parts: Sequence[JsonValue]) -> tuple[str, str | None]:
 def _text_from_messages(
     messages: Sequence[JsonObject],
 ) -> tuple[str, str | None, JsonObject, str | None]:
-    """Return the newest assistant text, provider id, usage, and title."""
+    """返回消息列表中最新的助手文本、提供商 ID、用量与标题."""
     latest_text = ""
     provider_id: str | None = None
     usage: JsonObject = {}
@@ -133,7 +133,7 @@ def _text_from_messages(
 
 
 def _is_query_part(part: JsonValue, query: str) -> bool:
-    """Return whether a provider message part repeats the submitted query."""
+    """返回提供商消息分块是否重复了所提交的查询."""
     if not isinstance(part, dict):
         return False
     return part.get("type") == "text" and part.get("text") == query
@@ -144,7 +144,7 @@ def _query_parent_ids(
     previous_ids: set[str],
     query: str,
 ) -> set[str]:
-    """Return user message ids that carry this newly submitted query."""
+    """返回携带此新提交查询的用户消息 ID."""
     parents: set[str] = set()
     for item in messages:
         info = item.get("info")
@@ -166,7 +166,7 @@ def _completed_reply(
     previous_ids: set[str],
     parents: set[str],
 ) -> tuple[str, str | None, JsonObject, str | None]:
-    """Return the completed assistant message belonging to this query."""
+    """返回属于此查询的已完成助手消息."""
     completed: list[JsonObject] = []
     for item in messages:
         info = item.get("info")
@@ -197,13 +197,13 @@ def _current_reply(
     previous_ids: set[str],
     query: str,
 ) -> tuple[str, str | None, JsonObject, str | None]:
-    """Recover only a completed answer parented to this newly submitted query."""
+    """仅恢复归属于此新提交查询的已完成回答."""
     parents = _query_parent_ids(messages, previous_ids, query)
     return _completed_reply(messages, previous_ids, parents)
 
 
 def _previous_message_ids(messages: Sequence[JsonObject]) -> set[str]:
-    """Return the durable provider message ids recorded before the prompt."""
+    """返回在提示词前记录的持久化提供商消息 ID."""
     previous_ids: set[str] = set()
     for message in messages:
         info = message.get("info")
@@ -216,7 +216,7 @@ def _previous_message_ids(messages: Sequence[JsonObject]) -> set[str]:
 
 
 def _answer_suffix(final_text: str, emitted_text: str) -> str:
-    """Return the part of the durable answer that was not streamed yet."""
+    """返回尚未流式传输的持久化回答部分."""
     if final_text.startswith(emitted_text):
         return final_text[len(emitted_text):]
     if not emitted_text:
@@ -225,20 +225,20 @@ def _answer_suffix(final_text: str, emitted_text: str) -> str:
 
 
 def _raise_permission_not_persisted() -> NoReturn:
-    """Fail when a resolved permission was never durably recorded."""
+    """当已决议的权限从未被持久化记录时抛出异常."""
     message = "权限回复未持久化或已失效"
     raise ConflictError(message)
 
 
 async def _abort_quietly(client: OpenCodeClient, session_id: str) -> None:
-    """Abort one provider session without masking the primary failure."""
+    """中止单个提供商会话且不掩盖主要故障."""
     with suppress(Exception, asyncio.CancelledError):
         await asyncio.wait_for(client.abort_session(session_id), timeout=5)
 
 
 @dataclass(frozen=True)
 class RuntimeConnection:
-    """Resolved OpenCode runtime endpoint for one expert run."""
+    """单次专家运行所解析的 OpenCode 运行时端点."""
 
     runtime_id: int
     base_url: str
@@ -247,7 +247,7 @@ class RuntimeConnection:
 
 @dataclass(frozen=True)
 class ExpertContext:
-    """Durable conversation state reused by an expert provider session."""
+    """专家提供商会话复用的持久化对话状态."""
 
     title: str | None
     opencode_session_id: str | None
@@ -272,7 +272,7 @@ def _conversation_context(
 
 @dataclass(frozen=True, slots=True)
 class RunInputs:
-    """Identifiers and prompt inputs for one expert run."""
+    """单次专家运行的标识符与提示词输入."""
 
     workspace_id: int
     user_id: int
@@ -282,7 +282,7 @@ class RunInputs:
 
 @dataclass(frozen=True, slots=True)
 class PermissionDispatch:
-    """Identity of one permission answer that a worker may dispatch."""
+    """工作线程可分发的单个权限回答标识."""
 
     provider_session_id: str
     permission_id: str
@@ -290,7 +290,7 @@ class PermissionDispatch:
 
 @dataclass(frozen=True, slots=True)
 class PermissionResponse:
-    """A permission response that is ready or awaiting durable confirmation."""
+    """就绪或等待持久化确认的权限响应."""
 
     response: str | None
     auto_rejected: bool = False
@@ -298,14 +298,14 @@ class PermissionResponse:
 
 @dataclass(frozen=True, slots=True)
 class PermissionWait:
-    """Provider event and future for one UI-mediated permission decision."""
+    """UI 介导权限决策的提供商事件与 Future."""
 
     event: AssistantEvent
     future: asyncio.Future[str]
 
 @dataclass(frozen=True, slots=True)
 class ProviderSession:
-    """Provider session selected for the current exchange."""
+    """为当前交互选定的提供商会话."""
 
     session_id: str
     created: bool
@@ -313,7 +313,7 @@ class ProviderSession:
 
 @dataclass(frozen=True, slots=True)
 class ReplyRecovery:
-    """Durable answer recovered after the provider event stream dropped."""
+    """提供商事件流断开后恢复的持久化回答."""
 
     text: str
     provider_id: str | None
@@ -323,7 +323,7 @@ class ReplyRecovery:
 
 @dataclass(slots=True)
 class StreamProgress:
-    """Mutable progress of one streamed provider exchange."""
+    """单次流式提供商交互的可变进度."""
 
     emitted_text: str = ""
     emitted_title: str | None = None
@@ -335,7 +335,7 @@ class StreamProgress:
 
 @dataclass(frozen=True, slots=True)
 class Exchange:
-    """Live provider connection plus the immutable inputs of one exchange."""
+    """存活提供商连接以及单次交互的不可变输入."""
 
     inputs: RunInputs
     runtime: RuntimeConnection
@@ -349,7 +349,7 @@ class Exchange:
 
 
 class ExpertEngine:
-    """OpenCode-backed engine for one expert assistant run."""
+    """单次专家助手运行的 OpenCode 支持引擎."""
 
     def __init__(
         self,
@@ -358,12 +358,12 @@ class ExpertEngine:
         conversation: AssistantConversation,
         run: AssistantRun,
     ) -> None:
-        """Bind the engine to one owned run and its durable conversation."""
+        """将引擎绑定至所属运行及其持久化对话."""
         self.conversation_id = int(conversation.id)
         self.run_id = int(run.id)
-        # Runtime setup must not share the stream's mutable Session while the
-        # consumer persists heartbeats/events. Create/close each Session in its
-        # worker and return scalars, never commit-expired ORM instances.
+        # 运行时设置不得在消费者持久化心跳/事件期间共享流的可变 Session.
+        # 在各自 worker 中创建/关闭 Session 并返回标量,
+        # 绝不返回 commit 后过期的 ORM 实例.
         bind = session.get_bind()
         if isinstance(bind, Connection):
             bind = bind.engine
@@ -377,7 +377,7 @@ class ExpertEngine:
         workspace_id: int,
         user_id: int,
     ) -> AssistantRun:
-        """Return the run when the caller still owns this expert run."""
+        """当调用方仍持有该专家运行时返回该运行."""
         run = repository.get_owned_run(
             session, self.run_id, workspace_id, user_id,
         )
@@ -397,7 +397,7 @@ class ExpertEngine:
         workspace_id: int,
         user_id: int,
     ) -> AssistantRun:
-        """Return the owned run only while it is still active."""
+        """仅当所属运行仍处于活跃状态时返回该运行."""
         self._owned_run(session, workspace_id, user_id)
         run = repository.lock_run(session, self.run_id)
         if (
@@ -414,7 +414,7 @@ class ExpertEngine:
         workspace_id: int,
         user_id: int,
     ) -> ExpertContext:
-        """Return the durable conversation context for this run."""
+        """返回此运行的持久化对话上下文."""
         with self.runtime_session_factory() as session:
             run = self._active_owned_run(session, workspace_id, user_id)
             conversation = session.get(
@@ -436,7 +436,7 @@ class ExpertEngine:
         runtime_id: int,
         session_id: str,
     ) -> None:
-        """Persist the provider session identity for this run."""
+        """为此运行持久化提供商会话标识."""
         with self.runtime_session_factory() as session:
             run = self._active_owned_run(session, workspace_id, user_id)
             conversation = session.get(
@@ -458,7 +458,7 @@ class ExpertEngine:
         runtime_id: int,
         container_id: str,
     ) -> None:
-        """Record the lease token before Redis grants runtime ownership."""
+        """在 Redis 授予运行时所有权前记录租约令牌."""
         with self.runtime_session_factory() as session:
             run = self._active_owned_run(session, workspace_id, user_id)
             run.runtime_lease_token = token
@@ -472,7 +472,7 @@ class ExpertEngine:
         user_id: int,
         payload: JsonObject,
     ) -> AssistantPermission:
-        """Register one durable permission request for this run."""
+        """为此运行注册单个持久化权限请求."""
         with self.runtime_session_factory() as session:
             run = self._owned_run(session, workspace_id, user_id)
             permission = repository.register_permission(session, run, payload)
@@ -486,7 +486,7 @@ class ExpertEngine:
         user_id: int,
         permission_id: str,
     ) -> tuple[str | None, bool]:
-        """Return the durable response and cancellation state of the run."""
+        """返回运行的持久化响应与取消状态."""
         with self.runtime_session_factory() as session:
             run = self._owned_run(session, workspace_id, user_id)
             permission = repository.permission_for_run(
@@ -511,7 +511,7 @@ class ExpertEngine:
         user_id: int,
         permission_id: str,
     ) -> str | None:
-        """Persist the UI-disabled rejection before provider dispatch."""
+        """在提供商分发前持久化 UI 禁用的拒绝决策."""
         with self.runtime_session_factory() as session:
             run = self._owned_run(session, workspace_id, user_id)
             permission = repository.permission_for_run(
@@ -544,9 +544,9 @@ class ExpertEngine:
         runtime: RuntimeConnection,
         dispatch: PermissionDispatch,
     ) -> None:
-        """Dispatch a permission response after locking its SQL identity."""
-        # SQL and this HTTP client both belong to this worker thread. Parent
-        # locks serialize grant dispatch against demotion/delete/replacement.
+        """在锁定 SQL 标识后分发权限响应."""
+        # SQL 与此 HTTP 客户端均属于当前工作线程.
+        # 父级锁针对降级/删除/替换串行化授权分发.
         with self.runtime_session_factory() as session:
             if session.get_bind().dialect.name == "postgresql":
                 session.execute(text("SET LOCAL lock_timeout = '5s'"))
@@ -604,7 +604,7 @@ class ExpertEngine:
             session.commit()
 
     def _runtime_needs_start(self, workspace_id: int, user_id: int) -> bool:
-        """Return whether the runtime must be started for this run."""
+        """返回运行时是否必须为此运行启动."""
         with self.runtime_session_factory() as session:
             workspace = session.get(Workspace, workspace_id)
             if workspace is None:
@@ -629,7 +629,7 @@ class ExpertEngine:
         *,
         needs_start: bool,
     ) -> RuntimeConnection:
-        """Start or reuse the runtime and return its relay endpoint."""
+        """启动或复用运行时并返回其中继端点."""
         with self.runtime_session_factory() as session:
             workspace = session.get(Workspace, workspace_id)
             if workspace is None:
@@ -648,8 +648,8 @@ class ExpertEngine:
                     else runtime.error_message
                 )
                 raise ServiceOperationError(failed)
-            # start already injects initial config. Existing runtimes refresh
-            # their scoped credentials through the live MCP API per task.
+            # start 已注入初始配置. 现有运行时通过存活的
+            # 每任务 MCP API 刷新其限定范围凭据.
             if not needs_start:
                 docker_service.setup_mcp(
                     session, workspace, user_id, runtime=runtime,
@@ -667,7 +667,7 @@ class ExpertEngine:
         workspace_id: int,
         user_id: int,
     ) -> AsyncGenerator[tuple[RuntimeConnection | None, AssistantEvent], None]:
-        """Yield the runtime status events that lead to a live connection."""
+        """产出导向存活连接的运行时状态事件."""
         needs_start = await run_owned(
             self._runtime_needs_start, workspace_id, user_id,
         )
@@ -696,7 +696,7 @@ class ExpertEngine:
         self,
         request: EngineRequest,
     ) -> AsyncGenerator[AssistantEvent, None]:
-        """Stream one expert run through its leased OpenCode runtime."""
+        """通过所租用的 OpenCode 运行时流式传输单次专家运行."""
         controller = request.controller
         if controller is None:
             message = "Expert run controller is unavailable"
@@ -741,7 +741,7 @@ class ExpertEngine:
                     yield event
 
     async def _require_provider_ready(self, client: OpenCodeClient) -> None:
-        """Fail before prompting when the runtime or MCP bridge is unready."""
+        """在提示前校验运行时或 MCP 桥接是否可用, 否则失败."""
         health = await client.health()
         if health.get("healthy") is False:
             message = "OpenCode 服务未就绪"
@@ -758,7 +758,7 @@ class ExpertEngine:
         runtime: RuntimeConnection,
         inputs: RunInputs,
     ) -> ProviderSession:
-        """Resume the durable provider session or create a fresh one."""
+        """恢复持久化提供商会话或创建全新会话."""
         session_id = context.opencode_session_id
         missing = False
         if session_id:
@@ -781,7 +781,7 @@ class ExpertEngine:
         runtime: RuntimeConnection,
         controller: RunController,
     ) -> AsyncGenerator[AssistantEvent, None]:
-        """Run the provider conversation for one leased expert runtime."""
+        """为租用的专家运行时执行提供商对话."""
         password = server_password(
             runtime.runtime_id, inputs.user_id, inputs.workspace_id,
         )
@@ -806,9 +806,8 @@ class ExpertEngine:
             )
 
             async def abort_provider_session() -> bool:
-                # The event stream may finish/close its client while the
-                # remote abort is in flight. Give this bounded control RPC
-                # its own transport lifetime.
+                # 远程中止进行期间事件流可能已完成/关闭客户端.
+                # 为此有界控制 RPC 提供独立的传输生命周期.
                 async with OpenCodeClient(
                     runtime.base_url,
                     server_username(),
@@ -840,7 +839,7 @@ class ExpertEngine:
         exchange: Exchange,
         progress: StreamProgress,
     ) -> AsyncGenerator[AssistantEvent, None]:
-        """Relay provider events, then emit the durable final answer."""
+        """中继提供商事件, 随后发射持久化最终回答."""
         try:
             async with aclosing(self._open_exchange(exchange, progress)) as events:
                 async for event in events:
@@ -851,13 +850,13 @@ class ExpertEngine:
             if progress.cancelled:
                 return
         except OpenCodeActionError:
-            # An unacknowledged permission must not clear SQL state or
-            # recover an older answer as if this control action succeeded.
+            # 未确认的权限不得清理 SQL 状态或恢复旧回答,
+            # 宛如此控制操作已成功一样.
             await _abort_quietly(exchange.client, exchange.provider.session_id)
             raise
         except OpenCodeClientError:
-            # If the event connection dropped after the provider accepted
-            # the prompt, rebuild the answer from the durable message API.
+            # 若在提供商接受提示后事件连接断开,
+            # 从持久化消息 API 重建回答.
             if progress.previous_ids is None:
                 raise
             recovery = await self._recover_reply(exchange, progress)
@@ -876,7 +875,7 @@ class ExpertEngine:
         exchange: Exchange,
         progress: StreamProgress,
     ) -> AsyncGenerator[AssistantEvent, None]:
-        """Open the event stream, then submit context and the new query."""
+        """打开事件流, 随后提交上下文与新查询."""
         try:
             first_event = await exchange.events.__anext__()
         except StopAsyncIteration:
@@ -920,7 +919,7 @@ class ExpertEngine:
         exchange: Exchange,
         progress: StreamProgress,
     ) -> AsyncGenerator[AssistantEvent, None]:
-        """Map provider events until the provider reports this turn done."""
+        """中继提供商事件, 直至提供商报告本轮完成."""
         async for provider_event in exchange.events:
             mapped_events = map_opencode_event(
                 provider_event,
@@ -953,7 +952,7 @@ class ExpertEngine:
         permission_id: str,
         permission_future: asyncio.Future[str],
     ) -> str | None:
-        """Wait until the permission decision is durably visible in SQL."""
+        """等待直至权限决策在 SQL 中持久可见."""
         client = exchange.client
         session_id = exchange.provider.session_id
         cancel_task = asyncio.create_task(
@@ -996,7 +995,7 @@ class ExpertEngine:
         progress: StreamProgress,
         permission_id: str,
     ) -> PermissionResponse:
-        """Persist the safe rejection when permission UI is disabled."""
+        """当权限 UI 禁用时持久化安全拒绝决策."""
         response = await run_owned(
             self._reject_pending_permission,
             exchange.inputs.workspace_id,
@@ -1020,7 +1019,7 @@ class ExpertEngine:
         response: str | None,
         progress: StreamProgress,
     ) -> str | None:
-        """Return a durable response or record that cancellation won."""
+        """返回持久化响应或记录取消获胜."""
         if response in {"once", "reject"}:
             return response
         if permission.state == "cancelled":
@@ -1037,7 +1036,7 @@ class ExpertEngine:
         permission_id: str,
         mapped: AssistantEvent,
     ) -> PermissionResponse | PermissionWait:
-        """Resolve an existing decision or prepare the UI wait event."""
+        """决议现有决策或准备 UI 等待事件."""
         if permission.state == "answered":
             response = permission.response
             if response not in {"once", "reject"}:
@@ -1075,7 +1074,7 @@ class ExpertEngine:
         permission_id: str,
         prepared: PermissionResponse,
     ) -> AssistantEvent:
-        """Dispatch one durable answer and return its status event."""
+        """分发单条持久化回答并返回其状态事件."""
         dispatch_response = self._permission_response_dispatchable(
             permission,
             prepared.response,
@@ -1119,7 +1118,7 @@ class ExpertEngine:
         progress: StreamProgress,
         mapped: AssistantEvent,
     ) -> AsyncGenerator[AssistantEvent, None]:
-        """Register the provider request, then dispatch its durable decision."""
+        """注册提供商请求, 随后分发其持久化决策."""
         permission_id = str(mapped.payload.get("permission_id") or "")
         permission = await run_owned(
             self._persist_permission,
@@ -1158,8 +1157,8 @@ class ExpertEngine:
                         )
                     return
             except BaseException:
-                # A revoked role, DB failure or disconnected waiter must not
-                # leave a live provider task.
+                # 角色被撤销、数据库失败或断开的等待者
+                # 绝不能遗留存活的提供商任务.
                 await _abort_quietly(
                     exchange.client,
                     exchange.provider.session_id,
@@ -1190,7 +1189,7 @@ class ExpertEngine:
         exchange: Exchange,
         progress: StreamProgress,
     ) -> ReplyRecovery:
-        """Rebuild the answer from the durable message API after a drop."""
+        """在连接断开后从持久化消息 API 重建回答."""
         messages = await exchange.client.get_messages(
             exchange.provider.session_id,
         )
@@ -1210,7 +1209,7 @@ class ExpertEngine:
         exchange: Exchange,
         progress: StreamProgress,
     ) -> AsyncGenerator[AssistantEvent, None]:
-        """Emit the durable final answer, the diff, and the terminal event."""
+        """发射持久化最终回答、diff 差异与终态事件."""
         client = exchange.client
         session_id = exchange.provider.session_id
         messages = await client.get_messages(session_id)
@@ -1252,7 +1251,7 @@ async def _recovery_events(
     recovery: ReplyRecovery,
     progress: StreamProgress,
 ) -> AsyncGenerator[AssistantEvent, None]:
-    """Emit the recovered answer parts that were not streamed yet."""
+    """产出尚未流式传输的已恢复回答部分."""
     if recovery.text and not progress.emitted_text:
         yield AssistantEvent("token", {"content": recovery.text})
         progress.emitted_text = recovery.text

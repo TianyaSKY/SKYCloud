@@ -1,8 +1,8 @@
-"""Durable upload quota admission, serialized by existing user/workspace rows.
+"""基于现有用户与工作空间行串行化的持久化上传配额准入控制.
 
-Reservations commit before object IO; consuming a reservation and inserting its
-file share a transaction. Daily admission charges survive aborts and IO failures.
-All deadlines and day boundaries are UTC, stored as UTC instants.
+预留记录在对象 IO 前提交; 消费预留与插入文件记录共享同一事务。
+每日准入扣减在客户端中止与 IO 故障后依然生效。
+所有截止时间与日期边界均采用 UTC, 并以 UTC 时间戳存储。
 """
 
 import re
@@ -40,7 +40,7 @@ USER_CONCURRENCY = positive_limit("UPLOAD_USER_CONCURRENCY", 8)
 WORKSPACE_CONCURRENCY = positive_limit("UPLOAD_WORKSPACE_CONCURRENCY", 32)
 TTL_SECONDS = positive_limit("UPLOAD_RESERVATION_TTL_SECONDS", 3600)
 
-# Enter result of the no-op guard used when no staging root is configured.
+# 未配置暂存根目录时使用的空操作保护上下文返回值。
 _GUARD_ACQUIRED = True
 
 StorageFactory: TypeAlias = Callable[[], UploadStorage]
@@ -48,7 +48,7 @@ StorageFactory: TypeAlias = Callable[[], UploadStorage]
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReserveParams:
-    """Admission inputs for one upload reservation."""
+    """单次上传预留记录的准入校验输入参数."""
 
     workspace_id: int
     user_id: int
@@ -60,7 +60,7 @@ class ReserveParams:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CancelParams:
-    """Cancellation inputs for one reservation."""
+    """单个上传预留记录的取消入参."""
 
     workspace_id: int
     user_id: int
@@ -70,19 +70,19 @@ class CancelParams:
 
 
 def utc_now() -> datetime:
-    """Return the current UTC instant."""
+    """获取并返回当前 UTC 时间戳."""
     return datetime.now(UTC)
 
 
 def find_reservation(
     session: Session, reservation_id: str,
 ) -> UploadReservation | None:
-    """Look up a reservation without locking; callers must apply owned() first."""
+    """无锁查询上传预留记录; 调用方必须先通过 owned() 完成校验."""
     return session.get(UploadReservation, reservation_id)
 
 
 def active_reservation_ids(session: Session) -> set[tuple[str, str]]:
-    """Return (workspace_id, reservation_id) pairs that are still active."""
+    """返回仍处于活跃状态的 (workspace_id, reservation_id) 二元组列表."""
     rows = session.execute(
         select(UploadReservation.workspace_id, UploadReservation.id).where(
             UploadReservation.status == "active",
@@ -96,7 +96,7 @@ def active_reservation_ids(session: Session) -> set[tuple[str, str]]:
 
 
 def lock_owners(session: Session, workspace_id: int, user_id: int) -> None:
-    """Lock the owning user and workspace rows in a single canonical order."""
+    """按规范先后顺序对所有者用户与工作空间行同时加行锁."""
     if (
         session.scalar(select(User.id).where(User.id == user_id).with_for_update())
         is None
@@ -121,7 +121,7 @@ def owned(
     *,
     lock: bool = True,
 ) -> UploadReservation:
-    """Return an active reservation owned by the caller, locking it when asked."""
+    """返回调用方拥有的活跃预留记录, 可选是否加行锁."""
     if lock:
         lock_owners(session, workspace_id, user_id)
     query = select(UploadReservation).where(UploadReservation.id == reservation_id)
@@ -141,7 +141,7 @@ def owned(
 
 
 def reserve(session: Session, params: ReserveParams) -> UploadReservation:
-    """Admit one upload against capacity, concurrency and daily allowances."""
+    """依据存储容量、并发连接数及每日配额额度执行单次上传准入."""
     if params.size < 0:
         message = "Invalid upload size"
         raise BusinessRuleError(message)
@@ -238,13 +238,13 @@ def consume(
     reservation_id: str,
     size: int,
 ) -> UploadReservation:
-    """Mark a reservation completed inside the caller's publication transaction."""
+    """在调用方的发布事务内将预留记录标记为已完成."""
     row = owned(session, workspace_id, user_id, reservation_id)
     if size != row.size:
         message = "Upload size differs from reservation"
         raise BusinessRuleError(message)
     row.status = "completed"
-    # Caller commits this with File; on rollback it stays active.
+    # 调用方将其随 File 一同提交; 回滚时仍保持 active 状态。
     return row
 
 
@@ -256,7 +256,7 @@ def lock_for_cancellation(
     *,
     missing_ok: bool = False,
 ) -> UploadReservation | None:
-    """Refresh committed state under admission locks before destructive cleanup."""
+    """在执行破坏性清理前, 在准入行锁保护下刷新最新已提交状态."""
     lock_owners(session, workspace_id, user_id)
     row = session.scalar(
         select(UploadReservation)
@@ -274,7 +274,7 @@ def lock_for_cancellation(
 
 
 def cancel(session: Session, params: CancelParams) -> None:
-    """Cancel an open reservation and drop its object reference when deleted."""
+    """取消未完成的预留并在已删除时解除其关联的对象存储引用."""
     row = lock_for_cancellation(
         session,
         params.workspace_id,
@@ -297,7 +297,7 @@ def _reclaim_expired_object(
     row: UploadReservation,
     storage_factory: StorageFactory | None,
 ) -> bool:
-    """Delete the unreferenced object of an expired session; False means retry later."""
+    """删除过期会话中未被引用的底层对象; 返回 False 表示需稍后重试."""
     object_name = cast("str | None", row.details.get("object_name"))
     if not object_name:
         return True
@@ -308,8 +308,8 @@ def _reclaim_expired_object(
         return True
     if storage_factory is None:
         return False
-    # Do not acknowledge cleanup until deletion succeeds. A storage outage keeps
-    # this journal eligible for the next Worker retry.
+    # 对象删除成功前不得确认清理。若底层存储发生故障,
+    # 该流水条目将继续保留并等待 Worker 下一轮重试。
     try:
         storage_factory().delete_file(object_name)
     except Exception:
@@ -328,7 +328,7 @@ def cleanup(
     upload_root: str | None = None,
     storage_factory: StorageFactory | None = None,
 ) -> int:
-    """Reclaim expired/closed sessions under the same locks as writers."""
+    """在与写入方完全一致的锁保护下回收过期或已关闭的会话."""
     now = utc_now()
     rows = session.execute(
         select(
@@ -380,7 +380,7 @@ def cleanup(
             ):
                 session.rollback()
                 continue
-            # Database identity cannot supply paths outside the upload root.
+            # 数据库记录的标识符绝不可生成超出上传根目录之外的路径。
             if workspace_id > 0 and re.fullmatch(
                 r"[A-Za-z0-9_-]{8,128}", reservation_id,
             ):
@@ -391,7 +391,7 @@ def cleanup(
                 )
             row.cleaned_at = now
             session.commit()
-    # Retain recent closed-session responses; admission charges outlive the session.
+    # 缓存近期已关闭会话的响应; 准入额度扣减生命周期长于会话。
     session.execute(
         delete(UploadReservation).where(
             UploadReservation.cleaned_at.is_not(None),

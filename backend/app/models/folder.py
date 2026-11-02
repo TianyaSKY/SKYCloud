@@ -1,4 +1,4 @@
-"""Folder tree nodes owned by a workspace."""
+"""工作区拥有的文件夹目录树节点模型."""
 
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict, cast
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 class FolderDict(TypedDict):
-    """Public representation of a folder row."""
+    """文件夹记录的公开表示模型."""
 
     id: int
     name: str
@@ -31,9 +31,9 @@ class FolderDict(TypedDict):
 
 
 class Folder(Base):
-    """Folder tree node; deleting one cascades into its subtree.
+    """文件夹树节点; 删除节点将级联删除其所有子树.
 
-    Folders belong to a workspace rather than to a user.
+    文件夹归属于工作区而非具体用户.
     """
 
     __tablename__ = "folder"
@@ -65,7 +65,7 @@ class Folder(Base):
         back_populates="parent",
         cascade="all, delete-orphan",
     )
-    # Database cascade removes file metadata; physical cleanup stays in service.
+    # 数据库级联删除文件元数据; 物理存储清理在服务层执行。
     files: Mapped[list["File"]] = relationship(
         "File",
         backref="folder",
@@ -73,12 +73,12 @@ class Folder(Base):
     )
 
     def to_dict(self) -> FolderDict:
-        """Return the public folder representation including its path."""
+        """返回包含完整路径的公开文件夹字典表示."""
         path_parts: list[str] = []
         current: Folder | None = self
         seen: set[tuple[str, int]] = set()
         while current is not None:
-            # Transient rows have no identity yet; fall back to object identity.
+            # 瞬态记录尚未分配主键 ID; 回退至使用对象内存标识。
             row_id = cast("int | None", current.id)
             identity: tuple[str, int] = (
                 ("row", row_id) if row_id is not None else ("object", id(current))
@@ -107,7 +107,7 @@ class Folder(Base):
 
     @classmethod
     def from_cache(cls, d: FolderDict) -> "Folder":
-        """Build a detached folder row from cached metadata fields."""
+        """根据缓存的元数据字段构建游离态文件夹记录."""
         return cls(
             id=d.get("id"),
             name=d.get("name"),

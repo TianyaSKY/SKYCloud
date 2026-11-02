@@ -117,8 +117,8 @@ async def test_admission_closes_response_published_during_cancel_drain(outcome):
         entered.set()
         try:await asyncio.Event().wait()
         except asyncio.CancelledError:
-            # A provider can complete despite cancellation. Admission owns
-            # that late response too, before transferring anything downstream.
+            # 即使已被取消, 提供商仍可能执行完成. 准入控制也持有
+            # 该延迟响应, 随后才向下游传递任何数据.
             await asyncio.sleep(.01)
             lease.upstream=late
             return late

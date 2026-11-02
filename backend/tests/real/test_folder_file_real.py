@@ -1,7 +1,4 @@
-"""SQLite-backed folder/file metadata, cleanup, and search behavior tests.
-
-The remote vector-search scenario is opt-in via ``TEST_AI_API=1``.
-"""
+"""基于 SQLite 的文件夹/文件元数据、清理与搜索行为测试."""
 
 import os
 import time
@@ -41,9 +38,7 @@ from app.models.file import File
 from app.models.folder import Folder
 
 
-# ===========================================================================
 # folder/service.py
-# ===========================================================================
 
 
 class TestFolderService:
@@ -131,14 +126,10 @@ class TestFolderService:
         assert len(folders) >= 2  # 根 + 文档
 
 
-# ===========================================================================
 # file/service.py — 工具函数
-# ===========================================================================
 
 
-# ===========================================================================
-# file/service.py — CRUD
-# ===========================================================================
+# file/service.py — 基础增删改查
 
 
 class TestFileServiceCRUD:
@@ -281,9 +272,7 @@ class TestFileServiceCRUD:
         assert stats["失败"] >= 1
 
 
-# ===========================================================================
 # file/service.py — 搜索与列表
-# ===========================================================================
 
 
 class TestFileServiceSearch:
@@ -348,15 +337,11 @@ class TestFileServiceSearch:
         assert result is None
 
 
-# ===========================================================================
 # file/service.py — 分片上传
-# ===========================================================================
 
 
 
-# ===========================================================================
 # file/service.py — 重建索引与清理
-# ===========================================================================
 
 
 class TestFileServiceMaintenance:
@@ -451,13 +436,11 @@ class TestFileServiceMaintenance:
 
         assert count == 0
         assert upload_dir.exists()
-# ===========================================================================
-# Tests requiring the external embedding provider
-# ===========================================================================
+# 需要外部嵌入模型提供商的测试
 
 
 class TestFileServiceExternalDeps:
-    """Cases that need a real remote embedding provider."""
+    """需要真实远程嵌入模型提供商的测试用例."""
     @skip_unless_ai_api
     def test_search_files_vector_success(self, session, test_workspace):
         """向量搜索完整流程 (L902-925)。

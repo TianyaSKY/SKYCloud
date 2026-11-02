@@ -24,9 +24,7 @@ def _request_context(user, session):
     return RequestContext(user=user, session_factory=_owned_factory(session))
 
 
-# ---------------------------------------------------------------------------
 # Auth Router 测试
-# ---------------------------------------------------------------------------
 
 class TestAuthRouter:
     def test_login(self, session, test_user):
@@ -134,9 +132,7 @@ class TestAuthRouter:
         assert result.status_code == 204
 
 
-# ---------------------------------------------------------------------------
 # Workspace Router 测试
-# ---------------------------------------------------------------------------
 
 class TestWorkspaceRouter:
     def test_create_workspace(self, session, test_user):
@@ -239,9 +235,7 @@ class TestWorkspaceRouter:
         assert result == {"message": "已移除"}
 
 
-# ---------------------------------------------------------------------------
 # Folder Router 测试
-# ---------------------------------------------------------------------------
 
 class TestFolderRouter:
     def test_create_folder(self, session, test_user, test_workspace):
@@ -322,9 +316,7 @@ class TestFolderRouter:
         assert task.state == "queued" and task.user_id == test_user.id
         assert task.delivered_at is None
 
-# ---------------------------------------------------------------------------
 # File Router 测试
-# ---------------------------------------------------------------------------
 
 class TestFileRouter:
     def test_list_files(self, session, test_user, test_workspace):
@@ -444,9 +436,7 @@ class TestFileRouter:
         assert "pending" in result
 
 
-# ---------------------------------------------------------------------------
 # Share Router 测试
-# ---------------------------------------------------------------------------
 
 class TestShareRouter:
     def test_create_share(self, session, test_user):
@@ -475,9 +465,7 @@ class TestShareRouter:
         assert "message" in result["data"]
 
 
-# ---------------------------------------------------------------------------
 # Inbox Router 测试
-# ---------------------------------------------------------------------------
 
 class TestInboxRouter:
     def test_get_inbox(self, session, test_user):
@@ -512,9 +500,7 @@ class TestInboxRouter:
         assert result.status_code == 204
 
 
-# ---------------------------------------------------------------------------
 # SysDict Router 测试
-# ---------------------------------------------------------------------------
 
 class TestSysDictRouter:
     def test_get_sys_dicts(self, session, admin_user):
@@ -561,9 +547,7 @@ class TestSysDictRouter:
         assert result.status_code == 204
 
 
-# ---------------------------------------------------------------------------
 # Token Usage Router 测试
-# ---------------------------------------------------------------------------
 
 class TestTokenUsageRouter:
     def test_my_stats(self, session, test_user):

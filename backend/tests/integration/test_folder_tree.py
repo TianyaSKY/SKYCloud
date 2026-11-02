@@ -1,4 +1,4 @@
-"""Real PostgreSQL ordering across REST/MCP service and scoped organizer writers."""
+"""跨 REST/MCP 服务与限定范围整理器写入者的真实 PostgreSQL 排序测试."""
 import concurrent.futures
 import os
 import threading
@@ -64,7 +64,7 @@ def test_opposite_moves_are_ordered_and_stale_ancestry_cannot_make_cycle(graph,m
             service.update_folder(db,ids['a'],{'parent_id':ids['b']})
     def cached_session():
         db=factory()
-        # Keep the ORM objects alive to prove the identity map is actually stale.
+        # 保持 ORM 对象存活以证明身份映射确实已过期.
         db.info['cached']=[db.get(Folder,ids['a']),db.get(Folder,ids['b'])]
         return db
     def second():

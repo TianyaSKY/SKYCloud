@@ -1,7 +1,7 @@
-"""Check real locked dependencies without pytest's optional-library mocks.
+"""在不使用 pytest 的可选库 mock 情况下检查真实的锁定依赖.
 
-Only synthetic credentials and in-process ASGI transports are used. No database,
-provider, storage, or user deployment is contacted.
+仅使用合成测试凭据和进程内 ASGI 传输. 不会连接任何数据库、
+服务商、存储或用户实际部署环境.
 """
 import asyncio
 import os
@@ -34,7 +34,7 @@ from app.mcp.audit import audited_tool
 @mcp.tool()
 @audited_tool('locked_failure_fixture')
 async def locked_failure_fixture() -> str:
-    """Synthetic failure for the real MCP transport privacy check."""
+    """用于真实 MCP 传输隐私检查的合成异常."""
     raise OSError('PRIVATE_STORAGE_PATH_AND_CREDENTIAL_SENTINEL')
 
 

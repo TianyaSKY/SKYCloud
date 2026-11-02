@@ -1,4 +1,4 @@
-"""Behavioral checks for the reviewed Ruff diagnostic baseline gate."""
+"""已审查 Ruff 诊断基线门禁的行为检查测试."""
 
 import json
 from pathlib import Path

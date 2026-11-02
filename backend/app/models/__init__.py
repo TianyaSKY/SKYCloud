@@ -1,4 +1,4 @@
-"""ORM model exports for users, files, workspaces, and assistant records."""
+"""用户、文件、工作区与助手相关记录的 ORM 模型导出."""
 
 from .assistant import (
     AssistantConversation,

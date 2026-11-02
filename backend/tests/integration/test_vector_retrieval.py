@@ -1,4 +1,4 @@
-"""Opt-in real PostgreSQL/pgvector retrieval with no model-provider calls."""
+"""无模型提供商调用的自选真实 PostgreSQL/pgvector 检索测试."""
 import json
 import os
 import subprocess
@@ -41,8 +41,8 @@ def indexed(postgres):
                  for name, workspace, embedding in [('near', first, vector(1)), ('orthogonal', first, vector(0, 1)),
                      ('opposite', first, vector(-1)), ('no-vector', first, None), ('foreign', second, vector(1))]]
         db.add_all(files); db.flush()
-        # Historical/inconsistent chunks can pass the independent foreign keys.
-        # Retrieval must scope both sides of the join, not trust only the chunk.
+        # 历史/不一致分块可以通过独立外键.
+        # 检索必须限定连接两边的范围, 不能仅信任分块.
         chunks = [FileChunk(file_id=files[0].id, workspace_id=first.id, chunk_index=0,
                             page_number=2, content='Local near content', vector_info=vector(1)),
                   FileChunk(file_id=files[1].id, workspace_id=first.id, chunk_index=0,
@@ -76,8 +76,8 @@ def test_file_vector_cosine_pages_and_scope(indexed):
 
 def test_actual_rag_chunk_join_scope_and_source_metadata(indexed, postgres):
     factory, first, second, identifiers = indexed
-    # Unit conftest replaces LangChain. Use the locked real Document class and
-    # production retrieval function in a child process, never a model endpoint.
+    # 单元测试 conftest 替换了 LangChain. 在子进程中使用锁定的真实 Document 类
+    # 和生产检索函数, 绝非模型端点.
     code = """
 import json, sys
 from sqlalchemy import create_engine
@@ -210,8 +210,8 @@ async def test_semantic_search_provider_admission_and_actual_usage(indexed,postg
         return SimpleNamespace(data=[SimpleNamespace(index=0,embedding=vector(1))],
                                usage=SimpleNamespace(total_tokens=12,prompt_tokens=12))
     monkeypatch.setattr(search_service,'get_embedding_model_config',lambda:{'api':'http://provider.test','key':'disposable','model':'embedding'})
-    # Only the provider SDK response is synthetic. Authorization, pgvector
-    # retrieval, receipt persistence and user aggregate update stay native.
+    # 仅提供商 SDK 响应为合成数据. 鉴权、pgvector 检索、
+    # 回执持久化和用户聚合更新均为原生执行.
     monkeypatch.setattr(llm,'_get_client',lambda *args:SimpleNamespace(embeddings=SimpleNamespace(create=embed)))
     monkeypatch.setattr(usage,'SessionLocal',factory)
     async def search():
@@ -301,8 +301,8 @@ async def test_cancelled_owned_sql_drains_native_lock_before_return(indexed,post
     if kind=='mcp-write':
         with postgres.connect() as db:
             assert db.scalar(text("SELECT count(*) FROM folder WHERE workspace_id=:workspace AND name='accepted-before-cancel'"),{'workspace':first})==1
-    # SQL work that had already started completes before cancellation returns;
-    # no assertion of database-side cancellation or rollback of accepted writes.
+    # 已启动的 SQL 操作在取消返回前完成;
+    # 不断言数据库端取消或回滚已接受的写入.
 
 
 @pytest.mark.parametrize('kind', ['single', 'multi'])
@@ -332,8 +332,8 @@ async def test_chat_cancelled_native_sql_closes_all_owned_sessions(indexed, post
 
     owned = sessionmaker(bind=postgres, class_=OwnedSession)
     monkeypatch.setattr(service, 'SessionLocal', owned)
-    # Provider response is synthetic; production membership and pgvector SQL
-    # execute on the native database, including parallel identity row locks.
+    # 提供商响应为合成数据; 生产成员身份与 pgvector SQL
+    # 在原生数据库上执行, 包括并行标识行锁.
     monkeypatch.setattr(service, 'get_embeddings_model', lambda: SimpleNamespace(
         aembed_query=AsyncMock(return_value=vector(1)),
         aembed_documents=AsyncMock(return_value=[vector(1), vector(1), vector(1)]),

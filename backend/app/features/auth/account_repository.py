@@ -1,4 +1,4 @@
-"""Account lifecycle SQL using the caller's Session and transaction."""
+"""使用调用方 Session 和事务的账户生命周期 SQL 操作."""
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.engine import CursorResult
@@ -10,7 +10,7 @@ from app.models.workspace import Workspace
 
 
 def lock_user(session: Session, user_id: int) -> User | None:
-    """Lock and freshly load one account row."""
+    """加锁并重新加载单条账户记录."""
     return session.scalar(
         select(User)
         .where(User.id == user_id)
@@ -20,7 +20,7 @@ def lock_user(session: Session, user_id: int) -> User | None:
 
 
 def lock_owned_workspaces(session: Session, user_id: int) -> list[Workspace]:
-    """Lock every workspace the account owns, in primary-key order."""
+    """按主键顺序加锁该账户拥有的所有工作区."""
     return list(
         session.scalars(
             select(Workspace)
@@ -32,7 +32,7 @@ def lock_owned_workspaces(session: Session, user_id: int) -> list[Workspace]:
 
 
 def user_runtimes(session: Session, user_id: int) -> list[OpenCodeRuntime]:
-    """List every runtime owned by the account, in primary-key order."""
+    """按主键顺序列出该账户拥有的所有运行时."""
     return list(
         session.scalars(
             select(OpenCodeRuntime)
@@ -43,7 +43,7 @@ def user_runtimes(session: Session, user_id: int) -> list[OpenCodeRuntime]:
 
 
 def delete_account(session: Session, user_id: int) -> None:
-    """Delete the account row; the database owns the cascade."""
+    """删除账户行记录; 由数据库级联删除完成关联清理."""
     session.execute(
         delete(User)
         .where(User.id == user_id)
@@ -52,12 +52,12 @@ def delete_account(session: Session, user_id: int) -> None:
 
 
 def current_role(session: Session, user_id: int) -> str | None:
-    """Read the current role column without cached profile/ORM identity state."""
+    """直接读取当前 role 列, 绕过缓存的 profile/ORM 身份状态."""
     return session.scalar(select(User.role).where(User.id == user_id))
 
 
 def set_avatar(session: Session, user_id: int, avatar_url: str) -> bool:
-    """Stage account avatar metadata in the caller's publication transaction."""
+    """在调用方的发布事务中暂存账户头像元数据."""
     result = session.execute(
         update(User).where(User.id == user_id).values(avatar=avatar_url),
     )
@@ -67,7 +67,7 @@ def set_avatar(session: Session, user_id: int, avatar_url: str) -> bool:
 
 
 def lock_users(session: Session, user_ids: set[int]) -> list[User]:
-    """Lock mutation identities in one deterministic order and refresh their state."""
+    """按确定顺序锁定变更涉及的实体记录并刷新其状态."""
     return list(
         session.scalars(
             select(User)

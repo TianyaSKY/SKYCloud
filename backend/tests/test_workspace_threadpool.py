@@ -1,4 +1,4 @@
-"""Slow synchronous workspace/auth work must leave the ASGI loop responsive."""
+"""缓慢的同步工作区/认证工作必须保持 ASGI 循环响应测试."""
 import asyncio
 import threading
 from types import SimpleNamespace
@@ -27,7 +27,7 @@ async def test_slow_sync_boundary_allows_concurrent_http_request(monkeypatch, se
 
     def slow(result):
         def call(*args, **kwargs):
-            # Fail immediately if called on the loop: no deadlock or timing-only assertion.
+            # 若在事件循环上被调用则立即失败: 无死锁或仅依赖时序的断言.
             assert threading.get_ident() != loop_thread
             entered.set()
             assert release.wait(5), 'test failed to release synchronous operation'

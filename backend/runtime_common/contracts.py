@@ -1,10 +1,10 @@
-"""Fixed data contracts shared by the application and Runtime Controller."""
+"""FastAPI 应用与 Runtime Controller 之间共享的固定数据契约."""
 
 from typing import TypedDict
 
 
 class ContainerPayload(TypedDict):
-    """The bounded container identity exposed over Controller RPC."""
+    """通过 Controller RPC 暴露的有界容器标识."""
 
     id: str
     name: str
@@ -15,7 +15,7 @@ class ContainerPayload(TypedDict):
 
 
 class UserSnapshotRow(TypedDict):
-    """One managed Runtime identity returned for a single user."""
+    """单个用户返回的托管 Runtime 实例快照."""
 
     id: str
     workspace_id: int

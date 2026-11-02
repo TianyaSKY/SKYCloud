@@ -1,4 +1,4 @@
-"""Container cleanup intents survive deletion of their account or workspace."""
+"""在账号或工作区删除后仍然存续的容器清理意图模型."""
 
 from datetime import datetime
 
@@ -11,7 +11,7 @@ from app.infra.utc_datetime import UTCDateTime
 
 
 class RuntimeContainerDeletion(Base):
-    """Pending cleanup for one container whose owner row is gone."""
+    """针对其所有者记录已移除的容器待处理清理记录."""
 
     __tablename__ = "runtime_container_deletions"
 

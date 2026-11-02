@@ -1,4 +1,4 @@
-"""Durable organizer delivery and fenced execution under a PostgreSQL lease."""
+"""PostgreSQL 租约保护下的持久化目录整理任务投递与隔离执行."""
 
 import uuid
 from collections.abc import Callable, Generator
@@ -24,11 +24,11 @@ TERMINAL_TASK_STATES = ("completed", "failed")
 
 
 class RetryTaskLater(Exception):
-    """A live executor or a transient database failure prevents processing now."""
+    """活跃执行者或瞬态数据库失败阻碍了当前处理, 需稍后重试."""
 
 
 def _active_task(session: Session, workspace_id: int) -> OrganizeTask | None:
-    """Return the queued or running task admitted for one workspace."""
+    """返回工作空间已准入的排队中或运行中的任务记录."""
     return (
         session.query(OrganizeTask)
         .filter(
@@ -40,7 +40,7 @@ def _active_task(session: Session, workspace_id: int) -> OrganizeTask | None:
 
 
 def admit_task(session: Session, workspace_id: int, user_id: int) -> bool:
-    """Admit one organizer task per workspace and commit its delivery row."""
+    """按工作空间准入单个整理任务并持久化其投递记录."""
     workspace = (
         session.query(Workspace)
         .filter_by(id=workspace_id)
@@ -70,7 +70,7 @@ def deliver_pending_organize_tasks(
     publisher: Callable[[int, int, str], None] | None = None,
     limit: int = 20,
 ) -> int:
-    """Deliver one due organizer task per transaction."""
+    """每笔事务投递一个到期的目录整理任务."""
     publish = publisher or task_queue.publish_organize_task
     delivered = 0
     for _ in range(limit):
@@ -93,8 +93,8 @@ def deliver_pending_organize_tasks(
             try:
                 publish(row.workspace_id, row.user_id, row.id)
             except Exception as error:
-                # Best-effort delivery: the broker client raises its own types
-                # and an uncertain publish must stay pending for a replay.
+                # 尽力投递: 消息代理客户端会抛出其专有异常类型,
+                # 投递状态不确定的任务必须保持 pending 状态以便后续重试。
                 row.last_error_type = type(error).__name__[:96]
                 row.next_attempt_at = now + timedelta(
                     seconds=min(300, 2 ** min(row.attempts, 9)),
@@ -120,7 +120,7 @@ def assert_task_claim(
     workspace_id: int,
     user_id: int,
 ) -> OrganizeTask:
-    """Return the locked task only while this execution still owns it."""
+    """仅在当前执行上下文仍持有锁时返回锁定中的任务记录."""
     task = (
         session.query(OrganizeTask)
         .filter_by(id=task_id)
@@ -144,7 +144,7 @@ def _require_message_identity(
     user_id: int,
     task_id: str | None,
 ) -> str:
-    """Return the task id once the message proves a valid identity."""
+    """在消息验证通过合法身份后返回对应的任务 ID."""
     if not isinstance(task_id, str):
         message = "Organize message requires task and user identity"
         raise PermissionDeniedError(message)
@@ -164,7 +164,7 @@ def _claim_task(
     user_id: int,
     task_id: str,
 ) -> OrganizeTask:
-    """Lock or adopt the task row this message is allowed to execute."""
+    """锁定或认领本条消息被允许执行的任务行记录."""
     task = (
         session.query(OrganizeTask)
         .filter_by(id=task_id)
@@ -172,8 +172,8 @@ def _claim_task(
         .one_or_none()
     )
     if task is None:
-        # Adopt trusted legacy JSON messages with a valid principal;
-        # never replace an already admitted task for this workspace.
+        # 采纳具备合法主体凭据的可信历史 JSON 消息;
+        # 绝不替换该工作空间下已准入的现有任务。
         workspace = (
             session.query(Workspace)
             .filter_by(id=workspace_id)
@@ -203,7 +203,7 @@ def task_execution(
     *,
     session_factory: SessionFactory = SessionLocal,
 ) -> Generator[str | None, None, None]:
-    """Hold the workspace lease and yield this execution token."""
+    """持有工作空间执行租约并产出本次执行令牌."""
     valid_task_id = _require_message_identity(workspace_id, user_id, task_id)
     with session_factory() as session:
         bind = session.get_bind()
@@ -235,5 +235,5 @@ def task_execution(
                 )
                 connection.commit()
             except SQLAlchemyError:
-                # A pooled connection must never retain a session advisory lock.
+                # 连接池回收的连接绝不能残留会话级 advisory lock。
                 connection.invalidate()

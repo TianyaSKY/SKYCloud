@@ -1,4 +1,4 @@
-"""Real routes and persistence must share the explicit Session contract."""
+"""真实路由与持久化必须共享显式 Session 契约测试."""
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient

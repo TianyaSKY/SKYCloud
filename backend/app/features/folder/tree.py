@@ -1,4 +1,4 @@
-"""Directory invariants shared by REST/MCP use cases and organizer tools."""
+"""REST/MCP 用例与整理工具共享的目录不变量校验."""
 
 from sqlalchemy.orm import Session
 
@@ -15,7 +15,7 @@ MAX_FOLDER_NAME_LENGTH = 128
 
 
 def validate_name(name: object) -> None:
-    """Reject names outside the persisted 1-128 character range."""
+    """拒绝超出 1-128 字符持久化长度范围的名称."""
     if (
         not isinstance(name, str)
         or not name
@@ -26,7 +26,7 @@ def validate_name(name: object) -> None:
 
 
 def require_root(session: Session, workspace_id: int) -> int:
-    """Return the workspace root folder id, which every tree operation needs."""
+    """返回目录树操作所需的工作空间根文件夹 ID."""
     root = repository.root_id(session, workspace_id)
     if root is None:
         message = "Workspace root folder not found"
@@ -35,7 +35,7 @@ def require_root(session: Session, workspace_id: int) -> int:
 
 
 def assert_mutable(session: Session, folder: Folder) -> None:
-    """Forbid mutating or deleting the workspace root folder itself."""
+    """禁止修改或删除工作空间根文件夹本身."""
     if folder.id == require_root(session, folder.workspace_id):
         message = "Workspace root folder cannot be modified or deleted"
         raise BusinessRuleError(message)
@@ -48,7 +48,7 @@ def validate_parent(
     *,
     moving_id: int | None = None,
 ) -> int:
-    """Resolve and validate the destination parent folder id."""
+    """解析并校验目标父文件夹 ID."""
     parent_id = require_root(session, workspace_id) if parent_id is None else parent_id
     current = repository.get_folder(session, parent_id)
     seen: set[int] = set()

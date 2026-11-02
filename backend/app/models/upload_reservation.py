@@ -1,4 +1,4 @@
-"""Durable upload capacity reservations and UTC daily admission usage."""
+"""持久化上传容量预留与基于 UTC 天维度的准入限额模型."""
 
 from datetime import date, datetime
 
@@ -18,7 +18,7 @@ from app.infra.utc_datetime import UTCDateTime
 
 
 class UploadReservation(Base):
-    """Reserved upload capacity for one staged multipart or plain upload."""
+    """单次暂存分片上传或普通上传的预留容量记录."""
 
     __tablename__ = "upload_reservations"
 
@@ -70,7 +70,7 @@ class UploadReservation(Base):
 
 
 class UploadDailyUsage(Base):
-    """Daily admission counters for one user in UTC days."""
+    """单个用户在特定 UTC 日期内的每日上传准入计数器."""
 
     __tablename__ = "upload_daily_usage"
 

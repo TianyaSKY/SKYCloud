@@ -1,4 +1,4 @@
-"""Actual Uvicorn exception logging through the production logging setup."""
+"""通过生产日志配置记录的实际 Uvicorn 异常日志测试."""
 import os
 import socket
 import subprocess

@@ -1,4 +1,4 @@
-"""REST errors have one documented shape without private validator context."""
+"""REST 错误具有文档统一结构且不含私有校验上下文测试."""
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient

@@ -1,4 +1,4 @@
-"""MCP call audit recording without retaining tokens or file contents."""
+"""记录 MCP 调用审计日志, 绝不持久化存储令牌或文件内容."""
 
 import asyncio
 import json
@@ -29,7 +29,7 @@ _UNAVAILABLE_MESSAGE = "Service temporarily unavailable"
 
 
 def _returned_error_type(result: object) -> str | None:
-    """Recognize structured tool errors that were returned instead of raised."""
+    """识别返回结构化工具错误而非抛出异常的情况."""
     payload: object = result
     if isinstance(result, str):
         try:
@@ -54,7 +54,7 @@ def record_mcp_call(
     error_type: str | None,
     duration_ms: int,
 ) -> None:
-    """Persist one bounded audit row; failures never surface to the caller."""
+    """持久化写入单条有界审计记录; 失败绝不向调用方抛出异常."""
     context = get_optional_mcp_context()
     if not context or not is_mcp_request_active():
         return
@@ -79,8 +79,8 @@ def record_mcp_call(
         )
         session.commit()
     except Exception as exc:
-        # Factory/SQL/driver failures must never replace a tool outcome. Preserve
-        # rollback and close attempts and log only the exception's class.
+        # 工厂/SQL/驱动层失败绝不能取代工具本身的结果。保留
+        # 回滚与关闭尝试, 且仅记录异常的类型名称。
         logger.error(
             "MCP audit persistence failed: error_type={}", type(exc).__name__,
         )
@@ -88,8 +88,8 @@ def record_mcp_call(
             try:
                 session.rollback()
             except Exception as cleanup_exc:
-                # Rollback can invoke driver/pool callbacks; failure cannot
-                # replace the tool result and must not prevent close below.
+                # 回滚可能触发驱动/连接池回调; 失败绝不能
+                # 覆盖工具结果, 且不得阻碍下方的关闭逻辑。
                 logger.error(
                     "MCP audit rollback failed: error_type={}",
                     type(cleanup_exc).__name__,
@@ -99,8 +99,8 @@ def record_mcp_call(
             try:
                 session.close()
             except Exception as cleanup_exc:
-                # A driver/pool close failure remains isolated from the tool,
-                # including when audit persistence or rollback already failed.
+                # 驱动/连接池关闭失败始终与工具结果相隔离,
+                # 包括在审计持久化或回滚已经失败的情况下。
                 logger.error(
                     "MCP audit close failed: error_type={}",
                     type(cleanup_exc).__name__,
@@ -110,7 +110,7 @@ def record_mcp_call(
 def audited_tool(
     tool_name: str,
 ) -> Callable[[Callable[_P, Awaitable[_R]]], Callable[_P, Awaitable[_R]]]:
-    """Decorate an async MCP tool with non-sensitive audit metadata."""
+    """为异步 MCP 工具添加不含敏感信息的审计装饰器."""
 
     def decorator(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[_R]]:
         @wraps(func)
@@ -127,8 +127,8 @@ def audited_tool(
                     success = False
                     error_type = returned_error
             except Exception as exc:
-                # FastMCP includes str(exc) in protocol errors. Keep internal
-                # database/storage details out of that transport boundary.
+                # FastMCP 会将 str(exc) 包含在协议错误中。保持内部
+                # 数据库/存储细节不泄露到该传输层边界之外。
                 raised = True
                 success = False
                 error_type = type(exc).__name__
@@ -150,7 +150,7 @@ def audited_tool(
                 return result
             finally:
                 duration_ms = int((time.perf_counter() - started) * 1000)
-                # Do not make a user-facing tool depend on audit persistence.
+                # 不让面向用户的工具结果依赖于审计持久化的成败。
                 try:
                     await run_owned_persistent(
                         record_mcp_call,

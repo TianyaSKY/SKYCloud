@@ -1,4 +1,4 @@
-"""Opt-in real broker transport and executor-bound delivery lifecycle checks."""
+"""自选真实 broker 传输与执行器绑定投递生命周期检查."""
 import base64
 import json
 import os

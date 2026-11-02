@@ -1,4 +1,4 @@
-"""Lifecycle state and retry behavior remain intact with private failure diagnostics."""
+"""生命周期状态与重试行为在私有故障诊断下保持完好测试."""
 from unittest.mock import MagicMock
 
 import pytest

@@ -63,7 +63,7 @@ def create_workspace(
 def _workspace_list_entry(
     workspace: Workspace, role: str, member_count: int,
 ) -> WorkspaceListEntry:
-    """Combine a workspace snapshot with its membership summary."""
+    """将工作空间快照与其成员身份概要组合."""
     return {
         **workspace.to_dict(),
         "my_role": role,
@@ -75,7 +75,7 @@ def get_user_workspace_rows(
     session: Session,
     user_id: int,
 ) -> list[tuple[WorkspaceListEntry, OpenCodeRuntime | None]]:
-    """Fetch membership counts and only the caller's runtime in one statement."""
+    """在单条 SQL 中批量查询成员数量及仅限调用方的运行时状态."""
     counts = (
         session.query(
             WorkspaceMember.workspace_id,
@@ -124,7 +124,7 @@ def get_workspace(session: Session, workspace_id: int) -> Workspace:
 
 
 def _member_detail(member: WorkspaceMember, user: User) -> MemberDetail:
-    """Combine a membership snapshot with the user's display fields."""
+    """将成员关系快照与用户的公开展示字段组合."""
     return {**member.to_dict(), "username": user.username, "avatar": user.avatar}
 
 
@@ -280,14 +280,14 @@ def remove_member(
         message = "该用户不是空间成员"
         raise ResourceNotFoundError(message)
 
-    # A removed member's OpenCode credential must stop working immediately and
-    # the corresponding container must not survive the membership deletion.
+    # 被移除成员的 OpenCode 凭据必须立即失效,
+    # 且其对应的容器在成员记录删除后绝不能继续存活。
     runtime = runtime_service.get_runtime(session, workspace_id, target_user_id)
     if runtime:
         docker_service.remove_runtime(runtime, session)
-        # Runtime records are owned by the workspace membership. Once that
-        # membership is gone, keep no dormant container identity or session
-        # binding that could be accidentally reused later.
+        # Runtime 记录归属于工作空间成员关系。一旦该成员关系
+        # 被删除, 绝不残留任何休眠的容器身份或会话绑定,
+        # 防止后续被意外错误复用。
         session.delete(runtime)
 
     session.delete(member)
@@ -333,11 +333,11 @@ def update_member_role(
     old_role = member.role
     member.role = new_role
     session.commit()
-    # Revoke the old role-bound runtime credential before provisioning a new
-    # one. A running OpenCode runtime is refreshed in place so a role change
-    # takes effect without requiring the user to restart the container. If
-    # Docker/configuration is unavailable, the token remains revoked and the
-    # runtime can be repaired through the explicit setup/restart endpoint.
+    # 在编排新凭据前, 优先吊销绑定旧角色的运行时凭据。
+    # 运行中的 OpenCode runtime 会就地刷新使其生效,
+    # 无需用户手动重启容器。若 Docker 或配置不可用,
+    # 令牌依然保持吊销状态, 该运行时
+    # 可通过显式设置/重启接口进行修复。
     runtime = runtime_service.get_runtime(session, workspace_id, target_user_id)
     if runtime:
         runtime_token_service.revoke_runtime_tokens(session, int(runtime.id))

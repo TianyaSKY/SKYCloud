@@ -1,4 +1,4 @@
-"""HTTP contracts for personal and administrator accounting endpoints."""
+"""个人与管理员记账端点的 HTTP 契约测试."""
 from datetime import timedelta
 
 import pytest

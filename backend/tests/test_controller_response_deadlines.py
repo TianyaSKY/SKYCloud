@@ -1,4 +1,4 @@
-"""Quiet upstream reads must obey a total response deadline, then drain ownership."""
+"""静默上游读取必须遵循总响应截止时间, 随后排干所有权测试."""
 import asyncio
 import httpx
 import pytest

@@ -1,4 +1,4 @@
-"""Docker operations restricted to managed runtimes and fixed configuration paths."""
+"""限制在受管运行时与固定配置路径内的 Docker 操作引擎."""
 
 import base64
 import contextlib
@@ -75,29 +75,29 @@ OPENCODE_PORT: Final = 3000
 
 
 class ControllerError(RuntimeError):
-    """The Controller could not complete a runtime operation."""
+    """Controller 无法完成运行时操作异常."""
 
 
 class MissingRuntime(ControllerError):
-    """The requested managed runtime does not exist."""
+    """请求的受管运行时不存在异常."""
 
 
 class MissingGenerationCandidate(ControllerError):
-    """A recorded runtime generation candidate is absent."""
+    """记录的运行时世代候选实例缺失异常."""
 
     def __init__(self, generation: str, container_id: str) -> None:
-        """Record the identity that the Controller could not find."""
+        """记录 Controller 无法找到的实例标识."""
         self.generation, self.container_id = generation, container_id
         super().__init__("Recorded generation candidate is missing")
 
 
 class PolicyViolation(ControllerError):
-    """The requested container or generation violates the fixed policy."""
+    """请求的容器或世代违反固定安全策略异常."""
 
 
 @dataclass(frozen=True, slots=True)
 class GenerationRequest:
-    """Validated runtime identity plus its generation label."""
+    """经过校验的运行时标识及其世代标签."""
 
     workspace_id: int
     user_id: int
@@ -106,42 +106,42 @@ class GenerationRequest:
 
     @property
     def triple(self) -> tuple[int, int, int]:
-        """Return the identity tuple stored in the generation journal."""
+        """返回世代日志中持久化存储的三元组标识."""
         return (self.workspace_id, self.user_id, self.runtime_id)
 
 
 class ContainerListOptions(TypedDict):
-    """Keyword options for the fixed Docker container list endpoint."""
+    """固定 Docker 容器列表端点的关键字选项."""
 
     all: bool
     filters: dict[str, list[str]]
 
 
 class ContainerApi(Protocol):
-    """The fixed Docker API surface used to list visible containers."""
+    """列出可见容器所使用的固定 Docker API 表面."""
 
     def containers(
         self,
         **options: Unpack[ContainerListOptions],
     ) -> list[dict[str, Any]]:
-        """Return one JSON row per visible container."""
+        """为每个可见容器返回一行 JSON 字典."""
         ...
 
 
 class RuntimeContainers(Protocol):
-    """The fixed Docker container collection surface used by this engine."""
+    """本引擎使用的固定 Docker 容器集合接口表面."""
 
     def create(self, **options: Unpack[DockerCreateOptions]) -> "Container":
-        """Create one stopped container from the fixed policy options."""
+        """根据固定策略选项创建一个已停止的容器."""
         ...
 
     def get(self, key: str) -> "Container":
-        """Return one container by reference."""
+        """根据引用获取单个容器."""
         ...
 
 
 def _docker_error(name: str) -> type[Exception]:
-    """Return the Docker SDK error class, or the local not-found fallback."""
+    """返回 Docker SDK 异常类型, 或本地未找到回退类型."""
     errors = getattr(docker, "errors", None)
     candidate = getattr(errors, name, None)
     if isinstance(candidate, type):
@@ -150,46 +150,46 @@ def _docker_error(name: str) -> type[Exception]:
 
 
 def _runtime_containers(client: "docker.DockerClient") -> RuntimeContainers:
-    """Project the SDK collection onto this engine's fixed policy surface.
+    """将 SDK 集合映射到本引擎的固定策略接口表面.
 
-    The published Docker stub restricts ``restart_policy`` to ``always`` and
-    ``on-failure`` although the daemon also accepts the fixed ``no`` policy used
-    for managed runtimes, so the collection is viewed through this exact surface.
+    发布版 Docker stub 将 restart_policy 限制为 always 和
+    on-failure, 尽管守护进程也接受受管运行时所用的固定 no 策略,
+    因此本集合通过该精确接口进行访问。
     """
     return cast("RuntimeContainers", client.containers)
 
 
 def _container_api(client: "docker.DockerClient") -> ContainerApi:
-    """Project the SDK API client onto the typed container list surface."""
+    """将 SDK API 客户端映射为类型化容器列表接口表面."""
     return cast("ContainerApi", client.api)
 
 
 def _list_containers(
     client: "docker.DockerClient", labels: list[str],
 ) -> list[dict[str, Any]]:
-    """List containers through the fixed label filter."""
+    """通过固定标签过滤器列出容器."""
     api = _container_api(client)
     options = ContainerListOptions(all=True, filters={"label": labels})
     return api.containers(**options)
 
 
 def _generation_label(labels: dict[str, str]) -> str | None:
-    """Return the generation label of a managed container, if any."""
+    """返回受管容器的世代标签, 若不存在则返回 None."""
     return labels.get(GENERATION_LABEL)
 
 
 def _version(labels: dict[str, str]) -> str | None:
-    """Return the recorded runtime policy version, if any."""
+    """返回记录的运行时策略版本, 若不存在则返回 None."""
     return labels.get(POLICY_LABEL)
 
 
 class Engine:
-    """Docker engine restricted to SKYCloud-managed runtime containers."""
+    """限定于 SKYCloud 受管运行时容器的 Docker 引擎."""
 
     def __init__(
         self, settings: Settings, client: docker.DockerClient | None = None,
     ) -> None:
-        """Bind the engine to its fixed policy and Docker daemon."""
+        """将引擎绑定至其固定策略与 Docker 守护进程."""
         self.settings = settings
         host = os.getenv("DOCKER_HOST")
         self.client = (
@@ -202,7 +202,7 @@ class Engine:
         return _runtime_containers(self.client)
 
     def ensure_image(self) -> None:
-        """Require the pinned runtime image to be present locally or pull it."""
+        """要求本地存在固定的运行时镜像, 否则执行拉取."""
         try:
             self.client.images.get(self.settings.image)
         except _docker_error("ImageNotFound") as exc:
@@ -217,7 +217,7 @@ class Engine:
     def managed(
         self, ref: str, *, require_policy: bool = False,
     ) -> "Container":
-        """Return a managed container, proving its identity and policy."""
+        """返回受管容器, 并核验其标识与策略符合规范."""
         if not re.fullmatch(RUNTIME_REFERENCE_PATTERN, ref):
             message = "Invalid runtime reference"
             raise PolicyViolation(message)
@@ -271,10 +271,10 @@ class Engine:
             raise PolicyViolation(message)
 
     def inspect(self, ref: str) -> ContainerPayload:
-        """Return only the fixed container fields the application may see."""
+        """仅返回应用程序允许查看的固定容器字段."""
         container = self.managed(ref)
         labels: dict[str, str] = container.attrs["Config"]["Labels"]
-        # Never expose environment variables or arbitrary Docker attributes.
+        # 绝不暴露环境变量或任意 Docker 内部属性。
         return {
             "id": self._container_id(container),
             "name": self._container_name(container),
@@ -288,16 +288,16 @@ class Engine:
 
     @staticmethod
     def _container_id(container: "Container") -> str:
-        """Return the full container identity recorded by the daemon."""
+        """返回守护进程记录的完整容器标识."""
         return cast("str", container.id)
 
     @staticmethod
     def _container_name(container: "Container") -> str:
-        """Return the container name proven by :meth:`managed`."""
+        """返回经 managed 核验通过的容器名称."""
         return cast("str", container.name)
 
     def user_snapshot(self, user_id: int) -> list[UserSnapshotRow]:
-        """One Docker list request, exposing only this user's managed identities."""
+        """发起单次 Docker 列表请求, 仅暴露属于该用户的受管标识."""
         rows = _list_containers(
             self.client,
             [
@@ -362,7 +362,7 @@ class Engine:
     def prepare(
         self, workspace_id: int, user_id: int, runtime_id: int, generation: str,
     ) -> ContainerPayload:
-        """Idempotently prepare one runtime generation and record it ready."""
+        """幂等地准备一个运行时世代并记录其为就绪状态."""
         request = GenerationRequest(workspace_id, user_id, runtime_id, generation)
         try:
             with self._generation_record(request) as record:
@@ -374,7 +374,7 @@ class Engine:
     def _prepare_locked(
         self, record: GenerationRecord, request: GenerationRequest,
     ) -> ContainerPayload:
-        """Prepare one generation while its journal row is locked."""
+        """在世代日志行已锁定的状态下准备单个世代."""
         state = record.read()
         if state["state"] == "retired":
             message = "Runtime generation is retired"
@@ -416,7 +416,7 @@ class Engine:
         *,
         _nonblocking: bool = False,
     ) -> None:
-        """Commit the retirement fence, then remove the retired container."""
+        """提交退役栅栏, 随后移除该已退役容器."""
         request = GenerationRequest(workspace_id, user_id, runtime_id, generation)
         try:
             with self._generation_record(
@@ -440,8 +440,8 @@ class Engine:
         except MissingRuntime:
             if not state["container_id"]:
                 return
-            # A daemon-accepted create can appear after retirement's
-            # first absence observation, with no recorded full ID.
+            # 守护进程接受的创建可能在退役首次观测到缺失后才出现,
+            # 且没有记录的完整 ID。
             try:
                 container = self.managed(
                     generation_name(
@@ -457,7 +457,7 @@ class Engine:
             pass
 
     def reconcile_retired(self, limit: int = DEFAULT_SCAN_LIMIT) -> int:
-        """Retire generations recorded as retired but still visible."""
+        """退役并清理已记录为退役但依然可见的世代容器."""
         rows = _list_containers(
             self.client, [f"{COMPONENT_LABEL}={RUNTIME_COMPONENT}"],
         )
@@ -470,7 +470,7 @@ class Engine:
                 self.retire_generation(*identity, _nonblocking=True)
                 removed += 1
             except Exception as error:
-                # One deferred identity must never stop the reconciliation scan.
+                # 单个推迟处理的实例绝不能中断整体对账扫描流程。
                 logger.warning(
                     "Retired generation reconciliation deferred (%s)",
                     type(error).__name__,
@@ -478,7 +478,7 @@ class Engine:
         return removed
 
     def _prepare_container(self, request: GenerationRequest) -> ContainerPayload:
-        """Idempotently create a stopped generation without replacing old resources."""
+        """幂等地创建已停止的世代容器, 不替换已有资源."""
         if (
             min(request.workspace_id, request.user_id, request.runtime_id) <= 0
             or max(request.workspace_id, request.user_id, request.runtime_id)
@@ -531,7 +531,7 @@ class Engine:
     def _await_name_reservation(
         self, request: GenerationRequest, name: str,
     ) -> ContainerPayload:
-        """Retry only transient absence after Docker reserved the name."""
+        """在 Docker 预留容器名称后仅针对偶发短暂缺失进行重试."""
         deadline = time.monotonic() + CREATE_RETRY_SECONDS
         while True:
             try:
@@ -543,7 +543,7 @@ class Engine:
 
     @staticmethod
     def _reference(container: "Container") -> str:
-        """Return the full identity of a freshly created container."""
+        """返回新创建容器的完整标识."""
         ref = container.id
         if not isinstance(ref, str):
             message = "Invalid runtime reference"
@@ -551,20 +551,20 @@ class Engine:
         return ref
 
     def _admit_prepared(self, container: "Container") -> ContainerPayload:
-        """Reject an implicitly extended policy before admitting the container."""
+        """在准入容器前拒绝任何隐式扩展的安全策略."""
         container.reload()
         try:
             ref = self._reference(container)
             self.managed(ref, require_policy=True)
         except PolicyViolation:
-            # An image may declare implicit volumes. Reject the new resource
-            # before admission and remove only the container just created.
+            # 镜像可能声明隐式卷。在准入前拒绝该新资源,
+            # 且仅移除刚创建的容器。
             container.remove(force=True, v=True)
             raise
         return self.inspect(ref)
 
     def action(self, ref: str, action: str) -> None:
-        """Apply one fixed lifecycle action to a managed container."""
+        """对受管容器执行单项固定的生命周期操作."""
         container = self.managed(ref, require_policy=action != "remove")
         labels: dict[str, str] = container.attrs["Config"]["Labels"]
         generation = _generation_label(labels)
@@ -613,7 +613,7 @@ class Engine:
         return (*request.triple, request.generation)
 
     def remove_legacy(self, ref: str) -> None:
-        """Remove only an exact historical SKYCloud identity, never relay to it."""
+        """仅移除历史 SKYCloud 精确标识的容器, 绝不中继流量."""
         if not re.fullmatch(CONTAINER_ID_PATTERN, ref):
             message = "Legacy cleanup requires a full container ID"
             raise PolicyViolation(message)
@@ -652,7 +652,7 @@ class Engine:
             raise MissingRuntime(message) from exc
 
     def read_config(self, ref: str) -> JsonObject:
-        """Return the runtime's normalized configuration object."""
+        """返回运行时归一化配置对象."""
         container = self.managed(ref, require_policy=True)
         result = container.exec_run(["cat", CONFIG_PATH], user=RUNTIME_USER)
         if result.exit_code != 0:
@@ -667,10 +667,10 @@ class Engine:
         return parsed if isinstance(parsed, dict) else {}
 
     def write_config(self, ref: str, config: JsonObject) -> None:
-        """Replace the runtime's normalized configuration object."""
+        """更新替换运行时归一化配置对象."""
         container = self.managed(ref, require_policy=True)
-        # Fixed commands only; both data and the generated temp path are safely
-        # quoted. Caller input never becomes a command or filesystem path.
+        # 仅使用固定命令; 数据和生成的临时路径均经过安全转义。
+        # 调用方输入绝不会变为命令或文件系统路径。
         encoded = base64.b64encode(
             json.dumps(config, ensure_ascii=False).encode(),
         ).decode()
@@ -686,13 +686,13 @@ class Engine:
             raise ControllerError(message)
 
     def target(self, ref: str) -> tuple[str, tuple[str, str]]:
-        """Return the fixed runtime URL and Basic credential for one container."""
+        """返回指定容器的固定运行时 URL 与 Basic 鉴权凭证."""
         container = self.managed(ref, require_policy=True)
         if container.status != "running":
             message = "Runtime is not running"
             raise PolicyViolation(message)
         labels: dict[str, str] = container.attrs["Config"]["Labels"]
-        # Read actual isolated network IP instead of caller-controlled URLs.
+        # 读取实际隔离网络的容器 IP, 而非调用方控制的 URL。
         address = container.attrs["NetworkSettings"]["Networks"][
             self.settings.network
         ]["IPAddress"]

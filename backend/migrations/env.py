@@ -1,4 +1,4 @@
-"""Transactional migrations with a caller-owned PostgreSQL connection."""
+"""调用方持有 PostgreSQL 连接的事务性迁移."""
 
 from alembic import context
 import os

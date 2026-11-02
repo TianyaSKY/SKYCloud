@@ -1,4 +1,4 @@
-"""OpenCode Docker lifecycle and per-runtime MCP configuration."""
+"""OpenCode Docker 容器生命周期与各运行时 MCP 配置管理."""
 
 import os
 from contextlib import suppress
@@ -53,7 +53,7 @@ from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.runtime_operation import RuntimeOperation
 from app.models.workspace import Workspace
 
-# The glibc runtime builder writes an immutable local ID into private .env.
+# glibc 运行时构建器会将不可变本地 ID 写入私有 .env 文件中。
 OPENCODE_IMAGE = os.getenv("OPENCODE_IMAGE", "")
 MCP_PORT = int(os.getenv("MCP_PORT", "5001"))
 OPENCODE_EXPERT_AGENT = os.getenv("OPENCODE_EXPERT_AGENT", "skycloud-expert")
@@ -69,7 +69,7 @@ MEMBER_REQUIRED = "用户不是该工作空间成员"
 
 
 class ModelConfigPolicy(TypedDict):
-    """Token limits and provider identity of the Runtime chat provider."""
+    """Runtime Chat 模型供应商的 Token 上限与供应商标识策略."""
 
     provider_id: str
     output_limit: int
@@ -78,7 +78,7 @@ class ModelConfigPolicy(TypedDict):
 
 @dataclass(frozen=True, slots=True)
 class StartAttempt:
-    """Requested generation boundary for one start attempt."""
+    """单次启动尝试所请求的代际边界上下文."""
 
     expected_generation: str | None = None
     attempt: int = 0
@@ -86,7 +86,7 @@ class StartAttempt:
 
 @dataclass(frozen=True, slots=True)
 class CandidateReplacement:
-    """Identity of a prepared candidate that vanished before publication."""
+    """在发布前已消失的已准备候选代际身份."""
 
     generation: str
     container_id: str
@@ -95,7 +95,7 @@ class CandidateReplacement:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RuntimeConfigSync:
-    """Options for pushing MCP/provider config to a live Runtime."""
+    """向运行中的 Runtime 推送 MCP/供应商配置的同步选项."""
 
     reload_config: bool = False
     runtime_config: "JsonObject | None" = None
@@ -103,7 +103,7 @@ class RuntimeConfigSync:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RuntimeProvisioning:
-    """Provisioning context of one Runtime configuration write."""
+    """单次 Runtime 配置写入的配置编排上下文."""
 
     runtime: OpenCodeRuntime | None = None
     reload_config: bool = False
@@ -112,7 +112,7 @@ class RuntimeProvisioning:
 
 @dataclass(slots=True)
 class StartState:
-    """Mutable progress of one start attempt."""
+    """单次启动尝试的可变进度跟踪状态."""
 
     workspace_id: int
     user_id: int
@@ -127,17 +127,17 @@ def _client() -> RuntimeController:
 
 
 def _container_uses_configured_image(container: ContainerPayload) -> bool:
-    """Whether an existing Runtime was created from the current image ref."""
+    """现有 Runtime 是否由当前镜像引用创建而成."""
     if container["labels"].get(RUNTIME_POLICY_LABEL) != POLICY_VERSION:
         return False
     image_ref = container["image"]
     return not image_ref or image_ref == OPENCODE_IMAGE
 
 def runtime_uses_configured_image(runtime: OpenCodeRuntime) -> bool:
-    """Check whether a persisted Runtime already uses ``OPENCODE_IMAGE``.
+    """检查已持久化的 Runtime 是否已在使用 ``OPENCODE_IMAGE``.
 
-    A Runtime created before an image-setting change should be rebuilt on its
-    next use, rather than continuing to run a stale project-owned image.
+    在镜像配置变更前创建的 Runtime 应在下次使用时重新构建,
+    而不是继续运行陈旧的项目历史镜像。
     """
     container_id = runtime.container_id
     if not container_id:
@@ -152,8 +152,8 @@ def runtime_uses_configured_image(runtime: OpenCodeRuntime) -> bool:
             runtime.id,
             type(exc).__name__,
         )
-        # Do not destroy a healthy Runtime merely because Docker is
-        # temporarily unavailable; the caller will surface its normal error.
+        # 绝不可仅因 Docker 暂时不可用就销毁健康的 Runtime;
+        # 调用方会正常向上抛出对应的常规错误。
         return True
     return _container_uses_configured_image(container)
 
@@ -163,10 +163,10 @@ def get_runtime_base_url(
     user_id: int,
     runtime: OpenCodeRuntime | None = None,
 ) -> str:
-    """Return a Runtime URL that works for Docker and hybrid local setups.
+    """返回适用于 Docker 容器与混合本地部署的 Runtime URL.
 
-    Both containerized and local API processes use the authenticated
-    Controller relay. They never need a runtime network interface or port.
+    容器化及本地 API 进程均通过经鉴权的 Controller 中继进行中转,
+    绝不需要直接暴露 Runtime 网络接口或主机端口。
     """
     configured = os.getenv("OPENCODE_RUNTIME_BASE_URL") or os.getenv(
         "OPENCODE_SERVER_URL",
@@ -207,7 +207,7 @@ def _sync_mcp_via_runtime_api(
     config: JsonObject,
     sync: RuntimeConfigSync,
 ) -> None:
-    """Apply fresh MCP credentials to the live Runtime without a restart."""
+    """无需重启容器, 直接向运行中的 Runtime 应用最新的 MCP 凭据."""
     base_url = get_runtime_base_url(workspace, user_id, runtime)
     auth = httpx.BasicAuth(
         server_username(),
@@ -228,7 +228,7 @@ def _sync_mcp_via_runtime_api(
 
 
 def _sync_status(session: Session, workspace: Workspace) -> None:
-    """Best-effort synchronization for legacy workspace container fields."""
+    """针对旧版工作空间容器字段的尽力而为同步."""
     container_id = workspace.container_id
     if not container_id:
         return
@@ -263,7 +263,7 @@ def _sync_runtime_status(session: Session, runtime: OpenCodeRuntime) -> None:
         .first()
     )
     if active is not None:
-        return  # Observing a stopped candidate is not a user stop request.
+        return  # 观测到已停止的候选容器不代表是用户主动发起的停止请求。
     try:
         container = _client().inspect(container_id)
         status = "running" if container["status"] == "running" else "stopped"
@@ -318,10 +318,10 @@ def summary(
     workspace: Workspace,
     user_id: int | None = None,
 ) -> RuntimeSummary:
-    """Return the current member's runtime summary.
+    """返回当前成员的 Runtime 状态概要.
 
-    The workspace-level fields remain as a read-only compatibility fallback
-    for deployments created before ``opencode_runtimes`` existed.
+    工作空间层级的旧字段保留为只读兼容性回退,
+    供在引入 ``opencode_runtimes`` 表之前部署的历史环境使用。
     """
     if user_id is not None:
         runtime = runtime_service.get_runtime(session, int(workspace.id), int(user_id))
@@ -363,7 +363,7 @@ def _status_snapshot(
 
 @dataclass(slots=True)
 class _ListChanges:
-    """Observed runtime changes awaiting one bulk SQL synchronization."""
+    """等待批量 SQL 同步写入的已观测运行时状态变更."""
 
     status: dict[int, str]
     container: dict[int, str | None]
@@ -416,8 +416,8 @@ def _apply_status_changes(
     if not changes.status:
         return
     now = utc_now()
-    # Compare the observed container too: a concurrent recreation must not
-    # be overwritten or have its new credentials revoked by an old snapshot.
+    # 亦需比对观测到的容器, 并发的重新创建绝不能被旧快照
+    # 覆盖, 其新凭据亦绝不可被陈旧快照吊销。
     observed = [runtime for runtime in runtimes if runtime.id in changes.status]
     updated = (
         session.execute(
@@ -476,10 +476,10 @@ def list_summaries(
     rows: list[tuple[WorkspaceListEntry, OpenCodeRuntime | None]],
     user_id: int,
 ) -> list[WorkspaceListItemData]:
-    """Refresh a user's list with constant database and Controller requests.
+    """以常量级数据库与 Controller 请求刷新用户的空间列表.
 
-    Serialize before committing so expire_on_commit cannot cause lazy reloads.
-    No host access URL is available for the isolated, unpublished runtimes.
+    在 commit 前序列化实体, 避免 expire_on_commit 触发懒加载。
+    对于隔离且未发布的 Runtime, 不提供主机直连访问 URL。
     """
     runtimes = [runtime for _, runtime in rows if runtime is not None]
     snapshot = (
@@ -500,7 +500,7 @@ def _active_operation(
     session: Session,
     runtime: OpenCodeRuntime | None,
 ) -> RuntimeOperation | None:
-    """Return the current active generation of this runtime, if any."""
+    """返回该运行时当前活跃的代际标识 (若存在)."""
     if runtime is None:
         return None
     return (
@@ -518,7 +518,7 @@ def _stale_attempt(
     operation: RuntimeOperation | None,
     attempt: StartAttempt,
 ) -> bool:
-    """Whether a resumed recovery no longer owns the current generation."""
+    """恢复流程是否已不再持有当前代际的所有权."""
     return attempt.expected_generation is not None and (
         operation is None or operation.generation != attempt.expected_generation
     )
@@ -528,7 +528,7 @@ def _select_existing_container(
     session: Session,
     runtime: OpenCodeRuntime | None,
 ) -> ContainerPayload | None:
-    """Return a live container that already satisfies the current identity."""
+    """返回已满足当前代际身份要求的活跃容器记录."""
     if runtime is None or not runtime.container_id:
         return None
     try:
@@ -555,9 +555,9 @@ def _retire_generation(
     runtime_id: int,
     generation: str,
 ) -> None:
-    """Retire a prepared generation the database no longer admits.
+    """退役数据库不再准入的已准备好的代际资源.
 
-    Failure is deferred to the Worker, which retries cancelled operations.
+    失败将递延给后台 Worker, 由其负责重试已取消的操作。
     """
     try:
         _client().retire_generation(workspace_id, user_id, runtime_id, generation)
@@ -574,7 +574,7 @@ def _prepare_generation(
     user_id: int,
     operation: RuntimeOperation,
 ) -> tuple[OpenCodeRuntime, str]:
-    """Prepare one admitted generation and publish its candidate identity."""
+    """准备已准入的单代际并在数据库中登记其候选身份."""
     generation = operation.generation
     runtime_id = int(operation.runtime_id)
     if operation.state == "preparing":
@@ -585,14 +585,14 @@ def _prepare_generation(
                 generation,
                 prepared["id"],
             )
-            session.commit()  # Preserve candidate even if publication fails.
+            session.commit()  # 即使发布失败也保留候选代际记录。
             runtime = operations.switch_candidate(session, generation)
-            session.commit()  # Old cleanup and new identity publish atomically.
+            session.commit()  # 原子性执行旧资源清理与新代际身份发布。
         except ConflictError:
             session.rollback()
-            # The admitted generation is gone (revoked edit permission or a
-            # superseding operation). Remove its resource now instead of waiting
-            # for reconciliation, then report the caller's current permission.
+            # 已准入代际已失效 (编辑权限被吊销或被更新操作取代)。
+            # 立即移除其代际资源而无需等待后台对账,
+            # 随后向上层上报调用方当前的权限状态。
             _retire_generation(workspace_id, user_id, runtime_id, generation)
             operations.runtime_with_write_access(session, workspace_id, user_id)
             raise
@@ -602,9 +602,9 @@ def _prepare_generation(
         )
     candidate_id = operation.candidate_container_id
     runtime = operations.switch_candidate(session, generation)
-    session.commit()  # Old cleanup and new identity publish atomically.
+    session.commit()  # 原子性执行旧资源清理与新代际身份发布。
     if candidate_id is None:
-        # switch_candidate already requires a recorded candidate.
+        # switch_candidate 已强制要求存在记录在案的候选代际。
         message = "Runtime candidate has not been recorded"
         raise ConflictError(message)
     return runtime, candidate_id
@@ -616,11 +616,11 @@ def _admit_and_prepare(
     state: StartState,
     attempt: StartAttempt,
 ) -> tuple[OpenCodeRuntime, ContainerPayload] | None:
-    """Admit, prepare and inspect one generation; None means replacement queued."""
+    """准入、准备并检查单个代际; 返回 None 表示已排队重试替换."""
     operation = operations.admit(session, state.workspace_id, state.user_id)
     state.generation = operation.generation
     state.runtime = None
-    session.commit()  # Generation is recoverable before every prepare RPC.
+    session.commit()  # 在每次 prepare RPC 发起前, 代际状态均可恢复。
     try:
         runtime, container_id = _prepare_generation(
             session,
@@ -664,7 +664,7 @@ def _replace_missing(
     state: StartState,
     candidate: CandidateReplacement,
 ) -> None:
-    """Replace one vanished candidate generation and restart the attempt."""
+    """替换已消失的候选代际并重新发起启动尝试."""
     if candidate.attempt >= 1:
         message = "Repeated candidate disappearance; retry later"
         raise ControllerError(message)
@@ -675,7 +675,7 @@ def _replace_missing(
     )
     replacement = operation.generation
     runtime_id = int(operation.runtime_id)
-    session.commit()  # Old cancellation + new intent survive retirement failure.
+    session.commit()  # 旧操作取消与新意图登记在退役失败时依然有效保留。
     _client().retire_generation(
         state.workspace_id,
         state.user_id,
@@ -698,7 +698,7 @@ def _start_published(
     runtime: OpenCodeRuntime,
     container: ContainerPayload,
 ) -> None:
-    """Start the published container and finish its generation bookkeeping."""
+    """启动已发布的容器并完成其代际簿记状态更新."""
     runtime = operations.current_runtime(
         session,
         operations.CurrentRuntimeParams(
@@ -736,7 +736,7 @@ def _activate(
     state: StartState,
     attempt: StartAttempt,
 ) -> None:
-    """Prepare, publish and start one generation, or stop on a stale request."""
+    """准备、发布并启动单个代际, 或在检测到请求陈旧时执行停止."""
     operation = _active_operation(session, state.runtime)
     if _stale_attempt(operation, attempt):
         return
@@ -753,7 +753,7 @@ def _activate(
         _start_published(session, workspace, state, runtime, container)
         return
     existing_runtime = state.runtime
-    if existing_runtime is None:  # unreachable: the container belongs to this runtime
+    if existing_runtime is None:  # 理论不可达: 容器严格归属于当前运行时。
         return
     _start_published(session, workspace, state, existing_runtime, container)
 
@@ -763,9 +763,9 @@ def _record_start_failure(
     state: StartState,
     error: ControllerError,
 ) -> None:
-    """Record one failed start without recreating a deleted runtime."""
+    """记录单次失败的启动操作, 不会重建已删除的运行时."""
     session.rollback()
-    # Never recreate a deleted owner/runtime while recording an RPC failure.
+    # 记录 RPC 失败时绝不重新创建已被删除的所有者或运行时。
     if state.generation is not None:
         runtime_operations.defer_operation(session, state.generation, error)
     else:
@@ -795,7 +795,7 @@ def start(
     expected_generation: str | None = None,
     _replacement_attempt: int = 0,
 ) -> Workspace:
-    """Prepare a durable generation before publishing its SQL identity."""
+    """在发布其 SQL 身份前先准备好持久化的代际资源."""
     state = StartState(
         workspace_id=int(workspace.id),
         user_id=user_id,
@@ -821,7 +821,7 @@ def start(
 
 
 def _stop_legacy(session: Session, workspace: Workspace) -> Workspace:
-    """Stop the legacy workspace-level container without runtime ownership."""
+    """停止旧版工作空间级别的无独立属主容器."""
     try:
         if workspace.container_id:
             _client().action(workspace.container_id, "stop")
@@ -844,7 +844,7 @@ def _stop_legacy(session: Session, workspace: Workspace) -> Workspace:
 
 @serialized
 def _stop_runtime(session: Session, workspace: Workspace, user_id: int) -> Workspace:
-    """Stop the caller's runtime after cancelling its active generations."""
+    """在取消活跃代际后停止调用方的运行时."""
     runtime = runtime_service.get_runtime(session, workspace.id, user_id)
     if not runtime:
         return workspace
@@ -856,8 +856,8 @@ def _stop_runtime(session: Session, workspace: Workspace, user_id: int) -> Works
     if runtime is None:
         return workspace
     if operations.cancel_runtime(session, int(runtime.id)):
-        # Commit the cancellation before the stop RPC: recovery must never resume a
-        # generation the user asked to stop, even if this process dies afterwards.
+        # 在调用停止 RPC 前提交取消操作: 恢复流程绝不能恢复
+        # 用户要求停止的代际, 即使当前进程随后发生崩溃。
         session.commit()
         runtime = operations.runtime_with_write_access(
             session,
@@ -895,16 +895,16 @@ def stop(
     workspace: Workspace,
     user_id: int | None = None,
 ) -> Workspace:
-    """Stop one runtime and revoke its token immediately."""
+    """停止单个运行时并立即吊销其访问令牌."""
     if user_id is None:
-        # Compatibility for old internal callers that have no runtime owner.
+        # 兼容无 runtime 所有者的旧版内部调用方。
         return _stop_legacy(session, workspace)
     return _stop_runtime(session, workspace, user_id)
 
 
 @serialized
 def restart(session: Session, workspace: Workspace, user_id: int) -> Workspace:
-    """Restart the caller's runtime, reprovisioning when its image changed."""
+    """重启调用方的运行时, 当镜像发生变更时重新编排构建."""
     runtime = runtime_service.get_runtime(session, workspace.id, user_id)
     if not runtime or not runtime.container_id:
         return start(session, workspace, user_id)
@@ -914,7 +914,7 @@ def restart(session: Session, workspace: Workspace, user_id: int) -> Workspace:
         user_id,
     )
     if runtime is None:
-        # The locked runtime row vanished; nothing remains to restart.
+        # 锁定的 runtime 记录已消失; 无任何实体需要重启。
         return workspace
     active = (
         session.query(RuntimeOperation)
@@ -944,7 +944,7 @@ def _restart_existing(
     user_id: int,
     runtime: OpenCodeRuntime,
 ) -> Workspace:
-    """Restart one published container, reprovisioning when it cannot."""
+    """重启单个已发布的容器, 无法直接重启时重新编排构建."""
     try:
         container_id = runtime.container_id
         if container_id is None:
@@ -979,7 +979,7 @@ def _restart_existing(
 
 
 def remove_container(workspace: Workspace, session: Session | None = None) -> None:
-    """Detach resources atomically; the Worker removes committed identities."""
+    """原子性解绑关联资源; 后台 Worker 负责清理已提交的身份."""
     if session is not None:
         for runtime in runtime_service.list_runtimes(session, int(workspace.id)):
             remove_runtime(runtime, session)
@@ -989,7 +989,7 @@ def remove_container(workspace: Workspace, session: Session | None = None) -> No
         workspace.error_message = None
         session.flush()
         return
-    # Explicit nontransactional callers retain the synchronous RPC contract.
+    # 显式的非事务性调用方保持原有的同步 RPC 契约行为。
     container_id = workspace.container_id
     if container_id:
         _remove_container_now(container_id)
@@ -1001,7 +1001,7 @@ def _remove_container_now(container_id: str) -> None:
 
 
 def remove_runtime(runtime: OpenCodeRuntime, session: Session | None = None) -> None:
-    """Revoke access and stage removal in the caller's transaction."""
+    """在调用方事务中吊销访问权限并暂存移除任务."""
     if session is not None:
         operations.cancel_runtime(session, int(runtime.id))
         stage_container_deletion_fallback(session, runtime.container_id)
@@ -1018,7 +1018,7 @@ def remove_runtime(runtime: OpenCodeRuntime, session: Session | None = None) -> 
 
 
 def get_access_url(entity: Workspace | OpenCodeRuntime) -> str | None:
-    """Return the published host port of a Runtime, when one exists."""
+    """返回 Runtime 已发布的主机端口 (若存在)."""
     container_id = entity.container_id
     if not container_id:
         return None
@@ -1041,12 +1041,12 @@ def merge_opencode_mcp_config(
     existing: "JsonObject | None",
     mcp_config: JsonObject,
 ) -> JsonObject:
-    """Merge only the SKYCLOUD MCP block into the existing config."""
+    """仅将 SKYCLOUD MCP 配置块合并至现有运行时配置中."""
     return runtime_config.merge_opencode_mcp_config(existing, mcp_config)
 
 
 def _chat_api_runtime_config(runtime_token: str) -> dict[str, str]:
-    """Expose only the gateway and scoped credential to untrusted code."""
+    """仅向不可信代码暴露网关地址与特定范围内的凭据."""
     configured = get_chat_model_config()
     base_url = os.getenv("OPENCODE_LLM_GATEWAY_URL")
     if not base_url:
@@ -1076,7 +1076,7 @@ def merge_opencode_chat_provider(
     existing: "JsonObject | None",
     chat_config: dict[str, str] | None = None,
 ) -> JsonObject:
-    """Merge the scoped chat provider into the existing OpenCode config."""
+    """将作用域受限的 Chat 供应商配置合并至现有 OpenCode 配置中."""
     return runtime_config.merge_opencode_chat_provider(
         existing,
         chat_config,
@@ -1088,7 +1088,7 @@ def opencode_chat_provider_needs_reload(
     existing: JsonObject,
     chat_config: dict[str, str],
 ) -> bool:
-    """Whether the live Runtime provider block differs from this config."""
+    """运行中的 Runtime 供应商配置块是否与该目标配置存在差异."""
     return runtime_config.opencode_chat_provider_needs_reload(
         existing,
         chat_config,
@@ -1097,7 +1097,7 @@ def opencode_chat_provider_needs_reload(
 
 
 def merge_opencode_expert_agent(existing: "JsonObject | None") -> JsonObject:
-    """Merge the least-privilege expert agent into the existing config."""
+    """将最小权限专家 Agent 配置合并至现有配置中."""
     return runtime_config.merge_opencode_expert_agent(
         existing,
         agent_name=OPENCODE_EXPERT_AGENT,
@@ -1119,7 +1119,7 @@ def setup_mcp(
     *,
     runtime: OpenCodeRuntime | None = None,
 ) -> None:
-    """Issue a scoped runtime token and atomically merge its MCP config."""
+    """签发作用域受限的运行时令牌并原子性合并其 MCP 配置."""
     _apply_runtime_config(
         session,
         workspace,
@@ -1135,10 +1135,10 @@ def _apply_runtime_config(
     user_id: int,
     provisioning: RuntimeProvisioning,
 ) -> None:
-    """Write MCP and model provider config to one running Runtime.
+    """将 MCP 与模型供应商配置写入运行中的 Runtime.
 
-    Configuration is reloaded through the instance API, preserving bounded
-    tmpfs storage and keeping all provisioning commands under the runtime UID.
+    通过实例 API 重新加载配置, 保持有界的 tmpfs 存储容量,
+    并将所有配置编排指令限制在 Runtime UID 权限下运行。
     """
     runtime = provisioning.runtime
     if runtime is None:

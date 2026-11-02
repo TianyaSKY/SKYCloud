@@ -1,4 +1,4 @@
-"""Private failure diagnostics for the standalone Controller process."""
+"""独立 Controller 进程的内部失败诊断日志处理."""
 
 import copy
 import logging
@@ -20,7 +20,7 @@ LIBRARY_LOGGERS: Final = ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn
 
 
 def _access_fields(record: logging.LogRecord) -> tuple[object, ...]:
-    """Return the uvicorn access tuple, or an empty tuple for other records."""
+    """返回 uvicorn 访问元组, 若非访问记录则返回空元组."""
     return record.args if isinstance(record.args, tuple) else ()
 
 
@@ -39,10 +39,10 @@ def _access_status(fields: tuple[object, ...]) -> int | str:
 
 
 class PrivateDiagnosticsHandler(logging.StreamHandler[TextIO]):
-    """Discard library exception text before formatting, including Uvicorn rethrows."""
+    """在格式化前过滤丢弃底层库异常文本, 包括 Uvicorn 重抛的异常."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Sanitize the record in place on a copy, then emit it."""
+        """在副本上就地脱敏日志记录, 随后将其输出."""
         error = record.exc_info[1] if record.exc_info is not None else None
         if error is not None:
             record = copy.copy(record)
@@ -68,11 +68,11 @@ def _library_loggers() -> Iterable[logging.Logger]:
 
 
 def setup_logging() -> None:
-    """Install the sanitizing handler for the process and library loggers."""
+    """为当前进程及第三方库日志记录器安装脱敏日志处理器."""
     handler = PrivateDiagnosticsHandler()
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
     logging.basicConfig(handlers=[handler], level=logging.INFO, force=True)
-    # HTTP client INFO records contain full runtime relay URLs and query strings.
+    # HTTP 客户端的 INFO 日志包含完整的运行时中继 URL 和查询字符串.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     for logger in _library_loggers():
         logger.handlers = [handler]

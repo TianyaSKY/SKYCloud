@@ -1,4 +1,4 @@
-"""Recovery must bind completed output to the newly submitted user message."""
+"""恢复机制必须将已完成输出绑定至新提交的用户消息测试."""
 import pytest
 from app.features.assistant.engines.expert_engine import _current_reply
 

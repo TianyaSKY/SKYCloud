@@ -1,4 +1,4 @@
-"""Runtime-facing model gateway. Exposes only scoped chat requests and health."""
+"""面向运行时的模型网关. 仅暴露作用域受限的聊天请求与健康检查."""
 
 import os
 from collections.abc import AsyncGenerator
@@ -19,7 +19,7 @@ _GATEWAY_PORT_ENV = "RUNTIME_LLM_GATEWAY_PORT"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    """Verify the database schema and retired administrator credentials."""
+    """校验数据库数据模式与废弃的历史管理员凭证."""
     configured_password("DATABASE_URL password", engine.url.password)
     await run_in_threadpool(check_schema, engine)
     await run_in_threadpool(check_legacy_admin, engine)
@@ -39,7 +39,7 @@ app.include_router(router)
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    """Report gateway liveness to the runtime container."""
+    """向运行时容器报告网关存活状态."""
     return {"status": "ok"}
 
 

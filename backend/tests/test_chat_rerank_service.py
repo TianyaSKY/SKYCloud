@@ -6,9 +6,7 @@ from langchain_core.documents import Document
 
 
 
-# ---------------------------------------------------------------------------
 # rerank 模块纯函数
-# ---------------------------------------------------------------------------
 
 from app.features.chat.rerank import (
     _get_index,
@@ -136,9 +134,7 @@ class TestRerankDocuments:
         assert result == docs
 
 
-# ---------------------------------------------------------------------------
 # chat service 工具函数
-# ---------------------------------------------------------------------------
 
 from app.features.chat.service import (
     _env_int as chat_env_int,
@@ -188,7 +184,7 @@ class TestFuseDocsWithRRF:
             Document(page_content="c", metadata={"id": 3, "distance": 0.3}),
         ]
         result = _fuse_docs_with_rrf([set1, set2], 60, 10)
-        # doc 2 appears in both sets so should have higher score
+        # 文档 2 在两个集合中均出现, 因此应获得更高分数
         assert result[0].metadata["id"] == 2
 
     def test_top_k_limit(self):

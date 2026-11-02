@@ -1,4 +1,4 @@
-"""Accounting failures must not alter the caller's business result or leak data."""
+"""记账故障不得改变调用方的业务结果或泄露数据测试."""
 from unittest.mock import Mock
 import pytest
 from app.features.token_usage import service

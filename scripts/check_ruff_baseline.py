@@ -1,4 +1,4 @@
-"""Compare a complete Ruff JSON report with the reviewed diagnostic baseline."""
+"""将完整的 Ruff JSON 报告与经过审查的诊断基线进行对比."""
 
 import argparse
 import json
@@ -39,18 +39,18 @@ MCP_LIST_FILES_DIAGNOSTIC: DiagnosticKey = (
 
 
 class SchemaError(ValueError):
-    """The report or baseline cannot be compared safely."""
+    """报告或基线无法安全比对异常."""
 
 
 def _fail(message: str, cause: BaseException | None = None) -> NoReturn:
-    """Raise a comparison-schema failure, preserving any parse cause."""
+    """抛出比对模式校验失败异常, 保留原始解析异常原因."""
     if cause is not None:
         raise SchemaError(message) from cause
     raise SchemaError(message)
 
 
 def _write(line: str) -> None:
-    """Write one complete output line to stdout."""
+    """向标准输出写入一行完整内容."""
     sys.stdout.write(line + "\n")
 
 
@@ -129,13 +129,13 @@ def _validate_code(policy: DiagnosticKey) -> None:
 
 
 def _key(values: DiagnosticKey) -> DiagnosticKey:
-    """Validate and return an exact diagnostic identity."""
+    """校验并返回精确的诊断标识元组."""
     _validate_code(values)
     return values
 
 
 def load_report(path: Path) -> list[tuple[DiagnosticKey, dict[str, object]]]:
-    """Load and validate every diagnostic from a complete Ruff JSON report."""
+    """从完整的 Ruff JSON 报告中加载并校验每条诊断项."""
     try:
         raw: object = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -167,7 +167,7 @@ def load_report(path: Path) -> list[tuple[DiagnosticKey, dict[str, object]]]:
 
 
 def load_baseline(path: Path) -> dict[DiagnosticKey, dict[str, object]]:
-    """Load and validate the reviewed baseline entries."""
+    """加载并校验已审查的基线条目."""
     try:
         raw: object = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -214,7 +214,7 @@ def compare(
     report: list[tuple[DiagnosticKey, dict[str, object]]],
     baseline: dict[DiagnosticKey, dict[str, object]],
 ) -> int:
-    """Print the full report and fail on any new or stale diagnostic."""
+    """打印完整报告, 并在出现任何新增或过期的诊断项时报错退出."""
     report_keys = {key for key, _item in report}
     baseline_keys = set(baseline)
     new_keys = sorted(report_keys - baseline_keys)
@@ -237,7 +237,7 @@ def compare(
 
 
 def main() -> int:
-    """Run the baseline comparison CLI."""
+    """运行基线对比命令行工具."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)

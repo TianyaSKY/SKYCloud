@@ -1,7 +1,7 @@
-"""Multipart upload orchestration over quota, file publication and byte adapters.
+"""分片上传编排层: 结合配额预留、文件发布与字节适配器.
 
-The caller owns the SQL Session. Reservation locks remain held across chunk
-writes and final publication; compensation preserves existing commit semantics.
+调用方持有 SQL Session。预留行锁在分片写入与
+最终发布期间保持持有; 补偿机制完整保留既有事务提交语义。
 """
 
 import math
@@ -52,7 +52,7 @@ from app.models.upload_reservation import UploadReservation
 
 
 class MultipartInitData(TypedDict, total=False):
-    """Multipart start inputs decoded from the request payload."""
+    """从请求载荷中解析出的分片上传初始化输入参数."""
 
     filename: str
     total_size: int
@@ -64,7 +64,7 @@ class MultipartInitData(TypedDict, total=False):
 
 
 class MultipartMetadata(TypedDict):
-    """Session metadata persisted in the reservation details column."""
+    """持久化记录在预留表 details 字段中的会话元数据."""
 
     upload_id: str
     workspace_id: int
@@ -82,7 +82,7 @@ class MultipartMetadata(TypedDict):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PendingMultipart:
-    """Validated multipart session request ready to be persisted."""
+    """已完成前置校验、待持久化落库的分片上传会话规格."""
 
     filename: str
     total_size: int
@@ -92,7 +92,7 @@ class PendingMultipart:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MultipartPublication:
-    """Owner and resolved metadata shared by every publication step."""
+    """各发布步骤共享的所有者标识与已解析元数据."""
 
     workspace_id: int
     uploader_id: int
@@ -103,7 +103,7 @@ class MultipartPublication:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SaveMultipartChunkParams:
-    """Inputs for storing one uploaded chunk."""
+    """持久化存储单个已上传分片所需的输入参数."""
 
     uploader_id: int
     workspace_id: int
@@ -114,12 +114,12 @@ class SaveMultipartChunkParams:
 
 
 def _multipart_metadata(reservation: UploadReservation) -> MultipartMetadata:
-    """Project the JSON details this service wrote for the reservation."""
+    """解析并映射本服务为该预留记录写入的 JSON details 元数据."""
     return cast("MultipartMetadata", reservation.details)
 
 
 def validate_upload_id(upload_id: str) -> str:
-    """Return the trimmed upload id, rejecting values outside the safe charset."""
+    """返回去除首尾空格的 upload_id, 拒绝含有非法字符的值."""
     candidate = (upload_id or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", candidate):
         message = "Invalid upload_id"
@@ -128,7 +128,7 @@ def validate_upload_id(upload_id: str) -> str:
 
 
 def _require_all_chunks(uploaded_chunks: set[int], total_chunks: int) -> None:
-    """Reject assembly while any chunk index is still missing."""
+    """若仍有任何分片缺失则拒绝执行合并组装."""
     missing = [index for index in range(total_chunks) if index not in uploaded_chunks]
     if missing:
         preview = ",".join(str(index) for index in missing[:10])
@@ -137,14 +137,14 @@ def _require_all_chunks(uploaded_chunks: set[int], total_chunks: int) -> None:
 
 
 def _verify_content_hash(actual_hash: str, expected_hash: str | None) -> None:
-    """Reject a merged object whose digest differs from the declared hash."""
+    """若合并后对象的实际摘要与声明的哈希不符则拒绝发布."""
     if expected_hash and actual_hash != expected_hash:
         message = "Uploaded content does not match its hash"
         raise BusinessRuleError(message)
 
 
 class MultipartUploadService:
-    """Multipart sessions over quota reservations and shared publication stages."""
+    """基于配额预留机制与共享发布阶段实现的分片上传服务."""
 
     def __init__(
         self,
@@ -153,19 +153,19 @@ class MultipartUploadService:
         *,
         storage_factory: Callable[[], UploadStorage] = get_storage_client,
     ) -> None:
-        """Bind multipart settings, the upload use case and object storage."""
+        """绑定分片配置、上传用例及对象存储接口."""
         self.settings = settings
         self.uploads = uploads
         self.storage_factory = storage_factory
 
     def directory(self, workspace_id: int, upload_id: str) -> str:
-        """Return the chunk directory of the given session."""
+        """返回指定分片会话的分片暂存目录路径."""
         return multipart_storage.upload_directory(
             self.settings.multipart_root, workspace_id, upload_id,
         )
 
     def _pending_upload(self, data: MultipartInitData) -> PendingMultipart:
-        """Validate the requested sizes and derive the chunk count."""
+        """校验声明的文件尺寸并推导预期的分片总数."""
         filename = (data.get("filename") or "").strip()
         if not filename:
             message = "filename is required"
@@ -204,7 +204,7 @@ class MultipartUploadService:
         pending: PendingMultipart,
         publication: MultipartPublication,
     ) -> dict[str, object] | None:
-        """Clone a reusable object when the declared hash is already stored."""
+        """当声明的哈希已存在时, 直接秒传复用该存储对象."""
         content_hash = publication.content_hash
         if not content_hash:
             return None
@@ -241,7 +241,7 @@ class MultipartUploadService:
         uploader_id: int,
         data: MultipartInitData,
     ) -> dict[str, object]:
-        """Open (or reuse) the session that will receive the chunks."""
+        """创建 (或秒传复用) 用于接收后续分片的上传会话."""
         pending = self._pending_upload(data)
         publication = MultipartPublication(
             workspace_id=workspace_id,
@@ -339,7 +339,7 @@ class MultipartUploadService:
     def get_multipart_upload_status(
         self, session: Session, workspace_id: int, uploader_id: int, upload_id: str,
     ) -> dict[str, object]:
-        """Return the recorded chunk progress of an open session."""
+        """查询并返回进行中分片会话已记录的分片上传进度."""
         meta = _multipart_metadata(
             upload_quota.owned(session, workspace_id, uploader_id, upload_id),
         )
@@ -358,7 +358,7 @@ class MultipartUploadService:
     def save_multipart_chunk(
         self, session: Session, params: SaveMultipartChunkParams,
     ) -> dict[str, object]:
-        """Store one chunk inside the still-held reservation locks."""
+        """在当前持有的预留锁保护下写入存储单个上传分片."""
         safe_upload_id = validate_upload_id(params.upload_id)
         meta = _multipart_metadata(
             upload_quota.owned(
@@ -411,7 +411,7 @@ class MultipartUploadService:
     def _assemble(
         self, staging: StagedUpload, chunks_dir: str, meta: MultipartMetadata,
     ) -> None:
-        """Merge the stored chunks into the staging payload."""
+        """将所有已存储的分片文件合并装配为暂存载荷."""
         try:
             multipart_storage.assemble(
                 chunks_dir,
@@ -444,12 +444,12 @@ class MultipartUploadService:
         publication: MultipartPublication,
         meta: MultipartMetadata,
     ) -> File:
-        """Publish the merged object, then insert and commit its file row."""
+        """发布合并后的存储对象, 随后插入并提交对应文件记录."""
         unique_filename = meta["object_name"]
         total_size = int(meta["total_size"])
         storage: UploadStorage | None = None
         try:
-            # Publish the merged file to MinIO.
+            # 将合并后的文件发布至 MinIO。
             actual_hash = hash_file(staging.path)
             _verify_content_hash(actual_hash, publication.content_hash)
             storage = self.storage_factory()
@@ -491,7 +491,7 @@ class MultipartUploadService:
             message = "Failed to save file metadata"
             raise ServiceOperationError(message) from exc
         finally:
-            # Remove the merged staging file and the chunk directory.
+            # 移除合并后的暂存文件及分片存储目录。
             close_staging_safely(staging)
             remove_multipart_upload_safely(
                 self.settings.multipart_root,
@@ -506,7 +506,7 @@ class MultipartUploadService:
     def complete_multipart_upload(
         self, session: Session, workspace_id: int, uploader_id: int, upload_id: str,
     ) -> File:
-        """Assemble the chunks, then publish the merged object and its row."""
+        """组装分片数据, 随后发布合并对象并提交文件记录."""
         safe_upload_id = validate_upload_id(upload_id)
         meta = _multipart_metadata(
             upload_quota.owned(session, workspace_id, uploader_id, safe_upload_id),
@@ -548,7 +548,7 @@ class MultipartUploadService:
     def abort_multipart_upload(
         self, session: Session, workspace_id: int, uploader_id: int, upload_id: str,
     ) -> None:
-        """Cancel the session reservation and delete its chunk directory."""
+        """取消会话预留记录并删除其分片暂存目录."""
         safe_upload_id = validate_upload_id(upload_id)
         upload_quota.cancel(
             session,
@@ -564,5 +564,5 @@ class MultipartUploadService:
 
 
 def get_multipart_service() -> MultipartUploadService:
-    """Build multipart behavior through the sole configuration assembly point."""
+    """通过统一配置装配点构建分片上传服务实例."""
     return MultipartUploadService(multipart_settings(), get_upload_service())

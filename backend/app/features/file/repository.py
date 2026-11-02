@@ -1,7 +1,7 @@
-"""File metadata persistence. Callers own Sessions, authorization and transactions.
+"""文件元数据持久化层。调用方持有 Session、鉴权逻辑与事务边界.
 
-No cache, storage, model provider, task publisher or independent Session is used.
-Returned rows remain attached to the caller Session and must be serialized there.
+本层不直接访问缓存、对象存储、模型供应商、任务发布者或独立 Session。
+返回的实体行仍附加在调用方 Session 上, 须在该会话内序列化。
 """
 
 from collections.abc import Sequence
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class FilePage:
-    """One page of file rows with the total row count."""
+    """包含单页文件记录与匹配总行数的分页结构."""
 
     items: list[File]
     total: int
@@ -29,7 +29,7 @@ class FilePage:
 
 @dataclass(frozen=True, slots=True)
 class DirectoryPage:
-    """Directory page holding folders first, then files, with the combined total."""
+    """目录浏览分页结果: 文件夹优先排列, 其后为文件, 附带总数."""
 
     folders: list[Folder]
     files: list[File]
@@ -38,7 +38,7 @@ class DirectoryPage:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FileRecordSpec:
-    """Every input required to publish one file row."""
+    """发布单条文件记录所需的全部入参字段."""
 
     name: str
     file_path: str
@@ -55,7 +55,7 @@ class FileRecordSpec:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListDirectoryParams:
-    """Directory listing filters, ordering and paging."""
+    """目录浏览过滤参数、排序规则与分页规格."""
 
     workspace_id: int
     parent_id: int | None
@@ -67,24 +67,24 @@ class ListDirectoryParams:
 
 
 def escape_like(value: str) -> str:
-    """Escape LIKE wildcards so the term matches literally."""
+    """转义 LIKE 通配符, 使检索词按字面量精确匹配."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def find_file(session: Session, file_id: int) -> File | None:
-    """Return one file row by primary key."""
+    """根据主键 ID 查询单条文件记录."""
     return session.get(File, file_id)
 
 
 def find_folder(session: Session, folder_id: int) -> Folder | None:
-    """Return one folder row with refreshed identity state."""
+    """查询单条文件夹记录并刷新其会话状态."""
     return session.get(Folder, folder_id, populate_existing=True)
 
 
 def find_reusable_file(
     session: Session, content_hash: str, file_size: int, workspace_id: int,
 ) -> File | None:
-    """Return the oldest row with the same hash and size in the workspace."""
+    """查询工作空间内具有相同哈希值与文件大小的最早历史记录."""
     return session.scalars(
         select(File)
         .where(
@@ -98,26 +98,26 @@ def find_reusable_file(
 
 
 def insert_file(session: Session, file: File) -> None:
-    """Add and flush one new file row."""
+    """新增并 flush 单条文件记录."""
     session.add(file)
     session.flush()
 
 
 def insert_files(session: Session, files: Sequence[File]) -> None:
-    """Add and flush several new file rows."""
+    """批量新增并 flush 多条文件记录."""
     session.add_all(files)
     session.flush()
 
 
 def remove_file(session: Session, file: File) -> None:
-    """Mark one attached file row for deletion at commit time."""
+    """标记单条已附加的文件记录以便在提交时删除."""
     session.delete(file)
 
 
 def has_other_object_reference(
     session: Session, object_name: str, file_id: int,
 ) -> bool:
-    """Return whether another row still references the object key."""
+    """查询是否仍有其他文件行引用同一对象存储键."""
     existing = session.scalar(
         select(File.id)
         .where(File.file_path == object_name, File.id != file_id)
@@ -129,7 +129,7 @@ def has_other_object_reference(
 def list_directory(
     session: Session, params: ListDirectoryParams,
 ) -> DirectoryPage:
-    """Return one folder-then-file page of the requested directory."""
+    """返回目标目录下文件夹置顶的分页目录浏览结果."""
     folder_filters: tuple[ColumnElement[bool], ...] = (
         Folder.workspace_id == params.workspace_id,
         Folder.parent_id == params.parent_id,
@@ -203,7 +203,7 @@ def list_directory(
 def search_names(
     session: Session, workspace_id: int, query: str, page: int, page_size: int,
 ) -> FilePage:
-    """Return one page of files whose name matches the term."""
+    """返回文件名与关键词匹配的单页文件记录."""
     filters = (
         File.workspace_id == workspace_id,
         File.name.ilike(f"%{escape_like(query)}%", escape="\\"),
@@ -229,7 +229,7 @@ def search_vectors(
     page: int,
     page_size: int,
 ) -> FilePage:
-    """Return one page of embedded files ordered by cosine distance."""
+    """按余弦距离升序返回已建立向量索引的单页文件列表."""
     filters = (
         File.workspace_id == workspace_id,
         File.vector_info.isnot(None),
@@ -250,7 +250,7 @@ def search_vectors(
 
 
 def find_root_file(session: Session, workspace_id: int) -> File | None:
-    """Return the first root-level file of the workspace."""
+    """返回工作空间根目录下的首个文件记录."""
     return session.scalars(
         select(File)
         .where(File.workspace_id == workspace_id, File.parent_id.is_(None))
@@ -259,7 +259,7 @@ def find_root_file(session: Session, workspace_id: int) -> File | None:
 
 
 def find_owned_workspace(session: Session, user_id: int) -> Workspace | None:
-    """Return the oldest workspace owned by the user."""
+    """返回该用户拥有的最早创建的工作空间."""
     return session.scalars(
         select(Workspace)
         .where(Workspace.owner_id == user_id)
@@ -274,7 +274,7 @@ def find_child_folder(
     parent_id: int | None,
     name: str | None = None,
 ) -> Folder | None:
-    """Return the first child folder, optionally filtered by name."""
+    """返回首个子文件夹记录, 可选按名称进行过滤."""
     query = select(Folder).where(
         Folder.workspace_id == workspace_id, Folder.parent_id == parent_id,
     )
@@ -284,7 +284,7 @@ def find_child_folder(
 
 
 def failed_file_ids(session: Session, workspace_id: int | None) -> list[int]:
-    """Return the ids of files whose indexing failed."""
+    """返回索引构建失败的文件 ID 列表."""
     query = select(File.id).where(File.status == "fail")
     if workspace_id is not None:
         query = query.where(File.workspace_id == workspace_id)
@@ -292,7 +292,7 @@ def failed_file_ids(session: Session, workspace_id: int | None) -> list[int]:
 
 
 def mark_pending(session: Session, file_ids: list[int]) -> None:
-    """Reset the given rows to the pending indexing status."""
+    """将指定文件记录的状态重置为 pending 待索引状态."""
     session.execute(
         update(File)
         .where(File.id.in_(file_ids))
@@ -302,14 +302,14 @@ def mark_pending(session: Session, file_ids: list[int]) -> None:
 
 
 def list_workspace_files(session: Session, workspace_id: int) -> list[File]:
-    """Return every file row of the workspace."""
+    """返回工作空间下的全部文件记录行."""
     return list(
         session.scalars(select(File).where(File.workspace_id == workspace_id)),
     )
 
 
 def status_counts(session: Session, workspace_id: int) -> dict[str, int]:
-    """Count files per indexing status inside the workspace."""
+    """按索引状态统计工作空间内的文件数量分布."""
     rows = session.execute(
         select(File.status, func.count(File.id))
         .where(File.workspace_id == workspace_id)
@@ -319,7 +319,7 @@ def status_counts(session: Session, workspace_id: int) -> dict[str, int]:
 
 
 def find_live_file(session: Session, file_id: int) -> File | None:
-    """Refresh an instant-clone source after reservation commit and object locking."""
+    """在预留提交及对象锁定后刷新秒传源文件状态."""
     return session.scalars(
         select(File)
         .where(File.id == file_id)
@@ -328,7 +328,7 @@ def find_live_file(session: Session, file_id: int) -> File | None:
 
 
 def has_object_reference(session: Session, object_name: str) -> bool:
-    """Return whether any file row references the object key."""
+    """查询是否有任意文件记录引用了该对象存储键."""
     existing = session.scalar(
         select(File.id).where(File.file_path == object_name).limit(1),
     )

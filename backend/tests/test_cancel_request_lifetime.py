@@ -1,4 +1,4 @@
-"""An accepted cancellation persists and signals its producer despite disconnect."""
+"""已接受的取消在断开连接后仍持久化并向生产者发信号测试."""
 import asyncio
 import threading
 from types import SimpleNamespace

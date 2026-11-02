@@ -1,7 +1,7 @@
-"""Bounded synchronous OpenCode configuration RPC, independent of SQL lifecycle.
+"""有界的同步 OpenCode 配置 RPC, 独立于 SQL 生命周期.
 
-Call from an existing worker/thread boundary; the caller owns fresh identity
-checks and transaction decisions before and after this external operation.
+应在现有 Worker 或独立线程边界内调用; 调用方在执行此前后的
+身份最新状态检查与事务决策由自身全权负责。
 """
 
 import time
@@ -23,7 +23,7 @@ MCP_INJECTION_FAILED = "向 OpenCode Runtime 注入 MCP 配置失败"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConfigSyncOptions:
-    """Time and reload policy for one configuration push."""
+    """单次配置推送的超时与重载策略配置."""
 
     startup_timeout: float
     reload_config: bool = False
@@ -37,7 +37,7 @@ def sync_mcp(
     config: JsonObject,
     options: ConfigSyncOptions,
 ) -> None:
-    """Wait for Runtime readiness, then push MCP and optional provider config."""
+    """等待 Runtime 就绪, 随后推送 MCP 与可选的供应商配置."""
     deadline = time.monotonic() + options.startup_timeout
     last_error: str | None = None
     with httpx.Client(
@@ -66,15 +66,15 @@ def sync_mcp(
 
         try:
             if options.reload_config:
-                # The pinned OpenCode caches global config for its lifetime.
-                # Instance disposal alone keeps the previous model JWT. Let
-                # updateGlobal write the changed config and invalidate that
-                # cache before the Controller's final normalized file write.
+                # 固定版本的 OpenCode 会在其生命周期内缓存全局配置。
+                # 仅销毁实例仍会保留先前的模型 JWT。通过调用
+                # updateGlobal 写入变更配置并在 Controller 最终规范化
+                # 写入文件之前作废该内存缓存。
                 response = client.patch("/global/config", json=options.runtime_config)
                 response.raise_for_status()
-                # Reload the instance without restarting the container: tmpfs
-                # configuration must remain mounted, and no active run exists
-                # during provisioning.
+                # 重新加载实例而无需重启容器: tmpfs 配置目录
+                # 必须保持挂载, 且在配置编排期间
+                # 不存在活跃运行。
                 response = client.post("/instance/dispose")
                 response.raise_for_status()
             response = client.post("/mcp", json={"name": "SKYCLOUD", "config": config})

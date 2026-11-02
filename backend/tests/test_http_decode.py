@@ -31,7 +31,7 @@ async def test_bounded_decode_matches_original(encoding,raw,split):
 
 @pytest.mark.parametrize('encoding',['gzip','deflate'])
 async def test_compressed_bomb_never_allocates_full_output(encoding):
-    # Create the fixture before tracing. One tiny wire chunk expands to 16 MiB.
+    # 在追踪前创建 fixture. 微小的网络分块可解压膨胀至 16 MiB.
     body=b'x'*(16*1024*1024)
     wire=gzip.compress(body) if encoding=='gzip' else zlib.compress(body)
     response=httpx.Response(200,headers={'content-encoding':encoding},stream=Stream(wire))

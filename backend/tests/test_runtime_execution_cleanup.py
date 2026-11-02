@@ -1,4 +1,4 @@
-"""Lifecycle lock cleanup must retain accepted results and primary failures."""
+"""生命周期锁清理必须保留已接受结果与主要故障测试."""
 from types import SimpleNamespace
 
 import pytest

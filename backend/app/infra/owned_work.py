@@ -1,4 +1,4 @@
-"""Keep synchronous worker lifetime inside the async operation that owns it."""
+"""将同步 worker 的生命周期限制在其所属的异步操作之内."""
 
 import asyncio
 import threading
@@ -21,11 +21,11 @@ class _OwnedWorkPolicy(Enum):
 def closeable_event_stream(
     events: AsyncIterator[_Event],
 ) -> AsyncGenerator[_Event, None]:
-    """Re-type a provider event stream that is an async generator at runtime.
+    """将运行时实际为异步生成器的供应商事件流重新声明类型.
 
-    Third-party event APIs (for example LangChain's ``astream_events``) declare
-    ``AsyncIterator`` although they return an async generator. Stream owners must
-    be able to ``aclose`` them so the generator is closed on disconnect.
+    第三方事件 API (例如 LangChain 的 ``astream_events``) 虽返回异步生成器,
+    但类型注解仅声明为 ``AsyncIterator``。流所有者必须能够
+    对其调用 ``aclose``, 以便在连接断开时及时关闭生成器。
     """
     return cast("AsyncGenerator[_Event, None]", events)
 
@@ -33,14 +33,14 @@ def closeable_event_stream(
 async def run_owned(
     function: Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs,
 ) -> _R:
-    """Drain started work and skip work still queued when cancelled."""
+    """排空已启动的任务, 并在取消时跳过仍在队列中等待的任务."""
     return await _run_owned(_OwnedWorkPolicy.SKIP_QUEUED, function, *args, **kwargs)
 
 
 async def run_owned_persistent(
     function: Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs,
 ) -> _R:
-    """Drain started work while persisting queued accounting or audit effects."""
+    """排空已启动的任务, 同时保留已入队的记账或审计副作用."""
     return await _run_owned(_OwnedWorkPolicy.PERSIST_QUEUED, function, *args, **kwargs)
 
 
@@ -62,8 +62,8 @@ async def _run_owned(
 
     pending: asyncio.Task[_R | None] = asyncio.create_task(asyncio.to_thread(work))
     try:
-        # The None branch is only reachable after cancellation, which is handled
-        # below, so a normal shield result is the callable's actual value.
+        # None 分支仅在取消后可达 (由下方逻辑处理),
+        # 因此正常的 shield 结果即为可调用对象的实际返回值。
         return cast("_R", await asyncio.shield(pending))
     except asyncio.CancelledError:
         with lock:

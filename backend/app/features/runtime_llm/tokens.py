@@ -1,7 +1,6 @@
-"""Model-only short lived credentials, persisted by hash and revoked with the runtime.
+"""仅用于模型的短期有效凭证, 按哈希持久化并随运行时一同撤销.
 
-These credentials authorize only the bounded model gateway; they never carry the
-provider key.
+这些凭证仅能对有界模型网关进行鉴权; 绝不携带供应商 API 密钥明文。
 """
 
 import datetime as dt
@@ -22,7 +21,7 @@ from app.models.opencode_runtime import OpenCodeRuntime
 
 
 class RuntimeLlmClaims(TypedDict):
-    """Validated claims carried by one runtime model credential."""
+    """单条运行时模型凭证所携带的经过验证的声明数据."""
 
     sub: object
     workspace_id: object
@@ -37,7 +36,7 @@ class RuntimeLlmClaims(TypedDict):
 
 
 def positive_setting(name: str, default: int) -> int:
-    """Read a strictly positive integer setting."""
+    """读取严格为正整数的配置项."""
     value = int(os.getenv(name, str(default)))
     if value <= 0:
         message = f"{name} must be positive"
@@ -46,7 +45,7 @@ def positive_setting(name: str, default: int) -> int:
 
 
 def issue_token(session: Session, runtime: OpenCodeRuntime) -> str:
-    """Issue the runtime model credential after MCP refresh revoked older ones."""
+    """在 MCP 刷新撤销旧凭据后签发全新的运行时模型凭证."""
     assert_can_write(session, int(runtime.workspace_id), int(runtime.user_id))
     if runtime.status != "running":
         message = "Runtime must be running"
@@ -87,7 +86,7 @@ def validate_token(
     *,
     touch: bool = True,
 ) -> RuntimeLlmClaims | None:
-    """Validate signature, revocation, membership, model binding and quota claims."""
+    """验证签名、撤销状态、成员资格、模型绑定与配额声明."""
     validated = validate_bound_token(
         session,
         raw,
@@ -106,7 +105,7 @@ def validate_token(
         return None
     if type(quota) is not int or quota <= 0:
         return None
-    # Keep every decoded JWT claim, including exp/iat/jti, unchanged. The
-    # bound-token validator has checked identity keys and the role above, and
-    # the checks here establish model and quota without copying the payload.
+    # 保持解码后的全部 JWT 声明 (包括 exp/iat/jti) 不变。
+    # 绑定令牌验证器已核验上述身份键与角色, 此处的
+    # 检查确立了模型与配额, 无须复制载荷。
     return cast("RuntimeLlmClaims", payload)

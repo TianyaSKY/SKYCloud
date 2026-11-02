@@ -1,4 +1,4 @@
-"""Owned Redis admission and token-checked release for expert runs."""
+"""专家运行的 Redis 准入控制与基于令牌的检查释放."""
 
 import asyncio
 import os
@@ -35,7 +35,7 @@ LostCallback = Callable[[], Awaitable[None]]
 
 @dataclass(slots=True)
 class _LeaseState:
-    """Mutable ownership marker shared with the renewal worker."""
+    """与续约协程共享的可变所有权标记."""
 
     key: str
     token: str
@@ -45,12 +45,12 @@ class _LeaseState:
 
 
 def _lease_key(runtime_id: int) -> str:
-    """Return the Redis key that arbitrates one expert runtime."""
+    """返回仲裁单个专家运行时的 Redis 键."""
     return f"assistant:expert:runtime:{runtime_id}"
 
 
 def _lease_ttl() -> int:
-    """Return the validated Redis lease lifetime in seconds."""
+    """返回校验后的 Redis 租约有效期 (秒)."""
     ttl = int(os.getenv("ASSISTANT_RUNTIME_LOCK_TTL", "3600"))
     if ttl <= 0:
         message = "Lease lifetime must be positive"
@@ -63,7 +63,7 @@ def _acquire(
     ttl_seconds: int,
     loop: asyncio.AbstractEventLoop,
 ) -> tuple[bool | None, float]:
-    """Attempt the non-blocking Redis SET that grants runtime ownership."""
+    """尝试执行非阻塞 Redis SET 授予运行时所有权."""
     state.attempted = True
     deadline = loop.time() + ttl_seconds
     result = extensions.redis_client.set(
@@ -80,7 +80,7 @@ def _renew(
     ttl_seconds: int,
     loop: asyncio.AbstractEventLoop,
 ) -> tuple[RedisValue, float]:
-    """Extend the token only while Redis still holds our ownership."""
+    """仅当 Redis 仍持有当前所有权时延长令牌有效期."""
     deadline = loop.time() + ttl_seconds
     result = extensions.redis_client.eval(
         RENEW, 1, state.key, state.token, ttl_seconds * 1000,
@@ -89,7 +89,7 @@ def _renew(
 
 
 def _lose_ownership(state: _LeaseState) -> None:
-    """Stop the owning task once the token can no longer be renewed."""
+    """一旦无法续约令牌, 立即停止所有者任务."""
     state.lost = True
     state.owner.cancel("expert-runtime-lease-lost")
 
@@ -100,7 +100,7 @@ def _confirm_ownership(
     deadline: float,
     loop: asyncio.AbstractEventLoop,
 ) -> None:
-    """Reject an acquisition that Redis did not confirm in time."""
+    """拒绝未能及时获得 Redis 确认的获取操作."""
     if result is False or result is None:
         busy = "Expert runtime is already busy"
         raise ConflictError(busy)
@@ -115,7 +115,7 @@ async def _keep_alive(
     deadline: float,
     loop: asyncio.AbstractEventLoop,
 ) -> None:
-    """Renew the Redis token until ownership is lost or the deadline expires."""
+    """持续续约 Redis 令牌, 直至失去所有权或超时."""
     pending: asyncio.Task[tuple[RedisValue, float]] | None = None
     try:
         while True:
@@ -130,8 +130,8 @@ async def _keep_alive(
             )
             ready, _ = await asyncio.wait({pending}, timeout=remaining)
             if not ready:
-                # Signal loss before draining a slow Redis operation. A
-                # delayed reply cannot keep the expert task executing.
+                # 在排干缓慢的 Redis 操作前标记丢失所有权.
+                # 延迟的回复不能让专家任务继续执行.
                 _lose_ownership(state)
                 return
             result, next_deadline = pending.result()
@@ -158,10 +158,10 @@ async def _keep_alive(
 
 
 def _release(state: _LeaseState) -> None:
-    """Delete the token only when Redis still records our ownership."""
+    """仅当 Redis 仍记录当前所有权时删除令牌."""
     try:
-        # Also clean up an ambiguous SET reply: it may have succeeded on
-        # Redis even if the client failed before receiving its response.
+        # 同样清理模糊的 SET 响应: 即使客户端在接收响应前失败,
+        # Redis 端也可能已设置成功.
         extensions.redis_client.eval(RELEASE, 1, state.key, state.token)
     except Exception as exc:
         logger.error(
@@ -174,7 +174,7 @@ async def _start_lease(
     state: _LeaseState,
     loop: asyncio.AbstractEventLoop,
 ) -> tuple[int, float]:
-    """Acquire the Redis token, mapping every failure to a safe error."""
+    """获取 Redis 令牌, 将所有失败映射为安全错误."""
     try:
         ttl = _lease_ttl()
         result, deadline = await run_owned(_acquire, state, ttl, loop)
@@ -195,7 +195,7 @@ async def _finish_lease(
     on_lost: LostCallback | None,
     local_lock: asyncio.Lock,
 ) -> None:
-    """Leave Redis, the renewal worker, and the local lock in their order."""
+    """按序清理 Redis、续约任务与本地锁."""
     try:
         if state.lost and on_lost is not None:
             try:
@@ -222,7 +222,7 @@ async def runtime_lease(
     on_lost: LostCallback | None = None,
     before_acquire: LeaseCallback | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Admit one expert run to a runtime until its block finishes."""
+    """准许单个专家运行占用运行时, 直至代码块结束."""
     local_lock = _LOCAL_RUNTIME_LOCKS.setdefault(runtime_id, asyncio.Lock())
     if local_lock.locked():
         busy = "Expert runtime is already busy"

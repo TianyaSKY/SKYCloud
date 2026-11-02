@@ -1,4 +1,4 @@
-"""Actual upload -> RabbitMQ -> locked SDK worker -> MinIO/PostgreSQL indexing."""
+"""实际上传到 RabbitMQ 再到锁定 SDK worker 的 MinIO/PostgreSQL 索引流水线测试."""
 import json
 import os
 from pathlib import Path
@@ -118,7 +118,7 @@ def test_actual_indexing_outcomes(upload_api, postgres, minio_storage, broker, p
     file_id = response.json()['data']["id"]
     from app.infra.task_queue import publish_messages, FILE_PROCESS_QUEUE
     if mode == "success":
-        # A second delivery of the same file must replace the existing chunks.
+        # 同一文件的第二次投递必须替换现有分块.
         publish_messages(FILE_PROCESS_QUEUE, [file_id])
     access, secret = minio_storage.integration_auth
     temporary = tmp_path / "worker-tmp"

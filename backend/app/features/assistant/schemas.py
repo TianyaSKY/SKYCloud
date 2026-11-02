@@ -1,4 +1,4 @@
-"""Pydantic contracts for the assistant API."""
+"""助手 API 的 Pydantic 契约."""
 
 from typing import Any, Literal, TypedDict
 
@@ -10,41 +10,41 @@ AssistantMode = Literal["fast", "expert"]
 
 
 class AssistantConversationCreate(BaseModel):
-    """New conversation request."""
+    """新建对话请求."""
 
     mode: AssistantMode = "fast"
     title: str | None = Field(default=None, max_length=255)
 
 
 class AssistantConversationUpdate(BaseModel):
-    """Partial conversation update request."""
+    """部分更新对话请求."""
 
     title: str | None = Field(default=None, min_length=1, max_length=255)
     status: Literal["active", "archived"] | None = None
 
 
 class AssistantMessageRequest(BaseModel):
-    """One chat message submitted for streaming."""
+    """提交用于流式传输的单条聊天消息."""
 
     query: str = Field(min_length=1, max_length=100_000)
 
 
 class AssistantPermissionResponse(BaseModel):
-    """One-shot permission response request."""
+    """一次性权限响应请求."""
 
     response: Literal["once", "reject"]
     remember: bool = False
 
 
 class AssistantHandoffRequest(BaseModel):
-    """Handoff from a fast conversation to an expert conversation."""
+    """从快速对话移交到专家对话."""
 
     target_mode: Literal["expert"] = "expert"
     message_id: int | None = None
 
 
 class AssistantConversationResponse(BaseModel):
-    """Public conversation representation."""
+    """公开对话表示."""
 
     id: int
     workspace_id: int
@@ -61,7 +61,7 @@ class AssistantConversationResponse(BaseModel):
 
 
 class AssistantMessageResponse(BaseModel):
-    """Public message representation."""
+    """公开消息表示."""
 
     id: int
     conversation_id: int
@@ -77,14 +77,14 @@ class AssistantMessageResponse(BaseModel):
 
 
 class AssistantMessagesResponse(BaseModel):
-    """Conversation plus its ordered messages."""
+    """对话及其有序消息列表."""
 
     conversation: AssistantConversationResponse
     messages: list[AssistantMessageResponse]
 
 
 class AssistantPermissionDetails(BaseModel):
-    """Bounded, user-visible permission prompt."""
+    """有界且对用户可见的权限提示."""
 
     permission_id: str = Field(min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=2000)
@@ -92,7 +92,7 @@ class AssistantPermissionDetails(BaseModel):
 
 
 class AssistantRunResponse(BaseModel):
-    """Public run representation."""
+    """公开运行表示."""
 
     id: int
     conversation_id: int
@@ -121,19 +121,19 @@ class AssistantRunResponse(BaseModel):
 
 
 class AssistantConversationListResponse(BaseModel):
-    """Conversation listing payload."""
+    """对话列表负载."""
 
     conversations: list[AssistantConversationResponse]
 
 
 class AssistantConversationListPayload(TypedDict):
-    """JSON payload for the conversation listing envelope."""
+    """对话列表封套的 JSON 负载."""
 
     conversations: list[AssistantConversationDict]
 
 
 class AssistantMessagesPayload(TypedDict):
-    """JSON payload for the conversation message listing envelope."""
+    """对话消息列表封套的 JSON 负载."""
 
     conversation: AssistantConversationDict
     messages: list[AssistantMessageDict]

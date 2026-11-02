@@ -1,4 +1,4 @@
-"""Application startup validates schema; migrations run in a separate process."""
+"""应用启动时校验架构; 数据库迁移在独立进程中运行."""
 
 from pathlib import Path
 
@@ -12,8 +12,9 @@ setup_logging()
 
 
 def initialize_application() -> None:
-    """Validate deployment and prepare the configured upload directory."""
+    """校验部署配置并准备上传目录."""
     check_deployment_secrets(engine.url)
     check_schema(engine)
     check_legacy_admin(engine)
     Path(UPLOAD_FOLDER).mkdir(parents=True, exist_ok=True)
+

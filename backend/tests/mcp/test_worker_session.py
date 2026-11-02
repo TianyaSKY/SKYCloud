@@ -1,4 +1,4 @@
-"""Cleanup faults must preserve business outcomes without logging SQL secrets."""
+"""清理故障必须保留业务结果且不记录 SQL 秘密信息."""
 from unittest.mock import MagicMock
 
 import pytest

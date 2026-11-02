@@ -23,9 +23,7 @@ from redis import Redis
 
 from app.infra.extensions import redis_client as _real_redis
 
-# ---------------------------------------------------------------------------
 # 环境变量开关：控制外部依赖测试是否执行
-# ---------------------------------------------------------------------------
 
 ENABLE_AI_API = os.environ.get("TEST_AI_API", "0") == "1"
 ENABLE_RABBITMQ = os.environ.get("TEST_RABBITMQ", "0") == "1"
@@ -45,11 +43,9 @@ skip_unless_symlink = pytest.mark.skipif(
     reason="设置 TEST_SYMLINK=1 启用（需要符号链接权限）",
 )
 
-# ---------------------------------------------------------------------------
 # 恢复 langchain_core.documents 为真实实现（父 conftest 将其 Mock 了）
 # chat/service.py 和 chat/rerank.py 使用 Document 作为纯数据容器，
 # 此处提供等价实现，无需安装完整 langchain 包。
-# ---------------------------------------------------------------------------
 
 
 class _RealDocument:
@@ -74,9 +70,7 @@ _real_docs_module.Document = _RealDocument  # type: ignore[attr-defined]
 sys.modules["langchain_core.documents"] = _real_docs_module
 
 
-# ---------------------------------------------------------------------------
 # 覆盖父级 conftest 的 autouse Mock fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -113,11 +107,9 @@ def mock_task_queue():
     yield {}
 
 
-# ---------------------------------------------------------------------------
 # 复用父级 conftest 的数据库 fixtures（通过 pytest 继承自动可用）
-# session, test_user, admin_user, test_workspace, test_folder
+# 会话及测试固定装置: test_user, admin_user, test_workspace, test_folder
 # 这些 fixture 使用真实 SQLite 数据库会话，无需 Mock。
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()

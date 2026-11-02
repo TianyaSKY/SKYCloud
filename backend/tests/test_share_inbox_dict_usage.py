@@ -19,9 +19,7 @@ from app.models.token_usage_log import TokenUsageLog
 from app.models.workspace import Workspace
 
 
-# ---------------------------------------------------------------------------
-# Share service
-# ---------------------------------------------------------------------------
+# 分享服务
 
 
 class TestShareService:
@@ -120,9 +118,7 @@ class TestShareService:
             cancel_share_for_user(session, 99999, test_user.id)
 
 
-# ---------------------------------------------------------------------------
-# Inbox service
-# ---------------------------------------------------------------------------
+# 收件箱服务
 
 
 class TestInboxService:
@@ -220,9 +216,7 @@ class TestInboxService:
             assert item.is_read is True
 
 
-# ---------------------------------------------------------------------------
-# SysDict service
-# ---------------------------------------------------------------------------
+# 系统字典服务
 
 
 class TestSysDictService:
@@ -292,9 +286,7 @@ class TestSysDictService:
         assert result["value"] == "sv"
 
 
-# ---------------------------------------------------------------------------
-# Token usage service
-# ---------------------------------------------------------------------------
+# Token 用量服务
 
 
 class TestTokenUsageService:

@@ -1,4 +1,4 @@
-"""Gateway credential SQL is owned by the endpoint's worker."""
+"""网关凭据 SQL 由端点的 worker 所有测试."""
 import asyncio
 import threading
 import time

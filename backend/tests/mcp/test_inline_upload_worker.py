@@ -1,4 +1,4 @@
-"""Inline adaptation runs off-loop before a separate worker-owned SQL unit."""
+"""内联适配在事件循环外运行, 先于独立 worker 持有 SQL 单元."""
 import asyncio
 import json
 import threading

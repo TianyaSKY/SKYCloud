@@ -1,4 +1,4 @@
-"""Runtime replacement identities survive deletion of their owning rows."""
+"""在所属主体记录删除后依然保留的运行时重建标识模型."""
 
 from datetime import datetime
 
@@ -11,7 +11,7 @@ from app.infra.utc_datetime import UTCDateTime
 
 
 class RuntimeOperation(Base):
-    """Runtime replacement identity fenced by a generation token."""
+    """受世代令牌栅栏保护的运行时重建操作标识."""
 
     __tablename__ = "runtime_operations"
 

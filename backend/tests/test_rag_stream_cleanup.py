@@ -1,4 +1,4 @@
-"""Streaming cancellation must close nested generators before returning."""
+"""流式取消在返回前必须关闭嵌套生成器测试."""
 import asyncio
 import os
 from pathlib import Path
@@ -148,7 +148,7 @@ async def test_fast_engine_closes_structured_stream_before_returning(monkeypatch
             await asyncio.sleep(0)
             closed.set()
 
-    # Retain the nested iterator so GC/finalization cannot satisfy the assertion.
+    # 保留嵌套迭代器, 避免垃圾回收/终结化偶然满足断言.
     inner = source()
     monkeypatch.setattr(
         "app.features.assistant.engines.fast_engine.generate_chat_events",

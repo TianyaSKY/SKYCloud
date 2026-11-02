@@ -19,9 +19,7 @@ from app.features.workspace.permissions import (
 )
 
 
-# ---------------------------------------------------------------------------
 # permissions
-# ---------------------------------------------------------------------------
 
 
 class TestWorkspaceRole:
@@ -128,9 +126,7 @@ class TestAssertAdmin:
             assert_admin(session, test_workspace.id, test_user.id)
 
 
-# ---------------------------------------------------------------------------
-# workspace service
-# ---------------------------------------------------------------------------
+# 工作区服务
 
 
 class TestCreateWorkspace:

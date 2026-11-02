@@ -14,9 +14,7 @@ from app.models.mcp_token import McpToken
 from app.models.token_usage_log import TokenUsageLog
 
 
-# ---------------------------------------------------------------------------
 # User 模型
-# ---------------------------------------------------------------------------
 
 
 class TestUserModel:
@@ -85,9 +83,7 @@ class TestUserModel:
         assert "repr_test" in repr(user)
 
 
-# ---------------------------------------------------------------------------
 # File 模型
-# ---------------------------------------------------------------------------
 
 
 class TestFileModel:
@@ -142,9 +138,7 @@ class TestFileModel:
         assert "file.txt" in path
 
 
-# ---------------------------------------------------------------------------
 # Folder 模型
-# ---------------------------------------------------------------------------
 
 
 class TestFolderModel:
@@ -182,9 +176,7 @@ class TestFolderModel:
         assert folder.name == "缓存目录"
 
 
-# ---------------------------------------------------------------------------
 # Workspace / WorkspaceMember 模型
-# ---------------------------------------------------------------------------
 
 
 class TestWorkspaceModel:
@@ -223,9 +215,7 @@ class TestWorkspaceModel:
         assert "repr_ws" in repr(ws)
 
 
-# ---------------------------------------------------------------------------
 # Share 模型
-# ---------------------------------------------------------------------------
 
 
 class TestShareModel:
@@ -258,9 +248,7 @@ class TestShareModel:
         assert share.expires_at is None
 
 
-# ---------------------------------------------------------------------------
 # Inbox 模型
-# ---------------------------------------------------------------------------
 
 
 class TestInboxModel:
@@ -295,9 +283,7 @@ class TestInboxModel:
         assert msg.is_read is True
 
 
-# ---------------------------------------------------------------------------
 # SysDict 模型
-# ---------------------------------------------------------------------------
 
 
 class TestSysDictModel:
@@ -318,9 +304,7 @@ class TestSysDictModel:
         assert sd.created_at is None
 
 
-# ---------------------------------------------------------------------------
 # McpToken 模型
-# ---------------------------------------------------------------------------
 
 
 class TestMcpTokenModel:
@@ -376,9 +360,7 @@ class TestMcpTokenModel:
         assert "token_value" not in McpToken.__table__.columns
 
 
-# ---------------------------------------------------------------------------
 # TokenUsageLog 模型
-# ---------------------------------------------------------------------------
 
 
 class TestTokenUsageLogModel:

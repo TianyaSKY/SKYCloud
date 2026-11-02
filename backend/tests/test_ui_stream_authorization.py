@@ -1,4 +1,4 @@
-"""UI chunks are authorized after reads; reader cleanup survives repeated cancel."""
+"""UI 分块在读取后鉴权; 读取器清理在多次取消中幸存测试."""
 import asyncio
 import threading
 import time

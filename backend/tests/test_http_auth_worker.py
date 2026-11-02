@@ -1,4 +1,4 @@
-"""HTTP authentication resolves SQL and cached profile on its owning worker."""
+"""HTTP 认证在其所属 worker 上解析 SQL 与缓存用户资料测试."""
 import asyncio
 import threading
 import jwt

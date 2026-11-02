@@ -1,7 +1,7 @@
-"""File listing, metadata, deletion and indexing use cases.
+"""文件浏览、元数据管理、删除与索引相关业务用例.
 
-Uploads and multipart sessions live in their feature use cases; this module
-retains operations that act on already-published files.
+普通上传与分片会话由各自独立用例实现; 本模块
+聚焦于针对已发布文件的操作处理。
 """
 
 from collections.abc import Sequence
@@ -47,7 +47,7 @@ ROOT_FILE_CACHE_PREFIX = "workspace:root:file:v2"
 
 
 class FileUpdateData(TypedDict, total=False):
-    """Partial file metadata update as present in the request."""
+    """请求中实际提供的文件元数据局部更新字典."""
 
     name: str
     status: str
@@ -55,7 +55,7 @@ class FileUpdateData(TypedDict, total=False):
 
 
 class BatchDeleteItemData(TypedDict, total=False):
-    """One batch delete entry: the entity id and whether it is a folder."""
+    """批量删除条目: 包含实体 ID 与是否为文件夹标识."""
 
     id: int
     is_folder: bool
@@ -63,7 +63,7 @@ class BatchDeleteItemData(TypedDict, total=False):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetFilesAndFoldersParams:
-    """Directory listing filters, ordering and paging."""
+    """目录浏览过滤参数、排序规则与分页规格."""
 
     workspace_id: int
     parent_id: int | None
@@ -76,7 +76,7 @@ class GetFilesAndFoldersParams:
 
 
 def get_file(session: Session, file_id: int) -> File:
-    """Return one file row or raise when it does not exist."""
+    """查询单条文件记录, 若记录不存在则抛出异常."""
     file_obj = repository.find_file(session, file_id)
     if not file_obj:
         message = "File not found"
@@ -87,10 +87,10 @@ def get_file(session: Session, file_id: int) -> File:
 def get_authorized_file(
     session: Session, workspace_id: int, user_id: int, file_id: int,
 ) -> File:
-    """Check workspace membership and that the file belongs to the workspace.
+    """校验用户的工作空间成员资格以及文件归属该工作空间.
 
-    ``user_id`` is intentionally used for membership, never as a workspace ID
-    and never as an uploader-ownership check.
+    ``user_id`` 仅用于成员资格校验, 绝不可作为工作空间 ID,
+    也不作为上传者所有权检查。
     """
     assert_member(session, workspace_id, user_id)
     file_obj = get_file(session, file_id)
@@ -103,7 +103,7 @@ def get_authorized_file(
 def get_downloadable_file(
     session: Session, workspace_id: int, user_id: int, file_id: int,
 ) -> File:
-    """Return an authorized file whose object still exists in storage."""
+    """返回已通过鉴权且底层存储对象确实存在的文件实体."""
     file_obj = get_authorized_file(session, workspace_id, user_id, file_id)
     storage = get_storage_client()
     if not storage.file_exists(file_obj.file_path):
@@ -115,7 +115,7 @@ def get_downloadable_file(
 def get_files_and_folders(
     session: Session, params: GetFilesAndFoldersParams,
 ) -> dict[str, object]:
-    """Return one directory page with its folders and file page."""
+    """返回包含子文件夹与单页文件列表的目录分页数据."""
     page = max(params.page, 1)
     rows = repository.list_directory(
         session,
@@ -147,7 +147,7 @@ def get_files_and_folders(
 
 
 def update_file(session: Session, file_id: int, data: FileUpdateData) -> File:
-    """Apply the partial metadata update and record the file change event."""
+    """应用元数据局部更新并记录对应的文件变更事件流水."""
     file_obj = repository.find_file(session, file_id)
     if not file_obj:
         message = "File not found"
@@ -198,13 +198,13 @@ def update_file(session: Session, file_id: int, data: FileUpdateData) -> File:
 
 
 def _root_file_cache_key(session: Session, workspace_id: int) -> str:
-    """Return the root-file cache key for the current workspace tree revision."""
+    """基于当前工作空间目录树版本计算根目录文件缓存键."""
     revision = sql_cache_revision(session, f"workspace:tree:{workspace_id}")
     return f"{workspace_id}:sql:{revision}"
 
 
 def _root_file_cache_allowed(session: Session, workspace_id: int) -> bool:
-    """Use the shared SQL cache gate with the cached root-file signature."""
+    """基于缓存的根目录文件签名使用共享 SQL 缓存网关."""
     return sql_cache_allowed(session, workspace_id)
 
 
@@ -214,7 +214,7 @@ def _root_file_cache_allowed(session: Session, workspace_id: int) -> bool:
     key=_root_file_cache_key,
 )
 def get_root_file_id(session: Session, workspace_id: int) -> int | None:
-    """Return the id of the first root-level file of the workspace."""
+    """返回工作空间根目录下的首个文件 ID."""
     root_file = repository.find_root_file(session, workspace_id)
     return root_file.id if root_file else None
 
@@ -225,7 +225,7 @@ def batch_delete_items(
     user_id: int,
     items: Sequence[BatchDeleteItemData],
 ) -> None:
-    """Delete every listed file or folder after a write-access check."""
+    """在完成写权限检查后批量删除列表中声明的所有文件或目录."""
     for item in items:
         assert_can_write_locked(session, workspace_id, user_id)
         if "id" not in item:
@@ -243,7 +243,7 @@ def batch_delete_items(
 
 
 def retry_embedding(session: Session, file_id: int) -> None:
-    """Re-queue one failed file for indexing."""
+    """将单个索引失败的文件重新推入索引任务队列."""
     file_obj = repository.find_file(session, file_id)
     if not file_obj:
         return
@@ -253,7 +253,7 @@ def retry_embedding(session: Session, file_id: int) -> None:
 
 
 def rebuild_failed_indexes(session: Session, workspace_id: int | None = None) -> int:
-    """Re-queue every failed file of the workspace and commit once."""
+    """将工作空间内全部索引失败的文件重新推入队列并在最后统一提交."""
     try:
         file_ids = repository.failed_file_ids(session, workspace_id)
         if not file_ids:
@@ -276,7 +276,7 @@ def rebuild_failed_indexes(session: Session, workspace_id: int | None = None) ->
 
 
 def get_all_files(session: Session, workspace_id: int) -> list[File]:
-    """Return every file row of the workspace."""
+    """返回工作空间下的全部文件记录行."""
     return repository.list_workspace_files(session, workspace_id)
 
 
@@ -287,7 +287,7 @@ async def process_status(
     session_factory: SessionFactory | None = None,
     user_id: int | None = None,
 ) -> dict[str, int]:
-    """Aggregate indexing status on the thread that owns the SQL Session."""
+    """在持有 SQL Session 的线程上聚合文件索引状态统计."""
 
     def work() -> dict[str, int]:
         if session_factory is not None:
@@ -304,7 +304,7 @@ async def process_status(
 
 
 def _process_status(session: Session, workspace_id: int) -> dict[str, int]:
-    """Group the workspace files by status instead of loading every row."""
+    """按状态对工作空间文件进行分组聚合统计, 无需加载完整实体行."""
     cnt = repository.status_counts(session, workspace_id)
     return {
         "处理中": cnt.get("pending", 0) + cnt.get("processing", 0),
@@ -316,7 +316,7 @@ def _process_status(session: Session, workspace_id: int) -> dict[str, int]:
 def cleanup_expired_uploads(
     max_age_hours: int = 24, *, session: Session | None = None,
 ) -> int:
-    """Remove expired staging/multipart directories and close stale sessions."""
+    """清理过期的暂存/分片上传目录并关闭僵尸会话记录."""
     upload_config = upload_settings()
     multipart_config = multipart_settings()
     count = cleanup_staging(upload_config.upload_root, upload_quota.TTL_SECONDS)

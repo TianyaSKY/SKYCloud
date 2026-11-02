@@ -1,4 +1,4 @@
-"""Upstream leases close even when ASGI never enters the response body."""
+"""即使 ASGI 从未进入响应体, 上游租约也会关闭测试."""
 import asyncio
 
 import pytest

@@ -81,7 +81,7 @@ def test_oversized_part_preserves_existing_part_and_cleans_temp(session, test_wo
     from app.features.file.multipart_service import SaveMultipartChunkParams, get_multipart_service
     monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
     service = get_multipart_service()
-    # Use the service's path contract rather than assume directory naming.
+    # 使用服务的路径契约, 而非假设目录命名.
     result = service.init_multipart_upload(session, test_workspace.id, test_user.id,
         {'filename': 'x', 'total_size': 5, 'chunk_size': 5, 'upload_id': 'abcdefgh'})
     chunks = Path(multipart_storage.chunks_directory(service.directory(test_workspace.id, result['upload_id'])))

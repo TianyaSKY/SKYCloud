@@ -1,4 +1,4 @@
-"""Assistant HTTP contracts using actual SQL, with explicit stream engine seam."""
+"""使用真实 SQL 与显式流式引擎接缝的助手 HTTP 契约测试."""
 from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI

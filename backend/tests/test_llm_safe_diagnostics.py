@@ -1,4 +1,4 @@
-"""Failure logs must not serialize provider responses, exception text or SQL binds."""
+"""故障日志不得序列化提供商响应、异常文本或 SQL 绑定值测试."""
 from unittest.mock import Mock, MagicMock
 import httpx
 import pytest

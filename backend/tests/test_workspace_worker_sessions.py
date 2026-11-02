@@ -1,4 +1,4 @@
-"""All workspace route workers own their business SQL session."""
+"""所有工作区路由 worker 持有其业务 SQL 会话测试."""
 import asyncio
 import threading
 from types import SimpleNamespace

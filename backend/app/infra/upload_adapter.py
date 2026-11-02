@@ -1,7 +1,7 @@
-"""Upload adapters that expose the legacy ``save(path)`` contract to services.
+"""上传适配器: 向服务层暴露遗留的 ``save(path)`` 契约.
 
-Historical services were written for Werkzeug ``FileStorage`` style objects; the
-adapters let FastAPI ``UploadFile`` and Base64 payloads keep that signature.
+历史服务最初针对 Werkzeug 的 ``FileStorage`` 风格对象编写;
+适配器使 FastAPI 的 ``UploadFile`` 和 Base64 载荷保持相同的调用签名。
 """
 
 import base64
@@ -22,24 +22,24 @@ from app.infra.upload_limits import FILE_LIMIT, copy_bounded
 
 
 class LegacyDiskUpload(Protocol):
-    """Legacy upload object that persists itself to a destination path."""
+    """将自身持久化保存至目标路径的遗留上传对象协议."""
 
     def save(self, destination: str) -> None:
-        """Write the upload to ``destination``."""
+        """将上传内容写入 ``destination``."""
 
 
 class FastAPIUploadAdapter:
-    """Wrap an ``UploadFile`` as ``filename`` / ``mimetype`` / ``save``."""
+    """将 ``UploadFile`` 包装为具备 filename/mimetype/save 属性的对象."""
 
     def __init__(self, upload_file: UploadFile) -> None:
-        """Expose the bounded FastAPI upload under the legacy contract."""
+        """在遗留契约下暴露有界的 FastAPI 上传文件."""
         self.upload_file = upload_file
         self.filename = upload_file.filename or ""
         self.mimetype = upload_file.content_type
 
     def save(self, destination: str, max_bytes: int = FILE_LIMIT) -> None:
-        """Copy at most ``max_bytes`` from the request into ``destination``."""
-        # The same request may save more than once, so rewind to the start.
+        """从请求中最多复制 ``max_bytes`` 字节到 ``destination``."""
+        # 同一请求可能保存多次, 因此重置指针到开头。
         self.upload_file.file.seek(0)
         try:
             with Path(destination).open("wb") as target:
@@ -50,15 +50,15 @@ class FastAPIUploadAdapter:
 
 
 class Base64UploadAdapter:
-    """Parse a data URI or bare Base64 payload and add a file extension."""
+    """解析 data URI 或纯 Base64 载荷并补全文件扩展名."""
 
     def __init__(self, base64_str: str, filename: str | None = None) -> None:
-        """Decode the payload header and derive a safe file name."""
+        """解码载荷头部并推导安全的文件名."""
         self._base64_str = base64_str
         self.mimetype = "application/octet-stream"
         self._data: str
 
-        # Support the data:image/png;base64,xxxx form.
+        # 支持 data:image/png;base64,xxxx 格式。
         if "," in base64_str:
             header, data = base64_str.split(",", 1)
             self._data = data
@@ -68,7 +68,7 @@ class Base64UploadAdapter:
         else:
             self._data = base64_str
 
-        # Without a filename, guess the extension from the MIME type.
+        # 未提供文件名时, 根据 MIME 类型推断扩展名。
         if not filename:
             ext = mimetypes.guess_extension(self.mimetype)
             if not ext:
@@ -88,8 +88,8 @@ class Base64UploadAdapter:
             self.filename = filename
 
     def decoded_bytes(self, max_bytes: int) -> bytes:
-        """Decode the payload, rejecting oversized or invalid input."""
-        # Reject oversized encoded input before allocating decoded bytes.
+        """解码载荷, 拒绝超大或非法的输入内容."""
+        # 在分配解码内存之前拒绝过大的编码输入。
         if len(self._data) > 4 * ((max_bytes + 2) // 3):
             message = "File too large"
             raise PayloadTooLargeError(message)
@@ -104,14 +104,14 @@ class Base64UploadAdapter:
         return file_data
 
     def save(self, destination: str, max_bytes: int = FILE_LIMIT) -> None:
-        """Decode and write at most ``max_bytes`` into ``destination``."""
+        """解码并最多写入 ``max_bytes`` 字节到 ``destination``."""
         file_data = self.decoded_bytes(max_bytes)
         with Path(destination).open("wb") as handle:
             handle.write(file_data)
 
     @property
     def content_type(self) -> str:
-        """Return the detected MIME type."""
+        """返回检测到的 MIME 类型."""
         return self.mimetype
 
 
@@ -121,7 +121,7 @@ UploadInput: TypeAlias = (
 
 
 def save_bounded(upload: UploadInput, destination: str, max_bytes: int) -> None:
-    """Persist a bounded upload; trusted legacy objects save the whole file."""
+    """持久化有界上传; 受信任的遗留对象保存整个文件."""
     if isinstance(upload, (FastAPIUploadAdapter, Base64UploadAdapter)):
         upload.save(destination, max_bytes=max_bytes)
     elif isinstance(upload, FileStorage):
@@ -133,7 +133,7 @@ def save_bounded(upload: UploadInput, destination: str, max_bytes: int) -> None:
             remove_partial_safely(destination)
             raise
     else:
-        # Legacy synchronous callers provide their own disk-backed upload.
+        # 遗留同步调用方提供自己的磁盘支持上传对象。
         upload.save(destination)
         if Path(destination).stat().st_size > max_bytes:
             remove_partial_safely(destination)
@@ -144,7 +144,7 @@ def save_bounded(upload: UploadInput, destination: str, max_bytes: int) -> None:
 def copy_upload_bounded(
     upload: UploadInput, target: BinaryIO, max_bytes: int,
 ) -> None:
-    """Copy into an owned handle; legacy path adapters use a private stage."""
+    """复制内容到自有句柄; 遗留路径适配器使用私有暂存目录."""
     if isinstance(upload, FastAPIUploadAdapter):
         upload.upload_file.file.seek(0)
         copy_bounded(upload.upload_file.file, target, max_bytes)

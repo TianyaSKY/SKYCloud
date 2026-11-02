@@ -1,4 +1,4 @@
-"""Resolve HTTP credentials using one worker-owned SQL unit and detached user data."""
+"""使用工作线程持有的 SQL 单元与游离用户数据解析 HTTP 凭证."""
 
 from collections.abc import Mapping
 from typing import cast
@@ -21,7 +21,7 @@ def resolve_http_user(
     payload: Mapping[str, object],
     token: str,
 ) -> User:
-    """Resolve a token into a detached user inside the caller's worker thread."""
+    """在调用方的工作线程中将令牌解析为游离的 User 对象."""
     with session_factory() as session:
         if payload.get("type") == "mcp":
             if not token_service.get_active_mcp_token(session, token):
@@ -33,9 +33,9 @@ def resolve_http_user(
         data = user_service.get_user_data(session, user_id)
         if role is None or not data:
             raise HTTPException(status_code=401, detail=_USER_MISSING)
-        # Do not mutate cached profile data. Authorization role comes from SQL.
+        # 不修改缓存的用户档案数据。鉴权角色始终来自 SQL 查询。
         user = User.from_cache(cast("UserDict", {**data, "role": role}))
-        # Only the request-local detached object carries the raw credential.
-        # It is never put in cached profile data or User.to_dict().
+        # 仅请求局部的游离对象持有原始凭据。
+        # 绝不放入缓存的用户档案数据或 User.to_dict() 中。
         user.http_stream_credential = StreamCredential(token, user_id)
         return user

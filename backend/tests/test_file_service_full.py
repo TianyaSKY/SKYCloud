@@ -135,8 +135,8 @@ class TestFileServiceClone:
         mock_object_storage.objects[source.file_path] = b"0123456789"
 
         def failing_publication(session, spec):
-            # A real flush failure rolls the transaction back and expires the
-            # attached reservation; the handler must not read it afterwards.
+            # 真实的 flush 失败会回滚事务并使附加的预留失效;
+            # 处理器在此之后绝不得读取该预留.
             session.add(File(
                 name=None, file_path="invalid", file_size=1,
                 workspace_id=spec.workspace_id, uploader_id=spec.uploader_id,

@@ -1,4 +1,4 @@
-"""Dedicated UI ingress: only opaque runtime sessions, never web Bearer tokens."""
+"""专用 UI 入口网关: 仅接受非透明运行时会话, 绝不接受 Web Bearer Token."""
 
 import asyncio
 import json
@@ -68,22 +68,22 @@ socket_slots = SocketSlots()
 
 
 class RequestSurface(Protocol):
-    """The request surface shared by HTTP and WebSocket scopes."""
+    """HTTP 与 WebSocket 作用域共享的基础请求接口定义."""
 
     @property
     def headers(self) -> Mapping[str, str]:
-        """Return the request headers."""
+        """返回请求头字典."""
         ...
 
     @property
     def cookies(self) -> Mapping[str, str]:
-        """Return the parsed request cookies."""
+        """返回已解析的请求 Cookie 字典."""
         ...
 
 
 @dataclass(frozen=True, slots=True)
 class RelayTarget:
-    """Immutable upstream target of one UI relay request."""
+    """单次 UI 中继请求的不可变上游转发目标."""
 
     url: str
     headers: dict[str, str]
@@ -113,7 +113,7 @@ def authenticate_owned(
     raw: str,
     host: str,
 ) -> JsonObject:
-    """Authenticate one UI session inside its owning worker thread."""
+    """在其所属 Worker 线程内鉴权单个 UI 会话."""
     with session_factory() as session:
         return ui_tickets.authenticate(session, raw, host)
 
@@ -123,7 +123,7 @@ def redeem_owned(
     raw: str,
     host: str,
 ) -> tuple[str, JsonObject]:
-    """Redeem one UI ticket inside its owning worker thread."""
+    """在其所属 Worker 线程内兑换单次 UI 票据."""
     with session_factory() as session:
         return ui_tickets.redeem(session, raw, host)
 
@@ -133,9 +133,9 @@ def reauthenticate(
     host: str,
     session_factory: SessionFactory | None = None,
 ) -> JsonObject:
-    """Check a live credential on a fresh Session owned by this call."""
-    # Streaming responses outlive yield dependencies on supported FastAPI
-    # versions; each periodic check owns and closes its independent Session.
+    """在当前调用拥有的全新 Session 上校验活跃凭据."""
+    # 流式响应的生命周期长于支持的 FastAPI 版本中的 yield 依赖;
+    # 每次周期性检查均持有并关闭其独立的 Session。
     factory = SessionLocal if session_factory is None else session_factory
     return authenticate_owned(factory, raw, host)
 
@@ -163,7 +163,7 @@ async def launch(
     ticket: str,
     session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> RedirectResponse:
-    """Redeem a launch ticket and set its host-bound session cookie."""
+    """兑换启动票据并设置绑定主机的会话 Cookie."""
     raw, payload = await run_owned(
         redeem_owned,
         session_factory,
@@ -194,7 +194,7 @@ async def renew(
     ticket: str,
     session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> HTMLResponse:
-    """Redeem a renewal ticket and acknowledge it to the parent frame."""
+    """兑换续期票据并向父级 frame 发送确认消息."""
     raw, payload = await run_owned(
         redeem_owned,
         session_factory,
@@ -204,8 +204,8 @@ async def renew(
     origin = ui_tickets.credential_origin(payload)
     nonce = secrets.token_urlsafe(32)
     parent = _app_origin()
-    # The acknowledgement contains only the already consumed ticket, never
-    # the newly issued HttpOnly session. It identifies the exact pending frame.
+    # 确认响应中仅包含已被消费的凭据, 绝不包含新签发的
+    # HttpOnly 会话。它仅用于准确定位待处理的 iframe 挂载。
     message = json.dumps(
         {"type": "skycloud-runtime-ui-renewed", "ticket": ticket},
     ).replace("<", "\\u003c")
@@ -240,12 +240,12 @@ def _verify_request(
     request: Request,
     credential: ui_tickets.CredentialFields,
 ) -> None:
-    """Enforce cookie scope, same-origin mutation and safe path shape."""
+    """强制 Cookie 作用域、同源变更保护与安全路径形状检查."""
     if request.cookies.get(ui_tickets.cookie_name(credential.origin)) != _credential(
         request,
     ):
         raise HTTPException(status_code=401, detail=COOKIE_SCOPE_MISMATCH)
-    # Same-site sibling runtimes must not be able to mutate another runtime.
+    # 同站点的兄弟运行时绝不能修改其他运行时的状态。
     origin = request.headers.get("origin")
     if origin and origin != credential.origin:
         raise HTTPException(status_code=403, detail=ORIGIN_MISMATCH)
@@ -392,8 +392,8 @@ async def _stream_output(
                     min(HTTP_RECHECK_SECONDS, deadline - time.monotonic()),
                 ),
             )
-            # Recheck after the read, before any newly arrived bytes leave
-            # this gateway; quiet upstreams also get periodic checks.
+            # 在读取后且新到达的字节离开网关前重新检查;
+            # 处于静默状态的上游也会收到定期的安全检查。
             _require_connected(disconnected=await request.is_disconnected())
             await _verify_credential(
                 target.raw_credential,
@@ -475,7 +475,7 @@ async def relay(
     request: Request,
     session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> UpstreamResponse:
-    """Relay one authenticated same-origin request to its runtime."""
+    """将已通过鉴权的同源请求中继转发至其所属 Runtime."""
     payload = await run_owned(
         authenticate_owned,
         session_factory,
@@ -494,7 +494,7 @@ def _terminal_allowed(
     websocket: WebSocket,
     credential: ui_tickets.CredentialFields,
 ) -> bool:
-    """Whether this socket path, query and cookie set may be bridged."""
+    """该 WebSocket 路径、查询参数与 Cookie 集合是否允许桥接."""
     return (
         websocket.cookies.get(ui_tickets.cookie_name(credential.origin))
         == _credential(websocket)
@@ -543,7 +543,7 @@ async def terminal(
     websocket: WebSocket,
     session_factory: Annotated[SessionFactory, Depends(get_session_factory)],
 ) -> None:
-    """Bridge one validated UI WebSocket to its runtime terminal."""
+    """将已校验合法的 UI WebSocket 桥接至其 Runtime 终端."""
     acquired = False
     owner: int | None = None
     try:
@@ -569,7 +569,7 @@ async def terminal(
         with suppress(RuntimeError):
             await websocket.close(code=1008)
     except Exception:
-        # Transport failures must still close the socket without leaking text.
+        # 传输失败必须安全关闭 WebSocket 连接且不泄露具体文本。
         with suppress(RuntimeError):
             await websocket.close(code=1011)
     finally:

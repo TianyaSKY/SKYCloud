@@ -163,7 +163,7 @@ class TestChatServiceMultiQuery:
 
 class TestChatServiceFormat:
     def _make_doc(self, content, metadata):
-        """Build a real SDK document for formatting and fusion."""
+        """构建用于格式化和融合的真实 SDK 文档."""
         return Document(page_content=content, metadata=metadata)
 
     def test_format_docs(self):

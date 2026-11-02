@@ -1,4 +1,4 @@
-"""Request authentication: resolve SQL scope on a worker, then install context."""
+"""请求身份鉴权: 在 worker 线程解析 SQL 作用域并注入请求上下文."""
 
 from collections.abc import Iterable, Mapping
 from typing import cast
@@ -31,7 +31,7 @@ _ASGI_HTTP_SCOPES = frozenset({"http", "websocket"})
 
 
 def _request_headers(scope: Scope) -> dict[bytes, bytes]:
-    """Lower-case the ASGI header names for case-insensitive lookup."""
+    """将 ASGI 请求头转为小写以实现大小写无关的检索."""
     raw_headers = cast("Iterable[tuple[bytes, bytes]]", scope.get("headers", []))
     return {key.lower(): value for key, value in raw_headers}
 
@@ -44,7 +44,7 @@ def _header_text(headers: Mapping[bytes, bytes], name: bytes) -> str | None:
 
 
 def _int_or_none(value: object) -> int | None:
-    """Parse a numeric claim/header value, rejecting anything else."""
+    """解析数值型声明或请求头, 拒绝任何其他非法格式."""
     if not isinstance(value, (int, float, str)):
         return None
     try:
@@ -54,7 +54,7 @@ def _int_or_none(value: object) -> int | None:
 
 
 def _workspace_matches(workspace_header: str | None, workspace_id: int) -> bool:
-    """Check the optional header against the workspace carried by the token."""
+    """根据令牌携带的工作区校验可选的工作区请求头."""
     if workspace_header is None:
         return True
     parsed = _int_or_none(workspace_header)
@@ -62,16 +62,14 @@ def _workspace_matches(workspace_header: str | None, workspace_id: int) -> bool:
 
 
 class JWTAuthMiddleware:
-    """Resolve a verified user + workspace context for every MCP request.
+    """为每个 MCP 请求解析经过校验的用户与工作区上下文.
 
-    A normal session/MCP token selects a workspace through
-    ``X-SKYCloud-Workspace-Id`` and membership lookup. A runtime token carries
-    its workspace in signed claims, but the runtime and current membership are
-    still checked in the database.
+    常规 session/MCP 令牌通过 ``X-SKYCloud-Workspace-Id`` 和成员查询选择工作区。
+    运行时令牌在其签名声明中携带工作区, 但仍会在数据库中检查运行时与当前成员资格。
     """
 
     def __init__(self, app: ASGIApp) -> None:
-        """Wrap the downstream ASGI application."""
+        """包装下游 ASGI 应用程序."""
         self.app = app
 
     @staticmethod
@@ -158,13 +156,13 @@ class JWTAuthMiddleware:
             )
             if resolved:
                 return resolved, resolved.user_id
-            # Diagnostic identity never authorizes a real tool when
-            # no verified workspace context could be resolved.
+            # 当无法解析出已验证的工作区上下文时,
+            # 诊断身份绝不能为真实工具调用进行授权。
             result = decode_token(session, token)
             return None, int(result) if result and str(result).isdigit() else None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Authenticate one ASGI request, then install and reset its context."""
+        """对单个 ASGI 请求进行鉴权, 注入并随后重置其上下文."""
         if scope["type"] not in _ASGI_HTTP_SCOPES:
             await self.app(scope, receive, send)
             return

@@ -1,4 +1,4 @@
-"""Exercise security boundaries through actual HTTP dependency resolution."""
+"""通过实际 HTTP 依赖项解析执行安全边界测试."""
 
 from unittest.mock import MagicMock, patch
 

@@ -1,4 +1,4 @@
-"""Serialize stream persistence in one worker; ORM values stay on that worker."""
+"""在单个 worker 中序列化流持久化; ORM 值保留在该 worker 上."""
 
 import asyncio
 from collections.abc import Callable
@@ -37,23 +37,23 @@ R = TypeVar("R")
 
 
 def _empty_answer_parts() -> list[str]:
-    """Return a fresh answer buffer."""
+    """返回全新的回答缓冲区."""
     return []
 
 
 def _empty_events() -> list[AssistantEvent]:
-    """Return a fresh event log."""
+    """返回全新的事件日志."""
     return []
 
 
 def _empty_metadata() -> dict[str, Any]:
-    """Return a fresh metadata mapping."""
+    """返回全新的元数据字典."""
     return {}
 
 
 @dataclass(slots=True)
 class StreamProgress:
-    """Mutable checkpoint state owned by one streaming run."""
+    """由单次流式运行拥有的可变检查点状态."""
 
     answer_parts: list[str] = field(default_factory=_empty_answer_parts)
     event_log: list[AssistantEvent] = field(default_factory=_empty_events)
@@ -65,13 +65,13 @@ class StreamProgress:
 
     @property
     def content(self) -> str:
-        """Return the answer text accumulated so far."""
+        """返回截至目前累积的回答文本."""
         return "".join(self.answer_parts)
 
 
 @dataclass(frozen=True, slots=True)
 class LeasePoll:
-    """One lease/permission poll inside the streaming worker."""
+    """流式 worker 内部的单次租约/权限轮询."""
 
     renew_lease: bool
     now: float
@@ -80,7 +80,7 @@ class LeasePoll:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FinalOutcome:
-    """Terminal values persisted for one run."""
+    """为单次运行持久化的终态值."""
 
     status: str
     content: str = ""
@@ -97,10 +97,10 @@ _FINAL_MESSAGES = {
 
 
 class StreamWorker:
-    """Run every SQL operation for one stream on a dedicated thread."""
+    """在专用线程上为单个流运行所有 SQL 操作."""
 
     def __init__(self) -> None:
-        """Create the single-thread executor that owns the Session."""
+        """创建拥有 Session 的单线程执行器."""
         self.executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="assistant-db",
@@ -112,15 +112,15 @@ class StreamWorker:
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> R:
-        """Run one blocking call and drain it before cancellation returns."""
+        """运行单个阻塞调用并在取消返回前将其排干."""
         future = asyncio.wrap_future(
             self.executor.submit(function, *args, **kwargs),
         )
         try:
             return await asyncio.shield(future)
         except asyncio.CancelledError:
-            # A running SQL operation cannot be cancelled. Drain it before
-            # cleanup or another operation can touch the same Session.
+            # 运行中的 SQL 操作无法取消. 在清理或其他操作
+            # 接触同一 Session 之前必须排干该操作.
             with anyio.CancelScope(shield=True):
                 while not future.done():
                     try:
@@ -134,7 +134,7 @@ class StreamWorker:
             raise
 
     async def __aenter__(self) -> "StreamWorker":
-        """Enter the worker context."""
+        """进入 worker 上下文."""
         return self
 
     async def __aexit__(
@@ -143,13 +143,13 @@ class StreamWorker:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        """Stop the executor without waiting for a cancelled SQL call."""
+        """停止执行器且不等待已取消的 SQL 调用."""
         del exc_type, exc, tb
         self.executor.shutdown(wait=False)
 
 
 class StreamPersistence:
-    """SQL state for one prepared assistant stream."""
+    """单次准备好的助手流的 SQL 状态."""
 
     def __init__(
         self,
@@ -159,7 +159,7 @@ class StreamPersistence:
         conversation: AssistantConversation,
         run: AssistantRun,
     ) -> None:
-        """Validate ownership and capture the durable identities."""
+        """校验所有权并捕获持久化标识."""
         self.session = session
         self.workspace = workspace
         self.user_id = int(user_id)
@@ -192,7 +192,7 @@ class StreamPersistence:
         self.query = str(user_message.content)
 
     def initialize(self, now: float) -> tuple[int, int, int, str, str]:
-        """Acquire the run lease and return the immutable stream inputs."""
+        """获取运行租约并返回不可变的流输入."""
         if self.credential is not None:
             self.credential.validate(self.session, self.user_id)
         active = repository.touch_run_lease(self.session, self.run_id, now)
@@ -203,10 +203,10 @@ class StreamPersistence:
         return self.run_id, self.message_id, self.workspace_id, self.mode, self.query
 
     def poll(self, request: LeasePoll) -> tuple[bool, bool]:
-        """Refresh the lease and read terminal/cancellation state."""
+        """刷新租约并读取终态/取消状态."""
         if request.idle:
-            # Flush checkpoints before waiting for more provider events. Quiet
-            # healthy streams must not hit the idle-write-transaction bound.
+            # 在等待更多提供商事件前刷新检查点.
+            # 空闲但健康的流不得触碰事务空闲写入超时上限.
             self.session.commit()
         if self.credential is not None:
             self.credential.validate(self.session, self.user_id)
@@ -241,11 +241,11 @@ class StreamPersistence:
         commit: bool,
         permission_boundary: bool = False,
     ) -> bool:
-        """Persist stream progress without mutating permission decisions."""
+        """持久化流进度且不改变权限决策."""
         if self.session.get_bind().dialect.name == "postgresql":
-            # A suspended/dead API worker must not retain message/run write
-            # locks forever between streaming checkpoints. Transaction-local
-            # configuration cannot leak into other pooled-session callers.
+            # 挂起或崩溃的 API worker 不得在检查点之间永久持有
+            # 消息/运行写锁. 事务本地配置不得泄漏给
+            # 其他连接池调用方.
             self.session.execute(
                 text("SET LOCAL idle_in_transaction_session_timeout = '5s'"),
             )
@@ -263,9 +263,9 @@ class StreamPersistence:
         return True
 
     def finish(self, outcome: FinalOutcome) -> str | None:
-        """Apply the terminal transition after refreshing durable state."""
-        # Recover from a failed flush/commit and refresh any state changed by
-        # another API worker before deciding the terminal transition.
+        """在刷新持久化状态后应用终态转换."""
+        # 从失败的 flush/commit 中恢复, 并刷新其他 API worker
+        # 可能修改的状态, 随后决定终态转换.
         self.session.rollback()
         run = repository.lock_run(self.session, self.run_id)
         if run is None:
@@ -304,9 +304,9 @@ class StreamPersistence:
         return status
 
     def engine(self) -> AssistantEngine:
-        """Build the engine selected by the conversation mode."""
+        """构建对话模式所选用的引擎."""
         if self.mode == "fast":
-            # Read the attribute at call time so tests can swap the engine.
+            # 调用时读取属性, 便于测试替换引擎.
             return fast_engine.FastEngine()
         return ExpertEngine(
             session=self.session,

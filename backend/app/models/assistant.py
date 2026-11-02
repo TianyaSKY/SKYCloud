@@ -1,10 +1,9 @@
-"""Persistent conversations, messages, and runs for the SKYCloud assistant.
+"""SKYCloud 助手的持久化对话、消息与运行记录模型.
 
-The assistant deliberately keeps a conversation's mode immutable. A fast
-conversation is backed by the read-only RAG engine, while an expert
-conversation is backed by an OpenCode session. Keeping the records in the
-database lets the UI recover after a browser refresh or an interrupted SSE
-connection without mixing the two execution models.
+助手按设计保持对话模式不可变。Fast 模式由只读 RAG 引擎支持,
+而 Expert 模式由 OpenCode 会话支持。将记录持久化在数据库中
+可使前端在浏览器刷新或 SSE 连接中断后恢复状态,
+且避免混合两种不同的执行模型。
 """
 
 import json
@@ -38,7 +37,7 @@ if TYPE_CHECKING:
 
 
 def _load_json_object(value: str | None) -> JsonObject:
-    """Parse a JSON object column, treating malformed values as empty."""
+    """解析 JSON 对象列数据, 将格式异常值处理为空字典."""
     if not value:
         return {}
     try:
@@ -49,12 +48,12 @@ def _load_json_object(value: str | None) -> JsonObject:
 
 
 def _dump_json(value: Mapping[str, object]) -> str:
-    """Serialize a JSON object column without whitespace or escaping."""
+    """序列化 JSON 对象列数据, 不引入多余空白或转义字符."""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 class AssistantConversationDict(TypedDict):
-    """Public representation of an assistant conversation row."""
+    """助手对话记录的公开表示模型."""
 
     id: int
     workspace_id: int
@@ -71,7 +70,7 @@ class AssistantConversationDict(TypedDict):
 
 
 class AssistantMessageDict(TypedDict):
-    """Public representation of an assistant message row."""
+    """助手消息记录的公开表示模型."""
 
     id: int
     conversation_id: int
@@ -87,7 +86,7 @@ class AssistantMessageDict(TypedDict):
 
 
 class AssistantRunDict(TypedDict):
-    """Public representation of an assistant run row."""
+    """助手运行记录的公开表示模型."""
 
     id: int
     conversation_id: int
@@ -109,7 +108,7 @@ class AssistantRunDict(TypedDict):
 
 
 class AssistantConversation(Base):
-    """A mode-specific assistant thread owned by one workspace member."""
+    """由单个工作区成员拥有的特定模式助手对话线程模型."""
 
     __tablename__ = "assistant_conversations"
 
@@ -209,7 +208,7 @@ class AssistantConversation(Base):
     )
 
     def to_dict(self) -> AssistantConversationDict:
-        """Return the public conversation representation."""
+        """返回对话的公开字典表示."""
         return {
             "id": self.id,
             "workspace_id": self.workspace_id,
@@ -227,7 +226,7 @@ class AssistantConversation(Base):
 
 
 class AssistantMessage(Base):
-    """A durable user, assistant, or system message."""
+    """持久化的用户、助手或系统消息模型."""
 
     __tablename__ = "assistant_messages"
 
@@ -291,7 +290,7 @@ class AssistantMessage(Base):
 
     @property
     def metadata_dict(self) -> JsonObject:
-        """Return the decoded provider metadata object."""
+        """返回解码后的服务提供商元数据对象."""
         return _load_json_object(self.metadata_json)
 
     @metadata_dict.setter
@@ -300,7 +299,7 @@ class AssistantMessage(Base):
 
     @property
     def usage(self) -> JsonObject:
-        """Return the decoded token usage object."""
+        """返回解码后的 Token 消耗统计对象."""
         return _load_json_object(self.usage_json)
 
     @usage.setter
@@ -308,7 +307,7 @@ class AssistantMessage(Base):
         self.usage_json = _dump_json(value or {})
 
     def to_dict(self) -> AssistantMessageDict:
-        """Return the public message representation."""
+        """返回消息的公开字典表示."""
         return {
             "id": self.id,
             "conversation_id": self.conversation_id,
@@ -325,7 +324,7 @@ class AssistantMessage(Base):
 
 
 class AssistantRun(Base):
-    """One execution attempt for one user message."""
+    """针对单条用户消息的一次执行尝试记录模型."""
 
     __tablename__ = "assistant_runs"
 
@@ -415,13 +414,13 @@ class AssistantRun(Base):
 
     @property
     def pending_permission_id(self) -> str | None:
-        """Return the current unresolved permission identifier."""
+        """返回当前未决权限请求的标识符."""
         permission = self.current_permission
         return permission.permission_id if permission is not None else None
 
     @property
     def pending_permission(self) -> dict[str, str] | None:
-        """Return a prompt only while waiting on an unanswered request."""
+        """仅在等待未答复的请求期间返回权限确认提示语."""
         permission = self.current_permission
         if (
             self.status != "waiting_permission"
@@ -452,7 +451,7 @@ class AssistantRun(Base):
 
     @property
     def metadata_dict(self) -> JsonObject:
-        """Return the decoded run metadata object."""
+        """返回解码后的运行元数据对象."""
         return _load_json_object(self.metadata_json)
 
     @metadata_dict.setter
@@ -460,7 +459,7 @@ class AssistantRun(Base):
         self.metadata_json = _dump_json(value or {})
 
     def to_dict(self) -> AssistantRunDict:
-        """Return the public run representation."""
+        """返回运行记录的公开字典表示."""
         return {
             "id": self.id,
             "conversation_id": self.conversation_id,
@@ -483,7 +482,7 @@ class AssistantRun(Base):
 
 
 class AssistantPermission(Base):
-    """Durable one-shot permission decision for one assistant run."""
+    """助手单次运行的持久化一次性权限决断记录模型."""
 
     __tablename__ = "assistant_permissions"
 
@@ -537,7 +536,7 @@ class AssistantPermission(Base):
 
     @property
     def details(self) -> dict[str, str] | None:
-        """Return the stored, bounded UI permission details."""
+        """返回存储的有界 UI 权限详情数据."""
         return permission_details(
             _load_json_object(self.details_json),
             self.permission_id,

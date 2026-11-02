@@ -1,4 +1,4 @@
-"""Build the checksum-locked glibc runtime; optionally save its immutable local ID."""
+"""构建经过校验和锁定的 glibc 运行时环境; 可选保存其不可变本地镜像 ID."""
 import argparse
 import hashlib
 import json

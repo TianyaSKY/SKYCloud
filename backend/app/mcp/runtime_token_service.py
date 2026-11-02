@@ -1,4 +1,4 @@
-"""Issuance and validation of short-lived OpenCode MCP runtime tokens."""
+"""签发并校验短期有效 OpenCode MCP 运行时令牌."""
 
 import datetime as _dt
 import os
@@ -21,7 +21,7 @@ _MIN_TTL_SECONDS = 60
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GenerateRuntimeTokenParams:
-    """Signed claims required to mint one runtime token."""
+    """生成运行时令牌所需的签名声明数据."""
 
     user_id: int
     workspace_id: int
@@ -33,7 +33,7 @@ class GenerateRuntimeTokenParams:
 
 @dataclass(frozen=True, slots=True)
 class BoundClaims:
-    """Decoded claims plus the identity fields they must match."""
+    """解码后的声明及必须匹配的身份字段."""
 
     payload: dict[str, Any]
     user_id: int
@@ -80,7 +80,7 @@ def issue_runtime_token(
     role: str,
     ttl_seconds: int | None = None,
 ) -> tuple[McpRuntimeToken, str]:
-    """Revoke prior runtime tokens and issue exactly one new token."""
+    """撤销此前的运行时令牌, 并签发全新的单条令牌."""
     now = utc_now()
     session.query(McpRuntimeToken).filter(
         McpRuntimeToken.runtime_id == runtime.id,
@@ -122,7 +122,7 @@ def refresh_runtime_token(
     role: str,
     ttl_seconds: int | None = None,
 ) -> tuple[McpRuntimeToken, str]:
-    """Rotate the runtime token; identical to a fresh issuance."""
+    """轮转运行时令牌; 等同于重新签发全新令牌."""
     return issue_runtime_token(
         session,
         runtime,
@@ -137,7 +137,7 @@ def get_active_runtime_token(
     *,
     touch: bool = True,
 ) -> McpRuntimeToken | None:
-    """Look up the raw token by hash and reject revoked/expired records."""
+    """通过哈希查找原始令牌, 并拒绝已撤销或已过期的记录."""
     record = (
         session.query(McpRuntimeToken)
         .filter(McpRuntimeToken.token_hash == McpRuntimeToken.hash_token(token))
@@ -192,7 +192,7 @@ def validate_runtime_token(
     session: Session,
     token: str,
 ) -> tuple[dict[str, Any], OpenCodeRuntime] | None:
-    """Verify MCP credentials; model credentials cannot be used for tools."""
+    """验证 MCP 凭证; 模型凭据不可用于工具调用."""
     return validate_bound_token(session, token, expected_type="mcp_runtime")
 
 
@@ -203,7 +203,7 @@ def validate_bound_token(
     expected_type: str,
     touch: bool = True,
 ) -> tuple[dict[str, Any], OpenCodeRuntime] | None:
-    """Shared signature, database revocation, binding and membership checks."""
+    """共享的签名核验、数据库撤销状态、绑定关系与成员资格检查."""
     claims = _decode_bound_claims(token, expected_type)
     if claims is None:
         return None
@@ -226,13 +226,13 @@ def validate_bound_token(
     if member_role is None:
         return None
 
-    # The role claim is informational; authorization always uses current DB role.
+    # role 声明仅供参考; 鉴权始终使用数据库中的当前角色。
     claims.payload["role"] = member_role.value
     return claims.payload, runtime
 
 
 def revoke_runtime_tokens(session: Session, runtime_id: int) -> int:
-    """Revoke all active tokens for a runtime and return the affected count."""
+    """撤销指定运行时的所有有效令牌, 并返回受影响的行数."""
     result = session.query(McpRuntimeToken).filter(
         McpRuntimeToken.runtime_id == runtime_id,
         McpRuntimeToken.revoked_at.is_(None),
@@ -241,7 +241,7 @@ def revoke_runtime_tokens(session: Session, runtime_id: int) -> int:
 
 
 def revoke_workspace_runtime_tokens(session: Session, workspace_id: int) -> int:
-    """Revoke every active runtime token in a workspace."""
+    """撤销指定工作区下的所有有效运行时令牌."""
     result = session.query(McpRuntimeToken).filter(
         McpRuntimeToken.workspace_id == workspace_id,
         McpRuntimeToken.revoked_at.is_(None),

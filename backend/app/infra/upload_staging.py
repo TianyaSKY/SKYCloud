@@ -1,7 +1,7 @@
-"""Private temporary uploads, protected against cleanup by live process leases.
+"""私有临时上传暂存目录, 由活跃进程租约防止并发清理.
 
-A process crash releases the OS file lock. The Worker only removes old unlocked
-UUID staging directories, and never scans historical files in the upload root.
+进程崩溃会自动释放 OS 文件锁。Worker 仅清理过期的未锁定
+UUID 暂存目录, 绝不扫描上传根目录下的历史文件。
 """
 
 import os
@@ -19,7 +19,7 @@ from loguru import logger
 
 from app.exceptions import ConflictError
 
-# sys.platform (not os.name) lets the type checker skip the Windows-only stub gap.
+# sys.platform (而非 os.name) 允许类型检查器跳过 Windows 专属桩差距。
 if sys.platform == "win32":
     import msvcrt
 else:
@@ -74,7 +74,7 @@ def _close_descriptor(fd: int) -> None:
 
 
 def _close_handle(handle: IO[bytes]) -> None:
-    # Best-effort close: a descriptor failure must not replace the original error.
+    # 尽最大努力关闭: 文件描述符关闭失败不得替换原始错误。
     try:
         handle.close()
     except Exception as exc:
@@ -95,7 +95,7 @@ def _prepare_lease(fd: int, handle: IO[bytes]) -> None:
 
 
 def _payload_extension(filename: str) -> str:
-    # MIME guessing can still use the original extension.
+    # MIME 类型推断仍可使用原始扩展名。
     extension = Path(filename).suffix
     if not re.fullmatch(r"\.[A-Za-z0-9]{1,16}", extension):
         return ""
@@ -103,7 +103,7 @@ def _payload_extension(filename: str) -> str:
 
 
 class StagedUpload:
-    """A private staging directory whose lease blocks concurrent cleanup."""
+    """私有暂存目录, 其持有的租约可阻止并发清理任务."""
 
     directory: Path
     path: str
@@ -116,7 +116,7 @@ class StagedUpload:
         *,
         stage_id: str | None = None,
     ) -> None:
-        """Create the staging directory and hold its process lease."""
+        """创建暂存目录并持有其进程租约."""
         root = _staging_root(upload_root)
         self.directory = _staging_directory(root, _staging_identity(stage_id))
         fd = os.open(self.directory / ".lease", _LEASE_FLAGS, 0o600)
@@ -135,7 +135,7 @@ class StagedUpload:
             raise
 
     def close(self) -> None:
-        """Release the lease and remove the staging directory."""
+        """释放租约并删除暂存目录."""
         if self.handle.closed:
             return
         try:
@@ -150,7 +150,7 @@ class StagedUpload:
 
 
 def cleanup_staging(upload_root: str, max_age_seconds: int) -> int:
-    """Remove expired unlocked staging directories; return how many went away."""
+    """删除过期的未加锁暂存目录; 返回已删除的目录数量."""
     root = Path(upload_root) / ".staging"
     if not root.is_dir() or root.is_symlink():
         return 0
@@ -172,7 +172,7 @@ def cleanup_staging(upload_root: str, max_age_seconds: int) -> int:
                 fd = os.open(lease, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
                 handle = os.fdopen(fd, "r+b")
                 _lock(handle)
-            # POSIX permits deleting locked files; Windows needs a closed lease.
+            # POSIX 允许删除已加锁文件; Windows 则需要关闭的租约句柄。
             if sys.platform == "win32" and handle is not None:
                 handle.close()
                 handle = None
@@ -192,7 +192,7 @@ def cleanup_staging(upload_root: str, max_age_seconds: int) -> int:
 def staging_guard(
     upload_root: str, stage_id: str | None,
 ) -> Generator[bool, None, None]:
-    """Hold a dead process's lease while reconciling its remote object."""
+    """在对账远程对象期间持有已终止进程的租约."""
     handle: IO[bytes] | None = None
     acquired = True
     try:
@@ -219,8 +219,8 @@ def staging_guard(
 
 
 def close_staging_safely(staging: StagedUpload) -> None:
-    """Clean up without replacing a committed result or the upload's error."""
-    # Any close failure here is secondary to the upload outcome, so isolate it.
+    """执行清理且绝不替换已提交的结果或上传失败错误."""
+    # 此处任何关闭失败均次于上传结果, 故对其进行隔离。
     try:
         staging.close()
     except Exception as exc:

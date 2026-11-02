@@ -17,7 +17,7 @@ OFFICE_CONVERSION_TIMEOUT_SECONDS = 120
 
 
 def get_libreoffice_command() -> str:
-    """Resolve soffice: env override, then Windows install paths, then PATH."""
+    """解析 soffice: 优先环境变量, 其次 Windows 安装路径, 最后系统 PATH."""
     env_path = os.environ.get("LIBREOFFICE_PATH")
     if env_path and Path(env_path).exists():
         return env_path
@@ -35,7 +35,7 @@ def get_libreoffice_command() -> str:
 
 
 def convert_office_to_pdf(input_path: str, output_dir: str) -> str:
-    """Convert with headless LibreOffice; a private profile avoids locks."""
+    """使用无头 LibreOffice 进行转换; 独立用户配置可避免实例死锁."""
     soffice_cmd = get_libreoffice_command()
     logger.info("Converting office document to PDF")
 
@@ -71,7 +71,7 @@ def convert_pdf_to_images(
     output_dir: str,
     max_pages: int = 5,
 ) -> list[str]:
-    """Render the first `max_pages` pages to JPEG at 2x zoom."""
+    """以 2 倍缩放将前 `max_pages` 页 PDF 渲染为 JPEG 图像."""
     image_paths: list[str] = []
     doc = None
     try:
@@ -105,7 +105,7 @@ def extract_video_frames(
     output_dir: str,
     frame_count: int = 5,
 ) -> list[str]:
-    """Extract `frame_count` evenly spaced frames spanning the whole video."""
+    """从整段视频中等间隔均匀抽取 `frame_count` 帧图像."""
     image_paths: list[str] = []
     cap = None
     try:

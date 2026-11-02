@@ -1,4 +1,4 @@
-"""Model authentication sessions belong to their dependency worker."""
+"""模型认证会话归属于其依赖项 worker 测试."""
 import asyncio
 import threading
 import httpx
@@ -81,8 +81,8 @@ async def test_cancelled_model_request_drains_control_worker_before_cleanup(monk
             with pytest.raises(asyncio.CancelledError) as error:
                 await asyncio.wait_for(pending, 2)
             assert await asyncio.to_thread(finished.wait, 2)
-    # Starlette's SSE task group can replace the outer cancellation message;
-    # the worker and upstream ownership assertions apply to both responses.
+    # Starlette 的 SSE 任务组可能会替换外部取消消息;
+    # worker 与上游所有权断言适用于两种响应.
     if stage != 'sse':
         assert str(error.value) == 'caller-stop'
     assert len(closed) == validations

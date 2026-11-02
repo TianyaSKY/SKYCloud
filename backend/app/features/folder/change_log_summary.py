@@ -1,4 +1,4 @@
-"""Compress change events into organizer context text and affected entity ids."""
+"""将变更事件流水压缩为整理器上下文文本与受影响实体 ID 集合."""
 
 from collections import Counter
 from collections.abc import Sequence
@@ -10,7 +10,7 @@ DEFAULT_SUMMARY_EVENT_LINES = 40
 
 
 class EventSummary(TypedDict):
-    """Aggregated event statistics handed to the organizer prompt."""
+    """提供给整理器 Prompt 的聚合事件统计与摘要."""
 
     summary_text: str
     changed_file_ids: list[int]
@@ -23,7 +23,7 @@ def _event_value(
     key: str,
     default: float | str | None = None,
 ) -> int | float | str | None:
-    """Read one field from either an ORM row or a plain mapping."""
+    """从 ORM 实体行或普通字典映射中读取指定字段."""
     if isinstance(event, dict):
         return event.get(key, default)
     return getattr(event, key, default)
@@ -37,7 +37,7 @@ def summarize_events(
     to_event_id: int,
     max_lines: int = DEFAULT_SUMMARY_EVENT_LINES,
 ) -> EventSummary:
-    """Summarize action distribution and sample rows up to `max_lines`."""
+    """汇总操作分布并按至多 `max_lines` 行进行样本采样."""
     action_counter: Counter[str] = Counter()
     changed_file_ids: set[int] = set()
     changed_folder_ids: set[int] = set()

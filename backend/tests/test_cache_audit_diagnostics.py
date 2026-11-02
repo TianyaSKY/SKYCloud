@@ -1,4 +1,4 @@
-"""Failures retain business outcomes without diagnostic data/traceback leaks."""
+"""故障保留业务结果且不泄露诊断数据或堆栈信息测试."""
 from unittest.mock import MagicMock
 
 import pytest

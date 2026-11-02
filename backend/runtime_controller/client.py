@@ -1,4 +1,4 @@
-"""Application-side RPC client. It has no Docker SDK or socket access."""
+"""应用端 RPC 客户端. 不具备 Docker SDK 或 socket 的直接访问权."""
 
 import os
 import re
@@ -21,18 +21,18 @@ AUTH_HEADER_NAME: Final = "X-Runtime-Controller-Token"
 
 
 class ControllerError(RuntimeError):
-    """The Controller rejected or could not answer an operation."""
+    """Controller 拒绝或未能成功响应操作异常."""
 
 
 class ControllerNotFound(ControllerError):
-    """The Controller does not know the requested runtime."""
+    """Controller 中不存在所请求的运行时实例."""
 
 
 class ControllerGenerationMissing(ControllerError):
-    """A recorded runtime generation candidate is absent."""
+    """记录的运行时世代候选实例缺失异常."""
 
     def __init__(self, generation: str, container_id: str) -> None:
-        """Record the identity that the Controller could not find."""
+        """记录 Controller 无法找到的实例标识."""
         self.generation, self.container_id = generation, container_id
         super().__init__("Recorded runtime candidate is missing")
 
@@ -40,12 +40,12 @@ class ControllerGenerationMissing(ControllerError):
 
 
 def controller_url() -> str:
-    """Return the configured Controller base URL without a trailing slash."""
+    """获取配置的 Controller 基础 URL, 移除末尾斜杠."""
     return os.getenv(CONTROLLER_URL_ENV, DEFAULT_CONTROLLER_URL).rstrip("/")
 
 
 def auth_headers(base_url: str | None = None) -> dict[str, str]:
-    """Return the Controller credential, unless the URL leaves Controller scope."""
+    """返回 Controller 鉴权凭证, 除非目标 URL 超出 Controller 范围."""
     if base_url is not None:
         candidate, expected = urlsplit(base_url), urlsplit(controller_url())
         runtime_prefix = expected.path.rstrip("/") + "/runtimes/"
@@ -62,21 +62,21 @@ def auth_headers(base_url: str | None = None) -> dict[str, str]:
 
 
 def runtime_url(ref: str) -> str:
-    """Return the fixed HTTP relay URL for one runtime reference."""
+    """返回单个运行时引用的固定 HTTP 中继 URL."""
     return controller_url() + "/runtimes/" + quote(ref, safe="") + "/http"
 
 
 
 def _container_payloads(payload: JsonValue) -> list[UserSnapshotRow]:
-    """Project the Controller's fixed snapshot response onto its RPC schema."""
+    """将 Controller 的固定快照响应投影为其 RPC 数据模式."""
     return cast("list[UserSnapshotRow]", payload)
 
 
 class ControllerClient:
-    """Narrow HTTP RPC client for the standalone Runtime Controller."""
+    """用于独立 Runtime Controller 的轻量级 HTTP RPC 客户端."""
 
     def _call(self, method: str, path: str, *, json: JsonValue = None) -> JsonValue:
-        """Call one fixed Controller RPC and return its JSON result."""
+        """调用单个固定的 Controller RPC 并返回其 JSON 结果."""
         try:
             response = httpx.request(
                 method,
@@ -105,7 +105,7 @@ class ControllerClient:
         response: httpx.Response,
         request: JsonValue,
     ) -> None:
-        """Raise the precise 409 identity error when the payload proves it."""
+        """当响应体提供充分凭据时抛出精确的 409 标识错误."""
         requested = request.get("generation") if isinstance(request, dict) else None
         try:
             detail: JsonValue = response.json()
@@ -126,7 +126,7 @@ class ControllerClient:
             raise ControllerGenerationMissing(generation, container_id)
 
     def inspect(self, ref: str) -> ContainerPayload:
-        """Return one bounded managed-container snapshot."""
+        """返回单个托管容器的有界快照."""
         path = "/containers/" + quote(ref, safe="")
         return cast("ContainerPayload", self._call("GET", path))
 
@@ -137,7 +137,7 @@ class ControllerClient:
         runtime_id: int,
         generation: str,
     ) -> ContainerPayload:
-        """Idempotently prepare one runtime generation."""
+        """幂等地准备一个运行时世代实例."""
         payload: JsonObject = {
             "workspace_id": workspace_id,
             "user_id": user_id,
@@ -158,7 +158,7 @@ class ControllerClient:
         runtime_id: int,
         generation: str,
     ) -> None:
-        """Durably retire one runtime generation before removal."""
+        """在移除前对单个运行时世代进行持久化退役标记."""
         payload: JsonObject = {
             "workspace_id": workspace_id,
             "user_id": user_id,
@@ -172,19 +172,19 @@ class ControllerClient:
             raise ControllerError(message) from exc
 
     def remove_legacy(self, ref: str) -> None:
-        """Remove one historical container only after the Controller confirms it."""
+        """仅在 Controller 确认后移除历史容器."""
         path = "/retired-containers/" + quote(ref, safe="") + "/remove"
         try:
             self._call("POST", path)
         except ControllerNotFound as exc:
-            # Old Controllers return 404 for an unsupported route as well as
-            # absent containers. Only the established inspect route can prove
-            # absence; retry there instead of discarding an unconfirmed intent.
+            # 旧版 Controller 在路由不支持或容器不存在时均返回 404.
+            # 只有标准 inspect 路由能证明确实不存在; 重试该路由而非丢弃意图.
+            # 保持错误语义清晰并向上传递确认失败.
             message = "Legacy cleanup outcome could not be confirmed"
             raise ControllerError(message) from exc
 
     def user_snapshot(self, user_id: int) -> list[UserSnapshotRow]:
-        """Return every managed runtime identity recorded for one user."""
+        """返回为单个用户记录的所有托管运行时标识."""
         return _container_payloads(self._call("GET", f"/users/{user_id}/containers"))
 
     def action(
@@ -192,16 +192,16 @@ class ControllerClient:
         container_id: str,
         action: Literal["start", "stop", "restart", "remove"],
     ) -> None:
-        """Run one fixed action on an exact container identity."""
+        """对精确的容器标识执行指定固定操作."""
         path = "/containers/" + quote(container_id, safe="")
         self._call("POST", path + "/actions/" + action)
 
     def read_config(self, container_id: str) -> JsonObject:
-        """Return the normalized configuration for one container."""
+        """返回单个容器的归一化配置信息."""
         path = "/containers/" + quote(container_id, safe="") + "/config"
         return cast("JsonObject", self._call("GET", path))
 
     def write_config(self, container_id: str, config: JsonObject) -> None:
-        """Replace the normalized configuration for one container."""
+        """更新替换单个容器的归一化配置信息."""
         path = "/containers/" + quote(container_id, safe="") + "/config"
         self._call("PUT", path, json=config)

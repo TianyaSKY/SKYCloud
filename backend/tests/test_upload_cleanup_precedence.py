@@ -1,4 +1,4 @@
-"""A failed temporary-file cleanup must not replace an upload's primary error."""
+"""失败的临时文件清理不得替代上传的主要错误测试."""
 import asyncio
 from io import BytesIO
 from types import SimpleNamespace

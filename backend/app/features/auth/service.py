@@ -34,8 +34,8 @@ def generate_token(
             payload["sid"] = session_id
         return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
     except Exception as e:
-        # JWT signing crosses the configured cryptographic backend. Preserve the
-        # no-token fallback and log only the error class, never signing details.
+        # JWT 签名跨越配置的加密后端。保留
+        # 无令牌回退, 且仅记录错误类型, 绝不泄露签名细节。
         logger.error("Access token generation failed: error_type={}", type(e).__name__)
         return None
 
@@ -58,8 +58,8 @@ def generate_mcp_token(
         }
         return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
     except Exception as e:
-        # Long-lived signing has the same backend failure boundary as access
-        # tokens; clients must not receive raw key or provider error details.
+        # 长效令牌签名与访问令牌具有相同的后端异常边界;
+        # 客户端绝不能接收原始密钥或密码学库错误细节。
         logger.error("MCP token generation failed: error_type={}", type(e).__name__)
         return None
 
@@ -80,21 +80,21 @@ def decode_token(session: Session, token: str) -> str:
 
 
 def _decoded_subject(session: Session, token: str) -> str:
-    """Decode and authorize the token within the caller's JWT error boundary."""
+    """在调用方的 JWT 错误边界内解码并鉴权该令牌."""
     payload: Mapping[str, object] = jwt.decode(
         token, SECRET_KEY, algorithms=["HS256"],
     )
     rejection = _token_rejection(session, token, payload)
     if rejection is not None:
         return rejection
-    # Tokens minted by this service always carry the subject claim.
+    # 本服务签发的令牌始终携带 subject 声明字段。
     return cast("str", payload["sub"])
 
 
 def _token_rejection(
     session: Session, token: str, payload: Mapping[str, object],
 ) -> str | None:
-    """Return the user-facing rejection for an otherwise valid JWT, if any."""
+    """对于格式合法但业务拒绝的 JWT 返回面向用户的拒绝信息 (若存在)."""
     claim_scope = payload.get("type")
     if claim_scope == "mcp" and not mcp_token_service.get_active_mcp_token(
         session,
@@ -116,7 +116,7 @@ def _token_rejection(
 
 
 class LoginResult(TypedDict):
-    """Credential check outcome returned before the browser session exists."""
+    """在浏览器会话创建前返回的凭证校验结果."""
 
     token: str
     role: str | None

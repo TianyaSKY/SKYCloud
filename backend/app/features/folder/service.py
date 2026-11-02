@@ -29,7 +29,7 @@ FOLDER_CACHE_EXPIRE = 3600
 
 
 class FolderCreateData(TypedDict):
-    """Validated folder creation payload handed to `create_folder`."""
+    """传递给 `create_folder` 的已校验文件夹创建入参."""
 
     name: str
     workspace_id: NotRequired[int]
@@ -37,7 +37,7 @@ class FolderCreateData(TypedDict):
 
 
 class FolderUpdateData(TypedDict):
-    """Validated folder update payload handed to `update_folder`."""
+    """传递给 `update_folder` 的已校验文件夹更新入参."""
 
     name: NotRequired[str]
     parent_id: NotRequired[int | None]
@@ -46,18 +46,18 @@ class FolderUpdateData(TypedDict):
 
 
 def _tree_cache_key(session: Session, workspace_id: int) -> str:
-    """Cache key suffix bound to the workspace tree revision."""
+    """绑定至工作空间目录树版本的缓存键后缀."""
     revision = sql_cache_revision(session, f"workspace:tree:{workspace_id}")
     return f"{workspace_id}:sql:{revision}"
 
 
 def _tree_cache_allowed(session: Session, workspace_id: int) -> bool:
-    """Use the shared SQL cache gate with the cached tree signature."""
+    """基于缓存的目录树签名使用共享 SQL 缓存网关."""
     return sql_cache_allowed(session, workspace_id)
 
 
 def _require_workspace_id(data: FolderCreateData) -> int:
-    """Require the create payload to carry its workspace id."""
+    """确保创建入参中包含 workspace_id."""
     workspace_id = data.get("workspace_id")
     if workspace_id is None:
         message = "workspace_id is required"
@@ -66,7 +66,7 @@ def _require_workspace_id(data: FolderCreateData) -> int:
 
 
 def _require_folder(folder: Folder | None) -> Folder:
-    """Require a loaded folder row; the caller rolls back on this error."""
+    """要求文件夹记录存在; 调用方在此异常时执行事务回滚."""
     if folder is None:
         message = "Folder not found"
         raise ResourceNotFoundError(message)
@@ -74,14 +74,14 @@ def _require_folder(folder: Folder | None) -> Folder:
 
 
 def _assert_owns(folder: Folder, workspace_id: int) -> None:
-    """Reject a folder that belongs to another workspace."""
+    """拒绝不属于当前工作空间的文件夹."""
     if folder.workspace_id != workspace_id:
         message = "Folder belongs to another workspace"
         raise PermissionDeniedError(message)
 
 
 def create_folder(session: Session, data: FolderCreateData) -> Folder:
-    """Create a folder under the resolved parent, locking the tree first."""
+    """在解析的目标父目录下创建文件夹, 先对目录树加锁."""
     try:
         workspace_id = _require_workspace_id(data)
         repository.lock_tree(session, workspace_id)
@@ -102,7 +102,7 @@ def create_folder(session: Session, data: FolderCreateData) -> Folder:
 
 
 def get_folder(session: Session, folder_id: int) -> Folder:
-    """Load a folder by id or fail with a domain error."""
+    """根据 ID 加载文件夹或抛出领域异常."""
     folder = session.get(Folder, folder_id)
     if not folder:
         message = "Folder not found"
@@ -130,7 +130,7 @@ def update_folder(
     folder_id: int,
     data: FolderUpdateData,
 ) -> Folder:
-    """Rename or move a folder inside the workspace tree."""
+    """在工作空间目录树中重命名或移动文件夹."""
     workspace_id = repository.workspace_id_for_folder(session, folder_id)
     if workspace_id is None:
         message = "Folder not found"
@@ -157,7 +157,7 @@ def update_folder(
 
 
 def delete_folder(session: Session, folder_id: int) -> None:
-    """Delete a folder and its whole subtree, logging one event per entity."""
+    """删除文件夹及其全部子树, 并为每个实体记录一条变更事件."""
     workspace_id = repository.workspace_id_for_folder(session, folder_id)
     if workspace_id is None:
         message = "Folder not found"
@@ -259,7 +259,7 @@ def _delete_folder_recursive(
     key=_tree_cache_key,
 )
 def get_root_folder_id(session: Session, workspace_id: int) -> int | None:
-    """Return the workspace root folder id from the fresh database."""
+    """从最新数据库中查询工作空间根文件夹 ID."""
     return repository.root_id(session, workspace_id)
 
 
@@ -269,7 +269,7 @@ def get_root_folder_id(session: Session, workspace_id: int) -> int | None:
     key=_tree_cache_key,
 )
 def get_folders(session: Session, workspace_id: int) -> list[FolderDict]:
-    """List every folder of the workspace as flat serialised rows."""
+    """列出工作空间下所有文件夹的扁平序列化字典列表."""
     folders = session.query(Folder).filter_by(workspace_id=workspace_id).all()
     return [f.to_dict() for f in folders]
 

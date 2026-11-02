@@ -1,4 +1,4 @@
-"""Bounded direct WebSocket transport shared by the two runtime relay hops."""
+"""两条 Runtime 中继跃点之间共享的有界直接 WebSocket 传输层."""
 
 import asyncio
 import contextlib
@@ -41,21 +41,21 @@ WS_INTERNAL_ERROR: Final = 1011
 
 
 def terminal_path(path: str) -> bool:
-    """Return whether the relay path addresses one runtime terminal."""
+    """判断中继路径是否对应某个运行时终端."""
     return bool(re.fullmatch(TERMINAL_PATH_PATTERN, path))
 
 
 class DirectConnect(connect):
-    """Fixed connection policy: no redirects, no proxies, bounded frames."""
+    """固定连接策略: 无重定向、无代理、有界帧限制."""
 
     def process_redirect(self, exc: Exception) -> Exception:
-        """Refuse handshake redirects; the pinned client follows them by default."""
-        # Never send either hop's credentials to a redirected endpoint.
+        """拒绝握手重定向; 固定的客户端默认会跟随重定向."""
+        # 严禁将任一跃点的凭证发送至被重定向的端点。
         return exc
 
 
 def direct_connect(url: str, headers: dict[str, str]) -> connect:
-    """Open one bounded WebSocket connection to the runtime."""
+    """打开一个直连到运行时的有界 WebSocket 连接."""
     return DirectConnect(
         url,
         additional_headers=headers,
@@ -73,16 +73,16 @@ def direct_connect(url: str, headers: dict[str, str]) -> connect:
 
 
 class SocketSlots:
-    """Fixed per-owner and total socket budget with a thread-safe counter."""
+    """具备线程安全计数器的固定单所有者和全局 Socket 配额管理."""
 
     def __init__(self, total: int = 64, per_owner: int = 4) -> None:
-        """Set the total and per-owner relay budgets."""
+        """设置全局及单所有者中继配额上限."""
         self.total, self.per_owner = total, per_owner
         self.counts: dict[str | int, int] = {}
         self.lock = threading.Lock()
 
     def acquire(self, owner: str | int) -> bool:
-        """Reserve one relay slot for the owner, or refuse at the budget."""
+        """为所有者预留一个中继槽位, 超过配额则拒绝."""
         with self.lock:
             if (
                 sum(self.counts.values()) >= self.total
@@ -93,7 +93,7 @@ class SocketSlots:
             return True
 
     def release(self, owner: str | int) -> None:
-        """Return one relay slot held by the owner."""
+        """归还所有者持有的一个中继槽位."""
         with self.lock:
             count = self.counts.get(owner, 0)
             if count <= 1:
@@ -103,11 +103,11 @@ class SocketSlots:
 
 
 class SocketLimit(Exception):
-    """The relay exceeded its frame, byte or message budget."""
+    """中继超出帧大小、字节数或消息计数配额异常."""
 
 
 def _frame(message: Message) -> bytes | str:
-    """Return the payload of one received ASGI WebSocket message."""
+    """获取接收到的 ASGI WebSocket 消息负载."""
     raw = message.get("bytes")
     if raw is not None:
         return raw
@@ -121,7 +121,7 @@ def _length(data: bytes | str) -> int:
 async def _shutdown(
     websocket: WebSocket, tasks: list["asyncio.Task[None]"], code: int,
 ) -> None:
-    """Cancel every pump, close the client and drain the cancelled tasks."""
+    """取消所有泵任务, 关闭客户端连接并排空已取消的任务."""
     for task in tasks:
         task.cancel()
     with contextlib.suppress(RuntimeError, WebSocketDisconnect):
@@ -130,7 +130,7 @@ async def _shutdown(
 
 
 def _close_code(done: set["asyncio.Task[None]"]) -> int:
-    """Map completed pump outcomes onto the fixed WebSocket close codes."""
+    """将已完成的泵任务结果映射为固定的 WebSocket 关闭状态码."""
     code = WS_NORMAL_CLOSURE
     for task in done:
         try:
@@ -142,13 +142,13 @@ def _close_code(done: set["asyncio.Task[None]"]) -> int:
         except (ConnectionClosed, WebSocketDisconnect):
             pass
         except Exception:
-            # Any pump failure must still close the client with a fixed code.
+            # 任何泵任务失败均须使用固定的状态码关闭客户端。
             code = WS_INTERNAL_ERROR
     return code
 
 
 async def _inbound(websocket: WebSocket, upstream: ClientConnection) -> None:
-    """Relay client frames upstream within the input budget."""
+    """在输入配额限制内将客户端帧中继发送至上游."""
     size = 0
     count = 0
     while True:
@@ -165,7 +165,7 @@ async def _inbound(websocket: WebSocket, upstream: ClientConnection) -> None:
 
 
 async def _outbound(websocket: WebSocket, upstream: ClientConnection) -> None:
-    """Relay runtime frames to the client within the message budget."""
+    """在消息配额限制内将运行时帧中继发送至客户端."""
     size = 0
     count = 0
     async for data in upstream:
@@ -181,14 +181,14 @@ async def _outbound(websocket: WebSocket, upstream: ClientConnection) -> None:
 
 
 async def _monitor(guard: Callable[[], Awaitable[None]], interval: float) -> None:
-    """Re-check the runtime identity for the lifetime of the session."""
+    """在会话生命周期内持续复核运行时身份有效性."""
     while True:
         await asyncio.sleep(interval)
         await guard()
 
 
 async def _expiry(seconds: float) -> None:
-    """End the session at its fixed lifetime."""
+    """在到达固定生存时间时终止会话."""
     await asyncio.sleep(max(0, min(MAX_SESSION_SECONDS, seconds)))
     raise HTTPException(401, "Runtime UI session expired")
 
@@ -201,7 +201,7 @@ async def pump(
     guard: Callable[[], Awaitable[None]],
     interval: float = GUARD_INTERVAL_SECONDS,
 ) -> None:
-    """End both pumps on peer close, lifetime/budget exhaustion or revocation."""
+    """在对端关闭、超时/配额耗尽或权限吊销时终止双向数据泵."""
     tasks = [
         asyncio.create_task(_inbound(websocket, upstream)),
         asyncio.create_task(_outbound(websocket, upstream)),

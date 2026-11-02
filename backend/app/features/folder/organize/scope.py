@@ -1,4 +1,4 @@
-"""Immutable task identity explicitly bound to every agent tool invocation."""
+"""显式绑定至每次 Agent 工具调用的不可变任务身份上下文."""
 
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
@@ -19,7 +19,7 @@ from app.infra.extensions import SessionFactory
 
 @dataclass(frozen=True)
 class OrganizeScope:
-    """Workspace, user and task identity bound to one organizer run."""
+    """绑定至单次整理运行的工作空间、用户与任务身份."""
 
     workspace_id: int
     user_id: int
@@ -35,13 +35,13 @@ _current_scope: ContextVar[OrganizeScope | None] = ContextVar(
 
 
 def current_scope() -> OrganizeScope | None:
-    """Return the scope bound to the current context, if any."""
+    """返回当前上下文绑定的作用域范围 (若存在)."""
     return _current_scope.get()
 
 
 @contextmanager
 def organize_scope(scope: OrganizeScope) -> Generator[None, None, None]:
-    """Bind the scope for the duration of the block, restoring it afterwards."""
+    """在代码块执行期间绑定作用域, 退出时恢复原有上下文."""
     if scope.workspace_id <= 0 or scope.user_id <= 0:
         message = "Organize task requires a valid user and workspace"
         raise PermissionDeniedError(message)
@@ -53,17 +53,17 @@ def organize_scope(scope: OrganizeScope) -> Generator[None, None, None]:
 
 
 def _tool_callable(source: BaseTool) -> Callable[..., object]:
-    """Return the python callable wrapped by a LangChain tool.
+    """返回 LangChain 工具底层包装的 Python 可调用对象.
 
-    LangChain stores it on ``func`` for structured tools and on ``__wrapped__``
-    for plain function wrappers, so the lookup stays behind a typed boundary.
+    LangChain 结构化工具存储在 ``func``, 普通函数包装器存储在
+    ``__wrapped__``, 此处通过类型化边界进行安全查找。
     """
     function = getattr(source, "func", None) or getattr(source, "__wrapped__", None)
     return cast("Callable[..., object]", function)
 
 
 def _bind_tool(source: BaseTool, scope: OrganizeScope) -> BaseTool:
-    """Wrap one tool so it always runs inside the bound identity."""
+    """包装单个工具使其始终在绑定的身份作用域内运行."""
     function = _tool_callable(source)
     parameters = signature(function)
 
@@ -83,12 +83,12 @@ def bind_tools(
     source_tools: Sequence[BaseTool],
     scope: OrganizeScope,
 ) -> list[BaseTool]:
-    """Bind identity in a closure so parallel LangGraph tools cannot lose scope."""
+    """在闭包中绑定身份, 避免 LangGraph 并行工具调用丢失作用域."""
     return [_bind_tool(source, scope) for source in source_tools]
 
 
 def authorize_session(session: Session, scope: OrganizeScope) -> None:
-    """Re-verify the durable task claim and write permission for this session."""
+    """重新校验当前会话的持久任务认领权与工作空间写权限."""
     if scope.task_id is not None:
         assert_task_claim(
             session,

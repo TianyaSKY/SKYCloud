@@ -7,9 +7,7 @@ from app.models.file import File
 from app.models.folder import Folder
 
 
-# ---------------------------------------------------------------------------
 # organize tools（通过 .invoke 调用 @tool 包装的函数）
-# ---------------------------------------------------------------------------
 
 from app.features.folder.organize.tools import (
     get_all_files,
@@ -295,9 +293,7 @@ class TestMergeFolderContents:
         assert mock_file.parent_id == 2
 
 
-# ---------------------------------------------------------------------------
 # token_usage service 补充
-# ---------------------------------------------------------------------------
 
 from app.features.token_usage.service import (
     GetUsageLogsParams,

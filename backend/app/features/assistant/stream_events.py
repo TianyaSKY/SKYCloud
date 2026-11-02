@@ -1,8 +1,8 @@
-"""Own the provider event producer, heartbeat forwarding and upstream cleanup.
+"""持有提供商事件生产者、心跳转发与上游清理.
 
-The bounded queue applies backpressure. Closing the consumer aborts the upstream
-while its client is open, then cancels and drains the producer before returning.
-No SQL Session or model-provider configuration crosses this boundary.
+有界队列提供反压机制. 关闭消费者会在其客户端打开时中止上游,
+随后在返回前取消并排干生产者.
+任何 SQL Session 或模型提供商配置均不跨越此边界.
 """
 
 import asyncio
@@ -20,7 +20,7 @@ from app.features.assistant.event_protocol import AssistantEvent, heartbeat_even
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class HeartbeatOptions:
-    """Bounded idle policy for one provider event stream."""
+    """单个提供商事件流的有界空闲策略."""
 
     interval_seconds: float = 15.0
     on_idle: Callable[[], Awaitable[object]] | None = None
@@ -33,19 +33,19 @@ HeartbeatQueue: TypeAlias = "asyncio.Queue[QueueItem]"
 
 
 def _raise_invariant(message: str) -> NoReturn:
-    """Raise the internal invariant error without a type-check raise site."""
+    """抛出内部不变量错误, 避免类型检查抛出点."""
     raise AssertionError(message)
 
 
 def _queued_event(value: AssistantEvent | BaseException | None) -> AssistantEvent:
-    """Narrow a queue payload that must be a forwarded provider event."""
+    """收窄必须为已转发提供商事件的队列负载类型."""
     if not isinstance(value, AssistantEvent):
         _raise_invariant("heartbeat queue lost its event payload")
     return value
 
 
 def _raise_queued_error(value: AssistantEvent | BaseException | None) -> NoReturn:
-    """Re-raise the provider exception captured by the producer task."""
+    """重新抛出生产者任务捕获的提供商异常."""
     if not isinstance(value, BaseException):
         _raise_invariant("heartbeat queue lost its error payload")
     raise value
@@ -55,15 +55,15 @@ async def _produce(
     engine_iterator: AsyncGenerator[AssistantEvent, None],
     queue: HeartbeatQueue,
 ) -> None:
-    """Drain the provider iterator into the bounded heartbeat queue."""
+    """将提供商迭代器排干至有界心跳队列中."""
     try:
         async with aclosing(engine_iterator):
             async for event in engine_iterator:
                 await queue.put(("event", event))
     except asyncio.CancelledError:
-        # The consumer is gone; do not block on a full queue during cleanup.
+        # 消费者已离开; 清理期间不在已满队列上阻塞.
         raise
-    except BaseException as exc:  # forwarded to the consumer below
+    except BaseException as exc:  # 转发至下方的消费协程
         await queue.put(("error", exc))
     else:
         await queue.put(("done", None))
@@ -74,7 +74,7 @@ async def _consume(
     run_id: int,
     options: HeartbeatOptions,
 ) -> AsyncGenerator[AssistantEvent, None]:
-    """Forward queued events and emit heartbeats while the provider is idle."""
+    """转发队列事件并在提供商空闲时产出心跳."""
     heartbeat_at = time.monotonic() + options.interval_seconds
     while True:
         try:
@@ -107,7 +107,7 @@ async def _cleanup_producer(
     *,
     interrupted: bool,
 ) -> None:
-    """Abort the live provider first, then cancel and drain the producer."""
+    """优先中止存活提供商, 随后取消并排干生产者."""
     if interrupted and on_abort is not None:
         try:
             await on_abort()
@@ -127,7 +127,7 @@ async def engine_events_with_heartbeats(
     run_id: int,
     options: HeartbeatOptions | None = None,
 ) -> AsyncGenerator[AssistantEvent, None]:
-    """Forward provider events while keeping reverse proxies' idle timers warm."""
+    """转发提供商事件, 同时保持反向代理空闲计时器活跃."""
     policy = options or HeartbeatOptions()
     queue: HeartbeatQueue = asyncio.Queue(maxsize=1)
     producer = asyncio.create_task(_produce(engine_iterator, queue))

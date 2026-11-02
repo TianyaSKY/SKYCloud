@@ -1,4 +1,4 @@
-"""The integration harness must resolve and create its fixture directory portably."""
+"""集成测试套件必须跨平台解析并创建其 fixture 目录测试."""
 import os
 import tempfile
 from pathlib import Path

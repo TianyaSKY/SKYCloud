@@ -1,4 +1,4 @@
-"""Opt-in browser harness; serves only isolated fixture data on loopback."""
+"""自选浏览器测试套件; 仅在环回口提供隔离 fixture 数据."""
 from tests.integration.fixture_paths import FIXTURE_DIR
 import json
 import socket
@@ -19,8 +19,8 @@ def exercise_browser(app, monkeypatch, user_id, workspace_id, auth, temporary):
     monkeypatch.setenv('APP_ORIGIN', parent)
     monkeypatch.setenv('RUNTIME_UI_ORIGIN_TEMPLATE', f'http://r{{runtime_id}}.skycloud.localhost:{port}')
     bundle = temporary / 'client.js'
-    # Exercise the production renewal utility. Only its API transport is
-    # substituted to attach this disposable fixture's signed authentication.
+    # 执行生产环境续约工具. 仅替换其 API 传输以
+    # 附加此一次性 fixture 的签名认证.
     script = '''
       const { createRequire } = await import('node:module');
       const req = createRequire(process.argv[1] + '/frontend/package.json');

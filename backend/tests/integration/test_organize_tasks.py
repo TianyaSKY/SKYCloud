@@ -1,4 +1,4 @@
-"""Real organizer admission/delivery/lease/fencing and process-death recovery."""
+"""真实整理器准入/投递/租约/隔离与进程崩溃恢复测试."""
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
 import json
@@ -86,7 +86,7 @@ def test_failed_claim_replacement_cannot_write(tasks):
 
 
 def test_broker_refusal_is_retryable(tasks, request, monkeypatch):
-    # Resolve the shared real RabbitMQ fixture only in tests that need a broker.
+    # 仅在需要 broker 的测试中解析共享真实 RabbitMQ fixture.
     request.getfixturevalue("broker")
     task_id = admitted(tasks)
     port = os.environ["RABBITMQ_PORT"]
@@ -162,6 +162,6 @@ def test_killed_process_releases_workspace_lease_and_unacked_delivery(tasks, pos
         consumer.close()
 
 
-# Shared opt-in broker fixture, imported after definitions to keep this module
-# focused on organizer control and to avoid any existing deployment resources.
+# 共享自选 broker fixture, 在定义后导入以保持此模块
+# 专注于整理器控制并避免影响任何现存部署资源.
 from tests.integration.test_task_queue import broker  # noqa: E402,F401

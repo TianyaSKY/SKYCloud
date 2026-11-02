@@ -1,5 +1,5 @@
-"""File indexing primitives.
+"""文件索引基础原语.
 
-Worker entry points live in :mod:`app.infra.indexing.handler`; this package
-stays import-light so ``chunking`` can be imported without loading the handler.
+Worker 入口点位于 :mod:`app.infra.indexing.handler`; 本包保持轻量导入,
+以便在无需加载 handler 的情况下导入 ``chunking``。
 """

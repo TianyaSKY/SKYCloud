@@ -1,4 +1,4 @@
-"""Map OpenCode bus events to the stable SKYCloud AssistantEvent protocol."""
+"""将 OpenCode 总线事件映射为稳定的 SKYCloud AssistantEvent 协议."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def _permission_dict_label(value: JsonObject) -> str:
 
 
 def _permission_tool_label(value: JsonValue) -> str | None:
-    """Convert OpenCode's string/object permission details into safe text."""
+    """将 OpenCode 的字符串/对象权限详情转换为安全文本."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -102,7 +102,7 @@ def _permission_tool_label(value: JsonValue) -> str | None:
 
 
 def extract_reasoning_title(text: str) -> str | None:
-    """Extract only a short provider heading, never the reasoning body."""
+    """仅提取简短的提供商标题, 绝不提取推理正文."""
     line = next((item.strip() for item in text.splitlines() if item.strip()), "")
     if not line:
         return None
@@ -128,7 +128,7 @@ def _first_string(mapping: JsonObject, keys: tuple[str, ...]) -> str | None:
 
 
 def _message_id(part: JsonObject, properties: JsonObject) -> str | None:
-    """Find the provider message id attached to a message part/event."""
+    """查找附加在消息分块/事件上的提供商消息 ID."""
     for source in (part, properties):
         value = _first_string(source, _MESSAGE_ID_KEYS)
         if value:
@@ -143,7 +143,7 @@ def _message_id(part: JsonObject, properties: JsonObject) -> str | None:
 
 
 def _message_role(part: JsonObject, properties: JsonObject) -> str | None:
-    """Read a provider message role from the common OpenCode payload shapes."""
+    """从常见 OpenCode 负载结构中读取提供商消息角色."""
     for source in (
         part,
         properties,
@@ -161,7 +161,7 @@ def _remember_message_role(
     properties: JsonObject,
     text_state: dict[str, str],
 ) -> None:
-    """Cache roles from ``message.updated`` before its parts arrive."""
+    """在消息分块到达前从 ``message.updated`` 缓存角色."""
     candidates: list[JsonObject] = [properties]
     for key in ("message", "info"):
         nested = properties.get(key)
@@ -182,11 +182,10 @@ def _is_user_text_part(
     text: str,
     text_state: dict[str, str],
 ) -> bool:
-    """Keep provider user prompts out of the assistant answer stream.
+    """将提供商用户提示词排除在助手回答流之外.
 
-    OpenCode normally gives us the role through ``message.updated``.  The
-    prompt comparison is a defensive fallback for older runtimes that emit a
-    part update without the preceding message metadata.
+    OpenCode 通常通过 ``message.updated`` 提供角色.
+    提示词比对仅作为针对缺少前置元数据的旧运行时的防御性回退.
     """
     role = _message_role(part, properties)
     message_id = _message_id(part, properties)
@@ -232,8 +231,8 @@ def _permission_labels(permission: JsonObject) -> tuple[str | None, str]:
             tool = _permission_tool_label(source)
         else:
             tool = name
-        # Current OpenCode tool is a message/call pointer; operation details
-        # live in metadata and patterns, not in that pointer.
+        # 当前 OpenCode 工具为消息/调用指针; 操作详情
+        # 位于元数据和模式中, 而非该指针本身.
         title = (
             permission.get("title")
             or permission.get("message")
@@ -292,8 +291,8 @@ def _reasoning_events(
     part_id: str,
     text_state: dict[str, str],
 ) -> list[AssistantEvent]:
-    # Expose only a concise heading as a task title; never stream the
-    # provider's reasoning body into the user-visible answer.
+    # 仅暴露简明标题作为任务标题; 绝不将提供商的
+    # 推理正文流式传输到用户可见的回答中.
     delta = properties.get("delta") or properties.get("textDelta") or part.get(
         "delta",
     )
@@ -432,7 +431,7 @@ def map_opencode_event(
     session_id: str,
     text_state: dict[str, str],
 ) -> list[AssistantEvent]:
-    """Return zero or more safe events for one provider bus record."""
+    """为单个提供商总线记录返回零个或多个安全事件."""
     kind = _event_type(event)
     properties = _properties(event)
     _remember_message_role(properties, text_state)

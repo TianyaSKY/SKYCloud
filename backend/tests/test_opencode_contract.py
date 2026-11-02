@@ -1,4 +1,4 @@
-"""Upstream diagnostics stay private; only confirmed absence permits recovery."""
+"""上游诊断信息保持私有; 仅确认不存在时允许恢复测试."""
 import asyncio
 import traceback
 from contextlib import asynccontextmanager

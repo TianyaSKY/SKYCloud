@@ -1,1 +1,1 @@
-"""Regression tests for MCP authentication, workspace scope, and runtimes."""
+"""MCP 认证、工作区范围与运行时回归测试."""

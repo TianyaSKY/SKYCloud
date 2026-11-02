@@ -1,4 +1,4 @@
-"""Revalidation must precede cache-backed protocol reads."""
+"""基于缓存的协议读取前必须进行重新校验测试."""
 import asyncio
 import json
 from unittest.mock import MagicMock

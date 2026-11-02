@@ -1,6 +1,6 @@
-"""File retrieval orchestration: worker-owned SQL, cache and shared embedding adapter.
+"""文件检索编排层: Worker 专属 SQL、缓存与共享向量嵌入服务.
 
-Upload, object publication and multipart lifecycle belong to the file service.
+上传、对象发布及分片生命周期全权交由文件服务处理。
 """
 
 from collections.abc import Callable
@@ -30,7 +30,7 @@ ResultT = TypeVar("ResultT")
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchFilesParams:
-    """Search term, paging and mode for one file search."""
+    """单次文件搜索的检索词、分页参数与搜索模式."""
 
     query: str
     page: int = 1
@@ -39,7 +39,7 @@ class SearchFilesParams:
 
 
 def _empty_page(params: SearchFilesParams) -> dict[str, object]:
-    """Return the empty result page with the requested paging values."""
+    """基于传入的分页参数返回空的分页搜索结果对象."""
     return {"items": [], "total": 0, "page": params.page, "page_size": params.page_size}
 
 
@@ -51,7 +51,7 @@ async def _execute_search(
     user_id: int | None,
     run: Callable[[Session], ResultT] | None,
 ) -> ResultT | None:
-    """Run the search callback on the session owner thread after authorization."""
+    """完成成员鉴权后在 Session 所属线程上运行搜索回调."""
 
     def work() -> ResultT | None:
         if session_factory is not None:
@@ -77,7 +77,7 @@ async def search_files(
     session_factory: Callable[[], AbstractContextManager[Session]] | None = None,
     user_id: int | None = None,
 ) -> dict[str, object]:
-    """Search file names or embeddings inside the workspace."""
+    """在工作空间内根据文件名模糊匹配或向量嵌入相似度执行检索."""
     if not params.query:
         return _empty_page(params)
 
@@ -95,7 +95,7 @@ async def search_files(
 
     try:
         if user_id is not None:
-            # Authorize before spending provider resources.
+            # 在调用上游模型供应商资源前优先完成鉴权校验。
             await _execute_search(
                 session,
                 workspace_id,
@@ -137,12 +137,12 @@ _search_cache_allowed: Callable[..., bool] = sql_cache_allowed
 def _cache_allowed(
     session: Session, workspace_id: int, query: str, page: int, page_size: int,
 ) -> bool:
-    """Consult the module-level gate at call time so tests can replace it."""
+    """在调用时动态读取模块级网关函数, 便于单元测试进行替换."""
     return _search_cache_allowed(session, workspace_id, query, page, page_size)
 
 
 def _search_revision(session: Session, workspace_id: int) -> int:
-    """Return the workspace search revision stored in SQL."""
+    """返回持久化在 SQL 中的工作空间搜索缓存版本号."""
     revision = session.scalar(
         select(Workspace.search_cache_revision).where(Workspace.id == workspace_id),
     )
@@ -152,7 +152,7 @@ def _search_revision(session: Session, workspace_id: int) -> int:
 def _search_generation_key(
     session: Session, workspace_id: int, query: str, page: int, page_size: int,
 ) -> str:
-    """Return the cache generation scope of the workspace search."""
+    """返回工作空间搜索缓存的代际作用域键名."""
     del session, query, page, page_size
     return f"{SEARCH_GENERATION_PREFIX}:{workspace_id}"
 
@@ -164,7 +164,7 @@ def _search_cache_key(
     page: int,
     page_size: int,
 ) -> str:
-    """Return the fuzzy search cache key for these arguments."""
+    """基于当前入参计算模糊搜索的 Redis 缓存键名."""
     revision = _search_revision(session, workspace_id)
     return (
         f"{workspace_id}:sql:{revision}:{query}:{page}:{page_size}:fuzzy"
@@ -180,7 +180,7 @@ def _search_cache_key(
 def _search_files_fuzzy(
     session: Session, workspace_id: int, query: str, page: int, page_size: int,
 ) -> dict[str, object]:
-    """Return one page of files whose name matches the term."""
+    """返回文件名与关键词匹配的单页文件列表."""
     rows = repository.search_names(session, workspace_id, query, page, page_size)
     return {
         "items": [file.to_dict() for file in rows.items],
@@ -197,7 +197,7 @@ def _search_files_vector_by_embedding(
     page: int,
     page_size: int,
 ) -> dict[str, object]:
-    """Return one page of embedded files ordered by cosine distance."""
+    """按余弦距离升序返回与目标向量相似的单页文件列表."""
     if not embeddings:
         return {
             "items": [],
@@ -219,7 +219,7 @@ def _search_files_vector_by_embedding(
 async def embedding_desc(
     desc: str, config: dict[str, str], user_id: int = 0,
 ) -> list[float]:
-    """Return one text embedding; failures return an empty list by design."""
+    """计算单段文本的向量嵌入; 设计约定发生失败时返回空列表."""
     try:
         vectors = await embed_texts(
             texts=desc,

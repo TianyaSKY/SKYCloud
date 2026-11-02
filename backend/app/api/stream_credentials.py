@@ -1,4 +1,4 @@
-"""Request-local HTTP credentials for continued stream authorization."""
+"""用于流式响应持续鉴权的请求局部 HTTP 凭证."""
 
 from __future__ import annotations
 
@@ -22,13 +22,13 @@ _STREAM_INVALID = "Stream session is no longer valid"
 
 @dataclass(frozen=True)
 class StreamCredential:
-    """A request-local credential used to revalidate long-lived streams."""
+    """用于长生命周期数据流持续重新验证的请求局部凭据."""
 
     token: str = field(repr=False)
     user_id: int
 
     def validate(self, session: Session, user_id: int) -> None:
-        """Verify the stream credential against current authoritative state."""
+        """根据当前权威数据库状态验证流凭据的有效性."""
         try:
             payload = cast(
                 "Mapping[str, object]",
@@ -40,8 +40,8 @@ class StreamCredential:
             ):
                 raise AuthenticationError(_STREAM_INVALID)
             if payload.get("type") == "mcp":
-                # Read-only scalar check avoids cached ORM state and updating
-                # last_used_at/committing on every stream poll.
+                # 只读标量检查避免了缓存的 ORM 状态,
+                # 并避免每次轮询时更新 last_used_at / 提交事务。
                 active = token_service.is_active_http_token(
                     session, self.token, user_id,
                 )

@@ -1,7 +1,7 @@
-"""Translate RAG provider events and settle accepted usage when streams close.
+"""将 RAG 供应商事件转换为稳定事件, 并在流关闭时结算用量.
 
-The caller owns model-chain construction and supplies the event source and
-usage writer. This module owns iterator closure and cancellation accounting.
+调用方管理模型链构建并提供事件源与用量记录器。
+本模块负责迭代器的妥善关闭以及取消时的用量记账。
 """
 
 import asyncio
@@ -24,14 +24,14 @@ from app.infra.owned_work import run_owned_persistent
 
 
 class UsageRecorder(Protocol):
-    """Persist one accepted chat usage record."""
+    """持久化单条已确认的聊天 Token 用量记录."""
 
     def __call__(self, usage: TokenUsage) -> None:
-        """Record the usage of one settled chat stream."""
+        """记录单次已结算聊天流的 Token 用量."""
 
 
 def _event_data(event: StreamEvent) -> dict[str, object]:
-    """Read one event's data mapping without assuming pure JSON values."""
+    """读取单次事件的数据字典映射, 不假定其为纯 JSON 值."""
     data: object = event["data"]
     if not isinstance(data, dict):
         return {}
@@ -39,12 +39,12 @@ def _event_data(event: StreamEvent) -> dict[str, object]:
 
 
 def _chunk_content(chunk: object) -> object:
-    """Read streamed content from the final-answer SDK chunk."""
+    """从最终回答的 SDK 数据块中读取流式生成的内容文本."""
     return chunk.content if isinstance(chunk, AIMessageChunk) else None
 
 
 def _usage_counts(output: object) -> tuple[int, int, int] | None:
-    """Read prompt/completion/total token counts from one model result."""
+    """从单个模型结果中读取提示词、补全与总 Token 计数."""
     if not isinstance(output, AIMessage) or not output.usage_metadata:
         return None
     metadata = output.usage_metadata
@@ -56,13 +56,13 @@ def _usage_counts(output: object) -> tuple[int, int, int] | None:
 
 
 def _model_name(event: StreamEvent) -> str | None:
-    """Read the model name advertised in one event's run metadata."""
+    """从单次事件的运行元数据中读取声明的模型名称."""
     value: object = (event.get("metadata") or {}).get("ls_model_name")
     return value if isinstance(value, str) else None
 
 
 def _keyword_event(event: StreamEvent) -> AssistantEvent | None:
-    """Emit the complete keyword dimensions once the rewriter settles."""
+    """在改写器完成处理后发送完整的关键词维度事件."""
     if event["event"] != "on_chain_end" or event["name"] != "keyword_gen":
         return None
     dimensions = require_keyword_dimensions(_event_data(event).get("output"))
@@ -73,7 +73,7 @@ def _keyword_event(event: StreamEvent) -> AssistantEvent | None:
 
 
 def _token_event(event: StreamEvent) -> AssistantEvent | None:
-    """Forward one final-answer model chunk, excluding rewriter tokens."""
+    """转发单个最终回答模型块, 排除改写器的 Token 干扰."""
     if event["event"] != "on_chat_model_stream":
         return None
     if event["name"] != "final_answer_model":
@@ -85,7 +85,7 @@ def _token_event(event: StreamEvent) -> AssistantEvent | None:
 
 
 def _retrieval_start_event(event: StreamEvent) -> AssistantEvent | None:
-    """Emit the retrieval status event when the retriever starts."""
+    """在检索器启动时发出检索状态事件通知."""
     started = event["event"] == "on_retriever_start"
     chain_start = (
         event["event"] == "on_chain_start"
@@ -100,7 +100,7 @@ def _retrieval_start_event(event: StreamEvent) -> AssistantEvent | None:
 
 
 def _source_event(event: StreamEvent) -> AssistantEvent | None:
-    """Expose source metadata for the sources panel, never chunk text."""
+    """为来源展示面板公开来源元数据, 绝不暴露分块文本全文."""
     if event["event"] != "on_chain_end" or event["name"] != "custom_db_retriever":
         return None
     output: object = _event_data(event).get("output") or []
@@ -125,7 +125,7 @@ def _source_event(event: StreamEvent) -> AssistantEvent | None:
 
 
 def _accumulate_usage(event: StreamEvent, usage: dict[str, int]) -> None:
-    """Add one model result's token counts to the running totals."""
+    """将单个模型结果的 Token 计数累加至当前累计统计中."""
     counts = _usage_counts(_event_data(event).get("output"))
     if counts is None:
         return
@@ -139,7 +139,7 @@ def _usage_event(
     usage: dict[str, int],
     model_name: str | None,
 ) -> AssistantEvent | None:
-    """Build the settled usage event, or nothing when no tokens were seen."""
+    """构建结算用量事件; 若未统计到任何 Token 则返回 None."""
     if not any(usage.values()):
         return None
     return AssistantEvent(
@@ -149,7 +149,7 @@ def _usage_event(
 
 
 def _assistant_event(event: StreamEvent) -> AssistantEvent | None:
-    """Map one provider event onto at most one structured assistant event."""
+    """将单个供应商事件映射为至多一个结构化助手事件."""
     if event["event"] == "on_chat_model_end":
         return None
     return (
@@ -164,7 +164,7 @@ async def stream_chat_events(
     event_factory: Callable[[], AsyncGenerator[StreamEvent, None]], *,
     user_id: int, query: str, record_usage: UsageRecorder,
 ) -> AsyncGenerator[AssistantEvent, None]:
-    """Translate provider events into stable assistant events and settle usage."""
+    """将供应商事件翻译为稳定助手事件, 并在退出时结算用量."""
     usage_accumulator: dict[str, int] = {
         "prompt_tokens": 0,
         "completion_tokens": 0,

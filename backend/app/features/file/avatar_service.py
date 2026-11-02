@@ -1,4 +1,4 @@
-"""Avatar publication across account, folder, share and file use cases."""
+"""跨账户、文件夹、分享与文件的头像发布用例."""
 
 from collections.abc import Callable
 
@@ -35,7 +35,7 @@ from app.infra.upload_limits import AVATAR_LIMIT
 
 
 class AvatarUploadService:
-    """Publish an avatar object and point the account profile at its URL."""
+    """发布头像对象并将其 URL 关联至用户账户资料."""
 
     def __init__(
         self,
@@ -44,7 +44,7 @@ class AvatarUploadService:
         storage_factory: Callable[[], UploadStorage] = get_storage_client,
         max_bytes: int = AVATAR_LIMIT,
     ) -> None:
-        """Bind bounded staging settings and the minimal object-store boundary."""
+        """绑定有界暂存配置与精简对象存储边界."""
         self.settings = settings
         self.storage_factory = storage_factory
         self.max_bytes = max_bytes
@@ -57,7 +57,7 @@ class AvatarUploadService:
         *,
         actor_id: int | None = None,
     ) -> dict[str, object]:
-        """Store the avatar and commit its file, share and account URL together."""
+        """存储头像对象并在同一事务中提交其文件记录、分享及账户 URL."""
         authorizing_id = user_id if actor_id is None else actor_id
         user_service.authorize_account_mutation(session, authorizing_id, user_id)
 
@@ -92,7 +92,7 @@ class AvatarUploadService:
             with stage_source(
                 upload, self.settings, max_bytes=self.max_bytes,
             ) as staged:
-                # Keep identity authorization ahead of reservation/workspace locks.
+                # 在获取预留或工作空间锁之前优先完成身份鉴权。
                 user_service.authorize_account_mutation(
                     session, authorizing_id, user_id,
                 )
@@ -144,7 +144,7 @@ class AvatarUploadService:
 def _set_avatar_or_raise(
     session: Session, user_id: int, avatar_url: str,
 ) -> None:
-    """Update an existing account avatar or report a missing account."""
+    """更新现有账户头像, 若账户不存在则抛出异常."""
     if not account_repository.set_avatar(session, user_id, avatar_url):
         message = "User not found"
         raise ResourceNotFoundError(message)
@@ -157,7 +157,7 @@ def upload_avatar_for_user(
     user_id: int,
     upload: UploadSource,
 ) -> dict[str, object]:
-    """Reject unauthorized actors before staging, then publish transactionally."""
+    """在暂存前拦截未授权操作者, 随后在事务中完成发布."""
     if actor_id != user_id and actor_role != "admin":
         message = "Permission denied"
         raise PermissionDeniedError(message)

@@ -1,4 +1,4 @@
-"""Cancellation must wait for chat SQL and accepted accounting work."""
+"""取消操作必须等待对话 SQL 与已接受的记账工作完成测试."""
 import asyncio
 import threading
 from types import SimpleNamespace

@@ -35,7 +35,7 @@ _DENIED = "Permission denied"
 
 
 class CreateUserData(TypedDict, total=False):
-    """Account fields accepted at provisioning time."""
+    """创建账户时接受的入参字段结构."""
 
     username: Required[str]
     password: str
@@ -44,7 +44,7 @@ class CreateUserData(TypedDict, total=False):
 
 
 class UpdateUserData(TypedDict, total=False):
-    """Profile fields a partial update may change."""
+    """部分更新允许修改的账户资料字段结构."""
 
     username: str
     avatar: str | None
@@ -52,7 +52,7 @@ class UpdateUserData(TypedDict, total=False):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChangePasswordParams:
-    """Password change request together with the acting identity."""
+    """修改密码请求参数以及执行操作的操作者身份."""
 
     actor_id: int
     actor_role: str
@@ -62,7 +62,7 @@ class ChangePasswordParams:
 
 
 def create_user(session: Session, data: CreateUserData) -> User:
-    """Provision an account with its private workspace and root folder."""
+    """创建新账户及其私有工作区和根文件夹."""
     new_user = User(
         username=data["username"], role="common", avatar=data.get("avatar"),
     )
@@ -94,13 +94,13 @@ def create_user(session: Session, data: CreateUserData) -> User:
 
 
 def _user_cache_key(session: Session, user_id: int) -> str:
-    """Build the profile cache key from the current SQL cache revision."""
+    """根据当前 SQL 缓存版本构建用户画像缓存键."""
     revision = sql_cache_revision(session, f"user:profile:{user_id}")
     return f"{user_id}:sql:{revision}"
 
 
 def _user_cache_allowed(session: Session, user_id: int) -> bool:
-    """Use the shared SQL cache gate with the cached profile signature."""
+    """对缓存画像函数使用共享的 SQL 缓存门禁函数."""
     return sql_cache_allowed(session, user_id)
 
 
@@ -142,7 +142,7 @@ async def get_user(
     session_factory: SessionFactory | None = None,
     actor_id: int | None = None,
 ) -> User:
-    """Load a profile on its owning worker, checking actor access when given."""
+    """在 worker 线程加载账户画像, 提供操作者时执行访问权限校验."""
     if session_factory is not None:
 
         def work() -> User:
@@ -160,8 +160,8 @@ async def get_user(
                 return User.from_cache(profile)
 
         return await run_owned(work)
-    # Explicit synchronous-session callers keep their existing service seam.
-    # The overloads require a Session when no owning factory is supplied.
+    # 显式同步会话调用方保留其现有服务接口边界。
+    # 未提供 Session 工厂时, 重载要求显式传入 Session。
     user_data = await run_owned(get_user_data, cast("Session", session), user_id)
     if not user_data:
         raise ResourceNotFoundError(_NOT_FOUND)
@@ -169,7 +169,7 @@ async def get_user(
 
 
 def update_user(session: Session, user_id: int, data: UpdateUserData) -> User:
-    """Update the mutable profile fields of one account."""
+    """更新单个账户的可变个人资料字段."""
     if set(data) - {"username", "avatar"}:
         message = "Only username and avatar can be updated"
         raise BusinessRuleError(message)
@@ -184,9 +184,9 @@ def update_user(session: Session, user_id: int, data: UpdateUserData) -> User:
 
 
 def delete_user(session: Session, user_id: int) -> None:
-    """Delete an account after detaching everything it owns."""
-    # Lock the account and owned workspaces before enumerating resources.
-    # FK writers cannot add a new owned space/runtime during deletion.
+    """在解除其拥有的所有关联资源后删除该账户."""
+    # 在枚举关联资源之前先锁定账户和所拥有的工作区。
+    # 外键写入方无法在删除过程中新增工作区或运行时。
     user = account_repository.lock_user(session, user_id)
     if not user:
         raise ResourceNotFoundError(_NOT_FOUND)
@@ -198,8 +198,8 @@ def delete_user(session: Session, user_id: int) -> None:
     for runtime in account_repository.user_runtimes(session, user_id):
         if runtime.workspace_id not in owned_ids:
             docker_service.remove_runtime(runtime, session)
-    # ORM backrefs would NULL non-null ownership/membership columns. The
-    # database owns the complete cascade, including file cleanup triggers.
+    # ORM 反向引用会将非空列置空。数据库
+    # 自身管理完整的级联删除, 包括文件清理触发器。
     account_repository.delete_account(session, user_id)
     session.commit()
     session.expire_all()
@@ -243,7 +243,7 @@ def ensure_user_access(
 def authorize_account_mutation(
     session: Session, actor_id: int, user_id: int | None = None,
 ) -> str:
-    """Keep current actor authorization locked through the caller's mutation commit."""
+    """在调用方的变更提交生命周期中保持当前操作者鉴权锁定有效."""
     identities = {actor_id} if user_id is None else {actor_id, user_id}
     users = {
         user.id: user

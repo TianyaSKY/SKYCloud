@@ -1,4 +1,4 @@
-"""HTTP security and lifecycle of host-bound runtime UI credentials."""
+"""主机绑定运行时 UI 凭据的 HTTP 安全性与生命周期测试."""
 import json
 from unittest.mock import patch
 from urllib.parse import urlsplit, parse_qs
@@ -100,8 +100,8 @@ def test_renew_rotates_cookie_without_exposing_session_or_loading_runtime(ui, te
     assert "default-src 'none'" in response.headers['content-security-policy']
     assert response.headers['cache-control'] == 'no-store'
     assert client.get('/runtime-ui/__skycloud/renew?ticket=' + ticket, headers={'Host': host}).status_code == 401
-    # Existing streams keep their bounded old lease; new HTTP/WS requests use
-    # the rotated host cookie. Every lease still checks authoritative identity.
+    # 现存流保留其有界的旧租约; 新的 HTTP/WS 请求使用
+    # 轮转后的主机 Cookie. 每次租约仍检查权威身份.
     assert len(store.entries) == 2
 
 

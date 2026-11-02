@@ -1,4 +1,4 @@
-"""Workspace read queries. Caller owns authorization, Session and transaction."""
+"""工作空间只读查询层。调用方持有鉴权逻辑、Session 与事务边界."""
 
 from dataclasses import dataclass
 
@@ -11,7 +11,7 @@ from app.models.folder import Folder
 
 @dataclass(frozen=True)
 class StorageStats:
-    """Aggregate storage usage for one workspace."""
+    """单个工作空间的聚合存储用量统计数据."""
 
     total_files: int
     total_folders: int
@@ -20,7 +20,7 @@ class StorageStats:
 
 
 def storage_stats(session: Session, workspace_id: int) -> StorageStats:
-    """Return file/folder counts and the per-status file breakdown."""
+    """返回文件/文件夹总数以及各索引状态的文件分布明细."""
     files = (
         session.query(
             func.count(File.id),
@@ -49,7 +49,7 @@ def storage_stats(session: Session, workspace_id: int) -> StorageStats:
 
 
 def workspace_folders(session: Session, workspace_id: int) -> list[Folder]:
-    """Return every folder of the workspace ordered by identity."""
+    """按主键顺序返回工作空间下的全部文件夹记录."""
     return (
         session.query(Folder)
         .filter(Folder.workspace_id == workspace_id)

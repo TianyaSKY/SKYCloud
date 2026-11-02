@@ -42,9 +42,7 @@ SessionFactoryDep = Annotated[SessionFactory, Depends(get_session_factory)]
 DELETED_MESSAGE = "已删除"
 
 
-# ---------------------------------------------------------------------------
 # 工作空间 CRUD
-# ---------------------------------------------------------------------------
 
 
 @router.post(
@@ -116,9 +114,7 @@ def get_workspace(
         return success_payload(merged)
 
 
-# ---------------------------------------------------------------------------
 # OpenCode Docker 工作区
-# ---------------------------------------------------------------------------
 
 
 @router.post(
@@ -132,9 +128,9 @@ def issue_ui_ticket(
     current_user: CurrentUser,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[UiTicket]:
-    """Issue a single-use UI launch credential for the caller's running runtime."""
+    """为调用方正在运行的 Runtime 签发单次使用的 UI 启动凭据."""
     with session_factory() as session:
-        # get_current_user has already checked the exact Bearer signature/scope.
+        # get_current_user 已严格校验过 Bearer 签名的作用域。
         claims = jwt.decode(
             request.headers["authorization"].split(" ", 1)[1],
             SECRET_KEY,
@@ -154,9 +150,7 @@ def issue_ui_ticket(
 
 
 
-# ---------------------------------------------------------------------------
-# Per-user OpenCode Runtime API
-# ---------------------------------------------------------------------------
+# 用户专属 OpenCode 运行时 API
 
 
 @router.get(
@@ -168,7 +162,7 @@ def get_opencode_runtime(
     current_user: CurrentUser,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[WorkspaceRuntimeData]:
-    """Return only the current member's OpenCode Runtime status."""
+    """仅返回当前成员的 OpenCode Runtime 状态概要."""
     with session_factory() as session:
         assert_member(session, workspace_id, current_user.id)
         workspace = workspace_service.get_workspace(session, workspace_id)
@@ -184,7 +178,7 @@ def start_opencode_runtime(
     current_user: CurrentUser,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[WorkspaceRuntimeData]:
-    """Start the caller's runtime, provisioning it when absent."""
+    """启动调用方的运行时, 若不存在则自动配置创建."""
     with session_factory() as session:
         assert_can_write(session, workspace_id, current_user.id)
         workspace = workspace_service.get_workspace(session, workspace_id)
@@ -201,7 +195,7 @@ def stop_opencode_runtime(
     current_user: CurrentUser,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[WorkspaceRuntimeData]:
-    """Stop the caller's runtime and revoke its credentials."""
+    """停止调用方的运行时并立即吊销其凭据."""
     with session_factory() as session:
         assert_can_write(session, workspace_id, current_user.id)
         workspace = workspace_service.get_workspace(session, workspace_id)
@@ -218,7 +212,7 @@ def restart_opencode_runtime(
     current_user: CurrentUser,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[WorkspaceRuntimeData]:
-    """Restart the caller's runtime and refresh its MCP credentials."""
+    """重启调用方的运行时并刷新其 MCP 访问凭据."""
     with session_factory() as session:
         assert_can_write(session, workspace_id, current_user.id)
         workspace = workspace_service.get_workspace(session, workspace_id)
@@ -235,7 +229,7 @@ def setup_opencode_runtime_mcp(
     current_user: CurrentUser,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[WorkspaceRuntimeData]:
-    """Refresh the caller's MCP token and Runtime configuration."""
+    """刷新调用方的 MCP 令牌与运行时配置."""
     with session_factory() as session:
         assert_can_write(session, workspace_id, current_user.id)
         workspace = workspace_service.get_workspace(session, workspace_id)
@@ -280,9 +274,7 @@ def delete_workspace(
         return success_payload({"message": DELETED_MESSAGE})
 
 
-# ---------------------------------------------------------------------------
 # 成员管理
-# ---------------------------------------------------------------------------
 
 
 @router.post(

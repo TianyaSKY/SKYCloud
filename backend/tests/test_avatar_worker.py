@@ -1,4 +1,4 @@
-"""Avatar adaptation and fresh role checks stay on the owning SQL worker."""
+"""头像适配与最新角色检查保留在所属 SQL worker 上测试."""
 import asyncio
 import threading
 from types import SimpleNamespace

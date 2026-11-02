@@ -1,4 +1,4 @@
-"""Long-lived MCP tokens bound to one user."""
+"""绑定至特定用户的长期 MCP 个人访问令牌模型."""
 
 import hashlib
 from datetime import datetime
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 class McpTokenDict(TypedDict):
-    """Public representation of a long-lived MCP token row."""
+    """长期 MCP 令牌记录的公开表示模型."""
 
     id: int
     user_id: int
@@ -35,10 +35,9 @@ class McpTokenDict(TypedDict):
 
 
 class McpToken(Base):
-    """Long-lived MCP token row with at most one active record per user.
+    """每个用户至多拥有一个有效记录的长期 MCP 令牌模型.
 
-    Only the SHA-256 hash and fingerprint are persisted. Raw credentials are
-    returned once by the explicit issuance operation.
+    仅持久化存储 SHA-256 哈希值与脱敏指纹。原始明文凭证仅在显式签发操作时返回一次。
     """
 
     __tablename__ = "mcp_tokens"
@@ -83,32 +82,32 @@ class McpToken(Base):
 
     @staticmethod
     def hash_token(token: str) -> str:
-        """Return the SHA-256 digest of a token."""
+        """返回令牌明文的 SHA-256 摘要值."""
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     @staticmethod
     def preview_token(token: str) -> str:
-        """Return a fingerprint preview derived from the token hash."""
+        """返回根据令牌哈希派生的指纹脱敏预览."""
         return f"sha256:{McpToken.hash_token(token)[:12]}"
 
     @property
     def is_revoked(self) -> bool:
-        """Return whether the token was explicitly revoked."""
+        """返回该令牌是否已被显式撤销."""
         return self.revoked_at is not None
 
     @property
     def is_expired(self) -> bool:
-        """Return whether the token expiry instant has passed."""
+        """返回令牌是否已过有效期截止时间点."""
         expires_at = to_utc_datetime(self.expires_at)
         return expires_at is not None and expires_at <= utc_now()
 
     @property
     def is_active(self) -> bool:
-        """Return whether the token is neither revoked nor expired."""
+        """返回该令牌是否未撤销且未过期 (有效状态)."""
         return not self.is_revoked and not self.is_expired
 
     def to_dict(self) -> McpTokenDict:
-        """Return the public token representation without the raw credential."""
+        """返回不包含原始明文凭证的公开令牌字典表示."""
         return {
             "id": self.id,
             "user_id": self.user_id,

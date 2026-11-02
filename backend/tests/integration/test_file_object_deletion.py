@@ -1,4 +1,4 @@
-"""Opt-in PostgreSQL/MinIO deletion atomicity, retry and clone races."""
+"""PostgreSQL/MinIO 删除原子性、重试与克隆竞争测试."""
 import hashlib
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -38,7 +38,7 @@ def object_context(postgres,minio_storage,monkeypatch,tmp_path):
 
 @pytest.fixture
 def object_http(object_context, monkeypatch, tmp_path):
-    """Expose instant upload through its authenticated HTTP contract."""
+    """通过已认证的 HTTP 契约暴露秒传功能."""
     from fastapi.testclient import TestClient
     from app.api.factory import create_fastapi_app
     from app.features.auth.service import generate_token
@@ -359,7 +359,7 @@ def test_bulk_and_database_cascades_stage_cleanup_in_same_transaction(object_con
     db,storage,_ = object_context
     statement = {'file':'DELETE FROM files WHERE id=1','workspace':'DELETE FROM workspaces WHERE id=1',
                  'user':'DELETE FROM users WHERE id=1'}[entity]
-    # A rolled back cascade must leave both metadata and bytes; no intent survives.
+    # 回滚的级联必须保留元数据和字节数据; 不残留任何操作意图.
     with db.connect() as connection:
         transaction = connection.begin()
         connection.execute(text(statement))
@@ -465,7 +465,7 @@ def test_account_service_deletes_loaded_graph_preserves_foreign_workspace(object
     from app.models.user import User
     with object_context[2]() as session:
         user = session.get(User,1)
-        # Loading backrefs must not turn the database cascade into NULL updates.
+        # 加载 backref 绝不能将数据库级联变成 NULL 更新操作.
         for relationship in ('owned_workspaces','workspace_memberships','mcp_tokens','opencode_runtimes','mcp_runtime_tokens','assistant_conversations','files'):
             assert getattr(user,relationship)
         delete_user(session,1)

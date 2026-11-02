@@ -124,28 +124,28 @@ class WorkspaceMessageResponse(BaseModel):
 
 
 class MemberDetail(WorkspaceMemberDict):
-    """Membership row plus the user's display identity."""
+    """成员记录附带用户的展示身份信息."""
 
     username: str
     avatar: str | None
 
 
 class WorkspaceListEntry(WorkspaceDict):
-    """Workspace row plus the caller's membership context."""
+    """工作空间记录附带调用方的成员上下文."""
 
     my_role: str
     member_count: int
 
 
 class WorkspaceDetailData(WorkspaceDict):
-    """Workspace row plus the caller's role and member list."""
+    """工作空间记录附带调用方的角色与成员列表."""
 
     my_role: str | None
     members: list[MemberDetail]
 
 
 class RuntimeSummary(TypedDict):
-    """The caller's runtime fields merged into a workspace view."""
+    """合并至工作空间视图中的调用方运行时状态字段."""
 
     runtime_id: int | None
     user_id: int | None
@@ -157,33 +157,33 @@ class RuntimeSummary(TypedDict):
 
 
 class WorkspaceRuntimeData(WorkspaceDict, RuntimeSummary):
-    """Workspace fields plus the caller's runtime summary."""
+    """工作空间字段附带调用方的运行时状态概要."""
 
 
 class WorkspaceListItemData(WorkspaceRuntimeData):
-    """Workspace list entry including the caller's runtime summary."""
+    """包含调用方运行时概要的工作空间列表条目."""
 
     my_role: str
     member_count: int
 
 
 class WorkspaceDetailRuntimeData(WorkspaceDetailData, RuntimeSummary):
-    """Workspace detail plus the caller's runtime summary."""
+    """包含调用方运行时概要的工作空间详情数据."""
 
 
 class WorkspaceListPayload(TypedDict):
-    """The success payload of the workspace list."""
+    """工作空间列表接口的成功响应载荷."""
 
     workspaces: list[WorkspaceListItemData]
 
 
 class MemberListPayload(TypedDict):
-    """The success payload of the member list."""
+    """成员列表接口的成功响应载荷."""
 
     members: list[MemberDetail]
 
 
 class MessagePayload(TypedDict):
-    """The success payload carrying only a message."""
+    """仅携带提示文案的成功响应载荷."""
 
     message: str

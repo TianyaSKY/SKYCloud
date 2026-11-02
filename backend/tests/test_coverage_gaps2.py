@@ -8,9 +8,7 @@ import pytest
 from app.features.share.service import CreateShareLinkParams
 
 
-# ---------------------------------------------------------------------------
 # chat/query_rewrite.py 剩余分支
-# ---------------------------------------------------------------------------
 class TestQueryRewriteGaps:
     def test_validate_keyword_dimensions_non_str_key(self):
         """validate_keyword_dimensions 中 key 不是 str 时分支（150-151）。
@@ -56,9 +54,7 @@ class TestQueryRewriteGaps:
             require_keyword_dimensions(12345)
 
 
-# ---------------------------------------------------------------------------
 # chat/rerank.py 剩余分支
-# ---------------------------------------------------------------------------
 class TestRerankGaps:
     def test_get_rerank_client_create(self):
         """_get_rerank_client 在 None 时创建新客户端（20-25）。"""
@@ -123,9 +119,7 @@ class TestRerankGaps:
 
 
 
-# ---------------------------------------------------------------------------
 # share/router.py 剩余分支
-# ---------------------------------------------------------------------------
 class TestShareRouter:
     def test_cancel_share_not_owner(self, session, test_workspace, test_user):
         """非本人取消分享应抛 403（51-54）。"""
@@ -149,9 +143,7 @@ class TestShareRouter:
             cancel_share(share.id, other_user, lambda: nullcontext(session))
 
 
-# ---------------------------------------------------------------------------
 # exceptions.py 剩余分支
-# ---------------------------------------------------------------------------
 class TestExceptionsGaps:
     def test_register_validation_error_handler(self):
         """验证 RequestValidationError 处理器（107-111）。"""
@@ -187,9 +179,7 @@ class TestExceptionsGaps:
         assert result.status_code == 422
 
 
-# ---------------------------------------------------------------------------
 # mcp/__init__.py 剩余分支
-# ---------------------------------------------------------------------------
 class TestMcpInit:
     def test_module_imports(self):
         """仅导入验证 mcp/__init__.py 的 import 行（12-13）。"""
@@ -197,9 +187,7 @@ class TestMcpInit:
         assert hasattr(app.mcp, "__name__")
 
 
-# ---------------------------------------------------------------------------
 # infra/upload_adapter.py 剩余分支
-# ---------------------------------------------------------------------------
 class TestUploadAdapter:
     def test_fastapi_upload_adapter_save(self, tmp_path):
         """FastAPIUploadAdapter.save 写入文件。"""
@@ -260,9 +248,7 @@ class TestUploadAdapter:
             assert f.read() == b"hello"
 
 
-# ---------------------------------------------------------------------------
 # infra/llm/config.py 剩余分支
-# ---------------------------------------------------------------------------
 class TestLlmConfigGaps:
     def test_get_chat_model_config_with_env(self):
         """从环境变量读取配置（42, 54-55）。"""
@@ -287,9 +273,7 @@ class TestLlmConfigGaps:
         assert is_model_config_sys_dict_key(None) is False
 
 
-# ---------------------------------------------------------------------------
 # folder/service.py 剩余分支（update/delete 的异常路径）
-# ---------------------------------------------------------------------------
 class TestFolderServiceExceptions:
     def test_create_folder_exception(self, session):
         from app.features.folder.service import create_folder

@@ -22,9 +22,7 @@ from app.models.user import User
 from app.models.workspace import Workspace
 
 
-# ---------------------------------------------------------------------------
 # dependencies
-# ---------------------------------------------------------------------------
 
 
 class TestGetCurrentUser:
@@ -175,9 +173,7 @@ class TestRequireWorkspaceRole:
             assert exc_info.value.status_code == 403
 
 
-# ---------------------------------------------------------------------------
 # factory
-# ---------------------------------------------------------------------------
 
 
 class TestCreateFastapiApp:
@@ -185,7 +181,7 @@ class TestCreateFastapiApp:
         with patch("app.api.factory.initialize_application"):
             app = create_fastapi_app()
             assert app.title == "SKYCloud API"
-            # Check the public routing behavior; included routers may be lazy.
+            # 检查公开路由行为; 包含的路由器可能是惰性加载的.
             with TestClient(app) as client:
                 assert client.get('/api/health').json() == {'success':True,'data':{'status':'ok'}}
 
@@ -198,9 +194,7 @@ class TestLifespan:
             m.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
 # schemas 验证
-# ---------------------------------------------------------------------------
 
 from app.features.auth.schemas import LoginRequest, RegisterRequest
 from app.features.file.schemas import FilePreflightRequest, MultipartInitRequest, BatchDeleteRequest

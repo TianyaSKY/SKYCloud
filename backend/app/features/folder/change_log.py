@@ -29,7 +29,7 @@ DEFAULT_MAX_INCREMENTAL_EVENTS = 200
 
 
 class FileChangeDetail(TypedDict):
-    """Current state of one file touched since the checkpoint."""
+    """自检查点以来发生变更的文件当前状态."""
 
     id: int
     name: str
@@ -38,7 +38,7 @@ class FileChangeDetail(TypedDict):
 
 
 class FolderChangeDetail(TypedDict):
-    """Current state of one folder touched since the checkpoint."""
+    """自检查点以来发生变更的文件夹当前状态."""
 
     id: int
     name: str
@@ -47,14 +47,14 @@ class FolderChangeDetail(TypedDict):
 
 
 class ChangedDetails(TypedDict):
-    """Resolved change details for prompt construction."""
+    """用于构建整理 Prompt 的已解析实体变更明细."""
 
     changed_files_detail: list[FileChangeDetail]
     changed_folders_detail: list[FolderChangeDetail]
 
 
 class FileChangeEventSpec(TypedDict):
-    """One change event to append to the log."""
+    """待追加写入流水日志的单条变更事件规格."""
 
     entity_type: str
     entity_id: int | None
@@ -67,7 +67,7 @@ class FileChangeEventSpec(TypedDict):
 
 
 class IncrementalContext(TypedDict):
-    """Everything the organizer needs to decide incremental vs full scan."""
+    """供整理器决策增量扫描或全量扫描所需的全部上下文信息."""
 
     has_changes: bool
     has_checkpoint: bool
@@ -86,7 +86,7 @@ class IncrementalContext(TypedDict):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LogEventParams:
-    """One change event described in the terms of the event log."""
+    """以变更流水日志结构描述的单条变更事件参数."""
 
     workspace_id: int
     entity_type: str
@@ -100,7 +100,7 @@ class LogEventParams:
 
 
 def _build_folder_path(folder_id: int | None, folder_map: dict[int, Folder]) -> str:
-    """Join the parent chain into a full path; cycle-safe for dirty data."""
+    """沿父级链条拼接完整路径; 具备环路检测以防御脏数据."""
     if folder_id is None or folder_id == 0:
         return "根目录"
     parts: list[str] = []
@@ -123,7 +123,7 @@ def _resolve_changed_details(
     changed_file_ids: list[int],
     changed_folder_ids: list[int],
 ) -> ChangedDetails:
-    """Attach names and full paths to the incremental summary."""
+    """为增量摘要关联实体名称与完整路径."""
     all_folders = session.query(Folder).filter_by(workspace_id=workspace_id).all()
     folder_map: dict[int, Folder] = {folder.id: folder for folder in all_folders}
 
@@ -172,7 +172,7 @@ def _resolve_changed_details(
 
 
 def _to_payload_text(payload: JsonValue) -> str | None:
-    """Serialise the optional payload column; plain strings pass through."""
+    """序列化可选 payload 列; 纯字符串直接透传."""
     if payload is None:
         return None
     if isinstance(payload, str):
@@ -181,7 +181,7 @@ def _to_payload_text(payload: JsonValue) -> str | None:
 
 
 def log_event(params: LogEventParams) -> bool:
-    """Append one change event; a write failure returns False instead of raising."""
+    """追加一条变更事件; 写入失败返回 False 而非抛出异常."""
     return (
         log_events_batch(
             params.workspace_id,
@@ -203,7 +203,7 @@ def log_event(params: LogEventParams) -> bool:
 
 
 def log_events_batch(workspace_id: int, events: Sequence[FileChangeEventSpec]) -> int:
-    """Append change events; uses its own session so callers keep their transaction."""
+    """批量写入变更事件; 使用独立 session 避免影响调用方事务."""
     if not events:
         return 0
 
@@ -247,7 +247,7 @@ def log_events_batch(workspace_id: int, events: Sequence[FileChangeEventSpec]) -
 
 
 def get_latest_event_id(session: Session, workspace_id: int) -> int:
-    """Return the newest event id of a workspace, or 0 when it has none."""
+    """返回工作空间最新变更事件 ID, 若无事件则返回 0."""
     row = (
         session.query(FileChangeEvent)
         .filter_by(workspace_id=workspace_id)
@@ -258,7 +258,7 @@ def get_latest_event_id(session: Session, workspace_id: int) -> int:
 
 
 def get_checkpoint_event_id(session: Session, workspace_id: int) -> int:
-    """Return the checkpointed event id of a workspace, or 0 when absent."""
+    """返回工作空间已检查点的事件 ID, 若不存在则返回 0."""
     checkpoint = (
         session.query(OrganizeCheckpoint).filter_by(workspace_id=workspace_id).first()
     )
@@ -274,7 +274,7 @@ def update_checkpoint(
     *,
     mark_full_scan: bool = False,
 ) -> None:
-    """Advance the organize checkpoint; `last_event_id` never moves backwards."""
+    """推进整理检查点; `last_event_id` 保证永不倒退."""
     target_event_id = max(0, int(event_id or 0))
     now = utc_now()
     statement = postgres_insert(OrganizeCheckpoint).values(
@@ -316,9 +316,9 @@ def load_incremental_context(
     workspace_id: int,
     max_events: int = DEFAULT_MAX_INCREMENTAL_EVENTS,
 ) -> IncrementalContext:
-    """Load the change summary since the checkpoint.
+    """加载自上次检查点以来的变更流水摘要.
 
-    `overflow` tells the caller to fall back to a full scan.
+    `overflow` 指示调用方应回退至全量扫描。
     """
     max_events = max(1, int(max_events or DEFAULT_MAX_INCREMENTAL_EVENTS))
 

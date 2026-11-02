@@ -1,10 +1,10 @@
-"""Synchronous file-indexing worker handlers.
+"""同步文件索引 worker 处理器.
 
-The worker deliberately keeps the whole file pipeline synchronous. Network
-calls, local parsing, and database writes may block one worker thread, while
-the worker runtime provides process-level concurrency with a thread pool.
-Database sessions are opened only for short state transitions and writes; no
-session is held while a file is downloaded or an LLM is running.
+Worker 刻意保持整个文件处理流水线为同步执行。网络
+调用、本地解析和数据库写入可能会阻塞单个 worker 线程, 而
+worker 运行时通过线程池提供进程级并发。
+数据库会话仅在简短的状态转换和写入时打开; 在下载文件
+或运行大语言模型期间不持有任何会话。
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ EMBEDDING_DIMENSIONS = 1024
 
 @dataclass(frozen=True)
 class FileIndexContext:
-    """Immutable file metadata needed after the initial DB transaction."""
+    """在初始数据库事务后所需的不可变文件元数据."""
 
     file_id: int
     workspace_id: int
@@ -56,7 +56,7 @@ class FileIndexContext:
 
 @dataclass(frozen=True)
 class ChunkIndexResult:
-    """Prepared vector payload for one file chunk."""
+    """为单个文件分块准备的向量载荷."""
 
     chunk_index: int
     page_number: int | None
@@ -66,7 +66,7 @@ class ChunkIndexResult:
 
 @dataclass(frozen=True)
 class FileIndexResult:
-    """Complete indexing output written in one final transaction."""
+    """在最终单个事务中写入的完整索引结果."""
 
     file_id: int
     workspace_id: int
@@ -77,7 +77,7 @@ class FileIndexResult:
 
 
 def _require_file(session: Session, file_id: int) -> File:
-    """Load one file or raise the shared not-found error."""
+    """加载单个文件记录, 若不存在则抛出统一的资源未找到异常."""
     file = session.get(File, file_id)
     if file is None:
         message = f"File {file_id} not found"
@@ -86,7 +86,7 @@ def _require_file(session: Session, file_id: int) -> File:
 
 
 def _require_locked_file(session: Session, file_id: int) -> File:
-    """Lock one file row or raise the shared not-found error."""
+    """锁定单个文件行, 若不存在则抛出统一的资源未找到异常."""
     file = (
         session.query(File)
         .filter(File.id == file_id)
@@ -100,7 +100,7 @@ def _require_locked_file(session: Session, file_id: int) -> File:
 
 
 def load_file_context(file_id: int) -> FileIndexContext | None:
-    """Load metadata and mark the file processing in a short transaction."""
+    """在简短事务中加载元数据并将文件状态标记为处理中."""
     session = SessionLocal()
     try:
         try:
@@ -124,14 +124,14 @@ def load_file_context(file_id: int) -> FileIndexContext | None:
 
 
 def _save_file_description(file_id: int, description: str) -> None:
-    """Persist a generated description without holding a session over the LLM call."""
+    """持久化保存生成的描述信息, 不在 LLM 调用期间持有会话."""
     session = SessionLocal()
     try:
         file = _require_file(session, file_id)
         file.description = description
         session.commit()
     except Exception:
-        # Rollback must run for any ORM/driver failure before re-raising.
+        # 重新抛出异常前, 必须对任何 ORM/驱动层失败执行回滚。
         session.rollback()
         raise
     finally:
@@ -143,7 +143,7 @@ def _mark_file_failed(
     file_id: int,
     _error: BaseException,
 ) -> None:
-    """Mark a file failed and notify its uploader using the supplied session."""
+    """使用传入的会话将文件标记为失败并通知上传者."""
     try:
         session.rollback()
         file = session.get(File, file_id)
@@ -176,7 +176,7 @@ def _mark_file_failed(
 
 
 def mark_file_failed(file_id: int, _error: BaseException) -> None:
-    """Open a short-lived session for failure status and notification."""
+    """开启短期会话以记录失败状态并发送通知."""
     session: Session | None = None
     try:
         session = SessionLocal()
@@ -199,7 +199,7 @@ def _embed_text(
     *,
     user_id: int,
 ) -> list[float]:
-    """Generate a complete searchable file vector or fail the indexing task."""
+    """生成完整的可检索文件向量, 否则判定索引任务失败."""
     return _embed_texts([text], config, user_id=user_id)[0]
 
 
@@ -209,7 +209,7 @@ def _embed_texts(
     *,
     user_id: int,
 ) -> list[list[float]]:
-    """Require one valid database-compatible vector for every requested text."""
+    """对每个请求的文本必须生成有效且兼容数据库的向量."""
     if not texts:
         return []
     vectors = embed_texts(
@@ -243,10 +243,10 @@ def _build_chunk_results(
     emb_config: dict[str, str],
     user_id: int,
 ) -> list[ChunkIndexResult]:
-    """Extract and embed chunks without touching the database."""
+    """在不触碰数据库的前提下提取并嵌入分块."""
     sections = extract_file_sections(local_path)
     if not sections:
-        # Images, videos, and scanned documents still need one searchable chunk.
+        # 图片、视频和扫描文档仍需要一个可检索的分块。
         sections = [TextSection(description)]
 
     chunks = build_text_chunks(sections)
@@ -279,7 +279,7 @@ def _build_index_result(
     description: str,
     emb_config: dict[str, str],
 ) -> FileIndexResult:
-    """Build all CPU/network indexing output without an ORM session."""
+    """在不使用 ORM 会话的情况下构建所有 CPU/网络索引产物."""
     file_vector = _embed_text(
         f"文件名: {context.name}\n{description}",
         emb_config,
@@ -303,7 +303,7 @@ def _build_index_result(
 
 
 def _save_index_result(result: FileIndexResult) -> None:
-    """Write a complete index result in one short transaction."""
+    """在单个简短事务中写入完整的索引结果."""
     session = SessionLocal()
     try:
         file = _require_locked_file(session, result.file_id)
@@ -329,7 +329,7 @@ def _save_index_result(result: FileIndexResult) -> None:
         file.status = "success"
         session.commit()
     except Exception:
-        # Rollback must run for any ORM/driver failure before re-raising.
+        # 重新抛出异常前, 必须对任何 ORM/驱动层失败执行回滚。
         session.rollback()
         raise
     finally:
@@ -337,13 +337,13 @@ def _save_index_result(result: FileIndexResult) -> None:
 
 
 def _download_file(context: FileIndexContext) -> str:
-    """Fetch the object into a temporary file for local parsing."""
+    """将对象文件获取到临时路径以供本地解析."""
     storage = get_storage_client()
     return storage.download_to_temp(context.object_name, suffix=context.suffix)
 
 
 def handle_file_indexing(file_id: int) -> None:
-    """Index one file using a synchronous, session-bounded pipeline."""
+    """使用同步且受会话边界保护的流水线对单个文件建立索引."""
     context: FileIndexContext | None = None
     local_path: str | None = None
     try:
@@ -377,8 +377,8 @@ def handle_file_indexing(file_id: int) -> None:
             len(result.chunks),
         )
     except Exception as exc:
-        # One file must not stop the worker task; failure status is persisted
-        # and the original exception still propagates to the task owner.
+        # 单个文件失败不得中断 worker 任务; 失败状态已持久化,
+        # 原始异常仍会向上传播给任务所有者。
         logger.error(
             "Error indexing file {} (error_type={})",
             file_id,

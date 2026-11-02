@@ -1,4 +1,4 @@
-"""Real PostgreSQL list reconciliation and concurrent recreation checks."""
+"""真实 PostgreSQL 列表对齐与并发重建检查测试."""
 import os
 from datetime import timedelta
 from unittest.mock import Mock, patch
@@ -42,7 +42,7 @@ def test_postgres_bulk_list_and_concurrent_recreation(postgres, state):
         session.commit(); session.expire_all()
         def observe(_):
             if state == 'recreated':
-                # An independent connection commits while the list transaction is open.
+                # 独立连接在列表事务处于打开状态时提交.
                 with Session(postgres) as writer:
                     writer.execute(update(OpenCodeRuntime).where(OpenCodeRuntime.user_id == user_id)
                         .values(container_id='f' * 64, status='running', config_version=7))
@@ -51,7 +51,7 @@ def test_postgres_bulk_list_and_concurrent_recreation(postgres, state):
         controller = Mock(); controller.user_snapshot.side_effect = observe
         queries = []
         def record(conn, cursor, statement, parameters, context, executemany):
-            # Record only the list connection, excluding the concurrent writer.
+            # 仅记录列表连接, 排除并发写入方.
             if conn is connection:
                 queries.append(statement)
         connection = session.connection()

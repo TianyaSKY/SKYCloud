@@ -1,4 +1,4 @@
-"""Hash-only, rotating browser refresh credentials and revocable access leases."""
+"""仅哈希化存储、轮转的浏览器刷新凭证与可撤销访问租约."""
 
 import hashlib
 import json
@@ -48,7 +48,7 @@ return 1
 
 
 class Family(TypedDict):
-    """Persisted refresh-family record validated by :func:`load_family`."""
+    """由 :func:`load_family` 校验的持久化刷新凭据家族记录."""
 
     user_id: int
     auth_version: int
@@ -57,14 +57,14 @@ class Family(TypedDict):
 
 
 class AccessClaims(TypedDict):
-    """Minimal claims an access token must expose when seeding a family."""
+    """种子化凭据家族时访问令牌必须公开的最小声明字段."""
 
     sub: str
     ver: int
 
 
 class SessionUserPayload(TypedDict):
-    """Public session user projection."""
+    """公开的会话用户信息投影模型."""
 
     id: int
     username: str
@@ -73,7 +73,7 @@ class SessionUserPayload(TypedDict):
 
 
 class SessionPayload(TypedDict):
-    """Public browser session projection returned by create/refresh."""
+    """创建或刷新会话后返回的公开浏览器会话模型."""
 
     token: str
     user_id: int
@@ -86,7 +86,7 @@ UserRow = Row[tuple[int, str, str | None, str | None, int]]
 
 
 def origin() -> str:
-    """Return the configured application origin, rejecting unsafe values."""
+    """返回配置的应用程序 Origin, 拒绝不安全的 Origin 配置值."""
     value = os.getenv("APP_ORIGIN", "http://app.skycloud.localhost").rstrip("/")
     parsed = urlsplit(value)
     if (
@@ -109,12 +109,12 @@ def origin() -> str:
 
 
 def cookie_name() -> str:
-    """Return the refresh cookie name for the current origin."""
+    """返回当前 Origin 对应的刷新 Cookie 名称."""
     return ("__Host-" if origin().startswith("https://") else "") + COOKIE
 
 
 def check_origin(request: Request, *, required: bool = False) -> None:
-    """Reject cross-origin browser session mutations."""
+    """拒绝跨源的浏览器会话变更请求."""
     supplied = request.headers.get("origin")
     if (supplied and supplied != origin()) or (
         required
@@ -127,12 +127,12 @@ def check_origin(request: Request, *, required: bool = False) -> None:
 
 
 def credential(request: Request) -> str:
-    """Read the refresh credential from the request cookies."""
+    """从请求 Cookie 中读取刷新凭据."""
     return request.cookies.get(cookie_name(), "")
 
 
 def set_cookie(response: Response, raw: str, seconds: int) -> None:
-    """Attach the rotating refresh credential to the response."""
+    """将轮转的刷新凭据附加到响应的 Cookie 中."""
     response.set_cookie(
         cookie_name(),
         raw,
@@ -146,7 +146,7 @@ def set_cookie(response: Response, raw: str, seconds: int) -> None:
 
 
 def clear_cookie(response: Response) -> None:
-    """Delete the refresh credential cookie."""
+    """从客户端响应中删除刷新凭据 Cookie."""
     response.delete_cookie(
         cookie_name(),
         httponly=True,
@@ -158,26 +158,26 @@ def clear_cookie(response: Response) -> None:
 
 
 def digest(raw: object) -> str:
-    """Validate a refresh credential shape and return its SHA-256 digest."""
+    """验证刷新凭据格式并返回其 SHA-256 摘要."""
     if not isinstance(raw, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", raw):
         raise HTTPException(401, "Refresh session required")
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def family_key(sid: object) -> str:
-    """Validate a browser session id and return its Redis family key."""
+    """验证浏览器会话 ID 并返回其 Redis 凭据家族键名."""
     if not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", sid):
         raise HTTPException(401, "Invalid browser session")
     return "web-auth:family:" + sid
 
 
 def token_key(raw: object) -> str:
-    """Return the Redis key that maps a refresh credential to its family."""
+    """返回将刷新凭据映射至其家族的 Redis 键名."""
     return "web-auth:refresh:" + digest(raw)
 
 
 def available(operation: str, *args: RedisArgument) -> RedisValue:
-    """Run one synchronous Redis command, mapping store failures to 503."""
+    """运行单条同步 Redis 命令, 将存储失败映射为 503 错误."""
     try:
         return getattr(redis_client, operation)(*args)
     except Exception as exc:
@@ -185,7 +185,7 @@ def available(operation: str, *args: RedisArgument) -> RedisValue:
 
 
 def load_family(sid: str) -> Family:
-    """Load and validate a persisted refresh family."""
+    """加载并校验已持久化的刷新凭据家族."""
     value = available("get", family_key(sid))
     try:
         return _parse_family(value)
@@ -194,7 +194,7 @@ def load_family(sid: str) -> Family:
 
 
 def _parse_family(value: RedisValue) -> Family:
-    """Decode and validate one persisted refresh family record."""
+    """解码并校验单条已持久化的刷新凭据家族记录."""
     raw_value: object = (
         json.loads(value)
         if isinstance(value, str | bytes | bytearray) and value
@@ -203,7 +203,7 @@ def _parse_family(value: RedisValue) -> Family:
     if not isinstance(raw_value, dict):
         message = "Refresh family is not a JSON object"
         raise TypeError(message)
-    # Decoded JSON objects always use string keys.
+    # 解码后的 JSON 对象始终使用字符串键。
     payload = cast("dict[str, object]", raw_value)
     family_user_id = payload.get("user_id")
     family_auth_version = payload.get("auth_version")
@@ -218,22 +218,22 @@ def _parse_family(value: RedisValue) -> Family:
     ):
         message = "Refresh family record is invalid"
         raise ValueError(message)
-    # The runtime checks above prove the required family fields.
+    # 上述运行时检查已确认必需的家族字段完整。
     return cast("Family", payload)
 
 
 def family_for(raw: str) -> str:
-    """Resolve a refresh credential to its validated browser session id."""
+    """将刷新凭据解析为其经过验证的浏览器会话 ID."""
     sid = available("get", token_key(raw))
     if isinstance(sid, bytes):
         sid = sid.decode()
     family_key(sid)
-    # family_key has validated both the type and shape without altering the id.
+    # family_key 已校验类型和格式, 未修改 ID 内容。
     return cast("str", sid)
 
 
 def current_user(session: Session, family: Family) -> UserRow:
-    """Load the live account row the family was issued for."""
+    """加载签发该凭据家族所对应的实时账户记录行."""
     row = session.execute(
         select(User.id, User.username, User.role, User.avatar, User.auth_version)
         .where(User.id == family["user_id"]),
@@ -244,7 +244,7 @@ def current_user(session: Session, family: Family) -> UserRow:
 
 
 def response_payload(row: UserRow, sid: str) -> SessionPayload:
-    """Issue an access token bound to ``sid`` and its public projection."""
+    """签发绑定到 ``sid`` 的访问令牌及其公开投影模型."""
     token = auth_service.generate_token(row.id, row.auth_version, session_id=sid)
     if not token:
         raise HTTPException(503, "Unable to issue access session")
@@ -265,7 +265,7 @@ def response_payload(row: UserRow, sid: str) -> SessionPayload:
 def create(
     session: Session, access_claims: AccessClaims,
 ) -> tuple[str, SessionPayload]:
-    """Create a browser refresh family and its first access session."""
+    """创建浏览器刷新凭据家族及其初始访问会话."""
     sid, raw = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     family: Family = {
         "user_id": int(access_claims["sub"]),
@@ -291,7 +291,7 @@ def create(
 
 
 def refresh(session: Session, raw: str) -> tuple[str, SessionPayload, int]:
-    """Rotate a refresh credential, rejecting reuse of a consumed family."""
+    """轮转刷新凭据, 拒绝已被消费的凭据家族重复使用."""
     sid = family_for(raw)
     family = load_family(sid)
     row = current_user(session, family)
@@ -322,7 +322,7 @@ def refresh(session: Session, raw: str) -> tuple[str, SessionPayload, int]:
 
 
 def revoke(raw: str) -> None:
-    """Revoke the family behind a refresh credential when it is still valid."""
+    """当刷新凭据仍有效时撤销其背后的凭据家族."""
     if not raw:
         return
     try:
@@ -335,7 +335,7 @@ def revoke(raw: str) -> None:
 
 
 def revoke_access(authorization: str) -> None:
-    """Revoke the family bound to a still-valid access token."""
+    """撤销绑定至仍然有效的访问令牌的凭据家族."""
     try:
         scheme, token = authorization.split(" ", 1)
         if scheme.lower() != "bearer":
@@ -348,7 +348,7 @@ def revoke_access(authorization: str) -> None:
 
 
 def access_active(payload: Mapping[str, object]) -> bool:
-    """Return whether a browser access token still has a live family."""
+    """返回浏览器访问令牌是否仍然拥有存活的凭据家族."""
     try:
         sid = payload["sid"]
         if not isinstance(sid, str):

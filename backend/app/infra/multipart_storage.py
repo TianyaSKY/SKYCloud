@@ -1,7 +1,7 @@
-"""Local multipart bytes and atomic publication; no database or authorization.
+"""本地分块字节处理与原子发布; 不包含数据库或鉴权逻辑.
 
-Callers validate upload identity/ownership and hold the reservation transaction.
-Only a complete, size-checked temporary file replaces an existing destination.
+调用方负责验证上传身份与所有权, 并持有预留事务。
+只有完整且经过大小校验的临时文件才会替换已有的目标文件。
 """
 
 import errno
@@ -27,17 +27,17 @@ _INVALID_CHUNK = "Invalid stored chunk"
 
 
 def upload_directory(root: str, workspace_id: int, upload_id: str) -> str:
-    """Return the multipart directory for one workspace upload."""
+    """返回单个工作区上传任务的分块目录路径."""
     return str(Path(root) / str(workspace_id) / upload_id)
 
 
 def chunks_directory(upload_dir: str) -> str:
-    """Return the chunk directory inside a multipart upload directory."""
+    """返回分块上传目录内的 chunks 子目录路径."""
     return str(Path(upload_dir) / "chunks")
 
 
 def metadata_path(upload_dir: str) -> str:
-    """Return the metadata file path inside a multipart upload directory."""
+    """返回分块上传目录内的元数据文件路径."""
     return str(Path(upload_dir) / "meta.json")
 
 
@@ -51,7 +51,7 @@ def _ordinary(info: os.stat_result, mode: Callable[[int], bool]) -> bool:
 
 
 def _lexical_absolute(value: str) -> Path:
-    """Normalize an absolute path lexically without following directory links."""
+    """词法规范化绝对路径, 不跟随目录软链接."""
     return Path(os.path.normpath(Path(value).absolute()))
 
 
@@ -59,7 +59,7 @@ def _lexical_absolute(value: str) -> Path:
 def _chunks_handle(
     chunks_dir: str, root: str | None, *, create: bool = False,
 ) -> Generator[int | str, None, None]:
-    """Anchor byte operations beneath the multipart root without directory links."""
+    """在分块根目录之下锚定字节操作, 不跟随软链接."""
     root_path = _lexical_absolute(root or chunks_dir)
     chunks_path = _lexical_absolute(chunks_dir)
     if not chunks_path.is_relative_to(root_path):
@@ -128,7 +128,7 @@ def _chunk_source(
     descriptor: int | None = None
     try:
         if isinstance(handle, int):
-            # NONBLOCK avoids hanging on a substituted FIFO before fstat rejects it.
+            # NONBLOCK 避免在 fstat 拒绝之前因被替换的 FIFO 管道而产生挂起。
             descriptor = os.open(
                 name,
                 os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
@@ -157,7 +157,7 @@ def _chunk_names(handle: int | str) -> list[str]:
 
 
 def list_chunks(chunks_dir: str, *, root: str | None = None) -> list[int]:
-    """List the stored chunk indexes without following file or directory links."""
+    """列出已存储的分块序号, 不跟随文件或目录软链接."""
     try:
         with _chunks_handle(chunks_dir, root) as handle:
             return sorted(
@@ -199,7 +199,7 @@ def _remove_temporary(handle: int | str, name: str) -> None:
 def _atomic_owned_target(
     handle: int | str, name: str,
 ) -> Generator[BinaryIO, None, None]:
-    """Create, publish and reclaim a temporary file relative to one directory."""
+    """相对于指定目录创建、发布并回收临时文件."""
     temporary = name + "." + uuid.uuid4().hex + ".tmp"
     descriptor: int | None = None
     try:
@@ -229,13 +229,13 @@ def _atomic_owned_target(
 
 
 def prepare_chunks(chunks_dir: str, *, root: str) -> None:
-    """Create the chunk directory chain beneath the multipart root."""
+    """在分块根目录下创建分块目录链路."""
     with _chunks_handle(chunks_dir, root, create=True):
         pass
 
 
 def read_metadata(path: str, *, root: str | None = None) -> dict[str, Any]:
-    """Read chunk metadata relative to the multipart root."""
+    """相对于分块根目录读取分块元数据."""
     target = Path(path)
     with _chunks_handle(str(target.parent), root) as handle, _chunk_source(
         handle, target.name,
@@ -246,7 +246,7 @@ def read_metadata(path: str, *, root: str | None = None) -> dict[str, Any]:
 def write_metadata(
     path: str, metadata: Mapping[str, Any], *, root: str | None = None,
 ) -> None:
-    """Write chunk metadata atomically relative to the multipart root."""
+    """相对于分块根目录以原子方式写入分块元数据."""
     target = Path(path)
     with _chunks_handle(str(target.parent), root, create=True) as handle, (
         _atomic_owned_target(handle, target.name)
@@ -258,7 +258,7 @@ def write_metadata(
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SaveChunkParams:
-    """One chunk write: identity, upload, size limits and anchor root."""
+    """单分块写入参数: 序号、上传输入、大小限制与锚定根路径."""
 
     index: int
     upload: UploadInput
@@ -268,7 +268,7 @@ class SaveChunkParams:
 
 
 def save_chunk(chunks_dir: str, params: SaveChunkParams) -> None:
-    """Write one bounded chunk atomically under the chunks directory."""
+    """在分块目录下以原子方式写入单个有界分块."""
     with _chunks_handle(chunks_dir, params.root, create=True) as handle, (
         _atomic_owned_target(handle, f"{params.index}.part")
     ) as target:
@@ -286,7 +286,7 @@ def save_chunk(chunks_dir: str, params: SaveChunkParams) -> None:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AssembleParams:
-    """Expected chunk layout for one atomic assembly."""
+    """单次原子组装操作的预期分块布局."""
 
     total_chunks: int
     chunk_size: int
@@ -295,7 +295,7 @@ class AssembleParams:
 
 
 def assemble(chunks_dir: str, destination: str, params: AssembleParams) -> None:
-    """Concatenate every chunk into ``destination`` and publish atomically."""
+    """将所有分块拼接合并至 ``destination`` 并原子发布."""
     with _chunks_handle(chunks_dir, params.root) as handle, _atomic_destination(
         destination,
     ) as temporary:

@@ -1,4 +1,4 @@
-"""Unified Assistant HTTP API."""
+"""统一助手 HTTP API."""
 
 import asyncio
 import os
@@ -58,7 +58,7 @@ def _enabled(name: str, *, default: bool = True) -> bool:
 
 
 def _require_v2() -> None:
-    """Reject every route when the assistant API is disabled."""
+    """当助手 API 被禁用时拒绝所有路由."""
     if not _enabled("ASSISTANT_V2_ENABLED"):
         message = "Assistant is disabled"
         raise HTTPException(
@@ -68,7 +68,7 @@ def _require_v2() -> None:
 
 
 def _require_expert() -> None:
-    """Reject expert routes when expert mode is disabled."""
+    """当专家模式被禁用时拒绝专家路由."""
     if not _enabled("ASSISTANT_EXPERT_ENABLED"):
         message = "Expert mode is disabled"
         raise HTTPException(
@@ -78,7 +78,7 @@ def _require_expert() -> None:
 
 
 def _require_permission_ui() -> None:
-    """Reject permission responses when the UI is disabled."""
+    """当 UI 禁用时拒绝权限响应."""
     if not _enabled("ASSISTANT_PERMISSION_UI_ENABLED"):
         message = "Assistant permission confirmation is disabled"
         raise HTTPException(
@@ -98,7 +98,7 @@ def create_assistant_conversation(
     workspace: CurrentWorkspace,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[AssistantConversationDict]:
-    """Create one owned assistant conversation."""
+    """创建所属的单个助手对话."""
     with session_factory() as session:
         _require_v2()
         if payload.mode == "expert":
@@ -125,7 +125,7 @@ def list_assistant_conversations(
     workspace: CurrentWorkspace,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[AssistantConversationListPayload]:
-    """List the caller's conversations in the current workspace."""
+    """列出调用方在当前工作区中的对话."""
     with session_factory() as session:
         _require_v2()
         if mode not in {None, "fast", "expert"}:
@@ -162,7 +162,7 @@ def update_assistant_conversation(
     workspace: CurrentWorkspace,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[AssistantConversationDict]:
-    """Rename or archive one owned conversation."""
+    """重命名或归档所属的单个对话."""
     with session_factory() as session:
         _require_v2()
         conversation = service.update_conversation(
@@ -188,7 +188,7 @@ def delete_assistant_conversation(
     workspace: CurrentWorkspace,
     session_factory: SessionFactoryDep,
 ) -> None:
-    """Delete one owned conversation with no live run."""
+    """删除无活跃运行的所属对话."""
     with session_factory() as session:
         _require_v2()
         service.delete_conversation(
@@ -209,7 +209,7 @@ def list_assistant_messages(
     workspace: CurrentWorkspace,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[AssistantMessagesPayload]:
-    """Return the messages of one owned conversation."""
+    """返回所属对话的消息列表."""
     with session_factory() as session:
         _require_v2()
         conversation = service.get_user_conversation(
@@ -244,7 +244,7 @@ def get_active_assistant_run_for_conversation(
     workspace: CurrentWorkspace,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[AssistantRunDict | None]:
-    """Return the live run of one conversation, if any."""
+    """返回单个对话的活跃运行 (若存在)."""
     with session_factory() as session:
         _require_v2()
         run = service.get_active_run_for_conversation(
@@ -274,7 +274,7 @@ async def stream_assistant_message(
     ctx: Ctx,
     workspace: CurrentWorkspace,
 ) -> PreparedStreamResponse:
-    """Prepare one run and stream its stable SSE events."""
+    """准备单次运行并流式传输其稳定的 SSE 事件."""
     _require_v2()
     if not payload.query.strip():
         message = "Query is required"
@@ -318,7 +318,7 @@ async def stream_assistant_message(
                 history,
             )
 
-    # Resolve all commit-expired attributes in the blocking preparation unit.
+    # 在阻塞准备单元中解析所有 commit 后过期的属性.
     (
         stream_workspace_id,
         stream_user_id,
@@ -374,12 +374,12 @@ async def cancel_assistant_run(
     workspace: CurrentWorkspace,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[AssistantRunDict]:
-    """Persist cancellation and signal the live producer."""
+    """持久化取消状态并向存活生产者发出信号."""
     _require_v2()
 
     def persist_cancel() -> AssistantRunDict:
         with session_factory() as session:
-            # Keep commit-expired ORM serialization in the same blocking unit.
+            # 将 commit 后过期的 ORM 序列化保留在同一阻塞单元中.
             return service.request_cancel(
                 session,
                 workspace,
@@ -392,8 +392,8 @@ async def cancel_assistant_run(
         await service.run_registry.request_cancel(run_id)
         return result
 
-    # Once accepted, persistence and the local producer signal share one
-    # lifetime. Losing the HTTP response must not skip the producer signal.
+    # 一旦被接受, 持久化与本地生产者信号共享同一生命周期.
+    # 丢失 HTTP 响应绝不能跳过生产者信号.
     pending = asyncio.create_task(cancel())
     try:
         result = await asyncio.shield(pending)
@@ -415,7 +415,7 @@ def get_active_assistant_run_for_member(
     workspace: CurrentWorkspace,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[AssistantRunDict | None]:
-    """Return the caller's live expert run, if any."""
+    """返回调用方的活跃专家运行 (若存在)."""
     with session_factory() as session:
         _require_v2()
         run = service.get_active_expert_run_for_member(
@@ -436,7 +436,7 @@ def get_assistant_run(
     workspace: CurrentWorkspace,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[AssistantRunDict]:
-    """Return one owned run."""
+    """返回所属的单次运行."""
     with session_factory() as session:
         _require_v2()
         assert_member(session, int(workspace.id), int(current_user.id))
@@ -466,7 +466,7 @@ def respond_assistant_permission(
     ctx: Ctx,
     workspace: CurrentWorkspace,
 ) -> SuccessEnvelope[AssistantRunDict]:
-    """Commit one one-shot permission response."""
+    """提交单次一次性权限响应."""
     with ctx.session_factory() as session:
         _require_v2()
         _require_permission_ui()
@@ -496,7 +496,7 @@ def handoff_assistant_conversation(
     workspace: CurrentWorkspace,
     session_factory: SessionFactoryDep,
 ) -> SuccessEnvelope[AssistantConversationDict]:
-    """Create the expert conversation continuing a fast conversation."""
+    """创建接续快速对话的专家对话."""
     with session_factory() as session:
         _require_v2()
         _require_expert()

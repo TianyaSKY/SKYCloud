@@ -60,7 +60,7 @@ class TestAuthService:
         from app.features.auth.service import decode_token
         import jwt
         from app.infra.extensions import SECRET_KEY
-        # Create an expired token
+        # 创建已过期的令牌
         import datetime
         payload = {
             "exp": datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1),

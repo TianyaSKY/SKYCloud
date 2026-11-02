@@ -1,7 +1,7 @@
-"""Reclaim historical multipart directories without following directory links.
+"""回收历史分块上传目录, 不跟随目录软链接.
 
-SQL ownership and live reservation discovery belong to the caller. POSIX scans
-anchor each directory with a no-follow descriptor, including recursive removal.
+SQL 归属与活跃预留查找属于调用方职责。POSIX 扫描
+通过防跟随的文件描述符锚定各个目录, 包括递归删除操作。
 """
 
 import errno
@@ -75,7 +75,7 @@ def _remove_directory(parent: int | str, name: str) -> bool:
 def remove_multipart_upload(
     root: str, workspace_id: int, upload_id: str,
 ) -> bool:
-    """Remove only a validated owned upload; propagate failures for retry."""
+    """仅删除经过验证且归属合法的上传目录; 抛出失败供重试."""
     if workspace_id <= 0 or not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", upload_id):
         message = "Invalid multipart cleanup identity"
         raise ValueError(message)
@@ -91,7 +91,7 @@ def remove_multipart_upload(
 def remove_multipart_upload_safely(
     root: str, workspace_id: int, upload_id: str,
 ) -> None:
-    """Best-effort filesystem cleanup after publication or cancellation."""
+    """发布或取消后尽最大努力执行文件系统清理."""
     try:
         remove_multipart_upload(root, workspace_id, upload_id)
     except OSError as exc:
@@ -171,7 +171,7 @@ def _cleanup_workspaces(
 def cleanup_legacy_multipart(
     root: str, max_age_seconds: float, active_ids: set[tuple[str, str]],
 ) -> int:
-    """Remove expired legacy workspace/upload directories below ``root``."""
+    """清理位于 ``root`` 之下已过期的遗留工作区/上传目录."""
     cutoff = time.time() - max_age_seconds
     removed = 0
     try:

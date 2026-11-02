@@ -1,4 +1,4 @@
-"""Worker-thread permission notifications must respect commit and loop ownership."""
+"""工作线程权限通知必须遵循 commit 与事件循环所有权."""
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -30,7 +30,7 @@ async def test_worker_permission_notification_wakes_owning_loop():
 async def test_cancelled_future_ignores_queued_worker_notification():
     controller = RunController()
     future = controller.wait_for_permission('p1')
-    # Schedule and cancel in one callback, before queued notification delivery.
+    # 在单个回调中完成调度与取消, 位于排队通知投递之前.
     def schedule_then_cancel():
         import threading
         worker = threading.Thread(target=lambda: controller.resolve_permission('p1', 'once'))

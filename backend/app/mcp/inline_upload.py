@@ -1,6 +1,6 @@
-"""Bounded text/Base64 adaptation, independent of MCP context and SQL transactions.
+"""有界文本与 Base64 适配层, 独立于 MCP 上下文与 SQL 事务.
 
-Run on a worker: encoding and MIME inference can allocate/read synchronously.
+在 worker 线程运行: 编码与 MIME 推断可同步分配内存与读取。
 """
 
 import base64
@@ -20,7 +20,7 @@ _INVALID_ENCODING_MESSAGE = "content_encoding must be utf-8 or base64"
 
 
 def _decode_text(content: str, max_bytes: int) -> bytes:
-    """Decode plain text content, enforcing the byte budget twice."""
+    """解码纯文本内容, 双重执行字节配额约束检查."""
     if len(content) > max_bytes:
         raise ValueError(_LIMIT_EXCEEDED_MESSAGE)
     raw = content.encode("utf-8")
@@ -30,7 +30,7 @@ def _decode_text(content: str, max_bytes: int) -> bytes:
 
 
 def _decode_base64(content: str, encoded_limit: int) -> tuple[bytes, str | None]:
-    """Decode Base64 content and report a data-URI media type when present."""
+    """解码 Base64 内容并在包含 data-URI 时解析其媒体类型."""
     compact = "".join((content or "").split())
     data_mime = None
     if compact.startswith("data:"):
@@ -56,7 +56,7 @@ def build_inline_upload(
     *,
     max_bytes: int,
 ) -> Base64UploadAdapter:
-    """Build a bounded upload adapter from text or Base64 MCP content."""
+    """从文本或 Base64 格式的 MCP 内容构建有界上传适配器."""
     normalized_filename = (filename or "").strip()
     if not normalized_filename:
         raise ValueError(_FILENAME_REQUIRED_MESSAGE)

@@ -22,7 +22,7 @@ _DENIED = "Permission denied"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateShareLinkParams:
-    """Inputs for creating one share link."""
+    """创建分享链接所需的入参结构."""
 
     user_id: int
     file_id: int
@@ -32,8 +32,8 @@ class CreateShareLinkParams:
 
 
 def create_share_link(session: Session, params: CreateShareLinkParams) -> Share:
-    """Create one share link inside the caller's transaction."""
-    # Both REST and MCP callers must be current members of the file workspace.
+    """在调用方的事务内创建单条分享链接."""
+    # REST 与 MCP 调用方均必须是文件所属工作区的当前有效成员。
     current_workspace_id = repository.file_workspace_id(session, params.file_id)
     if params.workspace_id is not None and current_workspace_id != params.workspace_id:
         raise PermissionDeniedError(_DENIED)
@@ -116,7 +116,7 @@ def create_share(
 
 
 def cancel_share_for_user(session: Session, share_id: int, user_id: int) -> None:
-    """Cancel one share owned by the user or report it missing."""
+    """取消用户拥有的单条分享链接, 若不存在则报告缺失."""
     if not cancel_share(session, share_id, user_id):
         message = "Share not found or permission denied"
         raise ResourceNotFoundError(message)

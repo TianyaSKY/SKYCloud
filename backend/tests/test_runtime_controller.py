@@ -1,4 +1,4 @@
-"""Controller authentication, fixed Docker policy, identity and relay regressions."""
+"""控制器认证、固定 Docker 策略、身份与中继回归测试."""
 
 import asyncio
 import json
