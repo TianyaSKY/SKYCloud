@@ -86,8 +86,10 @@ UserRow = Row[tuple[int, str, str | None, str | None, int]]
 
 
 def origin() -> str:
-    """返回配置的应用程序 Origin, 拒绝不安全的 Origin 配置值."""
-    value = os.getenv("APP_ORIGIN", "http://app.skycloud.localhost").rstrip("/")
+    """返回配置的应用程序 Origin, 缺省或为 * 时表示放行所有 Origin."""
+    value = os.getenv("APP_ORIGIN", "").strip().rstrip("/")
+    if not value or value == "*":
+        return "*"
     parsed = urlsplit(value)
     if (
         parsed.scheme not in {"http", "https"}
@@ -114,12 +116,18 @@ def cookie_name() -> str:
 
 
 def check_origin(request: Request, *, required: bool = False) -> None:
-    """拒绝跨源的浏览器会话变更请求."""
+    """拒绝跨源的浏览器会话变更请求.
+
+    若未配置具体 APP_ORIGIN 或为 * 则放行所有 Origin.
+    """
+    configured = origin()
+    if configured == "*":
+        return
     supplied = request.headers.get("origin")
-    if (supplied and supplied != origin()) or (
+    if (supplied and supplied != configured) or (
         required
         and (
-            supplied != origin()
+            supplied != configured
             or request.headers.get("x-skycloud-session") != "1"
         )
     ):
@@ -133,13 +141,14 @@ def credential(request: Request) -> str:
 
 def set_cookie(response: Response, raw: str, seconds: int) -> None:
     """将轮转的刷新凭据附加到响应的 Cookie 中."""
+    is_wildcard = origin() == "*"
     response.set_cookie(
         cookie_name(),
         raw,
         max_age=seconds,
         httponly=True,
         secure=origin().startswith("https://"),
-        samesite="strict",
+        samesite="lax" if is_wildcard else "strict",
         path="/",
     )
     response.headers["Cache-Control"] = "no-store"
@@ -147,11 +156,12 @@ def set_cookie(response: Response, raw: str, seconds: int) -> None:
 
 def clear_cookie(response: Response) -> None:
     """从客户端响应中删除刷新凭据 Cookie."""
+    is_wildcard = origin() == "*"
     response.delete_cookie(
         cookie_name(),
         httponly=True,
         secure=origin().startswith("https://"),
-        samesite="strict",
+        samesite="lax" if is_wildcard else "strict",
         path="/",
     )
     response.headers["Cache-Control"] = "no-store"

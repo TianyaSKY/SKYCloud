@@ -16,20 +16,21 @@ from minio import Minio
 from minio.error import S3Error
 from urllib3.response import BaseHTTPResponse
 
+from app.config.storage import get_minio_config
 from app.infra.secrets import configured_password
 
 # MinIO 对象存储配置读取
 # 从环境变量读取端点、凭证、Bucket、安全标志与超时配置
 # 有界 I/O: 设置连接与读取超时以防止工作线程阻塞
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "127.0.0.1:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
+_minio_cfg = get_minio_config()
+MINIO_ENDPOINT = _minio_cfg.endpoint
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "skycloud")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
-MINIO_BUCKET = os.getenv("MINIO_BUCKET", "skycloud")
-MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() in ("true", "1", "yes")
-# 有界 I/O: 无超时的对象存储调用会长期占用工作线程.
-MINIO_CONNECT_TIMEOUT = float(os.getenv("MINIO_CONNECT_TIMEOUT", "5"))
-MINIO_READ_TIMEOUT = float(os.getenv("MINIO_READ_TIMEOUT", "120"))
-MINIO_RETRIES = int(os.getenv("MINIO_RETRIES", "2"))
+MINIO_BUCKET = _minio_cfg.bucket
+MINIO_SECURE = _minio_cfg.secure
+MINIO_CONNECT_TIMEOUT = _minio_cfg.connect_timeout
+MINIO_READ_TIMEOUT = _minio_cfg.read_timeout
+MINIO_RETRIES = _minio_cfg.retries
 
 
 class MinIOStorageClient:

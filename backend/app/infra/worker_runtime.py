@@ -9,7 +9,6 @@ API 进程是异步的, 但本进程刻意设计为同步:
 from __future__ import annotations
 
 import json
-import os
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING
@@ -18,6 +17,7 @@ from loguru import logger
 from pika.exceptions import AMQPError
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.config.worker import get_worker_config
 from app.features.file.service import cleanup_expired_uploads
 from app.features.file.tasks import deliver_pending_file_tasks
 from app.features.folder.organize.handler import handle_organize_process
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 
     from app.infra.task_queue import QueueMessage
 
-ORGANIZE_WORKERS = max(1, int(os.getenv("WORKER_ORGANIZE_THREADS", "1")))
+ORGANIZE_WORKERS = get_worker_config().organize_threads
 
 
 def _run_isolated(label: str, action: Callable[[], int | None]) -> None:
@@ -319,9 +319,7 @@ def worker_step(
 
 def run_worker(max_workers: int | None = None) -> None:
     """使用独立的索引池和整理池持续消费任务."""
-    index_workers = max_workers or max(
-        1, int(os.getenv("WORKER_MAX_THREADS", "5")),
-    )
+    index_workers = max_workers or get_worker_config().max_threads
     logger.info(
         "Worker started with index_workers=%s, organize_workers=%s",
         index_workers,

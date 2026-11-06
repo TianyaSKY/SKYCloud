@@ -6,7 +6,6 @@ Worker LLM 调用统一走同步 sync_client.chat_completion, 便于记 Token.
 
 import base64
 import mimetypes
-import os
 import tempfile
 import threading
 from pathlib import Path
@@ -23,6 +22,7 @@ from openai.types.chat import (
     ChatCompletionMessageParam,
 )
 
+from app.config.worker import get_worker_config
 from app.infra.indexing.chunking import TextSection
 from app.infra.llm import sync_client
 
@@ -90,11 +90,12 @@ VISUAL_PROMPT = (
 
 # 此处为本地工具资源限流而非任务并发控制,
 # 用于防止多个索引线程同时处理大文件时耗尽转换工具资源。
+_worker_cfg = get_worker_config()
 _document_conversion_semaphore = threading.Semaphore(
-    max(1, int(os.getenv("WORKER_DOCUMENT_CONVERSION_WORKERS", "2"))),
+    _worker_cfg.document_conversion_workers,
 )
 _video_processing_semaphore = threading.Semaphore(
-    max(1, int(os.getenv("WORKER_VIDEO_PROCESSING_WORKERS", "2"))),
+    _worker_cfg.video_processing_workers,
 )
 
 
@@ -232,6 +233,23 @@ def generate_file_description(
             chat_config or config,
             user_id=user_id,
         )
+
+    # 当未配置可用视觉语言模型时优雅降级:
+    # - 可抽取文本的文档/媒体文件: 降级为纯文本抽取与 Chat 模型描述
+    # - 纯视觉图片等无法提取文本的文件: 保留客观文件名与元数据, 绝不伪造虚假分析结果
+    if not config.get("key"):
+        extracted = _extract_text_content(local_path)
+        if extracted.strip():
+            chat_target = chat_config or config
+            if chat_target.get("key"):
+                return _generate_text_description(
+                    local_path,
+                    chat_target,
+                    user_id=user_id,
+                )
+            return f"文件内容摘要: {_truncate_content(extracted.strip())}"
+        name = Path(local_path).name
+        return f"纯视觉文件: {name} (未配置多模态视觉模型, 无法提取图像内容)"
 
     visual_contents = _get_visual_urls(local_path)
     if not visual_contents:

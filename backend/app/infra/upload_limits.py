@@ -1,6 +1,5 @@
 """有界的上传大小限制, 在解析前和复制字节流时执行校验."""
 
-import os
 from typing import IO
 
 from starlette.formparsers import MultiPartException
@@ -8,25 +7,15 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.api.contracts import error_payload
+from app.config.upload import get_upload_limits_config
+from app.config.upload import positive_limit as positive_limit  # noqa: PLC0414
 from app.exceptions import PayloadTooLargeError
 
-
-def positive_limit(name: str, default: int) -> int:
-    """从环境变量读取正整数限制值."""
-    message = f"{name} must be a positive integer"
-    try:
-        value = int(os.environ.get(name, str(default)))
-    except ValueError as exc:
-        raise RuntimeError(message) from exc
-    if value <= 0:
-        raise RuntimeError(message)
-    return value
-
-
-FILE_LIMIT = positive_limit("UPLOAD_MAX_FILE_SIZE", 256 * 1024 * 1024)
-AVATAR_LIMIT = positive_limit("UPLOAD_MAX_AVATAR_SIZE", 5 * 1024 * 1024)
-REQUEST_CONCURRENCY = positive_limit("UPLOAD_REQUEST_CONCURRENCY", 8)
-REQUEST_LIMIT = positive_limit("UPLOAD_MAX_REQUEST_SIZE", 512 * 1024 * 1024)
+_upload_limits_cfg = get_upload_limits_config()
+FILE_LIMIT = _upload_limits_cfg.max_file_size
+AVATAR_LIMIT = _upload_limits_cfg.max_avatar_size
+REQUEST_CONCURRENCY = _upload_limits_cfg.request_concurrency
+REQUEST_LIMIT = _upload_limits_cfg.max_request_size
 
 
 def copy_bounded(source: IO[bytes], target: IO[bytes], max_bytes: int) -> int:

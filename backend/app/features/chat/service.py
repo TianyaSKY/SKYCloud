@@ -15,6 +15,7 @@ from langchain_core.runnables import Runnable, RunnableLambda, RunnableParallel
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, SecretStr
 
+from app.config.rag import get_rag_config
 from app.features.chat import repository
 from app.features.chat.query_rewrite import (
     RewriteKeywordDimensions,
@@ -72,18 +73,24 @@ class _RetrievalPayload(TypedDict):
     user_id: int
 
 
-def _env_int(name: str, default: int) -> int:
+def _env_int(name: str, default: int) -> int:  # pyright: ignore[reportUnusedFunction]
+    """保持向后兼容的环境变量正整数读取辅助函数."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
     try:
-        value = int(os.getenv(name, str(default)))
+        val = int(raw.strip())
     except (TypeError, ValueError):
         return default
-    return value if value > 0 else default
+    else:
+        return val if val > 0 else default
 
 
-RAG_VECTOR_FETCH_K = _env_int("RAG_VECTOR_FETCH_K", 20)
-RAG_MULTI_QUERY_MAX_QUERIES = _env_int("RAG_MULTI_QUERY_MAX_QUERIES", 3)
-RAG_RRF_K = _env_int("RAG_RRF_K", 60)
-RAG_FUSION_TOP_K = _env_int("RAG_FUSION_TOP_K", 30)
+_rag_cfg = get_rag_config()
+RAG_VECTOR_FETCH_K = _rag_cfg.vector_fetch_k
+RAG_MULTI_QUERY_MAX_QUERIES = _rag_cfg.multi_query_max_queries
+RAG_RRF_K = _rag_cfg.rrf_k
+RAG_FUSION_TOP_K = _rag_cfg.fusion_top_k
 
 
 @lru_cache(maxsize=1)

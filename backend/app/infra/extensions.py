@@ -9,21 +9,21 @@ from redis import Redis
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, scoped_session, sessionmaker
 
+from app.config.database import get_database_pool_config
 from app.infra.secrets import required_secret
 
 load_dotenv()
 
 # Windows 本机开发时 "localhost" 常解析到 IPv6 ::1, 连接会长时间卡住;
 # 默认改用 127.0.0.1。Docker 部署通过 DATABASE_HOST=db / DATABASE_URL 覆盖。
-POSTGRES_USER = os.getenv("POSTGRES_USER")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "skycloud")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST") or os.getenv("DATABASE_HOST", "127.0.0.1")
-POSTGRES_PORT = os.getenv("POSTGRES_PORT") or os.getenv("DATABASE_PORT")
-POSTGRES_DB = os.getenv("POSTGRES_DB")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT") or os.getenv("DATABASE_PORT", "5432")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "skycloud_db")
 
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = os.getenv("REDIS_PORT", "6379")
-DEFAULT_MODEL_PWD = os.getenv("DEFAULT_MODEL_PWD", "")
 
 # 分片和对象上传前的临时文件目录。Docker 默认挂载到 /data/uploads,
 # 本机开发或测试可通过环境变量覆盖。
@@ -39,15 +39,15 @@ DATABASE_URL = os.getenv("DATABASE_URL") or (
 )
 
 # SQLAlchemy 引擎: connect_timeout 避免 Windows/网络异常时无限卡在启动
-_db_connect_timeout = int(os.getenv("DB_CONNECT_TIMEOUT", "5"))
+_db_pool_cfg = get_database_pool_config()
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-    pool_size=int(os.getenv("DB_POOL_SIZE", "10")),
-    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
-    pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
-    pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "30")),
-    connect_args={"connect_timeout": _db_connect_timeout},
+    pool_size=_db_pool_cfg.pool_size,
+    max_overflow=_db_pool_cfg.max_overflow,
+    pool_recycle=_db_pool_cfg.pool_recycle,
+    pool_timeout=_db_pool_cfg.pool_timeout,
+    connect_args={"connect_timeout": _db_pool_cfg.connect_timeout},
 )
 
 SessionFactory: TypeAlias = Callable[[], Session]
@@ -190,6 +190,10 @@ class SyncRedisClient(Protocol):
 
     def pipeline(self, *, transaction: bool = True) -> RedisPipeline:
         """以指定的事务模式创建同步命令管道."""
+        ...
+
+    def ping(self) -> bool:
+        """向 Redis 服务端发送 PING 探活命令."""
         ...
 
 

@@ -69,8 +69,14 @@ def transport_options() -> TransportOptions:
     port = positive_limit("MCP_PORT", 8001)
     hosts.update({f"backend-mcp:{port}", f"skycloud-backend-mcp:{port}"})
     origins = set(_DEFAULT_ALLOWED_ORIGINS)
+    app_origin_val = os.getenv("APP_ORIGIN", "").strip()
+    effective_app_origin = (
+        app_origin_val
+        if app_origin_val and app_origin_val != "*"
+        else "http://app.skycloud.localhost"
+    )
     for value in (
-        os.getenv("APP_ORIGIN", "http://app.skycloud.localhost"),
+        effective_app_origin,
         os.getenv("OPENCODE_MCP_URL"),
     ):
         if not value:

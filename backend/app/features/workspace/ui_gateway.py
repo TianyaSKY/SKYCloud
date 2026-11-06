@@ -105,7 +105,8 @@ def _credential(surface: RequestSurface) -> str:
 
 
 def _app_origin() -> str:
-    return os.getenv("APP_ORIGIN", DEFAULT_APP_ORIGIN).rstrip("/")
+    raw = os.getenv("APP_ORIGIN", "").strip().rstrip("/")
+    return raw if raw and raw != "*" else DEFAULT_APP_ORIGIN
 
 
 def authenticate_owned(

@@ -120,7 +120,10 @@ def _canonical(origin: _Origin) -> str:
 def ui_origin(runtime_id: int) -> str:
     """返回规范的每个运行时专有 UI Origin, 拒绝不安全的配置."""
     template = os.getenv("RUNTIME_UI_ORIGIN_TEMPLATE", DEFAULT_ORIGIN_TEMPLATE)
-    parent = os.getenv("APP_ORIGIN", DEFAULT_APP_ORIGIN)
+    raw_parent = os.getenv("APP_ORIGIN", "").strip().rstrip("/")
+    parent = (
+        raw_parent if raw_parent and raw_parent != "*" else DEFAULT_APP_ORIGIN
+    )
     if template.count("{runtime_id}") != 1 or runtime_id <= 0:
         raise HTTPException(status_code=503, detail=NOT_CONFIGURED)
     value = template.replace("{runtime_id}", str(runtime_id))

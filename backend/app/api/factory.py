@@ -1,9 +1,11 @@
 """FastAPI 应用工厂: 组装路由分发与全局异常处理."""
 
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app import initialize_application
 from app.api.contracts import (
@@ -47,6 +49,23 @@ def create_fastapi_app() -> FastAPI:
         lifespan=lifespan,
     )
     register_exception_handlers(app)
+    app_origin = os.getenv("APP_ORIGIN", "").strip().rstrip("/")
+    if app_origin and app_origin != "*":
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[app_origin],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    else:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origin_regex=".*",
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
     app.add_middleware(UploadBodyLimitMiddleware)
 
     app.include_router(auth_router, prefix="/api")
