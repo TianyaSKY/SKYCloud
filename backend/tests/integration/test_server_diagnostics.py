@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """通过生产日志配置记录的实际 Uvicorn 异常日志测试."""
 import os
 import socket
@@ -10,7 +12,7 @@ import pytest
 pytestmark=pytest.mark.skipif(os.getenv('RUN_SERVER_DIAGNOSTIC_TESTS')!='1',reason='Opt-in isolated actual Uvicorn diagnostics')
 
 
-def test_uvicorn_unexpected_domain_and_http_failures_have_no_private_traceback(tmp_path):
+def test_uvicorn_unexpected_domain_and_http_failures_have_no_private_traceback(tmp_path: Any) -> None:
     private='private-server-exception-sentinel'
     script='''
 import sys

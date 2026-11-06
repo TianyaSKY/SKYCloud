@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """专家租约取消与令牌所有权的原生 Redis 验证."""
 import asyncio
 import os
@@ -7,21 +9,23 @@ import pytest
 
 from app.exceptions import ConflictError, ServiceOperationError
 from app.features.assistant.engines import runtime_lease as engine
-from tests.integration.test_runtime_security import infrastructure  # noqa: F401
+from tests.integration.test_runtime_security import infrastructure
+
+__all__ = ["infrastructure"]  # noqa: F401
 
 pytestmark = pytest.mark.skipif(os.getenv('RUN_EXPERT_GATEWAY_TESTS') != '1', reason='Opt-in native expert Redis lease')
 
 
 @pytest.mark.parametrize('phase', ['acquire', 'lost-reply', 'release'])
-async def test_native_lease_cancellation_drains_redis_and_local_ownership(infrastructure, monkeypatch, phase):
+async def test_native_lease_cancellation_drains_redis_and_local_ownership(infrastructure: Any, monkeypatch: Any, phase: Any) -> None:
     client = infrastructure['redis']
     entered, release, finished = (threading.Event() for _ in range(3))
     runtime_id = 92001
     key = f'assistant:expert:runtime:{runtime_id}'
-    body = []
+    body: list[bool] = []
 
     class Proxy:
-        def set(self, *args, **kwargs):
+        def set(self, *args: Any, **kwargs: Any):
             result = client.set(*args, **kwargs)
             if phase != 'release':
                 entered.set()
@@ -33,7 +37,7 @@ async def test_native_lease_cancellation_drains_redis_and_local_ownership(infras
                     finished.set()
             return result
 
-        def eval(self, *args):
+        def eval(self, *args: Any):
             if phase == 'release':
                 entered.set()
                 try:
@@ -67,19 +71,19 @@ async def test_native_lease_cancellation_drains_redis_and_local_ownership(infras
 
 
 @pytest.mark.parametrize('outcome', ['busy', 'lost-reply', 'successor'])
-async def test_native_lease_admission_and_atomic_token_release(infrastructure, monkeypatch, outcome):
+async def test_native_lease_admission_and_atomic_token_release(infrastructure: Any, monkeypatch: Any, outcome: Any) -> None:
     client = infrastructure['redis']
     key = 'assistant:expert:runtime:92002'
     if outcome == 'busy':
         client.set(key, 'other-worker', ex=60)
     class Proxy:
-        def set(self, *args, **kwargs):
+        def set(self, *args: Any, **kwargs: Any):
             result = client.set(*args, **kwargs)
             if outcome == 'lost-reply':
                 raise ConnectionError('synthetic-lost-redis-response')
             return result
 
-        def eval(self, *args):
+        def eval(self, *args: Any):
             return client.eval(*args)
     monkeypatch.setattr(engine.extensions, 'redis_client', Proxy())
     if outcome == 'successor':
@@ -95,7 +99,7 @@ async def test_native_lease_admission_and_atomic_token_release(infrastructure, m
     assert not engine._LOCAL_RUNTIME_LOCKS[92002].locked()
 
 
-async def test_native_lease_stays_owned_beyond_original_ttl(infrastructure, monkeypatch):
+async def test_native_lease_stays_owned_beyond_original_ttl(infrastructure: Any, monkeypatch: Any) -> None:
     client = infrastructure['redis']
     key = 'assistant:expert:runtime:92003'
     monkeypatch.setattr(engine.extensions, 'redis_client', client)
@@ -110,15 +114,16 @@ async def test_native_lease_stays_owned_beyond_original_ttl(infrastructure, monk
 
 
 @pytest.mark.parametrize('loss', ['replacement', 'outage'])
-async def test_native_renewal_loss_aborts_owner_and_preserves_successor(infrastructure, monkeypatch, loss):
+async def test_native_renewal_loss_aborts_owner_and_preserves_successor(infrastructure: Any, monkeypatch: Any, loss: Any) -> None:
     client = infrastructure['redis']
     key = 'assistant:expert:runtime:92004'
-    aborted, stopped = [], []
+    aborted: list[bool] = []
+    stopped: list[bool] = []
     class Proxy:
-        def set(self, *args, **kwargs):
+        def set(self, *args: Any, **kwargs: Any):
             return client.set(*args, **kwargs)
 
-        def eval(self, script, *args):
+        def eval(self, script: Any, *args: Any):
             if len(args) > 3:
                 if loss == 'outage':
                     raise ConnectionError('synthetic-renewal-unavailable')

@@ -1,3 +1,6 @@
+from collections.abc import Generator
+from typing import Any, cast
+# pyright: reportPrivateUsage=false
 """实际上传到 RabbitMQ 再到锁定 SDK worker 的 MinIO/PostgreSQL 索引流水线测试."""
 import json
 import os
@@ -14,22 +17,26 @@ from tests.integration.test_migrations import postgres  # noqa: F401
 from tests.integration.test_task_queue import broker  # noqa: F401
 from tests.integration.test_upload_storage import minio_storage, upload_api  # noqa: F401
 
+__all__ = ["postgres", "broker", "minio_storage", "upload_api"]
+
+
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_INDEXING_PIPELINE_TESTS") != "1", reason="Opt-in isolated indexing pipeline"
 )
 
 
 @pytest.fixture
-def provider(request):
+def provider(request: Any) -> Generator[tuple[Any, str, list[Any]], None, None]:
     mode = request.param
-    calls = []
+    calls: list[tuple[str, Any]] = []
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args):
+        def log_message(self, format: str, *args: Any) -> None:
             pass
 
-        def do_POST(self):
+        def do_POST(self) -> None:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             calls.append((self.path, body))
+            response: dict[str, Any] = {}
             if self.path.endswith("/chat/completions"):
                 response = {
                     "id": "synthetic-description", "object": "chat.completion",
@@ -45,8 +52,8 @@ def provider(request):
                     self.end_headers()
                     self.wfile.write(b'{"error":{"message":"synthetic rejection","type":"invalid_request_error"}}')
                     return
-                inputs = body["input"]
-                inputs = inputs if isinstance(inputs, list) else [inputs]
+                raw_inputs = body["input"]
+                inputs: list[Any] = list(cast(list[Any], raw_inputs)) if isinstance(raw_inputs, list) else [raw_inputs]
                 response = {
                     "object": "list", "model": "pipeline-embedding",
                     "data": [{"object": "embedding", "index": i, "embedding": [1.0] + [0.0] * 1023}
@@ -56,7 +63,7 @@ def provider(request):
                 if mode == "incomplete":
                     response["data"] = []
                 if mode == "zero":
-                    for item in response["data"]:
+                    for item in cast(list[dict[str, Any]], response["data"]):
                         item["embedding"] = [0.0] * 1024
             else:
                 self.send_error(404)
@@ -108,7 +115,7 @@ finally:
 
 
 @pytest.mark.parametrize("provider", ["success", "rejected", "incomplete", "zero"], indirect=True)
-def test_actual_indexing_outcomes(upload_api, postgres, minio_storage, broker, provider, tmp_path):
+def test_actual_indexing_outcomes(upload_api: Any, postgres: Any, minio_storage: Any, broker: Any, provider: Any, tmp_path: Any) -> None:
     client, headers, _ = upload_api
     mode, endpoint, calls = provider
     source = b"Real object bytes become searchable chunks through the indexing worker."

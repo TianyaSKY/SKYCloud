@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """跨 worker 执行心跳与恢复的隔离 PostgreSQL 测试."""
 import concurrent.futures
 from datetime import timedelta
@@ -13,6 +15,8 @@ from sqlalchemy.orm import Session
 from entry.migrate import upgrade
 from tests.integration.test_migrations import postgres
 from app.features.assistant import repository, service
+
+__all__ = ["postgres"]
 from app.infra.datetime_utils import beijing_now
 from app.models.assistant import AssistantRun
 from app.models.user import User
@@ -153,7 +157,7 @@ print('REAL_RAG_FAILURE_PERSISTED')
 
 
 @pytest.mark.parametrize('phase', ['rewrite', 'answer', 'retrieval', 'empty'])
-def test_rag_failures_persist_failed_runs_with_real_langchain(postgres, phase):
+def test_rag_failures_persist_failed_runs_with_real_langchain(postgres: Any, phase: Any) -> None:
     upgrade(postgres)
     environment = {**os.environ, 'DATABASE_URL': postgres.url.render_as_string(hide_password=False),
                    'SKYCLOUD_RAG_FAILURE_PHASE': phase, 'PGOPTIONS': '-c statement_timeout=300'}
@@ -168,7 +172,7 @@ def test_rag_failures_persist_failed_runs_with_real_langchain(postgres, phase):
     assert 'REAL_RAG_FAILURE_PERSISTED' in result.stdout
 
 
-def create_run(engine):
+def create_run(engine: Any):
     upgrade(engine)
     with Session(engine) as session:
         user = User(username='lease-user', password_hash='unused-test-hash', role='common')
@@ -209,14 +213,18 @@ def create_run(engine):
         return run.id
 
 
-def test_other_worker_preserves_live_permission_and_recovers_expired_lease(postgres):
+def test_other_worker_preserves_live_permission_and_recovers_expired_lease(postgres: Any) -> None:
     run_id = create_run(postgres)
     with Session(postgres) as worker, Session(postgres) as observer:
-        old = repository.lock_run(observer, run_id); observer.commit()
+        old = repository.lock_run(observer, run_id)
+        observer.commit()
+        assert old is not None
         assert repository.touch_run_lease(worker, run_id, time.time())
         worker.commit()  # The caller owns the lease transaction.
         assert not service.recover_abandoned_run(observer, old)
-        assert old.to_dict()['pending_permission']['permission_id'] == 'p1'
+        dict_val = old.to_dict()
+        assert dict_val['pending_permission'] is not None
+        assert dict_val['pending_permission']['permission_id'] == 'p1'
         observer.commit()
         assert repository.touch_run_lease(worker, run_id, time.time() - 60)
         worker.commit()
@@ -226,18 +234,20 @@ def test_other_worker_preserves_live_permission_and_recovers_expired_lease(postg
         observer.refresh(old); assert old.status == 'failed'
 
 
-def test_heartbeat_and_recovery_serialize_on_the_same_run_row(postgres):
+def test_heartbeat_and_recovery_serialize_on_the_same_run_row(postgres: Any) -> None:
     run_id = create_run(postgres)
     started = threading.Event()
-    def recover():
+    def recover() -> bool:
         with Session(postgres) as observer:
             old = observer.get(AssistantRun, run_id)
             started.set()
+            assert old is not None
             result = service.recover_abandoned_run(observer, old)
             observer.commit()
             return result
     with Session(postgres) as worker, concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         row = repository.lock_run(worker, run_id)
+        assert row is not None
         row.metadata_dict = {**row.metadata_dict, 'worker_heartbeat_unix': time.time()}
         worker.flush()
         pending = executor.submit(recover)
@@ -251,7 +261,7 @@ def test_heartbeat_and_recovery_serialize_on_the_same_run_row(postgres):
 
 
 @pytest.mark.parametrize('change',['demote','remove'])
-def test_stream_poll_observes_committed_permission_loss_with_cached_member(postgres,change):
+def test_stream_poll_observes_committed_permission_loss_with_cached_member(postgres: Any,change: Any) -> None:
     from sqlalchemy import text
     from app.models.workspace import WorkspaceMember
     from app.models.assistant import AssistantConversation
@@ -263,8 +273,11 @@ def test_stream_poll_observes_committed_permission_loss_with_cached_member(postg
         db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) SELECT workspace_id,user_id,'editor' FROM assistant_conversations LIMIT 1"))
     with Session(postgres) as worker:
         run=worker.get(AssistantRun,run_id)
+        assert run is not None and run.conversation_id is not None
         conversation=worker.get(AssistantConversation,run.conversation_id)
+        assert conversation is not None and conversation.workspace_id is not None and conversation.user_id is not None
         workspace=worker.get(Workspace,conversation.workspace_id)
+        assert workspace is not None and workspace.id is not None
         cached=worker.query(WorkspaceMember).one()
         persistence=StreamPersistence(worker,workspace,conversation.user_id,conversation,run)
         assert persistence.poll(LeasePoll(

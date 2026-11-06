@@ -1,3 +1,6 @@
+from collections.abc import Callable
+from typing import Any, cast
+# pyright: reportPrivateUsage=false
 """针对实际前端/nginx、API、PG、Redis 和 MinIO 的手动 CUA 验证."""
 import asyncio
 import json
@@ -23,6 +26,8 @@ from tests.integration.fixture_paths import FIXTURE_DIR
 from tests.integration.test_runtime_security import infrastructure, controller, docker
 from tests.integration.test_migrations import postgres
 from tests.integration.test_upload_storage import minio_storage
+
+__all__ = ["infrastructure", "controller", "docker", "postgres", "minio_storage"]
 from entry.migrate import upgrade
 from app.features.auth import user_service
 from app.infra.schema import check_schema
@@ -73,7 +78,7 @@ def free_port(host: str) -> int:
 
 
 @contextmanager
-def serve(app):
+def serve(app: Any):
     sock = socket.socket(); sock.bind(('127.0.0.1', 0)); sock.listen(128)
     port = sock.getsockname()[1]
     server = uvicorn.Server(uvicorn.Config(app, log_level='warning', access_log=False))
@@ -89,11 +94,11 @@ def serve(app):
         assert not thread.is_alive(), 'Synthetic model provider thread did not stop'
 
 
-def _sse(payload):
+def _sse(payload: Any):
     return 'data: ' + json.dumps(payload) + '\n\n'
 
 
-def _completion(content):
+def _completion(content: Any):
     return {'id': 'chatcmpl-browser-fixture', 'object': 'chat.completion', 'created': int(time.time()),
             'model': CHAT_MODEL,
             'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': content}, 'finish_reason': 'stop'}],
@@ -103,7 +108,7 @@ def _completion(content):
 def build_provider():
     """带测试控制流屏障的合成兼容 OpenAI 供应商."""
     released, closing = threading.Event(), threading.Event()
-    fault = {'apply': None}
+    fault: dict[str, Any] = {'apply': None}
     provider = FastAPI()
 
     @provider.get('/fixture/release')
@@ -137,7 +142,8 @@ def build_provider():
                 yield _sse({**base, 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': ''}, 'finish_reason': None}]})
                 yield _sse({**base, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}]})
                 yield _sse({**base, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})
-                if (body.get('stream_options') or {}).get('include_usage'):
+                stream_options = body.get('stream_options')
+                if isinstance(stream_options, dict) and cast(dict[str, Any], stream_options).get('include_usage'):
                     yield _sse({**base, 'choices': [], 'usage': PROVIDER_USAGE})
                 yield 'data: [DONE]\n\n'
             return StreamingResponse(structured_frames(), media_type='text/event-stream')
@@ -172,7 +178,7 @@ def build_provider():
     return provider, released, closing, fault
 
 
-def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, minio_storage, tmp_path):
+def test_actual_frontend_auth_and_runtime(infrastructure: Any, controller: Any, postgres: Any, minio_storage: Any, tmp_path: Any) -> None:
     from app.features.workspace import docker_service
     root = Path(__file__).resolve().parents[3]
     backend = Path(__file__).resolve().parents[2]
@@ -213,8 +219,10 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
             for account, action, model, prompt, completion, total in USAGE_SAMPLES
         ])
         db.commit()
-        user_id = user.id
+        user_id = int(user.id)
         workspace = db.query(Workspace).filter_by(owner_id=user.id).order_by(Workspace.id).first()
+        assert workspace is not None and workspace.id is not None
+        assert second is not None and second.id is not None
         workspace_ids = [workspace.id, second.id]
         runtime = OpenCodeRuntime(workspace_id=workspace.id, user_id=user_id, status='stopped')
         db.add(runtime); db.commit()
@@ -232,10 +240,11 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
                         if identity and identity not in infrastructure['cleanup']:
                             infrastructure['cleanup'].append(identity)
         db.expire_all()
-        runtime = db.get(OpenCodeRuntime, runtime_id)
+        running_runtime = db.get(OpenCodeRuntime, runtime_id)
+        assert running_runtime is not None
         operation = db.query(RuntimeOperation).filter_by(runtime_id=runtime_id).one()
-        assert runtime.status == 'running' and runtime.config_version > 0
-        assert operation.state == 'complete' and operation.candidate_container_id == runtime.container_id
+        assert running_runtime.status == 'running' and running_runtime.config_version > 0
+        assert operation.state == 'complete' and operation.candidate_container_id == running_runtime.container_id
     bind_host = '127.0.0.1'
     if sys.platform.startswith('linux'):
         # Docker Desktop 将 host.docker.internal 转发至主机环回口. Linux
@@ -358,13 +367,13 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
             document = httpx.get(f'http://127.0.0.1:{parent_port}/', timeout=3, trust_env=False)
             assert "script-src 'self'" in document.headers['content-security-policy']
             assert 'unsafe-eval' not in document.headers['content-security-policy']
-            def usage_log_status(path):
+            def usage_log_status(path: str) -> int:
                 return httpx.get(f'http://127.0.0.1:{parent_port}{path}', timeout=3,
                                  trust_env=False).status_code
 
-            def wait_for_usage_logs(target):
+            def wait_for_usage_logs(target: Callable[[int], bool]) -> tuple[int, int] | None:
                 deadline = time.monotonic() + 10
-                observed = None
+                observed: tuple[int, int] | None = None
                 while time.monotonic() < deadline:
                     observed = (usage_log_status('/api/token-usage/logs'),
                                 usage_log_status('/api/admin/token-usage/logs'))
@@ -373,13 +382,20 @@ def test_actual_frontend_auth_and_runtime(infrastructure, controller, postgres, 
                     time.sleep(.2)
                 return observed
 
+            def match_502(status: int) -> bool:
+                return status == 502
+
+            def match_not_502(status: int) -> bool:
+                return status != 502
+
             def apply_usage_fault(enabled: bool) -> None:
                 fault_include.write_text(USAGE_FAULT_LOCATIONS if enabled else '')
                 reloaded = docker('exec', frontend, 'nginx', '-s', 'reload', check=False)
                 assert reloaded.returncode == 0, reloaded.stderr
                 # Reload 会轮换 worker, 因此等待边界可被观测.
-                target = (lambda status: status == 502) if enabled else (lambda status: status != 502)
+                target: Callable[[int], bool] = match_502 if enabled else match_not_502
                 observed = wait_for_usage_logs(target)
+                assert observed is not None
                 assert all(target(status) for status in observed), (
                     'Fixture nginx usage-fault reload did not take effect', enabled, observed)
             fault['apply'] = apply_usage_fault

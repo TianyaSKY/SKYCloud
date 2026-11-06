@@ -1,3 +1,5 @@
+from typing import Any, cast
+# pyright: reportPrivateUsage=false
 """基于 SQLite 的文件夹/文件元数据、清理与搜索行为测试."""
 
 import os
@@ -44,7 +46,7 @@ from app.models.folder import Folder
 class TestFolderService:
     """文件夹 CRUD 与缓存。"""
 
-    def test_create_folder(self, session, test_workspace):
+    def test_create_folder(self, session: Any, test_workspace: Any) -> None:
         """创建文件夹。"""
         folder = create_folder(session, {
             "name": "新文件夹", "workspace_id": test_workspace.id, "parent_id": None
@@ -52,42 +54,42 @@ class TestFolderService:
         assert folder.id is not None
         assert folder.name == "新文件夹"
 
-    def test_create_folder_exception_rollback(self, session):
+    def test_create_folder_exception_rollback(self, session: Any) -> None:
         """创建失败时回滚（缺少必填字段）。"""
         with pytest.raises(Exception):
-            create_folder(session, {"workspace_id": 99999})  # 缺少 name
+            create_folder(session, cast(Any, {"workspace_id": 99999}))  # 缺少 name
 
-    def test_get_folder_success(self, session, test_folder):
+    def test_get_folder_success(self, session: Any, test_folder: Any) -> None:
         """获取存在的文件夹。"""
         folder = get_folder(session, test_folder.id)
         assert folder.name == "文档"
 
-    def test_get_folder_not_found(self, session):
+    def test_get_folder_not_found(self, session: Any) -> None:
         """不存在抛 404。"""
         with pytest.raises(ResourceNotFoundError):
             get_folder(session, 99999)
 
-    def test_get_authorized_folder_success(self, session, test_workspace, test_user, test_folder):
+    def test_get_authorized_folder_success(self, session: Any, test_workspace: Any, test_user: Any, test_folder: Any) -> None:
         """同空间文件夹通过校验。"""
         folder = get_authorized_folder(session, test_workspace.id, test_user.id, test_folder.id)
         assert folder.id == test_folder.id
 
-    def test_get_authorized_folder_wrong_workspace(self, session, test_user, test_folder):
+    def test_get_authorized_folder_wrong_workspace(self, session: Any, test_user: Any, test_folder: Any) -> None:
         """跨空间访问被拒绝。"""
         with pytest.raises(PermissionDeniedError):
             get_authorized_folder(session, 99999, test_user.id, test_folder.id)
 
-    def test_update_folder(self, session, test_folder):
+    def test_update_folder(self, session: Any, test_folder: Any) -> None:
         """更新文件夹名称。"""
         updated = update_folder(session, test_folder.id, {"name": "重命名"})
         assert updated.name == "重命名"
 
-    def test_update_folder_not_found(self, session):
+    def test_update_folder_not_found(self, session: Any) -> None:
         """更新不存在抛 404。"""
         with pytest.raises(ResourceNotFoundError):
             update_folder(session, 99999, {"name": "x"})
 
-    def test_delete_folder_recursive(self, session, test_workspace, test_folder):
+    def test_delete_folder_recursive(self, session: Any, test_workspace: Any, test_folder: Any) -> None:
         """递归删除文件夹及子文件。"""
         # 在文件夹下创建文件
         f = File(name="a.txt", file_path="a.txt", file_size=10,
@@ -102,12 +104,12 @@ class TestFolderService:
         assert session.get(Folder, folder_id) is None
         assert session.get(Folder, sub.id) is None
 
-    def test_delete_folder_not_found(self, session):
+    def test_delete_folder_not_found(self, session: Any) -> None:
         """删除不存在抛 404。"""
         with pytest.raises(ResourceNotFoundError):
             delete_folder(session, 99999)
 
-    def test_get_root_folder_id(self, session, test_workspace):
+    def test_get_root_folder_id(self, session: Any, test_workspace: Any) -> None:
         """获取根文件夹 ID。"""
         root_id = get_root_folder_id(session, test_workspace.id)
         assert root_id is not None
@@ -115,12 +117,12 @@ class TestFolderService:
         assert root.name == "/"
         assert root.parent_id is None
 
-    def test_get_root_folder_id_none(self, session):
+    def test_get_root_folder_id_none(self, session: Any) -> None:
         """无根文件夹时返回 None。"""
         result = get_root_folder_id(session, 99999)
         assert result is None
 
-    def test_get_folders(self, session, test_workspace, test_folder):
+    def test_get_folders(self, session: Any, test_workspace: Any, test_folder: Any) -> None:
         """获取空间全部文件夹。"""
         folders = get_folders(session, test_workspace.id)
         assert len(folders) >= 2  # 根 + 文档
@@ -135,7 +137,7 @@ class TestFolderService:
 class TestFileServiceCRUD:
     """文件 CRUD 操作。"""
 
-    def test_get_file_success(self, session, test_workspace, test_user):
+    def test_get_file_success(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """获取存在的文件。"""
         f = File(name="a.txt", file_path="a.txt", file_size=1,
                  workspace_id=test_workspace.id, uploader_id=test_user.id)
@@ -144,12 +146,12 @@ class TestFileServiceCRUD:
         result = get_file(session, f.id)
         assert result.name == "a.txt"
 
-    def test_get_file_not_found(self, session):
+    def test_get_file_not_found(self, session: Any) -> None:
         """不存在抛 404。"""
         with pytest.raises(ResourceNotFoundError):
             get_file(session, 99999)
 
-    def test_get_authorized_file_success(self, session, test_workspace, test_user):
+    def test_get_authorized_file_success(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """同空间文件通过校验。"""
         f = File(name="b.txt", file_path="b.txt", file_size=1,
                  workspace_id=test_workspace.id, uploader_id=test_user.id)
@@ -158,7 +160,7 @@ class TestFileServiceCRUD:
         result = get_authorized_file(session, test_workspace.id, test_user.id, f.id)
         assert result.id == f.id
 
-    def test_get_authorized_file_wrong_workspace(self, session, test_workspace, test_user):
+    def test_get_authorized_file_wrong_workspace(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """跨空间访问被拒绝。"""
         f = File(name="c.txt", file_path="c.txt", file_size=1,
                  workspace_id=test_workspace.id, uploader_id=test_user.id)
@@ -167,7 +169,7 @@ class TestFileServiceCRUD:
         with pytest.raises(PermissionDeniedError):
             get_authorized_file(session, 99999, test_user.id, f.id)
 
-    def test_get_downloadable_file_missing_disk(self, session, test_workspace, test_user):
+    def test_get_downloadable_file_missing_disk(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """磁盘文件不存在抛 404。"""
         f = File(name="d.txt", file_path="nonexist_disk.txt", file_size=1,
                  workspace_id=test_workspace.id, uploader_id=test_user.id)
@@ -176,7 +178,7 @@ class TestFileServiceCRUD:
         with pytest.raises(ResourceNotFoundError, match="not found on server"):
             get_downloadable_file(session, test_workspace.id, test_user.id, f.id)
 
-    def test_update_file_rename(self, session, test_workspace, test_user):
+    def test_update_file_rename(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """重命名文件。"""
         f = File(name="old.txt", file_path="old.txt", file_size=1,
                  workspace_id=test_workspace.id, uploader_id=test_user.id)
@@ -185,7 +187,7 @@ class TestFileServiceCRUD:
         updated = update_file(session, f.id, {"name": "new.txt"})
         assert updated.name == "new.txt"
 
-    def test_update_file_move(self, session, test_workspace, test_user, test_folder):
+    def test_update_file_move(self, session: Any, test_workspace: Any, test_user: Any, test_folder: Any) -> None:
         """移动文件。"""
         f = File(name="mv.txt", file_path="mv.txt", file_size=1,
                  workspace_id=test_workspace.id, uploader_id=test_user.id)
@@ -194,12 +196,12 @@ class TestFileServiceCRUD:
         updated = update_file(session, f.id, {"parent_id": test_folder.id})
         assert updated.parent_id == test_folder.id
 
-    def test_update_file_not_found(self, session):
+    def test_update_file_not_found(self, session: Any) -> None:
         """更新不存在抛 404。"""
         with pytest.raises(ResourceNotFoundError):
             update_file(session, 99999, {"name": "x"})
 
-    def test_delete_file_no_physical(self, session, test_workspace, test_user):
+    def test_delete_file_no_physical(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """删除文件记录（磁盘文件不存在时不报错）。"""
         f = File(name="del.txt", file_path="del_nonexist.txt", file_size=1,
                  workspace_id=test_workspace.id, uploader_id=test_user.id)
@@ -209,7 +211,7 @@ class TestFileServiceCRUD:
         delete_file(session, fid)
         assert session.get(File, fid) is None
 
-    def test_delete_file_with_physical(self, session, test_workspace, test_user):
+    def test_delete_file_with_physical(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """删除文件记录 + 物理文件。"""
         # 创建真实磁盘文件
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -225,7 +227,7 @@ class TestFileServiceCRUD:
         assert session.get(File, fid) is None
         assert not os.path.exists(path)
 
-    def test_delete_file_shared_path_keeps_physical(self, session, test_workspace, test_user):
+    def test_delete_file_shared_path_keeps_physical(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """秒传共享路径：有其它引用时不删物理文件。"""
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
         path = os.path.join(UPLOAD_FOLDER, "shared_phys.txt")
@@ -243,12 +245,12 @@ class TestFileServiceCRUD:
         # 清理
         delete_file(session, f2.id)
 
-    def test_delete_file_not_found(self, session):
+    def test_delete_file_not_found(self, session: Any) -> None:
         """删除不存在抛 404。"""
         with pytest.raises(ResourceNotFoundError):
             delete_file(session, 99999)
 
-    def test_get_all_files(self, session, test_workspace, test_user):
+    def test_get_all_files(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """获取空间全部文件。"""
         session.add(File(name="x.txt", file_path="x.txt", file_size=1,
                          workspace_id=test_workspace.id))
@@ -257,7 +259,7 @@ class TestFileServiceCRUD:
         assert len(files) >= 1
 
     @pytest.mark.asyncio
-    async def test_process_status(self, session, test_workspace, test_user):
+    async def test_process_status(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """按状态聚合统计。"""
         session.add(File(name="p.txt", file_path="p.txt", file_size=1,
                          workspace_id=test_workspace.id, status="pending"))
@@ -278,25 +280,25 @@ class TestFileServiceCRUD:
 class TestFileServiceSearch:
     """文件搜索与列表。"""
 
-    def test_get_files_and_folders_basic(self, session, test_workspace, test_user, test_folder):
+    def test_get_files_and_folders_basic(self, session: Any, test_workspace: Any, test_user: Any, test_folder: Any) -> None:
         """基本列表（文件夹 + 文件混合分页）。"""
         root_id = get_root_folder_id(session, test_workspace.id)
         for i in range(3):
             session.add(File(name=f"file{i}.txt", file_path=f"f{i}.txt", file_size=i * 10,
                              workspace_id=test_workspace.id, parent_id=root_id))
         session.commit()
-        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, page=1, page_size=10))
+        result = cast(dict[str, Any], get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, page=1, page_size=10)))
         assert "folders" in result
         assert "files" in result
         assert result["files"]["total"] >= 3
 
-    def test_get_files_and_folders_page_correction(self, session, test_workspace):
+    def test_get_files_and_folders_page_correction(self, session: Any, test_workspace: Any) -> None:
         """page < 1 时修正为 1。"""
         root_id = get_root_folder_id(session, test_workspace.id)
-        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, page=0))
+        result = cast(dict[str, Any], get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, page=0)))
         assert result["files"]["page"] == 1
 
-    def test_get_files_and_folders_sort_by_name(self, session, test_workspace, test_user):
+    def test_get_files_and_folders_sort_by_name(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """按名称排序。"""
         root_id = get_root_folder_id(session, test_workspace.id)
         session.add(File(name="zzz.txt", file_path="z.txt", file_size=1,
@@ -304,34 +306,34 @@ class TestFileServiceSearch:
         session.add(File(name="aaa.txt", file_path="a.txt", file_size=1,
                          workspace_id=test_workspace.id, parent_id=root_id))
         session.commit()
-        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, sort_by="name", order="asc"))
+        result = cast(dict[str, Any], get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, sort_by="name", order="asc")))
         names = [f["name"] for f in result["files"]["items"]]
         if len(names) >= 2:
             assert names[0] <= names[1]
 
-    def test_get_files_and_folders_filter_name(self, session, test_workspace, test_user):
+    def test_get_files_and_folders_filter_name(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """按名称过滤。"""
         root_id = get_root_folder_id(session, test_workspace.id)
         session.add(File(name="unique_xyz.txt", file_path="ux.txt", file_size=1,
                          workspace_id=test_workspace.id, parent_id=root_id))
         session.commit()
-        result = get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, name="unique_xyz"))
+        result = cast(dict[str, Any], get_files_and_folders(session, GetFilesAndFoldersParams(workspace_id=test_workspace.id, parent_id=root_id, name="unique_xyz")))
         assert result["files"]["total"] >= 1
 
-    def test_search_files_fuzzy(self, session, test_workspace, test_user):
+    def test_search_files_fuzzy(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """模糊搜索。"""
         session.add(File(name="searchable_doc.pdf", file_path="sd.pdf", file_size=1,
                          workspace_id=test_workspace.id))
         session.commit()
-        result = _search_files_fuzzy(session, test_workspace.id, "searchable", 1, 10)
+        result = cast(dict[str, Any], _search_files_fuzzy(session, test_workspace.id, "searchable", 1, 10))
         assert result["total"] >= 1
 
-    def test_search_files_fuzzy_no_match(self, session, test_workspace):
+    def test_search_files_fuzzy_no_match(self, session: Any, test_workspace: Any) -> None:
         """无匹配返回空。"""
-        result = _search_files_fuzzy(session, test_workspace.id, "zzz_nonexist_zzz", 1, 10)
+        result = cast(dict[str, Any], _search_files_fuzzy(session, test_workspace.id, "zzz_nonexist_zzz", 1, 10))
         assert result["total"] == 0
 
-    def test_get_root_file_id_none(self, session, test_workspace, real_redis):
+    def test_get_root_file_id_none(self, session: Any, test_workspace: Any, real_redis: Any) -> None:
         """无根文件返回 None。"""
         result = get_root_file_id(session, test_workspace.id)
         assert result is None
@@ -347,12 +349,12 @@ class TestFileServiceSearch:
 class TestFileServiceMaintenance:
     """文件维护：重建索引、清理过期上传。"""
 
-    def test_rebuild_failed_indexes_no_failed(self, session, test_workspace):
+    def test_rebuild_failed_indexes_no_failed(self, session: Any, test_workspace: Any) -> None:
         """无失败文件返回 0。"""
         result = rebuild_failed_indexes(session, test_workspace.id)
         assert result == 0
 
-    def test_rebuild_failed_indexes_with_failed(self, session, test_workspace):
+    def test_rebuild_failed_indexes_with_failed(self, session: Any, test_workspace: Any) -> None:
         failed = File(
             name="fail.txt",
             file_path="fail.txt",
@@ -369,7 +371,7 @@ class TestFileServiceMaintenance:
         session.refresh(failed)
         assert failed.status == "pending"
 
-    def test_rebuild_failed_indexes_db_error(self, session, test_workspace, test_user):
+    def test_rebuild_failed_indexes_db_error(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         from app.exceptions import ServiceOperationError
 
         session.add(
@@ -397,18 +399,18 @@ class TestFileServiceMaintenance:
         with pytest.raises(ServiceOperationError):
             rebuild_failed_indexes(session, test_workspace.id)
 
-    def test_retry_embedding_file_not_found(self, session):
+    def test_retry_embedding_file_not_found(self, session: Any) -> None:
         """文件不存在时静默返回。"""
         retry_embedding(session, 99999)  # 不抛异常
 
-    def test_cleanup_expired_uploads_no_dir(self, tmp_path, monkeypatch):
+    def test_cleanup_expired_uploads_no_dir(self, tmp_path: Any, monkeypatch: Any) -> None:
         upload_root = tmp_path / "nonexistent"
         monkeypatch.setattr(
             "app.features.file.upload_config.UPLOAD_FOLDER", str(upload_root),
         )
         assert cleanup_expired_uploads() == 0
 
-    def test_cleanup_expired_uploads_removes_old(self, tmp_path, monkeypatch):
+    def test_cleanup_expired_uploads_removes_old(self, tmp_path: Any, monkeypatch: Any) -> None:
         upload_root = tmp_path / "uploads"
         mp_root = upload_root / ".multipart"
         upload_dir = mp_root / "1" / "old_upload_id_123456789"
@@ -424,7 +426,7 @@ class TestFileServiceMaintenance:
         assert count == 1
         assert not upload_dir.exists()
 
-    def test_cleanup_expired_uploads_keeps_recent(self, tmp_path, monkeypatch):
+    def test_cleanup_expired_uploads_keeps_recent(self, tmp_path: Any, monkeypatch: Any) -> None:
         upload_root = tmp_path / "uploads"
         upload_dir = upload_root / ".multipart" / "1" / "recent_upload_id_12345678"
         upload_dir.mkdir(parents=True)
@@ -442,7 +444,7 @@ class TestFileServiceMaintenance:
 class TestFileServiceExternalDeps:
     """需要真实远程嵌入模型提供商的测试用例."""
     @skip_unless_ai_api
-    def test_search_files_vector_success(self, session, test_workspace):
+    def test_search_files_vector_success(self, session: Any, test_workspace: Any) -> None:
         """向量搜索完整流程 (L902-925)。
 
         外部依赖：Embedding API (OpenAI 兼容接口)

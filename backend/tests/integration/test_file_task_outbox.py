@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """索引移交的真实事务/broker 故障与并发测试."""
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
@@ -21,12 +23,12 @@ from tests.integration.test_migrations import postgres  # noqa: F401
 from tests.integration.test_worker_outcomes import file_database  # noqa: F401
 from tests.integration.test_task_queue import broker  # noqa: F401
 
-pytestmark = pytest.mark.skipif(os.getenv("RUN_FILE_OUTBOX_TESTS") != "1", reason="Opt-in isolated PostgreSQL/RabbitMQ")
+__all__ = ["postgres", "file_database", "broker"]
 
 
-def drain():
+def drain() -> list[int]:
     consumer = RabbitMQTaskConsumer(.01)
-    messages = []
+    messages: list[int] = []
     try:
         while message := consumer.get_message(FILE_PROCESS_QUEUE):
             messages.append(int(message.body))
@@ -36,7 +38,7 @@ def drain():
         consumer.close()
 
 
-def test_broker_outage_retains_committed_intent_then_recovers(file_database, broker, monkeypatch):
+def test_broker_outage_retains_committed_intent_then_recovers(file_database: Any, broker: Any, monkeypatch: Any) -> None:
     factory, file_id, _ = file_database
     with factory() as db:
         service.retry_embedding(db, file_id)
@@ -60,7 +62,7 @@ def test_broker_outage_retains_committed_intent_then_recovers(file_database, bro
     assert deliver_pending_file_tasks(session_factory=factory, publisher=real_publish) == 0
 
 
-def test_task_insert_failure_rolls_back_file_metadata(file_database, postgres, tmp_path, monkeypatch, mock_object_storage):
+def test_task_insert_failure_rolls_back_file_metadata(file_database: Any, postgres: Any, tmp_path: Any, monkeypatch: Any, mock_object_storage: Any) -> None:
     factory, _, workspace_id = file_database
     monkeypatch.setattr(upload_config, "UPLOAD_FOLDER", str(tmp_path))
     with postgres.begin() as db:
@@ -82,7 +84,7 @@ def test_task_insert_failure_rolls_back_file_metadata(file_database, postgres, t
 
 
 @pytest.mark.parametrize('failure', ['status', 'outbox', 'commit'])
-def test_rebuild_http_reports_sql_failure_and_preserves_retryable_state(file_database, postgres, failure):
+def test_rebuild_http_reports_sql_failure_and_preserves_retryable_state(file_database: Any, postgres: Any, failure: Any) -> None:
     from fastapi.testclient import TestClient
     from app.api.factory import create_fastapi_app
     from app.features.auth.service import generate_token
@@ -105,7 +107,9 @@ def test_rebuild_http_reports_sql_failure_and_preserves_retryable_state(file_dat
     app = create_fastapi_app()
     app.dependency_overrides[get_session_factory] = lambda: factory
     client = TestClient(app, raise_server_exceptions=False)
-    headers = {'authorization': 'Bearer ' + generate_token(user_id), 'X-Workspace-Id': str(workspace_id)}
+    token = generate_token(user_id)
+    assert token is not None
+    headers = {'authorization': 'Bearer ' + token, 'X-Workspace-Id': str(workspace_id)}
     response = client.post('/api/files/rebuild_failed_indexes', headers=headers)
     assert response.status_code == 500, response.text
     assert response.json() == {'success': False, 'error': {'code': 'INTERNAL_ERROR', 'message': 'Internal server error'}}
@@ -122,14 +126,14 @@ def test_rebuild_http_reports_sql_failure_and_preserves_retryable_state(file_dat
         assert db.query(FileTaskOutbox).one().file_id == file_id
 
 
-def test_concurrent_dispatchers_do_not_send_a_committed_row_twice(file_database, broker):
+def test_concurrent_dispatchers_do_not_send_a_committed_row_twice(file_database: Any, broker: Any) -> None:
     factory, file_id, _ = file_database
     with factory() as db:
         for _ in range(4):
             service.retry_embedding(db, file_id)
     barrier = threading.Barrier(2)
     local = threading.local()
-    def overlap_publish(file_ids):
+    def overlap_publish(file_ids: Any):
         if not getattr(local, "started", False):
             local.started = True
             # 两个分发器必须并发持有不同行记录.
@@ -137,15 +141,16 @@ def test_concurrent_dispatchers_do_not_send_a_committed_row_twice(file_database,
             barrier.wait(timeout=5)
         real_publish(file_ids)
     with concurrent.futures.ThreadPoolExecutor(2) as executor:
-        results = list(executor.map(lambda _: deliver_pending_file_tasks(
-            session_factory=factory, publisher=overlap_publish), range(2)))
+        def run_deliver(_: int) -> int:
+            return deliver_pending_file_tasks(session_factory=factory, publisher=overlap_publish)
+        results = list(executor.map(run_deliver, range(2)))
     assert sum(results) == 4
     assert drain() == [file_id] * 4
     with factory() as db:
         assert db.query(FileTaskOutbox).filter(FileTaskOutbox.delivered_at.is_(None)).count() == 0
 
 
-def test_broker_confirmation_before_sql_failure_causes_safe_redelivery(file_database, postgres, broker):
+def test_broker_confirmation_before_sql_failure_causes_safe_redelivery(file_database: Any, postgres: Any, broker: Any) -> None:
     factory, file_id, _ = file_database
     with factory() as db:
         service.retry_embedding(db, file_id)

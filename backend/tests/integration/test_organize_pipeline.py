@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """实际 API/队列/LangGraph/模型 SDK/工具/SQL 整理工作流测试."""
 import json
 import os
@@ -16,6 +18,8 @@ from app.infra.task_queue import publish_organize_task as real_publish_organize
 from tests.integration.test_task_queue import broker  # noqa: F401
 from tests.integration.test_upload_storage import minio_storage, upload_api  # noqa: F401
 from tests.integration.test_runtime_security import infrastructure  # noqa: F401
+
+__all__ = ["postgres", "broker", "minio_storage", "upload_api", "infrastructure"]
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_ORGANIZE_PIPELINE_TESTS") != "1", reason="Opt-in isolated complete organize workflow"
@@ -51,7 +55,7 @@ finally:
 
 
 @pytest.mark.parametrize("mode", ["success", "provider_rejected", "checkpoint_rejected"])
-def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker, infrastructure, mode):
+def test_complete_organize_workflow(upload_api: Any, postgres: Any, minio_storage: Any, broker: Any, infrastructure: Any, mode: Any) -> None:
     client, headers, _ = upload_api
     content = b"Synthetic document that belongs in the organized folder."
     uploaded = client.post("/api/files", headers=headers,
@@ -67,12 +71,12 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
                 BEGIN RAISE EXCEPTION 'synthetic checkpoint failure'; END $$
             """))
             db.execute(text("CREATE TRIGGER reject_checkpoint BEFORE INSERT OR UPDATE ON organize_checkpoints FOR EACH ROW EXECUTE FUNCTION reject_checkpoint()"))
-    calls = []
+    calls: list[dict[str, Any]] = []
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args):
+        def log_message(self, format: str, *args: Any) -> None:
             pass
 
-        def do_POST(self):
+        def do_POST(self) -> None:
             assert self.path == "/v1/chat/completions"
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             calls.append(request)
@@ -105,14 +109,18 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
                 self.wfile.write(b'{"error":{"message":"synthetic provider rejection","type":"invalid_request_error"}}')
                 return
             turn = len(calls) - 1
-            message = {"role":"assistant", "content":None}
+            message: dict[str, Any] = {"role":"assistant", "content":None}
+            name: str | None = None
+            args: dict[str, Any] | None = None
             if turn == 0:
                 name, args = "get_all_files", {"workspace_id":1}
             elif turn == 1:
                 name, args = "create_folder", {"name":"organized","parent_id":root_id,"workspace_id":1}
             elif turn == 2:
                 tool_messages = [item for item in request["messages"] if item["role"] == "tool"]
-                folder_id = int(re.search(r"ID: (\d+)", tool_messages[-1]["content"]).group(1))
+                match = re.search(r"ID: (\d+)", tool_messages[-1]["content"])
+                assert match is not None
+                folder_id = int(match.group(1))
                 name, args = "move_file", {"file_id":file_id,"target_folder_id":folder_id,"workspace_id":1}
             else:
                 name, args = None, None
@@ -199,7 +207,7 @@ def test_complete_organize_workflow(upload_api, postgres, minio_storage, broker,
     assert client.get(f"/api/files/{file_id}/download",headers=headers).content == content
 
 
-def test_concurrent_checkpoint_creation_and_updates_never_regress(postgres):
+def test_concurrent_checkpoint_creation_and_updates_never_regress(postgres: Any) -> None:
     import concurrent.futures
     from sqlalchemy.orm import sessionmaker
     from app.features.folder.change_log import update_checkpoint
@@ -211,7 +219,7 @@ def test_concurrent_checkpoint_creation_and_updates_never_regress(postgres):
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'checkpoint-space',1)"))
     factory = sessionmaker(bind=postgres)
     barrier = threading.Barrier(5)
-    def update(value):
+    def update(value: Any):
         barrier.wait(timeout=5)
         with factory() as db:
             update_checkpoint(db, 1, value, mark_full_scan=(value == 4))

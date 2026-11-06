@@ -1,3 +1,5 @@
+from typing import Any, cast
+# pyright: reportPrivateUsage=false
 """自选真实 Docker/Redis 检查. 所有资源均具唯一命名并清理."""
 
 from tests.integration.fixture_paths import FIXTURE_DIR
@@ -21,7 +23,7 @@ IMAGE = os.getenv("SKYCLOUD_TEST_INFRA_IMAGE", "redis:7-alpine@sha256:858f009f97
 POSTGRES_IMAGE = "pgvector/pgvector:pg15@sha256:47af0b65960b14f1c6945aa4ccae37836c632e9a6fe0eea9160936e616e5b2e9"
 
 
-def docker(*args, check=True):
+def docker(*args: Any, check: Any=True):
     result = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=30)
     if check and result.returncode:
         raise AssertionError(result.stderr)
@@ -43,7 +45,7 @@ def infrastructure():
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             try:
-                if client.ping():
+                if cast(Any, client).ping():
                     break
             except Exception:
                 time.sleep(0.1)
@@ -60,14 +62,14 @@ def infrastructure():
             docker("network", "rm", name, check=False)
 
 
-def test_quota_is_atomic_across_concurrent_requests(infrastructure, monkeypatch):
+def test_quota_is_atomic_across_concurrent_requests(infrastructure: Any, monkeypatch: Any) -> None:
     client = infrastructure["redis"]
     monkeypatch.setenv("RUNTIME_LLM_HOURLY_REQUEST_LIMIT", "7")
     credential = {"sub": "test-user", "workspace_id": 17, "runtime_id": 29, "quota": 100000}
 
-    def invoke(_):
+    def invoke(_: Any) -> bool:
         try:
-            quota.reserve(credential, 10, 20)
+            quota.reserve(cast(Any, credential), 10, 20)
             return True
         except HTTPException as exc:
             assert exc.status_code == 429
@@ -82,19 +84,19 @@ def test_quota_is_atomic_across_concurrent_requests(infrastructure, monkeypatch)
         assert int(client.get(key)) == 210
 
 
-def test_quota_cannot_be_bypassed_by_recreating_runtime(infrastructure, monkeypatch):
+def test_quota_cannot_be_bypassed_by_recreating_runtime(infrastructure: Any, monkeypatch: Any) -> None:
     client = infrastructure["redis"]
     monkeypatch.setenv("RUNTIME_LLM_HOURLY_REQUEST_LIMIT", "1")
     credential = {"sub": "restart-user", "workspace_id": 18, "runtime_id": 30, "quota": 100000}
     with patch.object(quota, "redis_client", client):
-        quota.reserve(credential, 10, 20)
+        quota.reserve(cast(Any, credential), 10, 20)
         with pytest.raises(HTTPException) as denied:
-            quota.reserve({**credential, "runtime_id": 31}, 10, 20)
+            quota.reserve(cast(Any, {**credential, "runtime_id": 31}), 10, 20)
     assert denied.value.status_code == 429
     assert not list(client.scan_iter("runtime-llm-quota:runtime:31:*"))
 
 
-def test_internal_runtime_cannot_reach_infrastructure_by_name_or_ip(infrastructure):
+def test_internal_runtime_cannot_reach_infrastructure_by_name_or_ip(infrastructure: Any) -> None:
     target = infrastructure["target"]
     inspect = json.loads(docker("inspect", target).stdout)[0]
     address = inspect["NetworkSettings"]["Networks"][infrastructure["infra"]]["IPAddress"]
@@ -110,7 +112,7 @@ def test_internal_runtime_cannot_reach_infrastructure_by_name_or_ip(infrastructu
 
 
 @pytest.mark.parametrize('development', [False, True], ids=['production', 'development'])
-def test_production_ports_and_runtime_network_are_restricted(tmp_path, development):
+def test_production_ports_and_runtime_network_are_restricted(tmp_path: Any, development: Any) -> None:
     root = Path(__file__).resolve().parents[3]
     generated_env = tmp_path / "deployment.env"
     subprocess.run(["python3", str(root / "scripts/generate-env.py"), "--output", str(generated_env)], check=True, capture_output=True)
@@ -160,25 +162,25 @@ def test_production_ports_and_runtime_network_are_restricted(tmp_path, developme
         assert "runtime-network" not in config["services"][name]["networks"]
 
 
-def test_development_public_port_override_is_rejected(tmp_path, monkeypatch):
+def test_development_public_port_override_is_rejected(tmp_path: Any, monkeypatch: Any) -> None:
     root = Path(__file__).resolve().parents[3]
     unsafe = tmp_path / 'unsafe-override.yml'
     unsafe.write_text((root / 'docker-compose.dev.yml').read_text().replace('127.0.0.1:', '0.0.0.0:', 1))
     actual_run = subprocess.run
 
-    def render_override(args, **kwargs):
+    def render_override(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
         # 仅替换此一次性 Compose 输入; 真实 Docker 仍然
         # 合并并校验配置, 而不启动容器.
         if args[:2] == ['docker', 'compose']:
             args = [str(unsafe) if arg == str(root / 'docker-compose.dev.yml') else arg for arg in args]
-        return actual_run(args, **kwargs)
+        return cast(subprocess.CompletedProcess[Any], actual_run(args, **kwargs))
 
     monkeypatch.setattr(subprocess, 'run', render_override)
     with pytest.raises(AssertionError, match='db'):
         test_production_ports_and_runtime_network_are_restricted(tmp_path, True)
 
 
-def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
+def test_postgresql_has_no_seeded_admin_and_bootstraps_once() -> None:
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import Session
     from entry.bootstrap_admin import bootstrap_admin
@@ -218,7 +220,7 @@ def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
         with engine.connect() as conn:
             assert conn.scalar(text("SELECT count(*) FROM users")) == 0
 
-        def create(index):
+        def create(index: Any):
             with Session(engine) as session:
                 try:
                     return bootstrap_admin(
@@ -244,7 +246,7 @@ def test_postgresql_has_no_seeded_admin_and_bootstraps_once():
         docker("rm", "-f", "-v", name, check=False)
 
 @pytest.fixture
-def controller(infrastructure, monkeypatch):
+def controller(infrastructure: Any, monkeypatch: Any):
     import httpx
     from runtime_controller.client import ControllerClient
     # 代系/沙箱检查需要构建的 OpenCode 运行时镜像: 代系策略
@@ -292,7 +294,7 @@ def controller(infrastructure, monkeypatch):
         (FIXTURE_DIR / 'skycloud-controller-integration.log').write_text(logs.stdout + logs.stderr)
 
 
-def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, controller):
+def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure: Any, controller: Any) -> None:
     import httpx
     from app.models.opencode_runtime import OpenCodeRuntime
     from app.models.workspace import Workspace
@@ -342,7 +344,9 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
         assert "text/html" in ui.headers.get("content-type", ""), ui.headers
         (FIXTURE_DIR / 'skycloud-runtime-ui-root.html').write_text(ui.text)
         import re
-        script = re.search(r'<script[^>]+src="([^"]+)', ui.text).group(1)
+        match = re.search(r'<script[^>]+src="([^"]+)', ui.text)
+        assert match is not None
+        script = match.group(1)
         asset = client.get(base.replace("/http", "/ui") + script)
         assert asset.status_code == 200
         assert "javascript" in asset.headers.get("content-type", "")
@@ -355,19 +359,23 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
         assert loaded.status_code == 200
         assert loaded.json()["model"] == "skycloud-chat/test-model"
         assert controller["client"].read_config(container["id"])["provider"] == config["provider"]
-    async def exercise_async_client():
+    async def exercise_async_client() -> None:
         import asyncio
         from app.features.assistant.clients.opencode_client import OpenCodeClient
         async with OpenCodeClient(base, service.server_username(), service.server_password(1, 1, workspace.id), timeout=10) as client:
             assert (await client.health())["healthy"] is True
             session_id = await client.create_session("Controller relay session")
-            assert (await client.get_session(session_id))["id"] == session_id
+            sess = await client.get_session(session_id)
+            assert sess is not None
+            assert sess["id"] == session_id
             stream = client.stream_events()
             try:
                 event = await asyncio.wait_for(anext(stream), timeout=10)
                 assert isinstance(event, dict) and event.get("type")
             finally:
-                await stream.aclose()
+                aclose = getattr(stream, "aclose", None)
+                if aclose:
+                    await aclose()
     import asyncio
     asyncio.run(exercise_async_client())
     assert httpx.get(base + "/global/health", timeout=5).status_code == 401
@@ -380,7 +388,7 @@ def test_real_opencode_sandbox_boots_and_reloads_configuration(infrastructure, c
     assert not any(row["id"] == container["id"] for row in controller["client"].user_snapshot(1))
 
 
-def test_runtime_network_cannot_contact_controller_rpc_listener(infrastructure, controller):
+def test_runtime_network_cannot_contact_controller_rpc_listener(infrastructure: Any, controller: Any) -> None:
     inspect = json.loads(docker("inspect", controller["name"]).stdout)[0]
     networks = inspect["NetworkSettings"]["Networks"]
     image = inspect["Image"]
@@ -409,21 +417,21 @@ finally:
                "-c", script, address, controller["token"], expected)
 
 
-def test_real_redis_ui_ticket_is_atomic_and_expires(infrastructure, monkeypatch):
+def test_real_redis_ui_ticket_is_atomic_and_expires(infrastructure: Any, monkeypatch: Any) -> None:
     from app.features.workspace import ui_tickets
     client = infrastructure["redis"]
     monkeypatch.setattr(ui_tickets, "redis_client", client)
     raw = ui_tickets._store("ticket", {"runtime_id": 42}, 30)
     key = ui_tickets._key("ticket", raw)
     assert raw not in key and 0 < client.ttl(key) <= 30
-    def redeem(_):
+    def redeem(_: int) -> dict[str, Any] | None:
         try:
             return ui_tickets._load("ticket", raw, consume=True)
         except HTTPException as exc:
             assert exc.status_code == 401
             return None
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as workers:
-        result = list(workers.map(redeem, range(32)))
+        result: list[dict[str, Any] | None] = list(workers.map(redeem, range(32)))
     assert result.count({"runtime_id": 42}) == 1
     assert result.count(None) == 31
     raw = ui_tickets._store("session", {"runtime_id": 42}, 600)

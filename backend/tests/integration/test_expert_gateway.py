@@ -1,3 +1,5 @@
+from typing import Any, cast
+# pyright: reportPrivateUsage=false
 """真实隔离 OpenCode 到模型网关再到合成提供商调用流测试."""
 import asyncio
 from contextlib import contextmanager
@@ -32,11 +34,20 @@ from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
 from app.models.runtime_operation import RuntimeOperation
 
+__all__ = [
+    "serve",
+    "infrastructure",
+    "controller",
+    "docker",
+    "postgres",
+    "minio_storage",
+]
+
 pytestmark = pytest.mark.skipif(os.getenv('RUN_EXPERT_GATEWAY_TESTS') != '1', reason='Opt-in isolated actual expert/model gateway integration')
 
 
 @contextmanager
-def serve(app):
+def serve(app: Any):
     sock = socket.socket(); sock.bind(('0.0.0.0', 0)); sock.listen(128)
     port = sock.getsockname()[1]
     server = uvicorn.Server(uvicorn.Config(app, lifespan='off', log_level='error', access_log=False))
@@ -53,32 +64,33 @@ def serve(app):
 
 
 @pytest.mark.parametrize('permission_response,crash_before_completion,missing_candidate', [(None,False,None),(None,True,None),('once',False,None),('reject',False,None),(None,False,'preparing'),(None,False,'switched'),(None,False,'conversation'),('unconfirmed',False,None),(None,False,'prompt-refusal'),(None,False,'completed-disconnect'),('demote',False,None),('remove',False,None),('auth-version',False,None),(None,False,'lease-loss'),('once',False,'command-lease-loss'),('once',False,'command-cancel'),('once',False,'command-crash'),(None,False,'lease-before-sql'),(None,False,'lease-set-reply'),('once',False,'command-cancel-retry'),(None,False,'paused-prompt'),('once',False,'permission-replay')],ids=['cold','crash','allow','reject','missing-preparing','missing-switched','conversation-replacement','permission-unconfirmed','prior-answer-refusal','completed-disconnect','permission-demote','permission-remove','http-auth-version','lease-loss','command-lease-loss','command-cancel','command-crash','lease-before-sql','lease-set-reply','command-cancel-retry','paused-prompt','permission-replay'])
-def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, controller, postgres, monkeypatch, tmp_path, permission_response,crash_before_completion,missing_candidate):
+def test_actual_expert_through_controller_gateway_and_mcp(infrastructure: Any, controller: Any, postgres: Any, monkeypatch: Any, tmp_path: Any, permission_response: Any,crash_before_completion: Any,missing_candidate: Any) -> None:
     from entry.llm_gateway import app as gateway
     if permission_response == 'unconfirmed':
         # 仅注入控制确认边界. 运行时、模型/工具请求、
         # 权限持久化与后续中止均使用真实服务.
         from app.features.assistant.clients.opencode_client import OpenCodeClient
         original_json = OpenCodeClient._json
-        async def unconfirmed_permission(client, method, path, **kwargs):
+        async def unconfirmed_permission(client: Any, method: Any, path: Any, **kwargs: Any):
             if '/permissions/' in path:
                 return False
             return await original_json(client,method,path,**kwargs)
         monkeypatch.setattr(OpenCodeClient,'_json',unconfirmed_permission)
-    permission_dispatches = []
+    permission_dispatches: list[tuple[Any, Any, Any]] = []
     if missing_candidate == 'permission-replay':
         from app.features.assistant.clients.opencode_client import OpenCodeClient
         actual_events = OpenCodeClient.stream_events
         actual_respond_permission = OpenCodeClient.respond_permission
 
-        async def replay_permission_event(client):
+        async def replay_permission_event(client: Any):
             async for event in actual_events(client):
                 yield event
-                if event.get('type') == 'permission.asked':
+                event_dict: Any = event
+                if event_dict.get('type') == 'permission.asked':
                     yield event
 
         async def record_permission_dispatch(
-            client, session_id, permission_id, response, *, remember=False,
+            client: Any, session_id: Any, permission_id: Any, response: Any, *, remember: Any=False,
         ):
             permission_dispatches.append((session_id, permission_id, response))
             return await actual_respond_permission(
@@ -91,14 +103,15 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
 
         monkeypatch.setattr(OpenCodeClient, 'stream_events', replay_permission_event)
         monkeypatch.setattr(OpenCodeClient, 'respond_permission', record_permission_dispatch)
-    lease_abort_acks = []
+    lease_abort_acks: list[Any] = []
     provider_disconnected = threading.Event()
-    replaced_lease_keys = []
+    replaced_lease_keys: list[Any] = []
+    actual_abort: Any = None
     if missing_candidate in ('lease-loss','command-lease-loss','command-cancel','command-cancel-retry'):
         monkeypatch.setenv('ASSISTANT_RUNTIME_LOCK_TTL', '1')
         from app.features.assistant.clients.opencode_client import OpenCodeClient
         actual_abort = OpenCodeClient.abort_session
-        async def observe_lease_abort(client, session_id):
+        async def observe_lease_abort(client: Any, session_id: Any):
             if missing_candidate == 'command-cancel-retry':
                 from app.features.assistant.clients.opencode_client import OpenCodeClientError
                 raise OpenCodeClientError('Synthetic control outage')
@@ -106,33 +119,36 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
             lease_abort_acks.append(result)
             return result
         monkeypatch.setattr(OpenCodeClient, 'abort_session', observe_lease_abort)
-    disconnects = []
+    disconnects: list[bool] = []
     if missing_candidate == 'completed-disconnect':
         from app.features.assistant.clients.opencode_client import OpenCodeClient, OpenCodeClientError
         original_events = OpenCodeClient.stream_events
-        async def disconnect_after_completion(client):
+        async def disconnect_after_completion(client: Any):
             events = original_events(client)
             try:
                 async for event in events:
-                    properties = event.get('properties',{})
-                    status = properties.get('status',{})
-                    if event.get('type') == 'session.status' and isinstance(status,dict) and status.get('type') == 'idle':
+                    event_dict = cast(dict[str, Any], event)
+                    properties = cast(dict[str, Any], event_dict.get('properties', {}))
+                    status = cast(dict[str, Any], properties.get('status', {}))
+                    if event_dict.get('type') == 'session.status' and status.get('type') == 'idle':
                         disconnects.append(True)
                         raise OpenCodeClientError('Injected event disconnect after provider completion')
                     yield event
             finally:
-                await events.aclose()
+                aclose_fn: Any = getattr(events, 'aclose', None)
+                if aclose_fn is not None:
+                    await aclose_fn()
         monkeypatch.setattr(OpenCodeClient,'stream_events',disconnect_after_completion)
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     provider_key = 'synthetic-provider-secret-' + uuid.uuid4().hex
     model = 'skycloud-mock-model'
-    requests = []
+    requests: list[dict[str, Any]] = []
     provider = FastAPI()
 
     @provider.post('/v1/chat/completions')
     async def complete(request: Request):
-        body = await request.json()
+        body: dict[str, Any] = await request.json()
         assert request.headers.get('authorization') == 'Bearer ' + provider_key
         assert body['model'] == model
         requests.append(body)
@@ -148,7 +164,7 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
                 assert time.monotonic() < deadline, 'native model transport did not disconnect after lease loss'
                 await asyncio.sleep(.01)
             provider_disconnected.set()
-        reply = {'id': 'chatcmpl-test', 'object': 'chat.completion', 'created': int(time.time()), 'model': model,
+        reply: dict[str, Any] = {'id': 'chatcmpl-test', 'object': 'chat.completion', 'created': int(time.time()), 'model': model,
                  'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'E2E_GATEWAY_OK'}, 'finish_reason': 'stop'}],
                  'usage': {'prompt_tokens': 20, 'completion_tokens': 5, 'total_tokens': 25}}
         tool_request = permission_response is not None and any(tool.get('function', {}).get('name') == 'bash' for tool in body.get('tools', [])) and not any(message.get('role') == 'tool' for message in body['messages'])
@@ -166,7 +182,7 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
         async def chunks():
             base = {key: value for key, value in reply.items() if key not in ('choices', 'usage')}
             base['object'] = 'chat.completion.chunk'
-            frames = [({'role': 'assistant', 'content': ''}, None), ({'tool_calls': [{'index': 0, **call}]}, None), ({}, 'tool_calls')] if tool_request else [({'role': 'assistant', 'content': ''}, None), ({'content': 'E2E_GATEWAY_OK'}, None), ({}, 'stop')]
+            frames: list[tuple[dict[str, Any], str | None]] = [({'role': 'assistant', 'content': ''}, None), ({'tool_calls': [{'index': 0, **call}]}, None), ({}, 'tool_calls')] if tool_request else [({'role': 'assistant', 'content': ''}, None), ({'content': 'E2E_GATEWAY_OK'}, None), ({}, 'stop')]
             for delta, finish in frames:
                 yield 'data: ' + json.dumps({**base, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}) + '\n\n'
             yield 'data: ' + json.dumps({**base, 'choices': [], 'usage': reply['usage']}) + '\n\n'
@@ -199,11 +215,13 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure, contro
     infrastructure['cleanup'].append(runtime_name)
     bridge = infrastructure['target'] + '-gateway'
     infrastructure['cleanup'].append(bridge)
-    process = None
-    boot_process = None
-    permission_replay_run_ids = []
-    permission_http_responses = []
-    observed = []
+    process: subprocess.Popen[str] | subprocess.Popen[bytes] | None = None
+    boot_process: subprocess.Popen[str] | subprocess.Popen[bytes] | None = None
+    permission_replay_run_ids: list[int] = []
+    permission_http_responses: list[int] = []
+    observed: list[Any] = []
+    run: Any = None
+    history: list[Any] = []
     try:
         with serve(provider) as provider_port, serve(gateway) as gateway_port:
             monkeypatch.setenv('CHAT_API_URL', f'http://127.0.0.1:{provider_port}/v1')
@@ -248,7 +266,8 @@ server {{ listen 5001; location / {{ proxy_pass http://host.docker.internal:{mcp
                     from app.infra.runtime_operations import recover_runtime_operations
                     recover_runtime_operations(session_factory=factory)
                     with factory() as observer:
-                        assert observer.get(RuntimeOperation,old_generation).state == 'cancelled'
+                        op = observer.get(RuntimeOperation,old_generation)
+                        assert op is not None and op.state == 'cancelled'
                         replacement = observer.query(RuntimeOperation).filter_by(workspace_id=ws_id,user_id=user_id,state='complete').one()
                         assert replacement.generation != old_generation and replacement.candidate_container_id != prepared["id"]
                 if crash_before_completion:
@@ -274,6 +293,7 @@ with Session(engine) as session:
                     with (tmp_path / 'boot.log').open('w') as boot_output:
                         boot_process = subprocess.Popen([sys.executable,'-c',boot_code],env=environment,
                             stdin=subprocess.PIPE,stdout=boot_output,stderr=subprocess.STDOUT,text=True)
+                        assert boot_process.stdin is not None
                         boot_process.stdin.write(json.dumps({'database':postgres.url.render_as_string(hide_password=False),
                             'workspace':ws_id,'user':user_id,'marker':str(marker)}))
                         boot_process.stdin.close()
@@ -287,15 +307,19 @@ with Session(engine) as session:
                         assert boot_process.wait(5) < 0
                     with factory() as observer:
                         pending = observer.get(RuntimeOperation,generation)
+                        assert pending is not None
                         assert pending.state == 'switched' and pending.finished_at is None
                         candidate_id = pending.candidate_container_id
                     from app.infra.runtime_operations import recover_runtime_operations
                     assert recover_runtime_operations(session_factory=factory) == 1
                     with factory() as observer:
                         recovered = observer.get(RuntimeOperation,generation)
+                        assert recovered is not None
                         assert recovered.state == 'complete' and recovered.candidate_container_id == candidate_id
                 with factory() as db:
-                    workspace = db.get(Workspace, ws_id)
+                    db_ws = db.get(Workspace, ws_id)
+                    assert db_ws is not None
+                    workspace = db_ws
                     conversation = repository.create_conversation(
                         db,
                         repository.CreateConversationParams(
@@ -351,6 +375,7 @@ asyncio.run(run())
                         with (tmp_path / 'paused-worker.log').open('w') as output:
                             boot_process = subprocess.Popen([sys.executable,'-c',child_code],env=environment,
                                 stdin=subprocess.PIPE,stdout=output,stderr=subprocess.STDOUT,text=True)
+                            assert boot_process.stdin is not None
                             boot_process.stdin.write(json.dumps({'database':postgres.url.render_as_string(hide_password=False),
                                 'workspace':ws_id,'user':user_id,'conversation':conversation.id,'run':run.id,'marker':str(marker)}))
                             boot_process.stdin.close()
@@ -367,6 +392,7 @@ asyncio.run(run())
                             from datetime import timedelta
                             with factory() as recovery:
                                 abandoned = recovery.get(AssistantRun,run.id)
+                                assert abandoned is not None
                                 captured_session = abandoned.opencode_session_id
                                 assert captured_session and not requests
                                 abandoned.started_at = utc_now()-timedelta(seconds=60)
@@ -385,8 +411,10 @@ asyncio.run(run())
                             assert not requests, 'recovered paused worker dispatched a new model request after remote cleanup'
                             assert boot_process.wait(5)==0
                         with factory() as recovery:
-                            assert recovery.get(AssistantRun,run.id).status == 'failed'
+                            ar = recovery.get(AssistantRun,run.id)
+                            assert ar is not None and ar.status == 'failed'
                             runtime = docker_service.runtime_service.get_runtime(recovery,ws_id,user_id)
+                            assert runtime is not None
                             assert not infrastructure['redis'].exists(f'assistant:expert:runtime:{runtime.id}')
                         return
                     if missing_candidate in ('lease-before-sql','lease-set-reply'):
@@ -432,6 +460,7 @@ asyncio.run(run())
                         with (tmp_path / 'lease-worker.log').open('w') as output:
                             boot_process = subprocess.Popen([sys.executable,'-c',lease_code],env=environment,
                                 stdin=subprocess.PIPE,stdout=output,stderr=subprocess.STDOUT,text=True)
+                            assert boot_process.stdin is not None
                             boot_process.stdin.write(json.dumps({'database':postgres.url.render_as_string(hide_password=False),
                                 'workspace':ws_id,'user':user_id,'conversation':conversation.id,'run':run.id,
                                 'mode':missing_candidate,'marker':str(marker)}))
@@ -450,8 +479,10 @@ asyncio.run(run())
                         from app.models.assistant_runtime_abort import AssistantRuntimeAbort
                         with factory() as observer:
                             runtime = docker_service.runtime_service.get_runtime(observer,ws_id,user_id)
+                            assert runtime is not None
                             key = f'assistant:expert:runtime:{runtime.id}'
                             abandoned = observer.get(AssistantRun,run.id)
+                            assert abandoned is not None
                             assert abandoned.opencode_session_id is None and not requests
                             if missing_candidate == 'lease-before-sql':
                                 assert infrastructure['redis'].get(key) is None, 'Redis acquired before durable SQL ownership existed'
@@ -464,7 +495,8 @@ asyncio.run(run())
                         assert recover_abandoned_runs(session_factory=factory)==1
                         if missing_candidate == 'lease-set-reply':
                             with factory() as observer:
-                                assert observer.get(AssistantRuntimeAbort,run.id).session_id is None
+                                abort_record = observer.get(AssistantRuntimeAbort,run.id)
+                                assert abort_record is not None and abort_record.session_id is None
                             assert abort_pending_sessions(session_factory=factory)==1
                         else:
                             assert abort_pending_sessions(session_factory=factory)==0
@@ -495,6 +527,7 @@ asyncio.run(run())
                         with (tmp_path / 'stream-worker.log').open('w') as stream_output:
                             boot_process = subprocess.Popen([sys.executable,'-c',stream_code],env=environment,
                                 stdin=subprocess.PIPE,stdout=stream_output,stderr=subprocess.STDOUT,text=True)
+                            assert boot_process.stdin is not None
                             boot_process.stdin.write(json.dumps({'database':postgres.url.render_as_string(hide_password=False),
                                 'workspace':ws_id,'user':user_id,'conversation':conversation.id,'run':run.id}))
                             boot_process.stdin.close()
@@ -504,13 +537,15 @@ asyncio.run(run())
                                 assert boot_process.poll() is None, 'native streaming worker exited before permission request'
                                 with factory() as responder:
                                     restored = responder.get(AssistantRun, run.id)
+                                    assert restored is not None
                                     permission = restored.pending_permission_id
                                     if permission:
+                                        resp_ws = responder.get(Workspace, ws_id)
+                                        assert resp_ws is not None
                                         service.respond_permission(
                                             responder,
                                             service.RespondPermissionParams(
-                                                workspace=responder.get(
-                                                    Workspace, ws_id),
+                                                workspace=resp_ws,
                                                 user_id=user_id,
                                                 run_id=run.id,
                                                 permission_id=permission,
@@ -522,6 +557,7 @@ asyncio.run(run())
                                 time.sleep(.05)
                             with factory() as reader:
                                 runtime = docker_service.runtime_service.get_runtime(reader,ws_id,user_id)
+                                assert runtime is not None and runtime.container_id is not None
                                 container_id = runtime.container_id
                             while True:
                                 assert boot_process.poll() is None, 'native worker exited before command started'
@@ -540,6 +576,7 @@ asyncio.run(run())
                         from app.infra.datetime_utils import utc_now
                         with factory() as recovery:
                             abandoned = recovery.get(AssistantRun,run.id)
+                            assert abandoned is not None
                             assert abandoned.status == 'running'
                             abandoned.started_at = utc_now() - timedelta(seconds=60)
                             abandoned.metadata_dict = {**abandoned.metadata_dict,'worker_heartbeat_unix':time.time()-60}
@@ -549,25 +586,29 @@ asyncio.run(run())
                         from app.exceptions import ConflictError
                         from app.models.assistant_runtime_abort import AssistantRuntimeAbort
                         with factory() as recovery:
-                            assert recovery.get(AssistantRun, run.id).status == 'failed'
+                            ar = recovery.get(AssistantRun, run.id)
+                            assert ar is not None and ar.status == 'failed'
                             intent = recovery.get(AssistantRuntimeAbort, run.id)
+                            assert intent is not None
                             assert intent.lease_token and infrastructure['redis'].get(f'assistant:expert:runtime:{intent.runtime_id}') == intent.lease_token
+                            rec_ws = recovery.get(Workspace, ws_id)
+                            assert rec_ws is not None
                             with pytest.raises(ConflictError, match='cleanup'):
                                 service.prepare_run(
                                     recovery,
                                     service.PrepareRunParams(
-                                        workspace=recovery.get(
-                                            Workspace, ws_id),
+                                        workspace=rec_ws,
                                         user_id=user_id,
                                         conversation_id=conversation.id,
                                         query='new task',
                                     ),
                                 )
-                        def unavailable(target):
+                        def unavailable(target: Any):
                             raise ConnectionError('synthetic-control-unavailable')
                         assert abort_pending_sessions(session_factory=factory, abort_function=unavailable) == 0
                         with factory() as recovery:
                             intent = recovery.get(AssistantRuntimeAbort, run.id)
+                            assert intent is not None
                             assert intent.completed_at is None and intent.attempts == 1
                             intent.next_attempt_at = utc_now() - timedelta(seconds=1)
                             recovery.commit()
@@ -580,12 +621,14 @@ asyncio.run(run())
                                 assert state.stdout.rsplit(')',1)[1].split()[0] == 'Z', 'abandoned native command still executing after SQL recovery'
                         assert docker('exec',container_id,'test','-e','/tmp/skycloud-command-late',check=False).returncode == 1
                         return
-                    command_observers = []
-                    command_state = {}
+                    command_observers: list[asyncio.Task[Any]] = []
+                    command_state: dict[str, Any] = {}
                     async def interrupt_started_command():
                         def current_container():
                             with factory() as reader:
-                                return docker_service.runtime_service.get_runtime(reader, ws_id, user_id).container_id
+                                crt = docker_service.runtime_service.get_runtime(reader, ws_id, user_id)
+                                assert crt is not None and crt.container_id is not None
+                                return crt.container_id
                         container_id = await asyncio.to_thread(current_container)
                         deadline = time.monotonic() + 10
                         while True:
@@ -605,9 +648,11 @@ asyncio.run(run())
                         else:
                             def cancel_run():
                                 with factory() as writer:
-                                    service.request_cancel(writer, writer.get(Workspace, ws_id), user_id, run.id)
+                                    ws = writer.get(Workspace, ws_id)
+                                    assert ws is not None
+                                    service.request_cancel(writer, ws, user_id, run.id)
                             await asyncio.to_thread(cancel_run)
-                    async def collect():
+                    async def collect() -> list[Any]:
                         if permission_response == 'auth-version':
                             from app.features.assistant import router as assistant_router
                             from app.features.assistant.event_protocol import AssistantEvent
@@ -615,15 +660,20 @@ asyncio.run(run())
                             from app.features.assistant.clients.opencode_client import OpenCodeClient
                             from app.models.assistant import AssistantRun
                             raw = generate_token(user_id, 0)
-                            abort_acks, abort_closed, abort_errors, revoked, event_clients = [], [], [], [], []
+                            assert raw is not None
+                            abort_acks: list[Any] = []
+                            abort_closed: list[bool] = []
+                            abort_errors: list[Any] = []
+                            revoked: list[bool] = []
+                            event_clients: list[Any] = []
                             actual_abort = OpenCodeClient.abort_session
                             actual_events = OpenCodeClient.stream_events
-                            async def observed_events(client):
+                            async def observed_events(client: Any):
                                 event_clients.append(client._client)
                                 async for event in actual_events(client):
                                     yield event
                             monkeypatch.setattr(OpenCodeClient, 'stream_events', observed_events)
-                            async def observed_abort(client, session_id):
+                            async def observed_abort(client: Any, session_id: Any):
                                 abort_closed.append(client._client.is_closed)
                                 assert client._client not in event_clients
                                 try:
@@ -642,8 +692,8 @@ asyncio.run(run())
                                     with postgres.begin() as independent:
                                         independent.execute(text('UPDATE users SET auth_version=auth_version+1 WHERE id=:id'), {'id': user_id})
                                 await asyncio.to_thread(update)
-                            async def observed_app(scope, receive, send):
-                                async def observe(message):
+                            async def observed_app(scope: Any, receive: Any, send: Any):
+                                async def observe(message: Any):
                                     await send(message)
                                     if message['type'] == 'http.response.body' and b'permission_required' in message.get('body', b'') and not revoked:
                                         revoked.append(True)
@@ -657,6 +707,7 @@ asyncio.run(run())
                             observed.extend(AssistantEvent(**json.loads(line[6:])) for line in response.text.splitlines() if line.startswith('data: '))
                             assert revoked and abort_acks and all(abort_acks) and not any(abort_closed), (abort_closed, abort_errors)
                             result = db.get(AssistantRun, int(response.headers['X-Assistant-Run-Id']))
+                            assert result is not None
                             assert result.status == 'cancelled' and result.pending_permission_id is None
                             assert observed[-1].type == 'cancelled'
                             assert service.run_registry.get(result.id) is None
@@ -667,21 +718,21 @@ asyncio.run(run())
                             return observed
                         if missing_candidate == 'permission-replay':
                             from app.features.assistant import router as assistant_router
-                            from app.models.assistant import AssistantPermission, AssistantRun
                             from app.features.assistant.event_protocol import AssistantEvent
                             from app.features.auth.service import generate_token
                             raw = generate_token(user_id, 0)
+                            assert raw is not None
                             app = FastAPI()
                             app.include_router(assistant_router.router)
                             app.dependency_overrides[get_db] = lambda: None
                             app.dependency_overrides[get_session_factory] = lambda: factory
 
-                            async def authenticated_app(scope, receive, send):
+                            async def authenticated_app(scope: Any, receive: Any, send: Any):
                                 async with httpx.AsyncClient(
                                     transport=httpx.ASGITransport(app=app),
                                     base_url='http://test',
                                 ) as responder:
-                                    async def observe(message):
+                                    async def observe(message: Any):
                                         await send(message)
                                         if message['type'] != 'http.response.body':
                                             return
@@ -727,6 +778,7 @@ asyncio.run(run())
                                 if line.startswith('data: ')
                             )
                             return observed
+                        assert run is not None
                         async for event in service.stream_run(
                             service.StreamRunParams(
                                 session_factory=factory,
@@ -742,17 +794,22 @@ asyncio.run(run())
                                 assert "printf 'AUTHORIZED_ONLY'" in event.payload['tool']
                                 def respond_from_worker():
                                     with factory() as responder:
-                                        restored = responder.get(type(run), run.id)
-                                        assert restored.to_dict()['pending_permission']['tool'] == event.payload['tool']
+                                        from app.models.assistant import AssistantRun
+                                        restored = responder.get(AssistantRun, run.id)
+                                        assert restored is not None
+                                        restored_dict = restored.to_dict()
+                                        assert restored_dict['pending_permission'] is not None
+                                        assert restored_dict['pending_permission']['tool'] == event.payload['tool']
                                         if permission_response in ('demote','remove'):
                                             responder.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=:ws AND user_id=:user" if permission_response == 'demote' else "DELETE FROM workspace_members WHERE workspace_id=:ws AND user_id=:user"),{'ws':ws_id,'user':user_id})
                                             responder.commit()
                                         else:
+                                            resp_ws = responder.get(Workspace, ws_id)
+                                            assert resp_ws is not None
                                             service.respond_permission(
                                                 responder,
                                                 service.RespondPermissionParams(
-                                                    workspace=responder.get(
-                                                        Workspace, ws_id),
+                                                    workspace=resp_ws,
                                                     user_id=user_id,
                                                     run_id=run.id,
                                                     permission_id=(
@@ -773,7 +830,7 @@ asyncio.run(run())
                         if command_observers:
                             await asyncio.gather(*command_observers)
                         return observed
-                    events = asyncio.run(asyncio.wait_for(collect(), 120))
+                    events: list[Any] = asyncio.run(asyncio.wait_for(collect(), 120))
                     if permission_response == 'auth-version':
                         return
                     if missing_candidate == 'permission-replay':
@@ -786,6 +843,7 @@ asyncio.run(run())
                             replay_run = replay_session.get(
                                 AssistantRun, permission_replay_run_ids[0],
                             )
+                            assert replay_run is not None
                             assert replay_run.status == 'completed'
                             permissions = replay_session.query(
                                 AssistantPermission,
@@ -793,12 +851,13 @@ asyncio.run(run())
                                 AssistantPermission.run_id == replay_run.id,
                             ).all()
                             assert len(permissions) == 1
-                            permission = permissions[0]
-                            assert permission.state == 'dispatched'
-                            assert permission.response == 'once'
-                            assert permission.answered_at is not None
-                            assert permission.dispatched_at is not None
+                            replayed_permission = permissions[0]
+                            assert replayed_permission.state == 'dispatched'
+                            assert replayed_permission.response == 'once'
+                            assert replayed_permission.answered_at is not None
+                            assert replayed_permission.dispatched_at is not None
                         return
+                    assert run is not None
                     db.refresh(run)
                     if missing_candidate in ('command-lease-loss','command-cancel','command-cancel-retry'):
                         assert command_state, 'command cancellation boundary was not exercised'
@@ -815,12 +874,13 @@ asyncio.run(run())
                                 assert intent is not None and intent.completed_at is None
                                 assert intent.session_id == run.opencode_session_id
                                 from app.exceptions import ConflictError
+                                read_ws = reader.get(Workspace, ws_id)
+                                assert read_ws is not None
                                 with pytest.raises(ConflictError, match='cleanup'):
                                     service.prepare_run(
                                         reader,
                                         service.PrepareRunParams(
-                                            workspace=reader.get(
-                                                Workspace, ws_id),
+                                            workspace=read_ws,
                                             user_id=user_id,
                                             conversation_id=conversation.id,
                                             query='new work',
@@ -831,6 +891,7 @@ asyncio.run(run())
                             assert abort_pending_sessions(session_factory=factory)==0
                             with factory() as writer:
                                 intent = writer.get(AssistantRuntimeAbort,run.id)
+                                assert intent is not None
                                 assert intent.attempts == 1 and intent.completed_at is None
                                 intent.next_attempt_at = utc_now()-timedelta(seconds=1)
                                 writer.commit()
@@ -848,6 +909,7 @@ asyncio.run(run())
                         assert docker('exec', command_state['container'], 'test', '-e', '/tmp/skycloud-command-late', check=False).returncode == 1
                         assert len(requests) == 1, 'aborted command triggered a later model call'
                         runtime = docker_service.runtime_service.get_runtime(db, ws_id, user_id)
+                        assert runtime is not None
                         if missing_candidate == 'command-lease-loss':
                             assert infrastructure['redis'].get(replaced_lease_keys[0]) == 'successor-worker'
                         else:
@@ -881,12 +943,15 @@ asyncio.run(run())
                         from app.features.assistant.clients.opencode_client import OpenCodeClient
                         from app.features.assistant.clients.opencode_auth import server_password,server_username
                         current_runtime = docker_service.runtime_service.get_runtime(db,ws_id,user_id)
+                        assert current_runtime is not None
                         async def failure_messages():
+                            assert current_runtime is not None
                             async with OpenCodeClient(docker_service.get_runtime_base_url(workspace,user_id,current_runtime),server_username(),server_password(current_runtime.id,user_id,ws_id)) as failure_client:
                                 return await failure_client.get_messages(run.opencode_session_id)
                         failures = asyncio.run(failure_messages())
+                        raw_failures: list[dict[str, Any]] = cast(list[dict[str, Any]], failures)
                         import re
-                        detail = json.dumps([{key:message.get('info',{}).get(key) for key in ('id','role','parentID','time','finish','error')} for message in failures])
+                        detail = json.dumps([{key: cast(dict[str, Any], message.get('info', {})).get(key) for key in ('id','role','parentID','time','finish','error')} for message in raw_failures])
                         detail = re.sub(r'eyJ[A-Za-z0-9_.-]+','[redacted]',detail.replace(provider_key,'[redacted]'))
                         raise AssertionError('OpenCode recovered task failed: '+detail[:1500])
                     assert run.status == ('cancelled' if permission_response == 'reject' else 'completed'), [(event.type, event.payload) for event in events]
@@ -907,7 +972,7 @@ asyncio.run(run())
                         from app.features.assistant.clients.opencode_client import OpenCodeClient, OpenCodeClientError
                         first_session = run.opencode_session_id
                         original_json = OpenCodeClient._json
-                        async def refuse_prompt(client,method,path,**kwargs):
+                        async def refuse_prompt(client: Any,method: Any,path: Any,**kwargs: Any):
                             if path.endswith('/prompt_async'):
                                 raise OpenCodeClientError('OpenCode returned HTTP 503',503)
                             return await original_json(client,method,path,**kwargs)
@@ -936,7 +1001,9 @@ asyncio.run(run())
                     if missing_candidate == 'conversation':
                         first_session = run.opencode_session_id
                         first_runtime = docker_service.runtime_service.get_runtime(db,ws_id,user_id)
+                        assert first_runtime is not None
                         first_container = first_runtime.container_id
+                        assert first_container is not None
                         first_generation = db.query(RuntimeOperation).filter_by(state='complete').one().generation
                         docker('rm','-f',first_container)  # Lose actual OpenCode session storage.
                         request_count = len(requests)
@@ -964,19 +1031,23 @@ asyncio.run(run())
                         assert '续接历史' in replayed
                         db.expire_all()
                         restored_runtime = docker_service.runtime_service.get_runtime(db,ws_id,user_id)
+                        assert restored_runtime is not None
                         assert restored_runtime.container_id != first_container
-                        assert db.get(RuntimeOperation,first_generation).state == 'cancelled'
+                        first_op = db.get(RuntimeOperation,first_generation)
+                        assert first_op is not None and first_op.state == 'cancelled'
 
                     runtime = docker_service.runtime_service.get_runtime(db, ws_id, user_id)
+                    assert runtime is not None
                     assert not infrastructure['redis'].exists(f'assistant:expert:runtime:{runtime.id}')
                     operation = db.query(RuntimeOperation).filter_by(workspace_id=ws_id,user_id=user_id,state='complete').one()
                     assert operation.state == 'complete' and operation.finished_at is not None
                     assert operation.candidate_container_id == runtime.container_id
-                    runtime_config = docker_service._client().read_config(runtime.container_id)
+                    runtime_config: Any = docker_service._client().read_config(str(runtime.container_id))
                     assert provider_key not in json.dumps(runtime_config)
-                    raw = runtime_config['provider'][docker_service.OPENCODE_CHAT_PROVIDER_ID]['options']['apiKey']
+                    raw_api_key: str = str(runtime_config['provider'][docker_service.OPENCODE_CHAT_PROVIDER_ID]['options']['apiKey'])
                     from app.features.runtime_llm import tokens
-                    assert tokens.validate_token(db, raw)['type'] == 'runtime_llm'
+                    token_info = tokens.validate_token(db, raw_api_key)
+                    assert token_info is not None and token_info['type'] == 'runtime_llm'
                     assert list(infrastructure['redis'].scan_iter('runtime-llm-quota:*:requests'))
                     # 通过独立 worker Session 以及冷启动执行
                     # 现有运行时凭据刷新.
@@ -986,17 +1057,19 @@ asyncio.run(run())
                         return [item async for item in engine._ensure_runtime(ws_id, user_id)]
                     refreshed = asyncio.run(refresh_existing())
                     assert refreshed[0][1].payload['runtime_status'] == 'running'
-                    assert refreshed[-1][0].runtime_id == runtime.id
+                    rt_res = refreshed[-1][0]
+                    assert rt_res is not None and rt_res.runtime_id == runtime.id
                     from app.features.assistant.clients.opencode_client import OpenCodeClient
                     from app.features.assistant.clients.opencode_auth import server_password, server_username
                     async def mcp_status():
                         async with OpenCodeClient(docker_service.get_runtime_base_url(workspace, user_id, runtime), server_username(), server_password(runtime.id, user_id, ws_id)) as client:
                             return await client.get_mcp_status(), await client.get_messages(run.opencode_session_id)
                     connected, messages = asyncio.run(mcp_status())
-                    assert connected['SKYCLOUD']['status'] == 'connected'
+                    connected_dict: Any = connected
+                    assert connected_dict['SKYCLOUD']['status'] == 'connected'
                     # 在热刷新后使用最新限定范围 Runtime 凭据
                     # 通过其协议调用实际 MCP 搜索工具.
-                    mcp_headers = docker_service._client().read_config(runtime.container_id)['mcp']['SKYCLOUD']['headers']
+                    mcp_headers: Any = runtime_config['mcp']['SKYCLOUD']['headers']
                     # 父级单元 conftest 替换了 MCP 包. 像服务器一样
                     # 在独立进程中运行锁定 SDK.
                     client_code = """
@@ -1032,9 +1105,15 @@ asyncio.run(main())
                     for stored_message in repository.get_messages(db, conversation.id):
                         AssistantMessageResponse.model_validate(stored_message.to_dict())
                     if permission_response == 'reject':
-                        states = [part['state'] for message in messages for part in message.get('parts', []) if part.get('type') == 'tool' and part.get('tool') == 'bash']
-                        assert any(state.get('status') == 'error' and 'rejected' in state.get('error', '').lower() for state in states)
-                        assert all('AUTHORIZED_ONLY' not in state.get('output', '') for state in states)
+                        raw_messages: list[dict[str, Any]] = cast(list[dict[str, Any]], messages)
+                        states: list[dict[str, Any]] = [
+                            part['state']
+                            for message in raw_messages
+                            for part in [cast(dict[str, Any], p) for p in cast(list[Any], message.get('parts', [])) if isinstance(p, dict)]
+                            if part.get('type') == 'tool' and part.get('tool') == 'bash'
+                        ]
+                        assert any(state.get('status') == 'error' and 'rejected' in str(state.get('error', '')).lower() for state in states)
+                        assert all('AUTHORIZED_ONLY' not in str(state.get('output', '')) for state in states)
 
     finally:
         # 新启动名称为持久化代系. 在 fixture 清理中保留每个
@@ -1047,7 +1126,7 @@ asyncio.run(main())
             if current and current.container_id:
                 runtime_name = current.container_id
         (FIXTURE_DIR / 'skycloud-expert-gateway-results.json').write_text(json.dumps([{'fields': list(body), 'max_tokens': body.get('max_tokens')} for body in requests]))
-        (FIXTURE_DIR / 'skycloud-expert-gateway-events.json').write_text(json.dumps([{'type': event.type, 'payload': event.payload} for event in observed], ensure_ascii=False))
+        (FIXTURE_DIR / 'skycloud-expert-gateway-events.json').write_text(json.dumps([{'type': getattr(event, 'type', ''), 'payload': getattr(event, 'payload', {})} for event in observed], ensure_ascii=False))
         for name, label in [(runtime_name, 'runtime'), (bridge, 'proxy')]:
             logs = docker('logs', name, check=False)
             (FIXTURE_DIR / f'skycloud-expert-gateway-{label}.log').write_text(logs.stdout + logs.stderr)
@@ -1061,8 +1140,8 @@ asyncio.run(main())
 
 
 def test_mcp_upload_is_scoped_over_streamable_http(
-    infrastructure, postgres, minio_storage, tmp_path,
-):
+    infrastructure: Any, postgres: Any, minio_storage: Any, tmp_path: Any,
+) -> None:
     """通过真实 MCP 协议测试上传、回读与角色隔离."""
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)

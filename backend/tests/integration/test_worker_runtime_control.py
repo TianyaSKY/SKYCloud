@@ -1,3 +1,5 @@
+from typing import Any, cast
+# pyright: reportPrivateUsage=false
 """验证生产 Compose Worker 能删除 API 已删除的运行时."""
 
 import json
@@ -134,11 +136,11 @@ def _compose_override(
 
 
 def _api_exec_json(
-    run_compose,
+    run_compose: Any,
     source: str,
     *,
     timeout: int = 30,
-) -> object:
+) -> Any:
     result = run_compose(
         "exec",
         "-T",
@@ -191,8 +193,8 @@ def _runtime_ids(
         )
         if inspected.returncode:
             continue
-        record = json.loads(inspected.stdout)[0]
-        labels = record["Config"]["Labels"] or {}
+        record = cast(dict[str, Any], json.loads(inspected.stdout)[0])
+        labels = cast(dict[str, Any], record.get("Config", {}).get("Labels") or {})
         if (
             record["Id"].startswith(short_id)
             and labels.get("skycloud.user_id") == str(user_id)
@@ -204,7 +206,7 @@ def _runtime_ids(
     return matches
 
 
-def test_worker_removes_runtime_after_workspace_deletion(tmp_path):
+def test_worker_removes_runtime_after_workspace_deletion(tmp_path: Any) -> None:
     root = Path(__file__).resolve().parents[3]
     images = {
         "backend": os.getenv("SKYCLOUD_TEST_BACKEND_IMAGE", ""),
@@ -377,11 +379,12 @@ def test_worker_removes_runtime_after_workspace_deletion(tmp_path):
             assert runtime_id is not None
             assert isinstance(short_id, str) and len(short_id) == 12
 
-            snapshot = _api_exec_json(
+            snapshot_raw = _api_exec_json(
                 run_compose,
                 "import json; from runtime_controller.client import ControllerClient; "
                 f"print(json.dumps(ControllerClient().user_snapshot({user_id})))",
             )
+            snapshot = cast(list[dict[str, Any]], snapshot_raw)
             matching = [
                 row
                 for row in snapshot
@@ -390,7 +393,7 @@ def test_worker_removes_runtime_after_workspace_deletion(tmp_path):
                 and row["user_id"] == user_id
             ]
             assert len(matching) == 1
-            full_container_id = matching[0]["id"]
+            full_container_id = str(matching[0]["id"])
             assert len(full_container_id) == 64
             assert full_container_id.startswith(short_id)
 
@@ -401,11 +404,12 @@ def test_worker_removes_runtime_after_workspace_deletion(tmp_path):
             )
             assert stopped.status_code == 200, stopped.text
             assert stopped.json()["data"]["status"] == "stopped"
-            kept = _api_exec_json(
+            kept_raw = _api_exec_json(
                 run_compose,
                 "import json; from runtime_controller.client import ControllerClient; "
                 f"print(json.dumps(ControllerClient().inspect({full_container_id!r})))",
             )
+            kept = cast(dict[str, Any], kept_raw)
             assert kept["id"] == full_container_id
             assert kept["status"] != "running"
 
@@ -443,8 +447,12 @@ raise SystemExit(1)
         save_logs()
         raise
     finally:
-        if full_container_id is None and all(
-            value is not None for value in (user_id, workspace_id, runtime_id, short_id)
+        if (
+            full_container_id is None
+            and user_id is not None
+            and workspace_id is not None
+            and runtime_id is not None
+            and short_id is not None
         ):
             candidates = _runtime_ids(
                 user_id=user_id,

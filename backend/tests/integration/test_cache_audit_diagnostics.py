@@ -1,9 +1,12 @@
+from collections.abc import Generator
+from typing import Any, cast
+# pyright: reportPrivateUsage=false
 """隔离 PostgreSQL/Redis 故障保留业务结果与私有诊断信息测试."""
 import os
 import pytest
 from loguru import logger
 from redis import Redis
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from tests.integration.test_migrations import postgres
 from tests.integration.test_runtime_security import infrastructure
 from entry.migrate import upgrade
@@ -15,24 +18,28 @@ from app.models.user import User
 from app.models.workspace import Workspace
 from app.models.mcp_audit_log import McpAuditLog
 
+__all__ = ["postgres", "infrastructure"]
+
 pytestmark = pytest.mark.skipif(os.getenv('RUN_CACHE_AUDIT_DIAGNOSTICS') != '1', reason='Opt-in actual infrastructure diagnostics')
 SECRET = 'private-infra-diagnostic-sentinel'
 
 
 @pytest.fixture
-def diagnostics():
-    captured = []
-    sink = logger.add(lambda message: captured.append((str(message), message.record['exception'])), format='{message}')
+def diagnostics() -> Generator[list[tuple[str, Any]], None, None]:
+    captured: list[tuple[str, Any]] = []
+    def log_sink(message: Any) -> None:
+        captured.append((str(message), message.record['exception']))
+    sink = logger.add(log_sink, format='{message}')
     yield captured
     logger.remove(sink)
 
 
-def safe(captured, error_type):
+def safe(captured: Any, error_type: Any):
     assert any('error_type=' + error_type in message for message, _ in captured)
     assert all(SECRET not in message and exception is None for message, exception in captured)
 
 
-async def test_actual_redis_acl_rejection_preserves_cache_fallback(infrastructure, monkeypatch, diagnostics):
+async def test_actual_redis_acl_rejection_preserves_cache_fallback(infrastructure: Any, monkeypatch: Any, diagnostics: Any) -> None:
     admin = infrastructure['redis']
     admin.acl_setuser('diagnostic-test', enabled=True, reset=True, passwords=['+disposable-redis-test'],
                       keys=['*'], commands=['-@all', '+ping'])
@@ -41,9 +48,12 @@ async def test_actual_redis_acl_rejection_preserves_cache_fallback(infrastructur
     client = Redis(**options)
     monkeypatch.setattr(cache, 'redis_client', client)
     try:
-        assert client.ping()
-        @cache.cacheable(cache.CacheableParams(prefix=SECRET), key=lambda value: value)
-        async def read(value):
+        assert bool(getattr(client, 'ping')())
+        def cache_key(value: str) -> str:
+            return value
+
+        @cache.cacheable(cache.CacheableParams(prefix=SECRET), key=cache_key)
+        async def read(value: str) -> dict[str, str]:
             return {'result': value}
         assert await read(SECRET) == {'result': SECRET}
         assert cache.evict_cache_pattern(SECRET) == 0
@@ -55,7 +65,7 @@ async def test_actual_redis_acl_rejection_preserves_cache_fallback(infrastructur
         admin.acl_deluser('diagnostic-test')
 
 
-async def test_actual_postgres_audit_rejection_preserves_tool_and_recovers(postgres, monkeypatch, diagnostics):
+async def test_actual_postgres_audit_rejection_preserves_tool_and_recovers(postgres: Any, monkeypatch: Any, diagnostics: Any) -> None:
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     with factory() as seed:
@@ -87,7 +97,7 @@ async def test_actual_postgres_audit_rejection_preserves_tool_and_recovers(postg
         reset_mcp_context(context)
 
 
-async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, monkeypatch):
+async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure: Any, monkeypatch: Any) -> None:
     import asyncio
     import threading
     import json
@@ -96,13 +106,14 @@ async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, 
     admin.set(key, json.dumps({'previous': True}))
     entered = threading.Event()
     class ObservedRedis(Redis):
-        def execute_command(self, *args, **kwargs):
+        def execute_command(self, *args: Any, **kwargs: Any) -> Any:
             if str(args[0]).upper() == 'GET':
                 entered.set()
-            return super().execute_command(*args, **kwargs)
+            cmd: Any = getattr(super(), 'execute_command')
+            return cmd(*args, **kwargs)
     client = ObservedRedis(**admin.connection_pool.connection_kwargs)
     monkeypatch.setattr(cache, 'redis_client', client)
-    business = []
+    business: list[str] = []
     @cache.cacheable(cache.CacheableParams(prefix=key))
     async def work():
         business.append('accepted')
@@ -130,7 +141,7 @@ async def test_cancelled_cache_owns_actual_paused_redis_command(infrastructure, 
 
 
 @pytest.mark.parametrize('mode', ['generic', 'workspace'])
-def test_actual_cache_eviction_is_batched_and_workspace_scoped(infrastructure, monkeypatch, mode):
+def test_actual_cache_eviction_is_batched_and_workspace_scoped(infrastructure: Any, monkeypatch: Any, mode: Any) -> None:
     from app.features.file import deletion as file_deletion
     admin = infrastructure['redis']
     prefix = 'large-cache' if mode == 'generic' else 'search:fuzzy:1'
@@ -140,14 +151,14 @@ def test_actual_cache_eviction_is_batched_and_workspace_scoped(infrastructure, m
         for index in range(20):
             pipeline.set(f'search:fuzzy:12:{index}', 'other-workspace')
         pipeline.execute()
-    batches = []
+    batches: list[int] = []
     class ObservedStore:
-        def set(self, *args, **kwargs):
+        def set(self, *args: Any, **kwargs: Any):
             return admin.set(*args, **kwargs)
-        def scan_iter(self, **kwargs):
+        def scan_iter(self, **kwargs: Any) -> Any:
             assert kwargs == {'match': prefix+':*', 'count': 128}
             yield from admin.scan_iter(**kwargs)
-        def delete(self, *keys):
+        def delete(self, *keys: Any):
             assert 0 < len(keys) <= 128
             batches.append(len(keys))
             return admin.delete(*keys)
@@ -161,7 +172,7 @@ def test_actual_cache_eviction_is_batched_and_workspace_scoped(infrastructure, m
     assert len(list(admin.scan_iter(match='search:fuzzy:12:*'))) == 20
 
 
-def test_actual_redis_generation_fences_late_search_write(infrastructure, monkeypatch):
+def test_actual_redis_generation_fences_late_search_write(infrastructure: Any, monkeypatch: Any) -> None:
     import threading
     from concurrent.futures import ThreadPoolExecutor
     from types import SimpleNamespace
@@ -170,8 +181,8 @@ def test_actual_redis_generation_fences_late_search_write(infrastructure, monkey
     monkeypatch.setattr(cache, 'redis_client', admin)
     entered, release = threading.Event(), threading.Event()
     names = ['old-name']
-    reads = []
-    def query(*args):
+    reads: list[str] = []
+    def query(*args: Any):
         snapshot = names[0]
         reads.append(snapshot)
         if len(reads) == 1:
@@ -179,27 +190,31 @@ def test_actual_redis_generation_fences_late_search_write(infrastructure, monkey
             assert release.wait(3)
         return SimpleNamespace(items=[SimpleNamespace(to_dict=lambda: {'name': snapshot})], total=1)
     monkeypatch.setattr(search_service.repository, 'search_names', query)
-    monkeypatch.setattr(search_service, '_search_revision', lambda *args: 0)
-    monkeypatch.setattr(search_service, '_search_cache_allowed', lambda *args, **kwargs: True)
+    def mock_search_revision(*args: Any) -> int:
+        return 0
+    def mock_search_cache_allowed(*args: Any, **kwargs: Any) -> bool:
+        return True
+    monkeypatch.setattr(search_service, '_search_revision', mock_search_revision)
+    monkeypatch.setattr(search_service, '_search_cache_allowed', mock_search_cache_allowed)
     with ThreadPoolExecutor(max_workers=1) as executor:
-        old = executor.submit(search_service._search_files_fuzzy, None, 1, 'name', 1, 10)
+        old = executor.submit(search_service._search_files_fuzzy, cast(Any, None), 1, 'name', 1, 10)
         try:
             assert entered.wait(1)
             names[0] = 'new-name'
             file_deletion.clear_search_cache(1)
         finally:
             release.set()
-        assert old.result()['items'][0]['name'] == 'old-name'
-    assert search_service._search_files_fuzzy(None, 1, 'name', 1, 10)['items'][0]['name'] == 'new-name'
+        assert cast(dict[str, Any], old.result())['items'][0]['name'] == 'old-name'
+    assert cast(dict[str, Any], search_service._search_files_fuzzy(cast(Any, None), 1, 'name', 1, 10))['items'][0]['name'] == 'new-name'
     assert reads == ['old-name', 'new-name']
     # 仅驱逐代系标记绝不能复活旧键.
     admin.delete('cache:generation:search:fuzzy:1')
     names[0] = 'latest-name'
-    assert search_service._search_files_fuzzy(None, 1, 'name', 1, 10)['items'][0]['name'] == 'latest-name'
+    assert cast(dict[str, Any], search_service._search_files_fuzzy(cast(Any, None), 1, 'name', 1, 10))['items'][0]['name'] == 'latest-name'
 
 
 @pytest.mark.parametrize("mode", ["no-cleanup", "redis-denied"])
-def test_actual_sql_commit_invalidates_search_without_redis_cleanup(postgres, infrastructure, monkeypatch, mode):
+def test_actual_sql_commit_invalidates_search_without_redis_cleanup(postgres: Any, infrastructure: Any, monkeypatch: Any, mode: Any) -> None:
     from app.features.file import search_service
     from app.models.file import File
     upgrade(postgres)
@@ -213,11 +228,13 @@ def test_actual_sql_commit_invalidates_search_without_redis_cleanup(postgres, in
         item = File(name='old-name', file_path='cache-revision-object', workspace_id=workspace.id, uploader_id=user.id)
         db.add(item); db.commit()
         workspace_id, file_id = workspace.id, item.id
-        assert search_service._search_files_fuzzy(db, workspace_id, 'name', 1, 10)['items'][0]['name'] == 'old-name'
+        assert cast(dict[str, Any], search_service._search_files_fuzzy(db, workspace_id, 'name', 1, 10))['items'][0]['name'] == 'old-name'
     # 模拟在权威 SQL 提交后立即退出进程:
     # 不运行文件服务 Redis 代系轮转或物理删除.
     with factory() as db:
-        db.get(File, file_id).name = 'new-name'
+        f = db.get(File, file_id)
+        assert f is not None
+        f.name = 'new-name'
         db.commit()
     client = None
     try:
@@ -232,14 +249,14 @@ def test_actual_sql_commit_invalidates_search_without_redis_cleanup(postgres, in
             from app.features.file import deletion as file_deletion
             file_deletion.clear_search_cache(workspace_id)
         with factory() as db:
-            assert search_service._search_files_fuzzy(db, workspace_id, 'name', 1, 10)['items'][0]['name'] == 'new-name'
+            assert cast(dict[str, Any], search_service._search_files_fuzzy(db, workspace_id, 'name', 1, 10))['items'][0]['name'] == 'new-name'
     finally:
         if client is not None:
             client.close()
             infrastructure['redis'].acl_deluser('revision-reader')
 
 
-def test_sql_search_revision_is_atomic_scoped_and_covers_direct_writes(postgres):
+def test_sql_search_revision_is_atomic_scoped_and_covers_direct_writes(postgres: Any) -> None:
     from app.models.file import File
     from sqlalchemy import select, text
     upgrade(postgres)
@@ -254,14 +271,16 @@ def test_sql_search_revision_is_atomic_scoped_and_covers_direct_writes(postgres)
         item = File(name='trigger-name', file_path='trigger-object', workspace_id=a)
         db.add(item); db.commit()
         file_id = item.id
-        def revision(workspace):
+        def revision(workspace: Any):
             return db.scalar(select(Workspace.search_cache_revision).where(Workspace.id == workspace))
         assert (revision(a), revision(b)) == (1, 0)
         assert 'search_cache_revision' not in first.to_dict()
         db.execute(text('UPDATE files SET name=:name WHERE id=:id'), {'name':'rollback-name','id':file_id})
         assert revision(a) == 2
         db.rollback()
-        assert revision(a) == 1 and db.get(File,file_id).name == 'trigger-name'
+        file_rec = db.get(File, file_id)
+        assert file_rec is not None
+        assert revision(a) == 1 and file_rec.name == 'trigger-name'
         db.execute(text('UPDATE files SET workspace_id=:workspace WHERE id=:id'), {'workspace':b,'id':file_id})
         db.commit()
         assert (revision(a), revision(b)) == (2, 1)
@@ -271,7 +290,7 @@ def test_sql_search_revision_is_atomic_scoped_and_covers_direct_writes(postgres)
 
 
 @pytest.mark.parametrize('mode', ['dirty', 'flushed', 'direct-sql'])
-def test_rolled_back_search_does_not_publish_uncommitted_cache(postgres, infrastructure, monkeypatch, mode):
+def test_rolled_back_search_does_not_publish_uncommitted_cache(postgres: Any, infrastructure: Any, monkeypatch: Any, mode: Any) -> None:
     from app.models.file import File
     from app.features.file import search_service
     from sqlalchemy import text
@@ -288,31 +307,34 @@ def test_rolled_back_search_does_not_publish_uncommitted_cache(postgres, infrast
         db.add(item); db.commit()
         workspace_id, file_id = workspace.id, item.id
     with factory() as db:
-        assert search_service._search_files_fuzzy(db,workspace_id,'name',1,10)['items'][0]['name'] == 'original-name'
+        assert cast(dict[str, Any], search_service._search_files_fuzzy(db,workspace_id,'name',1,10))['items'][0]['name'] == 'original-name'
     before = {key:admin.get(key) for key in admin.scan_iter(match=f'search:fuzzy:{workspace_id}:*')}
     assert before, 'healthy read-only search must still populate the shared cache'
     with factory() as db:
         if mode == 'direct-sql':
             db.execute(text('UPDATE files SET name=:name WHERE id=:id'), {'name':'uncommitted-name','id':file_id})
         else:
-            db.get(File,file_id).name = 'uncommitted-name'
+            file_rec = db.get(File,file_id)
+            assert file_rec is not None
+            file_rec.name = 'uncommitted-name'
             if mode == 'flushed':
                 db.flush()
-        assert search_service._search_files_fuzzy(db,workspace_id,'name',1,10)['items'][0]['name'] == 'uncommitted-name'
+        assert cast(dict[str, Any], search_service._search_files_fuzzy(db,workspace_id,'name',1,10))['items'][0]['name'] == 'uncommitted-name'
         db.rollback()
     after = {key:admin.get(key) for key in admin.scan_iter(match=f'search:fuzzy:{workspace_id}:*')}
     assert after == before, 'uncommitted search result was published to shared Redis'
     with factory() as db:
-        db.get(File,file_id).name = 'committed-name'
+        file_rec = db.get(File,file_id)
+        assert file_rec is not None
+        file_rec.name = 'committed-name'
         db.commit()
     with factory() as db:
-        assert search_service._search_files_fuzzy(db,workspace_id,'name',1,10)['items'][0]['name'] == 'committed-name'
+        assert cast(dict[str, Any], search_service._search_files_fuzzy(db,workspace_id,'name',1,10))['items'][0]['name'] == 'committed-name'
 
 
-async def test_cached_read_cancel_drains_actual_blocked_sql(postgres, infrastructure, monkeypatch):
+async def test_cached_read_cancel_drains_actual_blocked_sql(postgres: Any, infrastructure: Any, monkeypatch: Any) -> None:
     import asyncio
     import time
-    from contextlib import contextmanager
     from sqlalchemy import text
     from app.features.auth import user_service
     upgrade(postgres)
@@ -322,19 +344,26 @@ async def test_cached_read_cancel_drains_actual_blocked_sql(postgres, infrastruc
         user = User(username='blocked-profile-reader', password_hash='unused', role='common')
         db.add(user); db.commit()
         user_id = user.id
-    pids, closed = [], []
-    @contextmanager
-    def tracked_factory():
-        with factory() as db:
-            pids.append(db.scalar(text('SELECT pg_backend_pid()')))
+    pids: list[int] = []
+    closed: list[str] = []
+
+    class TrackedSession(Session):
+        def close(self) -> None:
             try:
-                yield db
+                super().close()
             finally:
                 closed.append('closed')
+
+    tracked_sessionmaker = sessionmaker(bind=postgres, class_=TrackedSession)
+    def tracked_factory() -> Session:
+        db = tracked_sessionmaker()
+        pids.append(int(db.scalar(text('SELECT pg_backend_pid()'))))
+        return db
+
     with postgres.connect() as locker:
         transaction = locker.begin()
         locker.execute(text('LOCK TABLE users IN ACCESS EXCLUSIVE MODE'))
-        pending = asyncio.create_task(user_service.get_user(None,user_id,session_factory=tracked_factory))
+        pending = asyncio.create_task(user_service.get_user(None, user_id, session_factory=tracked_factory))
         try:
             deadline = time.monotonic()+5
             while True:
@@ -359,7 +388,7 @@ async def test_cached_read_cancel_drains_actual_blocked_sql(postgres, infrastruc
 
 @pytest.mark.parametrize('kind', ['profile', 'folders', 'root-id'])
 @pytest.mark.parametrize('finish', ['rollback', 'commit'])
-def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructure, monkeypatch, kind, finish):
+def test_other_sql_caches_bypass_uncommitted_transactions(postgres: Any, infrastructure: Any, monkeypatch: Any, kind: Any, finish: Any) -> None:
     from app.features.auth import user_service
     from app.features.folder import service as folders
     from app.models.folder import Folder
@@ -377,24 +406,38 @@ def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructu
         child = Folder(name='original-name', workspace_id=workspace.id, parent_id=root.id)
         db.add_all([child]); db.commit()
         uid, wid, root_id, child_id = user.id,workspace.id,root.id,child.id
-    def read(db):
-        if kind == 'profile': return user_service.get_user_data(db,uid)['username']
-        if kind == 'folders': return next(row['name'] for row in folders.get_folders(db,wid) if row['id']==child_id)
-        return folders.get_root_folder_id(db,wid)
+    def read(db: Any) -> Any:
+        if kind == 'profile':
+            user_data = user_service.get_user_data(db, uid)
+            assert user_data is not None
+            return user_data['username']
+        if kind == 'folders':
+            return next(row['name'] for row in folders.get_folders(db, wid) if row['id'] == child_id)
+        return folders.get_root_folder_id(db, wid)
     expected_original = root_id if kind == 'root-id' else 'original-name'
     with factory() as db:
         assert read(db) == expected_original
     before = {key:admin.get(key) for key in admin.scan_iter()}
     assert before
     with factory() as db:
-        if kind == 'profile': db.get(User,uid).username = 'uncommitted-name'
-        elif kind == 'folders': db.get(Folder,child_id).name = 'uncommitted-name'
+        replacement: Folder | None = None
+        if kind == 'profile':
+            u = db.get(User, uid)
+            assert u is not None
+            u.username = 'uncommitted-name'
+        elif kind == 'folders':
+            f = db.get(Folder, child_id)
+            assert f is not None
+            f.name = 'uncommitted-name'
         else:
-            replacement = Folder(name='new-root',workspace_id=wid)
-            db.add(replacement); db.flush()
-            db.get(Folder,root_id).parent_id = replacement.id
+            replacement = Folder(name='new-root', workspace_id=wid)
+            db.add(replacement)
+            db.flush()
+            rf = db.get(Folder, root_id)
+            assert rf is not None
+            rf.parent_id = replacement.id
         db.flush()
-        expected = replacement.id if kind == 'root-id' else 'uncommitted-name'
+        expected = replacement.id if kind == 'root-id' and replacement is not None else 'uncommitted-name'
         assert read(db) == expected
         if finish == "commit":
             db.commit()
@@ -406,7 +449,7 @@ def test_other_sql_caches_bypass_uncommitted_transactions(postgres, infrastructu
 
 
 @pytest.mark.parametrize('phase', ['pending-rollback', 'flushed-rollback', 'commit'])
-def test_root_file_id_cache_tracks_committed_tree_and_bypasses_writes(postgres, infrastructure, monkeypatch, phase):
+def test_root_file_id_cache_tracks_committed_tree_and_bypasses_writes(postgres: Any, infrastructure: Any, monkeypatch: Any, phase: Any) -> None:
     from app.features.file import service as files
     from app.models.folder import Folder
     from app.models.file import File
@@ -428,7 +471,9 @@ def test_root_file_id_cache_tracks_committed_tree_and_bypasses_writes(postgres, 
     before = {key: admin.get(key) for key in admin.scan_iter()}
     assert before
     with factory() as db:
-        db.get(File, original_id).parent_id = root_id
+        file_rec = db.get(File, original_id)
+        assert file_rec is not None
+        file_rec.parent_id = root_id
         if phase != 'pending-rollback':
             db.flush()
         if phase == 'commit':
@@ -445,7 +490,7 @@ def test_root_file_id_cache_tracks_committed_tree_and_bypasses_writes(postgres, 
         assert files.get_root_file_id(db, wid) == (None if phase == 'commit' else original_id)
 
 
-def test_generic_cache_revisions_are_scoped_atomic_and_survive_owner_deletion(postgres):
+def test_generic_cache_revisions_are_scoped_atomic_and_survive_owner_deletion(postgres: Any) -> None:
     from sqlalchemy import text
     from app.models.folder import Folder
     from app.models.file import File
@@ -464,7 +509,8 @@ def test_generic_cache_revisions_are_scoped_atomic_and_survive_owner_deletion(po
         uid,a,b,file_id = user.id,first.id,second.id,item.id
         profile = f'user:profile:{uid}'
         tree_a,tree_b = f'workspace:tree:{a}',f'workspace:tree:{b}'
-        revision = lambda scope: cache.sql_cache_revision(db,scope)
+        def revision(scope: str) -> int:
+            return cache.sql_cache_revision(db, scope)
         assert (revision(profile),revision(tree_a),revision(tree_b)) == (1,2,0)
         db.add(Folder(name='child',workspace_id=a,parent_id=root.id)); db.commit()
         assert (revision(tree_a),revision(tree_b)) == (3,0)

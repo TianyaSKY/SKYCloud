@@ -1,3 +1,5 @@
+from typing import Any, cast
+# pyright: reportPrivateUsage=false
 """自选真实 PostgreSQL MCP 读取与独立提交撤销测试."""
 import asyncio
 import json
@@ -14,8 +16,10 @@ from entry.migrate import upgrade
 from tests.integration.test_migrations import postgres
 from tests.integration.test_runtime_security import infrastructure
 
+__all__ = ["postgres", "infrastructure"]
 
-def warmed(redis, prefix):
+
+def warmed(redis: Any, prefix: Any):
     """同步读取必须在此前缀下缓存其结果.
 
     缓存键携带持久化 SQL 修订版本后缀, 因此仅断言前缀.
@@ -28,7 +32,7 @@ pytestmark = pytest.mark.skipif(os.getenv("RUN_WORKSPACE_INSIGHTS_TESTS") != "1"
 
 @pytest.mark.parametrize('mode', ['fast', 'expert'])
 @pytest.mark.parametrize('reject_commit', [False, True])
-async def test_disconnected_cancel_drains_native_sql_lock_and_signals_only_committed_run(postgres, reject_commit, mode):
+async def test_disconnected_cancel_drains_native_sql_lock_and_signals_only_committed_run(postgres: Any, reject_commit: Any, mode: Any) -> None:
     import threading
     import time
     from contextlib import contextmanager
@@ -47,6 +51,7 @@ async def test_disconnected_cancel_drains_native_sql_lock_and_signals_only_commi
     factory = sessionmaker(bind=postgres)
     with factory() as db:
         workspace = db.get(Workspace, 1)
+        assert workspace is not None
         conversation = service.create_conversation(db, workspace, 1, mode, 'cancel')
         _, run, _ = service.prepare_run(db, service.PrepareRunParams(
             workspace=workspace, user_id=1,
@@ -56,7 +61,7 @@ async def test_disconnected_cancel_drains_native_sql_lock_and_signals_only_commi
         with postgres.begin() as db:
             db.execute(text('ALTER TABLE assistant_runs ADD CONSTRAINT reject_cancel CHECK (cancel_requested=false)'))
     entered, closed = threading.Event(), threading.Event()
-    worker_pids = []
+    worker_pids: list[int] = []
     @contextmanager
     def owned_factory():
         with factory() as db:
@@ -109,7 +114,7 @@ async def test_disconnected_cancel_drains_native_sql_lock_and_signals_only_commi
 
 
 @pytest.mark.parametrize("tool", [server.get_storage_overview, server.get_folder_tree])
-def test_scoped_read_then_independent_membership_removal(postgres, monkeypatch, tool):
+def test_scoped_read_then_independent_membership_removal(postgres: Any, monkeypatch: Any, tool: Any) -> None:
     upgrade(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common'),(2,'foreign','x','common')"))
@@ -137,7 +142,7 @@ def test_scoped_read_then_independent_membership_removal(postgres, monkeypatch, 
 
 @pytest.mark.parametrize("operation", ["create_folder","move_file","delete_file","move_folder",
                                        "delete_folder","batch_delete","upload_file"])
-def test_write_tool_rejects_independent_role_downgrade(postgres, monkeypatch, operation):
+def test_write_tool_rejects_independent_role_downgrade(postgres: Any, monkeypatch: Any, operation: Any) -> None:
     upgrade(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'writer','x','common')"))
@@ -150,12 +155,13 @@ def test_write_tool_rejects_independent_role_downgrade(postgres, monkeypatch, op
     try:
         with postgres.begin() as independent:
             independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
-        arguments = {
+        all_arguments: dict[str, dict[str, Any]] = {
             "create_folder":{"name":"forbidden"},"move_file":{"file_id":1,"new_name":"forbidden"},
             "delete_file":{"file_id":1},"move_folder":{"folder_id":2,"new_name":"forbidden"},
             "delete_folder":{"folder_id":2},"batch_delete":{"items":[server.BatchDeleteItem(id=1)]},
             "upload_file":{"filename":"forbidden.txt","content":"abc"},
-        }[operation]
+        }
+        arguments = all_arguments[operation]
         result = json.loads(asyncio.run(getattr(server,operation)(**arguments)))
         error = "需要编辑者或管理员权限"
         if operation == "batch_delete":
@@ -170,7 +176,7 @@ def test_write_tool_rejects_independent_role_downgrade(postgres, monkeypatch, op
         reset_mcp_context(token)
 
 
-def test_batch_delete_revalidates_after_each_committed_item(postgres, monkeypatch):
+def test_batch_delete_revalidates_after_each_committed_item(postgres: Any, monkeypatch: Any) -> None:
     upgrade(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'writer','x','common')"))
@@ -178,7 +184,7 @@ def test_batch_delete_revalidates_after_each_committed_item(postgres, monkeypatc
         db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'admin')"))
         db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id) VALUES (1,'first','first',3,'success',1,1),(2,'second','second',3,'success',1,1)"))
     monkeypatch.setattr(server,"SessionLocal",sessionmaker(bind=postgres))
-    def delete_and_downgrade(session,file_id):
+    def delete_and_downgrade(session: Any,file_id: Any):
         assert file_id == 1, 'second mutation must not be reached'
         session.execute(text("DELETE FROM files WHERE id=:id"),{"id":file_id})
         session.commit()
@@ -198,7 +204,7 @@ def test_batch_delete_revalidates_after_each_committed_item(postgres, monkeypatc
 
 
 @pytest.mark.parametrize("operation", ["list_files","get_user_folders","get_current_user"])
-def test_remaining_reads_revalidate_before_warm_cache(postgres,monkeypatch,operation):
+def test_remaining_reads_revalidate_before_warm_cache(postgres: Any,monkeypatch: Any,operation: Any) -> None:
     upgrade(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
@@ -234,7 +240,7 @@ def test_remaining_reads_revalidate_before_warm_cache(postgres,monkeypatch,opera
 
 
 @pytest.mark.parametrize('mode', ['fuzzy', 'vector'])
-async def test_search_scope_and_committed_revocation_before_cached_or_vector_reads(postgres, infrastructure, monkeypatch, mode):
+async def test_search_scope_and_committed_revocation_before_cached_or_vector_reads(postgres: Any, infrastructure: Any, monkeypatch: Any, mode: Any) -> None:
     from unittest.mock import AsyncMock
     from app.exceptions import PermissionDeniedError
     from app.features.file import search_service
@@ -250,7 +256,7 @@ async def test_search_scope_and_committed_revocation_before_cached_or_vector_rea
     monkeypatch.setattr(server, 'SessionLocal', sessionmaker(bind=postgres))
     monkeypatch.setattr(cache, 'redis_client', infrastructure['redis'])
     monkeypatch.setattr(search_service, 'embedding_desc', AsyncMock(return_value=near))
-    monkeypatch.setattr(search_service, 'get_embedding_model_config', lambda: {})
+    monkeypatch.setattr(search_service, 'get_embedding_model_config', lambda: cast(dict[str, Any], {}))
     token = set_mcp_context(McpRequestContext(1,1,'viewer'))
     try:
         first = json.loads(await server.search_files('target', search_type=mode))
@@ -268,7 +274,7 @@ async def test_search_scope_and_committed_revocation_before_cached_or_vector_rea
         reset_mcp_context(token)
 
 
-async def test_worker_cleanup_invalidation_preserves_commit_and_rolls_back_uncommitted_work(postgres, monkeypatch):
+async def test_worker_cleanup_invalidation_preserves_commit_and_rolls_back_uncommitted_work(postgres: Any, monkeypatch: Any) -> None:
     """显式关闭故障接缝; 真实 PG 事务与 SQLAlchemy 销毁."""
     from sqlalchemy.orm import Session
     from sqlalchemy.exc import StatementError
@@ -279,14 +285,16 @@ async def test_worker_cleanup_invalidation_preserves_commit_and_rolls_back_uncom
         def close(self):
             raise StatementError(private, 'SELECT :password', {'password': private}, ValueError(private))
     monkeypatch.setattr(server, 'SessionLocal', sessionmaker(bind=postgres, class_=CloseFaultSession))
-    records = []
-    sink = logger.add(lambda message: records.append(message.record))
+    records: list[dict[str, Any]] = []
+    def log_sink(message: Any) -> None:
+        records.append(cast(dict[str, Any], message.record))
+    sink = logger.add(log_sink)
     original = RuntimeError('original business failure')
-    def committed(db):
+    def committed(db: Any):
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'committed','x','common')"))
         db.commit()
         return {'id': 1}
-    def uncommitted(db):
+    def uncommitted(db: Any):
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (2,'uncommitted','x','common')"))
         raise original
     try:
@@ -306,7 +314,7 @@ async def test_worker_cleanup_invalidation_preserves_commit_and_rolls_back_uncom
 
 
 @pytest.mark.parametrize('mode', ['fuzzy','semantic','status'])
-async def test_http_worker_reads_revalidate_committed_removal(postgres, infrastructure, monkeypatch, mode):
+async def test_http_worker_reads_revalidate_committed_removal(postgres: Any, infrastructure: Any, monkeypatch: Any, mode: Any) -> None:
     """在显式过期 HTTP 身份依赖快照背后的真实 SQL/缓存."""
     import httpx
     from types import SimpleNamespace
@@ -348,7 +356,7 @@ async def test_http_worker_reads_revalidate_committed_removal(postgres, infrastr
         assert denied.json()['success'] is False
 
 
-async def test_http_auth_fresh_role_overrides_cached_admin_and_revokes_version(postgres,infrastructure,monkeypatch):
+async def test_http_auth_fresh_role_overrides_cached_admin_and_revokes_version(postgres: Any,infrastructure: Any,monkeypatch: Any) -> None:
     import httpx
     from fastapi import FastAPI,Depends
     from app.api.dependencies import require_admin
@@ -366,9 +374,11 @@ async def test_http_auth_fresh_role_overrides_cached_admin_and_revokes_version(p
     app.dependency_overrides[get_db]=database
     app.dependency_overrides[get_session_factory]=lambda:factory
     @app.get('/admin-only')
-    async def admin(user=Depends(require_admin)):
+    async def admin(user: Any=Depends(require_admin)):
         return {'id':user.id}
-    headers={'Authorization':'Bearer '+generate_token(1)}
+    token = generate_token(1)
+    assert token is not None
+    headers: dict[str, str] = {'Authorization': 'Bearer ' + token}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://test') as client:
         assert (await client.get('/admin-only',headers=headers)).status_code==200
         assert warmed(infrastructure['redis'], 'user:profile:1:sql:')
@@ -381,7 +391,7 @@ async def test_http_auth_fresh_role_overrides_cached_admin_and_revokes_version(p
 
 
 @pytest.mark.parametrize('change',['demote','delete-target'])
-async def test_profile_http_current_roles_and_cached_target_lifecycle(postgres,infrastructure,monkeypatch,change):
+async def test_profile_http_current_roles_and_cached_target_lifecycle(postgres: Any,infrastructure: Any,monkeypatch: Any,change: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
@@ -415,10 +425,10 @@ async def test_profile_http_current_roles_and_cached_target_lifecycle(postgres,i
 
 
 def test_account_and_folder_cache_revisions_follow_transaction_and_redis_failure(
-    postgres,
-    infrastructure,
-    monkeypatch,
-):
+    postgres: Any,
+    infrastructure: Any,
+    monkeypatch: Any,
+) -> None:
     from redis.exceptions import ConnectionError as RedisConnectionError
     from sqlalchemy.orm import sessionmaker
     from app.features.auth import user_service
@@ -449,11 +459,11 @@ def test_account_and_folder_cache_revisions_follow_transaction_and_redis_failure
             folders = folder_service.get_folders(db, 1)
             return user, folders
 
-    def folder_name(folders):
+    def folder_name(folders: Any):
         return next(folder["name"] for folder in folders if folder["id"] == 2)
 
     user, folders = read_profiles()
-    assert user["username"] == "cache-reader"
+    assert user is not None and user["username"] == "cache-reader"
     assert folder_name(folders) == "original-folder"
     assert warmed(redis, user_service.USER_CACHE_PREFIX + ":1:sql:")
     assert warmed(redis, folder_service.FOLDER_CACHE_PREFIX + ":1:sql:")
@@ -465,21 +475,21 @@ def test_account_and_folder_cache_revisions_follow_transaction_and_redis_failure
         transaction.rollback()
 
     user, folders = read_profiles()
-    assert user["username"] == "cache-reader"
+    assert user is not None and user["username"] == "cache-reader"
     assert folder_name(folders) == "original-folder"
 
     with postgres.begin() as db:
         db.execute(text("UPDATE users SET username='committed-user' WHERE id=1"))
         db.execute(text("UPDATE folder SET name='committed-folder' WHERE id=2"))
     user, folders = read_profiles()
-    assert user["username"] == "committed-user"
+    assert user is not None and user["username"] == "committed-user"
     assert folder_name(folders) == "committed-folder"
 
     class UnavailableRedis:
-        def get(self, *args, **kwargs):
+        def get(self, *args: Any, **kwargs: Any):
             raise RedisConnectionError("fixture Redis unavailable")
 
-        def set(self, *args, **kwargs):
+        def set(self, *args: Any, **kwargs: Any):
             raise RedisConnectionError("fixture Redis unavailable")
 
     monkeypatch.setattr(cache, "redis_client", UnavailableRedis())
@@ -487,11 +497,11 @@ def test_account_and_folder_cache_revisions_follow_transaction_and_redis_failure
         db.execute(text("UPDATE users SET username='redis-down-user' WHERE id=1"))
         db.execute(text("UPDATE folder SET name='redis-down-folder' WHERE id=2"))
     user, folders = read_profiles()
-    assert user["username"] == "redis-down-user"
+    assert user is not None and user["username"] == "redis-down-user"
     assert folder_name(folders) == "redis-down-folder"
 
 
-async def test_sys_dict_crud_reads_current_sql_without_revision_state(postgres):
+async def test_sys_dict_crud_reads_current_sql_without_revision_state(postgres: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
@@ -546,11 +556,11 @@ async def test_sys_dict_crud_reads_current_sql_without_revision_state(postgres):
             "SELECT count(*) FROM sql_cache_revisions WHERE scope LIKE 'sys_dict:%'",
         )).scalar_one() == 0
 @pytest.mark.parametrize('operation', ['create', 'profile', 'password', 'delete', 'self-password'])
-async def test_account_mutations_reject_stale_admin_snapshot(postgres, monkeypatch, operation):
+async def test_account_mutations_reject_stale_admin_snapshot(postgres: Any, monkeypatch: Any, operation: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
-    from app.features.auth import router, user_service
+    from app.features.auth import router
     from app.api.dependencies import get_current_user, require_admin
     from app.infra.extensions import get_session_factory
     from app.exceptions import register_exception_handlers
@@ -585,13 +595,16 @@ async def test_account_mutations_reject_stale_admin_snapshot(postgres, monkeypat
         assert response.status_code == (400 if operation == 'self-password' else 403), response.text
     with factory() as db:
         assert db.query(User).count() == 2
-        assert db.get(User, 1).check_password('original-password')
-        assert db.get(User, 2).check_password('original-password')
-        assert db.get(User, 1).auth_version == db.get(User, 2).auth_version == 0
-        assert db.get(User, 2).username == 'target'
+        u1 = db.get(User, 1)
+        u2 = db.get(User, 2)
+        assert u1 is not None and u2 is not None
+        assert u1.check_password('original-password')
+        assert u2.check_password('original-password')
+        assert u1.auth_version == u2.auth_version == 0
+        assert u2.username == 'target'
 
 
-def test_account_authorization_lock_orders_demotion_after_transaction(postgres):
+def test_account_authorization_lock_orders_demotion_after_transaction(postgres: Any) -> None:
     from sqlalchemy.exc import DBAPIError
     from app.features.auth import user_service
     from app.exceptions import PermissionDeniedError
@@ -605,7 +618,8 @@ def test_account_authorization_lock_orders_demotion_after_transaction(postgres):
             independent.execute(text("SET LOCAL lock_timeout='100ms'"))
             with pytest.raises(DBAPIError) as error:
                 independent.execute(text("UPDATE users SET role='common' WHERE id=1"))
-            assert error.value.orig.pgcode == '55P03'
+            orig: Any = error.value.orig
+            assert getattr(orig, "pgcode", None) == '55P03'
             independent.rollback()
         owned.commit()
     with postgres.begin() as independent:
@@ -615,7 +629,7 @@ def test_account_authorization_lock_orders_demotion_after_transaction(postgres):
             user_service.authorize_account_mutation(owned, 1, 2)
 
 
-async def test_http_workspace_dependencies_detach_and_recheck_membership(postgres):
+async def test_http_workspace_dependencies_detach_and_recheck_membership(postgres: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import Depends, FastAPI
@@ -633,12 +647,12 @@ async def test_http_workspace_dependencies_detach_and_recheck_membership(postgre
     app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
 
     @app.get('/context')
-    async def context(workspace=Depends(get_current_workspace)):
+    async def context(workspace: Any=Depends(get_current_workspace)):
         assert workspace._sa_instance_state.session is None
         return {'id': workspace.id, 'name': workspace.name}
 
     @app.get('/editor')
-    async def editor(workspace=Depends(require_workspace_role('editor'))):
+    async def editor(workspace: Any=Depends(require_workspace_role('editor'))):
         assert workspace._sa_instance_state.session is None
         return {'id': workspace.id}
 
@@ -660,7 +674,7 @@ async def test_http_workspace_dependencies_detach_and_recheck_membership(postgre
 
 
 @pytest.mark.parametrize('operation', ['create', 'update', 'delete', 'organize', 'root', 'all', 'get'])
-async def test_folder_http_rechecks_stale_workspace_snapshot(postgres, infrastructure, monkeypatch, operation):
+async def test_folder_http_rechecks_stale_workspace_snapshot(postgres: Any, infrastructure: Any, monkeypatch: Any, operation: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
@@ -680,9 +694,11 @@ async def test_folder_http_rechecks_stale_workspace_snapshot(postgres, infrastru
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
     for route in router.router.routes:
-        for dependency in route.dependant.dependencies:
-            if dependency.name == 'workspace':
-                app.dependency_overrides[dependency.call] = lambda: SimpleNamespace(id=1)
+        dependant: Any = getattr(route, "dependant", None)
+        if dependant is not None:
+            for dependency in dependant.dependencies:
+                if dependency.name == 'workspace':
+                    app.dependency_overrides[dependency.call] = lambda: SimpleNamespace(id=1)
     calls = {
         'create': ('POST', '/folder', {'name': 'forbidden'}),
         'update': ('PUT', '/folder/2', {'name': 'forbidden'}),
@@ -711,7 +727,7 @@ async def test_folder_http_rechecks_stale_workspace_snapshot(postgres, infrastru
         assert db.scalar(text('SELECT count(*) FROM organize_tasks')) == 0
 
 
-def test_folder_write_authorization_lock_blocks_role_change(postgres):
+def test_folder_write_authorization_lock_blocks_role_change(postgres: Any) -> None:
     from sqlalchemy.exc import DBAPIError
     from app.features.workspace.permissions import assert_can_write_locked
     from app.exceptions import PermissionDeniedError
@@ -727,7 +743,8 @@ def test_folder_write_authorization_lock_blocks_role_change(postgres):
             independent.execute(text("SET LOCAL lock_timeout='100ms'"))
             with pytest.raises(DBAPIError) as error:
                 independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
-            assert error.value.orig.pgcode == '55P03'
+            orig: Any = error.value.orig
+            assert getattr(orig, "pgcode", None) == '55P03'
             independent.rollback()
         owned.commit()
     with postgres.begin() as independent:
@@ -738,7 +755,7 @@ def test_folder_write_authorization_lock_blocks_role_change(postgres):
 
 
 @pytest.mark.parametrize('operation', ['list', 'get', 'download', 'update', 'delete', 'batch', 'retry', 'rebuild'])
-async def test_file_http_rejects_stale_membership_before_io(postgres, monkeypatch, operation):
+async def test_file_http_rejects_stale_membership_before_io(postgres: Any, monkeypatch: Any, operation: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
@@ -756,9 +773,11 @@ async def test_file_http_rejects_stale_membership_before_io(postgres, monkeypatc
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
     for route in router.router.routes:
-        for dependency in route.dependant.dependencies:
-            if dependency.name == 'workspace':
-                app.dependency_overrides[dependency.call] = lambda: SimpleNamespace(id=1)
+        dependant: Any = getattr(route, "dependant", None)
+        if dependant is not None:
+            for dependency in dependant.dependencies:
+                if dependency.name == 'workspace':
+                    app.dependency_overrides[dependency.call] = lambda: SimpleNamespace(id=1)
     def forbidden_storage():
         raise AssertionError('denied download must not open storage')
     monkeypatch.setattr(router, 'get_storage_client', forbidden_storage)
@@ -787,7 +806,7 @@ async def test_file_http_rejects_stale_membership_before_io(postgres, monkeypatc
         assert db.scalar(text('SELECT count(*) FROM file_task_outbox')) == 0
 
 
-async def test_file_batch_delete_rechecks_after_committed_item(postgres, monkeypatch):
+async def test_file_batch_delete_rechecks_after_committed_item(postgres: Any, monkeypatch: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
@@ -801,7 +820,7 @@ async def test_file_batch_delete_rechecks_after_committed_item(postgres, monkeyp
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
         db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
         db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id) VALUES (1,'first','first',3,'success',1,1),(2,'second','second',3,'success',1,1)"))
-    def delete_then_demote(session, id):
+    def delete_then_demote(session: Any, id: Any):
         assert id == 1, 'second delete must not be dispatched'
         session.execute(text('DELETE FROM files WHERE id=1'))
         session.commit()
@@ -812,9 +831,11 @@ async def test_file_batch_delete_rechecks_after_committed_item(postgres, monkeyp
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=postgres)
     for route in router.router.routes:
-        for dependency in route.dependant.dependencies:
-            if dependency.name == 'workspace':
-                app.dependency_overrides[dependency.call] = lambda: SimpleNamespace(id=1)
+        dependant: Any = getattr(route, "dependant", None)
+        if dependant is not None:
+            for dependency in dependant.dependencies:
+                if dependency.name == 'workspace':
+                    app.dependency_overrides[dependency.call] = lambda: SimpleNamespace(id=1)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
         response = await client.post('/files/batch-delete', json={'items': [{'id': 1}, {'id': 2}]})
         assert response.status_code == 403, response.text
@@ -824,7 +845,7 @@ async def test_file_batch_delete_rechecks_after_committed_item(postgres, monkeyp
 
 @pytest.mark.parametrize('operation', ['create_folder', 'move_file', 'delete_file', 'move_folder',
                                        'delete_folder', 'batch_delete', 'upload_file'])
-async def test_mcp_write_authorization_holds_role_lock_at_dispatch(postgres, monkeypatch, operation):
+async def test_mcp_write_authorization_holds_role_lock_at_dispatch(postgres: Any, monkeypatch: Any, operation: Any) -> None:
     from sqlalchemy.exc import DBAPIError
     from app.exceptions import BusinessRuleError
     from app.features.file.upload_service import FileUploadService
@@ -836,12 +857,13 @@ async def test_mcp_write_authorization_holds_role_lock_at_dispatch(postgres, mon
         db.execute(text("INSERT INTO folder(id,name,workspace_id,parent_id) VALUES (1,'/',1,NULL),(2,'child',1,1)"))
         db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id) VALUES (1,'original','original',3,'success',1,1)"))
     monkeypatch.setattr(server, 'SessionLocal', sessionmaker(bind=postgres))
-    arguments = {
+    all_arguments: dict[str, dict[str, Any]] = {
         'create_folder': {'name': 'new'}, 'move_file': {'file_id': 1, 'new_name': 'new'},
         'delete_file': {'file_id': 1}, 'move_folder': {'folder_id': 2, 'new_name': 'new'},
         'delete_folder': {'folder_id': 2}, 'batch_delete': {'items': [server.BatchDeleteItem(id=1)]},
         'upload_file': {'filename': 'new.txt', 'content': 'abc'},
-    }[operation]
+    }
+    arguments = all_arguments[operation]
     owner, method = {
         'create_folder': (server.folder_service, 'create_folder'),
         'move_file': (server.file_service, 'update_file'),
@@ -851,14 +873,15 @@ async def test_mcp_write_authorization_holds_role_lock_at_dispatch(postgres, mon
         'batch_delete': (server.file_service, 'delete_file'),
         'upload_file': (FileUploadService, 'create_uploaded_file'),
     }[operation]
-    calls = []
-    def dispatch(session, *args, **kwargs):
+    calls: list[bool] = []
+    def dispatch(session: Any, *args: Any, **kwargs: Any):
         calls.append(True)
         with postgres.connect() as independent:
             independent.execute(text("SET LOCAL lock_timeout='100ms'"))
             with pytest.raises(DBAPIError) as error:
                 independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE workspace_id=1 AND user_id=1"))
-            assert error.value.orig.pgcode == '55P03'
+            orig: Any = error.value.orig
+            assert getattr(orig, "pgcode", None) == '55P03'
             independent.rollback()
         raise BusinessRuleError('Intentional transaction boundary stop')
     monkeypatch.setattr(owner, method, dispatch)
@@ -881,7 +904,7 @@ async def test_mcp_write_authorization_holds_role_lock_at_dispatch(postgres, mon
         reset_mcp_context(token)
 
 
-async def test_share_publication_locks_membership_and_file_and_preserves_owner_cancellation(postgres):
+async def test_share_publication_locks_membership_and_file_and_preserves_owner_cancellation(postgres: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
@@ -908,7 +931,8 @@ async def test_share_publication_locks_membership_and_file_and_preserves_owner_c
                 independent.execute(text("SET LOCAL lock_timeout='100ms'"))
                 with pytest.raises(DBAPIError) as error:
                     independent.execute(text(statement))
-                assert error.value.orig.pgcode == '55P03'
+                orig: Any = error.value.orig
+                assert getattr(orig, "pgcode", None) == '55P03'
                 independent.rollback()
         owned.commit()
         share_id, token = share.id, share.token
@@ -928,7 +952,7 @@ async def test_share_publication_locks_membership_and_file_and_preserves_owner_c
         assert db.scalar(text('SELECT count(*) FROM files')) == 1
 
 
-async def test_mcp_share_publication_rejects_concurrent_workspace_change(postgres, monkeypatch):
+async def test_mcp_share_publication_rejects_concurrent_workspace_change(postgres: Any, monkeypatch: Any) -> None:
     upgrade(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
@@ -937,7 +961,7 @@ async def test_mcp_share_publication_rejects_concurrent_workspace_change(postgre
         db.execute(text("INSERT INTO files(id,name,file_path,file_size,status,workspace_id,uploader_id) VALUES (1,'original','original',3,'success',1,1)"))
     monkeypatch.setattr(server, 'SessionLocal', sessionmaker(bind=postgres))
     authorized = server.file_service.get_authorized_file
-    def move_after_read(session, **kwargs):
+    def move_after_read(session: Any, **kwargs: Any):
         file = authorized(session, **kwargs)
         with postgres.begin() as independent:
             independent.execute(text('UPDATE files SET workspace_id=2 WHERE id=1'))
@@ -955,7 +979,7 @@ async def test_mcp_share_publication_rejects_concurrent_workspace_change(postgre
 
 
 @pytest.mark.parametrize('change', ['demote', 'delete'])
-async def test_settings_owned_routes_reject_stale_admin(postgres, change):
+async def test_settings_owned_routes_reject_stale_admin(postgres: Any, change: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
@@ -989,7 +1013,7 @@ async def test_settings_owned_routes_reject_stale_admin(postgres, change):
         assert db.execute(text('SELECT id,key,value,des,enable FROM sys_dict')).all() == [(1,'original','value','description',True)]
 
 
-async def test_settings_http_write_keeps_actor_lock_until_commit(postgres, monkeypatch):
+async def test_settings_http_write_keeps_actor_lock_until_commit(postgres: Any, monkeypatch: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
@@ -1003,13 +1027,14 @@ async def test_settings_http_write_keeps_actor_lock_until_commit(postgres, monke
         db.execute(text("DELETE FROM sys_dict"))
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin')"))
     create = router.sys_dict_service.create_sys_dict
-    observed = []
-    def observe_then_create(session, data):
+    observed: list[bool] = []
+    def observe_then_create(session: Any, data: Any):
         with postgres.connect() as independent:
             independent.execute(text("SET LOCAL lock_timeout='100ms'"))
             with pytest.raises(DBAPIError) as error:
                 independent.execute(text("UPDATE users SET role='common' WHERE id=1"))
-            assert error.value.orig.pgcode == '55P03'
+            orig: Any = error.value.orig
+            assert getattr(orig, "pgcode", None) == '55P03'
             independent.rollback()
         observed.append(True)
         return create(session, data)
@@ -1029,7 +1054,7 @@ async def test_settings_http_write_keeps_actor_lock_until_commit(postgres, monke
         assert db.execute(text('SELECT key,value FROM sys_dict')).all() == [('allowed','one')]
 
 
-async def test_inbox_owned_http_routes_preserve_message_ownership(postgres):
+async def test_inbox_owned_http_routes_preserve_message_ownership(postgres: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
@@ -1060,7 +1085,7 @@ async def test_inbox_owned_http_routes_preserve_message_ownership(postgres):
 
 
 @pytest.mark.parametrize('change', ['demote', 'delete'])
-async def test_usage_owned_http_rejects_stale_admin_and_preserves_self_reads(postgres, change):
+async def test_usage_owned_http_rejects_stale_admin_and_preserves_self_reads(postgres: Any, change: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
@@ -1105,7 +1130,7 @@ async def test_usage_owned_http_rejects_stale_admin_and_preserves_self_reads(pos
 
 
 @pytest.mark.parametrize('change', ['demote', 'remove'])
-async def test_assistant_owned_http_rechecks_committed_membership(postgres, change):
+async def test_assistant_owned_http_rechecks_committed_membership(postgres: Any, change: Any) -> None:
     import httpx
     from types import SimpleNamespace
     from fastapi import FastAPI
@@ -1123,6 +1148,7 @@ async def test_assistant_owned_http_rechecks_committed_membership(postgres, chan
     mode = 'expert' if change == 'demote' else 'fast'
     with factory() as owned:
         workspace = owned.get(Workspace, 1)
+        assert workspace is not None
         conversation = service.create_conversation(owned, workspace, 1, mode, 'original')
         cid = conversation.id
         _, run, _ = service.prepare_run(owned, service.PrepareRunParams(
@@ -1141,7 +1167,7 @@ async def test_assistant_owned_http_rechecks_committed_membership(postgres, chan
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[get_current_workspace] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[get_session_factory] = lambda: factory
-    calls = [
+    calls: list[tuple[str, str, Any]] = [
         ('POST','/assistant/conversations',{'mode':mode}),
         ('GET','/assistant/conversations?mode='+mode,None),
         ('PATCH',f'/assistant/conversations/{cid}',{'title':'forbidden'}),
@@ -1176,7 +1202,7 @@ async def test_assistant_owned_http_rechecks_committed_membership(postgres, chan
 
 
 @pytest.mark.parametrize('operation', ['prepare', 'archive', 'delete'])
-def test_assistant_recovery_retains_member_lock_until_outer_write_commit(postgres, monkeypatch, operation):
+def test_assistant_recovery_retains_member_lock_until_outer_write_commit(postgres: Any, monkeypatch: Any, operation: Any) -> None:
     from datetime import timedelta
     from sqlalchemy.exc import DBAPIError
     from app.features.assistant import service
@@ -1190,6 +1216,7 @@ def test_assistant_recovery_retains_member_lock_until_outer_write_commit(postgre
     factory = sessionmaker(bind=postgres)
     with factory() as owned:
         workspace = owned.get(Workspace, 1)
+        assert workspace is not None
         conversation = service.create_conversation(owned, workspace, 1, 'expert', 'original')
         cid = conversation.id
         _, old, _ = service.prepare_run(owned, service.PrepareRunParams(
@@ -1198,8 +1225,8 @@ def test_assistant_recovery_retains_member_lock_until_outer_write_commit(postgre
         old.started_at = utc_now() - timedelta(minutes=5)
         old.metadata_dict = {}; owned.commit()
     recover = service.recover_abandoned_run
-    observed = []
-    def observe_recovery(session, run, *, commit=True):
+    observed: list[bool] = []
+    def observe_recovery(session: Any, run: Any, *, commit: Any=True):
         assert commit is False
         result = recover(session, run, commit=commit)
         if result:
@@ -1207,13 +1234,15 @@ def test_assistant_recovery_retains_member_lock_until_outer_write_commit(postgre
                 independent.execute(text("SET LOCAL lock_timeout='100ms'"))
                 with pytest.raises(DBAPIError) as error:
                     independent.execute(text("UPDATE workspace_members SET role='viewer' WHERE user_id=1"))
-                assert error.value.orig.pgcode == '55P03'
+                orig: Any = error.value.orig
+                assert getattr(orig, "pgcode", None) == '55P03'
                 independent.rollback()
             observed.append(True)
         return result
     monkeypatch.setattr(service, 'recover_abandoned_run', observe_recovery)
     with factory() as owned:
         workspace = owned.get(Workspace, 1)
+        assert workspace is not None
         if operation == 'prepare':
             service.prepare_run(
                 owned,
@@ -1243,7 +1272,7 @@ def test_assistant_recovery_retains_member_lock_until_outer_write_commit(postgre
 
 
 @pytest.mark.parametrize('change', ['demote','remove','stop','revoke','delete-user'])
-async def test_runtime_model_owned_dependency_rejects_independent_revocation(postgres, change):
+async def test_runtime_model_owned_dependency_rejects_independent_revocation(postgres: Any, change: Any) -> None:
     import httpx
     from fastapi import Depends, FastAPI
     from app.features.runtime_llm import router, tokens
@@ -1264,7 +1293,7 @@ async def test_runtime_model_owned_dependency_rejects_independent_revocation(pos
     # 生产认证依赖项包含实际签名/哈希绑定的令牌.
     # 探测避免发起提供商请求; 仅证明依赖项准入.
     @app.get('/credential')
-    async def credential(payload=Depends(router.current_credential)):
+    async def credential(payload: Any=Depends(router.current_credential)):
         return {'user_id':int(payload['sub']), 'workspace_id':payload['workspace_id']}
     statements = {
         'demote': "UPDATE workspace_members SET role='viewer' WHERE user_id=1",
@@ -1284,13 +1313,15 @@ async def test_runtime_model_owned_dependency_rejects_independent_revocation(pos
 
 
 @pytest.mark.parametrize('phase', ['sql-reject','rollback-fault','commit-ack','close-fault'])
-def test_accounting_faults_preserve_business_and_recover_actual_postgres(postgres, monkeypatch, phase):
+def test_accounting_faults_preserve_business_and_recover_actual_postgres(postgres: Any, monkeypatch: Any, phase: Any) -> None:
     from sqlalchemy.orm import Session
     from app.features.token_usage import service
     upgrade(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
-    active, calls, logged = [True], [], []
+    active: list[bool] = [True]
+    calls: list[str] = []
+    logged: list[str] = []
     private = 'private-accounting-query'
     class FaultSession(Session):
         def commit(self):
@@ -1308,10 +1339,12 @@ def test_accounting_faults_preserve_business_and_recover_actual_postgres(postgre
             calls.append('invalidate')
             return super().invalidate()
     monkeypatch.setattr(service, 'SessionLocal', sessionmaker(bind=postgres, class_=FaultSession))
-    monkeypatch.setattr(service.logger, 'error', lambda message,*args: logged.append(message.format(*args)))
+    def mock_log(message: str, *args: Any) -> None:
+        logged.append(message.format(*args))
+    monkeypatch.setattr(service.logger, 'error', mock_log)
     # SQL 拒绝是在聚合 UPDATE 后由原生 varchar(50) 强制执行.
     action = 'x'*51 if phase in {'sql-reject','rollback-fault'} else 'chat'
-    assert service.record_usage(service.RecordUsageParams(user_id=1, action=action, prompt_tokens=2, completion_tokens=3, query_summary=private)) is None
+    service.record_usage(service.RecordUsageParams(user_id=1, action=action, prompt_tokens=2, completion_tokens=3, query_summary=private))
     assert logged and private not in str(logged)
     assert 'close' in calls
     if phase in {'rollback-fault','close-fault'}: assert 'invalidate' in calls
@@ -1321,14 +1354,14 @@ def test_accounting_faults_preserve_business_and_recover_actual_postgres(postgre
         assert db.scalar(text('SELECT count(*) FROM token_usage_logs')) == (0 if initial == 0 else 1)
     # 后续记账调用在同一真实引擎/连接池上成功执行且无需重试.
     active[0] = False
-    assert service.record_usage(service.RecordUsageParams(user_id=1, action='chat', prompt_tokens=2, completion_tokens=3)) is None
+    service.record_usage(service.RecordUsageParams(user_id=1, action='chat', prompt_tokens=2, completion_tokens=3))
     with postgres.connect() as db:
         assert db.scalar(text('SELECT total_tokens FROM users WHERE id=1')) == initial + 5
         assert db.scalar(text('SELECT sum(total_tokens) FROM token_usage_logs')) == initial + 5
 
 
 @pytest.mark.parametrize('outcome', ['done','engine-error','creation-error','cancel'])
-async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, monkeypatch, outcome):
+async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres: Any, monkeypatch: Any, outcome: Any) -> None:
     import threading
     from sqlalchemy.orm import Session
     from app.features.assistant import service
@@ -1342,6 +1375,7 @@ async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, mo
         db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
     with sessionmaker(bind=postgres)() as owned:
         workspace = owned.get(Workspace, 1)
+        assert workspace is not None
         conversation = service.create_conversation(owned, workspace, 1, 'fast', 'original')
         cid = conversation.id
         _, run, history = service.prepare_run(owned, service.PrepareRunParams(
@@ -1349,9 +1383,10 @@ async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, mo
             conversation_id=cid, query='query'))
         rid, mid = run.id, run.assistant_message_id
     loop_thread = threading.get_ident()
-    calls, logged = [], []
+    calls: list[str] = []
+    logged: list[str] = []
     class FaultSession(Session):
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any):
             self.owner = threading.get_ident()
             assert self.owner != loop_thread
             super().__init__(*args, **kwargs)
@@ -1365,7 +1400,7 @@ async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, mo
             return super().invalidate()
     entered = asyncio.Event()
     class Engine:
-        async def stream(self, request):
+        async def stream(self, request: Any):
             yield AssistantEvent('token', {'content':'Answer'})
             if outcome == 'engine-error': raise RuntimeError('private-provider-url')
             if outcome == 'cancel':
@@ -1373,7 +1408,9 @@ async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, mo
                 await asyncio.Event().wait()
     monkeypatch.setattr(
         'app.features.assistant.engines.fast_engine.FastEngine', Engine)
-    monkeypatch.setattr(service.logger, 'error', lambda message,*args: logged.append(message.format(*args)))
+    def mock_log2(message: str, *args: Any) -> None:
+        logged.append(message.format(*args))
+    monkeypatch.setattr(service.logger, 'error', mock_log2)
     factory = sessionmaker(bind=postgres, class_=FaultSession)
     async def collect():
         params = service.StreamRunParams(
@@ -1410,7 +1447,7 @@ async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres, mo
 
 
 @pytest.mark.parametrize('leased,cleanup', [(False,None),(True,None),(False,'self-cancel'),(True,'self-cancel'),(False,'repeat-cancel'),(True,'repeat-cancel')])
-async def test_prepared_response_header_failure_after_member_removal(postgres, leased, cleanup):
+async def test_prepared_response_header_failure_after_member_removal(postgres: Any, leased: Any, cleanup: Any) -> None:
     from types import SimpleNamespace
     from starlette.requests import ClientDisconnect
     from app.features.assistant import repository, service
@@ -1422,7 +1459,7 @@ async def test_prepared_response_header_failure_after_member_removal(postgres, l
         db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'admin')"))
     factory = sessionmaker(bind=postgres)
     with factory() as db:
-        workspace = SimpleNamespace(id=1)
+        workspace: Any = SimpleNamespace(id=1)
         conversation = service.create_conversation(db, workspace, 1, 'fast', 'test')
         _, run, _ = service.prepare_run(db, service.PrepareRunParams(
             workspace=workspace, user_id=1,
@@ -1438,16 +1475,20 @@ async def test_prepared_response_header_failure_after_member_removal(postgres, l
         nonlocal entered
         entered = True
         yield b'unreachable'
-    async def receive(): await asyncio.Event().wait()
-    async def send(message): raise OSError('header send failed')
+    async def receive() -> dict[str, Any]:
+        await asyncio.Event().wait()
+        return {}
+    async def send(message: Any) -> None:
+        raise OSError('header send failed')
     import threading
+    from sqlalchemy.orm import Session
     closing,release,closed=(asyncio.Event() for _ in range(3))
     loop_thread=threading.get_ident()
-    sessions=[]
-    iterator=body()
+    sessions: list[Session] = []
+    iterator: Any = body()
     class Body:
         def __aiter__(self):return self
-        async def __anext__(self):return await anext(iterator)
+        async def __anext__(self):return await iterator.__anext__()
         async def aclose(self):
             closing.set()
             if cleanup=='repeat-cancel':await release.wait()
@@ -1457,7 +1498,8 @@ async def test_prepared_response_header_failure_after_member_removal(postgres, l
         assert closed.is_set() and threading.get_ident()!=loop_thread
         session=factory();sessions.append(session);return session
     response = PreparedStreamResponse(Body(), session_factory=owned_factory, run_scope=scope)
-    pending=asyncio.create_task(response({'type':'http','asgi':{'spec_version':'2.4'}},receive,send))
+    scope_dict: dict[str, Any] = {'type':'http','asgi':{'spec_version':'2.4'}}
+    pending=asyncio.create_task(response(scope_dict,receive,send))
     try:
         await asyncio.wait_for(closing.wait(),2)
         if cleanup=='repeat-cancel':
@@ -1477,7 +1519,7 @@ async def test_prepared_response_header_failure_after_member_removal(postgres, l
             'streaming' if leased else 'cancelled')
 
 
-def test_prepared_compensation_serializes_with_native_lease_claim(postgres):
+def test_prepared_compensation_serializes_with_native_lease_claim(postgres: Any) -> None:
     from types import SimpleNamespace
     from sqlalchemy.exc import DBAPIError
     from app.features.assistant import repository, service
@@ -1488,7 +1530,7 @@ def test_prepared_compensation_serializes_with_native_lease_claim(postgres):
         db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'admin')"))
     factory = sessionmaker(bind=postgres)
     with factory() as db:
-        workspace = SimpleNamespace(id=1)
+        workspace: Any = SimpleNamespace(id=1)
         conversation = service.create_conversation(db, workspace, 1, 'fast', 'test')
         _, run, _ = service.prepare_run(db, service.PrepareRunParams(
             workspace=workspace, user_id=1,
@@ -1499,7 +1541,8 @@ def test_prepared_compensation_serializes_with_native_lease_claim(postgres):
             independent.execute(text("SET lock_timeout='100ms'"))
             with pytest.raises(DBAPIError) as error:
                 independent.execute(text("UPDATE assistant_runs SET metadata_json='{}' WHERE id=:id"), {'id': scope[-1]})
-            assert error.value.orig.pgcode == '55P03'
+            orig: Any = error.value.orig
+            assert getattr(orig, "pgcode", None) == '55P03'
             independent.rollback()
         db.commit()
     with factory() as independent:
@@ -1507,7 +1550,7 @@ def test_prepared_compensation_serializes_with_native_lease_claim(postgres):
 
 
 @pytest.mark.parametrize('fault', ['cancel-before-commit', 'cancel-after-commit', 'commit-rejected', 'ack-lost', 'close-failed'])
-async def test_http_preparation_abort_compensates_after_owned_transaction(postgres, monkeypatch, fault):
+async def test_http_preparation_abort_compensates_after_owned_transaction(postgres: Any, monkeypatch: Any, fault: Any) -> None:
     import threading
     from types import SimpleNamespace
     from sqlalchemy.orm import Session
@@ -1518,16 +1561,17 @@ async def test_http_preparation_abort_compensates_after_owned_transaction(postgr
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
         db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'admin')"))
-    workspace = SimpleNamespace(id=1)
+    workspace: Any = SimpleNamespace(id=1)
     with sessionmaker(bind=postgres)() as db:
         conversation = service.create_conversation(db, workspace, 1, 'fast', 'test')
         conversation_id = conversation.id
     loop_thread = threading.get_ident()
     entered, release = threading.Event(), threading.Event()
-    opened, calls = [], []
+    opened: list[Any] = []
+    calls: list[str] = []
     original = RuntimeError('controlled preparation fault')
     class OwnedSession(Session):
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any):
             super().__init__(*args, **kwargs)
             self.owner = threading.get_ident()
             assert self.owner != loop_thread
@@ -1561,12 +1605,14 @@ async def test_http_preparation_abort_compensates_after_owned_transaction(postgr
             super().invalidate()
     factory = sessionmaker(bind=postgres, class_=OwnedSession)
     from app.api.dependencies import RequestContext
+    req_dummy: Any = SimpleNamespace(headers={})
+    user_dummy: Any = SimpleNamespace(id=1, http_stream_credential=None)
     pending = asyncio.create_task(router.stream_assistant_message(
         conversation_id,
         AssistantMessageRequest(query='question'),
-        SimpleNamespace(headers={}),
+        req_dummy,
         RequestContext(
-            user=SimpleNamespace(id=1, http_stream_credential=None),
+            user=user_dummy,
             session_factory=factory,
         ),
         workspace,
@@ -1589,10 +1635,14 @@ async def test_http_preparation_abort_compensates_after_owned_transaction(postgr
         from starlette.requests import ClientDisconnect
         response = await pending
         assert calls[-1] == 'prepare-invalidate'
-        async def receive(): await asyncio.Event().wait()
-        async def send(message): raise OSError('header send failed')
+        async def receive() -> dict[str, Any]:
+            await asyncio.Event().wait()
+            return {}
+        async def send(message: Any) -> None:
+            raise OSError('header send failed')
         with pytest.raises(ClientDisconnect):
-            await response({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send)
+            scope_dict: dict[str, Any] = {'type': 'http', 'asgi': {'spec_version': '2.4'}}
+            await response(scope_dict, receive, send)
     else:
         with pytest.raises(RuntimeError) as error:
             await pending
@@ -1613,7 +1663,7 @@ async def test_http_preparation_abort_compensates_after_owned_transaction(postgr
 
 
 @pytest.mark.parametrize('fault', ['revoked', 'cancel'])
-async def test_http_stream_initialization_abort_cleans_unclaimed_run(postgres, monkeypatch, fault):
+async def test_http_stream_initialization_abort_cleans_unclaimed_run(postgres: Any, monkeypatch: Any, fault: Any) -> None:
     import threading
     from types import SimpleNamespace
     from sqlalchemy.orm import Session
@@ -1626,20 +1676,21 @@ async def test_http_stream_initialization_abort_cleans_unclaimed_run(postgres, m
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
         db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'admin')"))
-    workspace = SimpleNamespace(id=1)
+    workspace: Any = SimpleNamespace(id=1)
     with sessionmaker(bind=postgres)() as db:
         conversation = service.create_conversation(db, workspace, 1, 'fast', 'test')
         conversation_id = conversation.id
     entered, release = threading.Event(), threading.Event()
-    opened, closed = [], []
+    opened: list[Any] = []
+    closed: list[Any] = []
     loop_thread = threading.get_ident()
     class OwnedSession(Session):
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any):
             super().__init__(*args, **kwargs)
             self.owner = threading.get_ident()
             assert self.owner != loop_thread
             opened.append(self)
-        def get(self, entity, *args, **kwargs):
+        def get(self, entity: Any, *args: Any, **kwargs: Any):
             assert threading.get_ident() == self.owner
             if fault == 'cancel' and entity is Workspace:
                 entered.set()
@@ -1649,18 +1700,20 @@ async def test_http_stream_initialization_abort_cleans_unclaimed_run(postgres, m
             assert threading.get_ident() == self.owner
             super().close()
             closed.append(self)
-    def forbidden_engine(*args, **kwargs): raise AssertionError('model must not start')
+    def forbidden_engine(*args: Any, **kwargs: Any): raise AssertionError('model must not start')
     monkeypatch.setattr(
         'app.features.assistant.engines.fast_engine.FastEngine',
         forbidden_engine)
     factory = sessionmaker(bind=postgres, class_=OwnedSession)
     from app.api.dependencies import RequestContext
+    req_dummy: Any = SimpleNamespace(headers={})
+    user_dummy: Any = SimpleNamespace(id=1, http_stream_credential=None)
     response = await router.stream_assistant_message(
         conversation_id,
         AssistantMessageRequest(query='question'),
-        SimpleNamespace(headers={}),
+        req_dummy,
         RequestContext(
-            user=SimpleNamespace(id=1, http_stream_credential=None),
+            user=user_dummy,
             session_factory=factory,
         ),
         workspace,
@@ -1669,10 +1722,14 @@ async def test_http_stream_initialization_abort_cleans_unclaimed_run(postgres, m
     if fault == 'revoked':
         with postgres.begin() as independent:
             independent.execute(text('DELETE FROM workspace_members WHERE workspace_id=1 AND user_id=1'))
-    sent = []
-    async def receive(): await asyncio.Event().wait()
-    async def send(message): sent.append(message['type'])
-    pending = asyncio.create_task(response({'type': 'http', 'asgi': {'spec_version': '2.4'}}, receive, send))
+    sent: list[str] = []
+    async def receive() -> dict[str, Any]:
+        await asyncio.Event().wait()
+        return {}
+    async def send(message: Any) -> None:
+        sent.append(message['type'])
+    scope_dict: dict[str, Any] = {'type': 'http', 'asgi': {'spec_version': '2.4'}}
+    pending = asyncio.create_task(response(scope_dict, receive, send))
     if fault == 'cancel':
         try:
             assert await asyncio.to_thread(entered.wait, 2)
@@ -1698,7 +1755,7 @@ async def test_http_stream_initialization_abort_cleans_unclaimed_run(postgres, m
 
 
 @pytest.mark.parametrize('change,quiet', [('version',False),('version',True),('family',False),('family',True),('mcp',False),('expiry',True),('member',False),('member',True)])
-async def test_assistant_stream_rechecks_live_identity_and_membership(postgres, infrastructure, monkeypatch, change, quiet):
+async def test_assistant_stream_rechecks_live_identity_and_membership(postgres: Any, infrastructure: Any, monkeypatch: Any, change: Any, quiet: Any) -> None:
     import time
     import httpx
     import jwt
@@ -1718,13 +1775,15 @@ async def test_assistant_stream_rechecks_live_identity_and_membership(postgres, 
         db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'viewer')"))
     factory=sessionmaker(bind=postgres)
     with factory() as db:
-        conversation=service.create_conversation(db,SimpleNamespace(id=1),1,'fast','test')
+        workspace_ns: Any = SimpleNamespace(id=1)
+        conversation=service.create_conversation(db,workspace_ns,1,'fast','test')
         cid=conversation.id
     monkeypatch.setattr(refresh_sessions, 'redis_client', infrastructure['redis'])
     claims={'sub':'1','ver':0,'exp':int(time.time())+(4 if change=='expiry' else 60)}
     if change=='family':
         with factory() as db:
-            _, payload=refresh_sessions.create(db, claims)
+            c_claims: refresh_sessions.AccessClaims = {'sub': '1', 'ver': 0}
+            _, payload=refresh_sessions.create(db, c_claims)
             raw=payload['token']
     else:
         if change=='mcp': claims['type']='mcp'
@@ -1745,15 +1804,15 @@ async def test_assistant_stream_rechecks_live_identity_and_membership(postgres, 
     app.dependency_overrides[get_db]=lambda:None
     app.dependency_overrides[get_session_factory]=lambda:factory
     first_sent,entered,closed=asyncio.Event(),asyncio.Event(),asyncio.Event()
-    aborted=[]
-    async def observed_app(scope,receive,send):
-        async def observe(message):
+    aborted: list[bool] = []
+    async def observed_app(scope: Any,receive: Any,send: Any):
+        async def observe(message: Any):
             await send(message)
             if message['type']=='http.response.body' and b'allowed' in message.get('body',b''):
                 first_sent.set()
         await app(scope,receive,observe)
     class Engine:
-        async def stream(self,request):
+        async def stream(self,request: Any):
             controller=request.controller
             async def abort():aborted.append(True)
             controller.set_abort_callback(abort)
@@ -1789,7 +1848,7 @@ async def test_assistant_stream_rechecks_live_identity_and_membership(postgres, 
 
 
 @pytest.mark.parametrize('cleanup',[None,'self-cancel','repeat-cancel'])
-async def test_ui_header_send_failure_closes_real_upstream_http(postgres,infrastructure,monkeypatch,cleanup):
+async def test_ui_header_send_failure_closes_real_upstream_http(postgres: Any,infrastructure: Any,monkeypatch: Any,cleanup: Any) -> None:
     import threading
     from urllib.parse import urlsplit,parse_qs
     import httpx
@@ -1816,7 +1875,7 @@ async def test_ui_header_send_failure_closes_real_upstream_http(postgres,infrast
     upstream_closed=threading.Event()
     controller=FastAPI()
     @controller.get('/runtimes/{container_id}/ui/event')
-    async def event(container_id):
+    async def event(container_id: Any):
         assert container_id=='a'*64
         async def chunks():
             try:
@@ -1827,33 +1886,32 @@ async def test_ui_header_send_failure_closes_real_upstream_http(postgres,infrast
     app=FastAPI();app.include_router(ui_gateway.router)
     app.dependency_overrides[get_session_factory]=lambda:factory
     real_client=httpx.AsyncClient
-    clients=[]
-    def tracked_client(**kwargs):
+    clients: list[httpx.AsyncClient] = []
+    def tracked_client(**kwargs: Any):
         client=real_client(**kwargs)
         clients.append(client)
         return client
     monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',tracked_client)
     closing,release=asyncio.Event(),asyncio.Event()
     if cleanup:
-        actual_response=ui_gateway.UpstreamResponse
-        class WrappedResponse(actual_response):
-            def __init__(self,*args,**kwargs):
+        class WrappedResponse(ui_gateway.UpstreamResponse):
+            def __init__(self,*args: Any,**kwargs: Any):
                 super().__init__(*args,**kwargs)
-                iterator=self.body_iterator
+                iterator: Any = self.body_iterator
                 class Body:
-                    def __aiter__(self):return self
-                    async def __anext__(self):return await anext(iterator)
-                    async def aclose(self):
+                    def __aiter__(self) -> "Body":return self
+                    async def __anext__(self) -> bytes: return await iterator.__anext__()
+                    async def aclose(self) -> None:
                         closing.set()
                         if cleanup=='repeat-cancel':await release.wait()
                         await iterator.aclose()
                         if cleanup=='self-cancel':raise asyncio.CancelledError('private-upstream-close')
-                self.iterator=Body()
-                self.body_iterator=self.iterator
+                self.iterator: Any = Body()
+                self.body_iterator: Any = self.iterator
         monkeypatch.setattr(ui_gateway,'UpstreamResponse',WrappedResponse)
-    async def fail_headers(scope,receive,send):
+    async def fail_headers(scope: Any,receive: Any,send: Any):
         scope={**scope,'asgi':{'version':'3.0','spec_version':'2.4'}}
-        async def failed_send(message):raise OSError('header send failed')
+        async def failed_send(message: Any):raise OSError('header send failed')
         await app(scope,receive,failed_send)
     with serve(controller) as port:
         monkeypatch.setattr(ui_gateway,'controller_url',lambda:f'http://127.0.0.1:{port}')
@@ -1875,7 +1933,7 @@ async def test_ui_header_send_failure_closes_real_upstream_http(postgres,infrast
 
 
 @pytest.mark.parametrize('change,quiet,streaming', [('demote',True,True),('remove',True,True),('stop',True,True),('revoke',True,True),('delete-user',True,True),('demote',False,True),('demote',False,False)])
-async def test_model_stream_current_runtime_revocation(postgres,monkeypatch,change,quiet,streaming):
+async def test_model_stream_current_runtime_revocation(postgres: Any,monkeypatch: Any,change: Any,quiet: Any,streaming: Any) -> None:
     import httpx
     from fastapi import FastAPI
     from app.features.runtime_llm import router,tokens
@@ -1913,18 +1971,20 @@ async def test_model_stream_current_runtime_revocation(postgres,monkeypatch,chan
             finally:closed.set()
         async def aclose(self):closed.set()
     actual_client=httpx.AsyncClient
-    upstreams=[]
+    upstreams: list[httpx.AsyncClient] = []
     def provider():
         client=actual_client(transport=httpx.MockTransport(lambda _:httpx.Response(200,stream=Bytes())))
         upstreams.append(client);return client
     monkeypatch.setattr(router,'upstream_client',provider)
-    monkeypatch.setattr(router.quota,'reserve',lambda *args:None)
+    def mock_reserve_1(*args: Any, **kwargs: Any) -> None:
+        pass
+    monkeypatch.setattr(router.quota, 'reserve', mock_reserve_1)
     monkeypatch.setattr(router,'get_chat_model_config',lambda:{'api':'http://synthetic/v1','key':'synthetic-server-key','model':model})
     app=FastAPI();app.include_router(router.router)
     app.dependency_overrides[get_db]=lambda:None
     app.dependency_overrides[get_session_factory]=lambda:factory
-    async def observed_app(scope,receive,send):
-        async def observe(message):
+    async def observed_app(scope: Any,receive: Any,send: Any):
+        async def observe(message: Any):
             await send(message)
             if message['type']=='http.response.body' and b'allowed' in message.get('body',b''):first_sent.set()
         await app(scope,receive,observe)
@@ -1940,7 +2000,7 @@ async def test_model_stream_current_runtime_revocation(postgres,monkeypatch,chan
 
 
 @pytest.mark.parametrize('stage,end',[('body','revoke'),('headers','revoke'),('body','timeout'),('headers','timeout'),('headers','completed-revoked')])
-async def test_model_admission_wait_current_permission_and_timeout(postgres,monkeypatch,stage,end):
+async def test_model_admission_wait_current_permission_and_timeout(postgres: Any,monkeypatch: Any,stage: Any,end: Any) -> None:
     import httpx
     from fastapi import FastAPI
     from app.features.runtime_llm import router,tokens
@@ -1958,7 +2018,9 @@ async def test_model_admission_wait_current_permission_and_timeout(postgres,monk
         db.add(runtime);db.commit();raw=tokens.issue_token(db,runtime)
     model=get_chat_model_config()['model']
     entered,closed=asyncio.Event(),asyncio.Event()
-    charges,clients,responses=[],[],[]
+    charges: list[bool] = []
+    clients: list[httpx.AsyncClient] = []
+    responses: list[httpx.Response] = []
     def revoke():
         with postgres.begin() as db:db.execute(text("UPDATE workspace_members SET role='viewer' WHERE user_id=1"))
     body=json.dumps({'model':model,'messages':[{'role':'user','content':'question'}],'stream':True}).encode()
@@ -1968,7 +2030,7 @@ async def test_model_admission_wait_current_permission_and_timeout(postgres,monk
                 yield body[:5];entered.set();await asyncio.Event().wait();yield body[5:]
             finally:closed.set()
     actual_client=httpx.AsyncClient
-    async def provider(request):
+    async def provider(request: Any):
         try:
             entered.set()
             if end!='completed-revoked':await asyncio.Event().wait()
@@ -1980,7 +2042,9 @@ async def test_model_admission_wait_current_permission_and_timeout(postgres,monk
     def upstream():
         client=actual_client(transport=httpx.MockTransport(provider));clients.append(client);return client
     monkeypatch.setattr(router,'upstream_client',upstream)
-    monkeypatch.setattr(router.quota,'reserve',lambda *args:charges.append(True))
+    def mock_reserve_2(*args: Any, **kwargs: Any) -> None:
+        charges.append(True)
+    monkeypatch.setattr(router.quota, 'reserve', mock_reserve_2)
     monkeypatch.setattr(router,'get_chat_model_config',lambda:{'api':'http://synthetic/v1','key':'synthetic-server-key','model':model})
     if end=='timeout':monkeypatch.setattr(router,'MAX_BODY_SECONDS' if stage=='body' else 'MAX_HEADER_SECONDS',0.05)
     app=FastAPI();app.include_router(router.router)
@@ -2000,7 +2064,7 @@ async def test_model_admission_wait_current_permission_and_timeout(postgres,monk
 
 
 @pytest.mark.parametrize('stage',['body','headers','buffered'])
-async def test_model_native_client_disconnect_releases_wait(postgres,monkeypatch,stage):
+async def test_model_native_client_disconnect_releases_wait(postgres: Any,monkeypatch: Any,stage: Any) -> None:
     import threading
     import httpx
     from fastapi import FastAPI
@@ -2020,8 +2084,10 @@ async def test_model_native_client_disconnect_releases_wait(postgres,monkeypatch
         db.add(runtime);db.commit();raw=tokens.issue_token(db,runtime)
     model=get_chat_model_config()['model']
     received,provider_ready,provider_closed,finished=(threading.Event() for _ in range(4))
-    clients,charges,errors=[],[],[]
-    async def provider(scope,receive,send):
+    clients: list[httpx.AsyncClient] = []
+    charges: list[bool] = []
+    errors: list[str] = []
+    async def provider(scope: Any,receive: Any,send: Any):
         try:
             while True:
                 message=await receive()
@@ -2034,7 +2100,7 @@ async def test_model_native_client_disconnect_releases_wait(postgres,monkeypatch
         finally:provider_closed.set()
     app=FastAPI();app.include_router(router.router)
     app.dependency_overrides[get_session_factory]=lambda:factory
-    async def observed(scope,receive,send):
+    async def observed(scope: Any,receive: Any,send: Any):
         async def read():
             message=await receive()
             if message['type']=='http.request':received.set()
@@ -2046,14 +2112,16 @@ async def test_model_native_client_disconnect_releases_wait(postgres,monkeypatch
     def upstream():
         client=httpx.AsyncClient(timeout=10,trust_env=False);clients.append(client);return client
     monkeypatch.setattr(router,'upstream_client',upstream)
-    monkeypatch.setattr(router.quota,'reserve',lambda *args:charges.append(True))
+    def mock_reserve_3(*args: Any, **kwargs: Any) -> None:
+        charges.append(True)
+    monkeypatch.setattr(router.quota, 'reserve', mock_reserve_3)
     # 即使失败也必须让这些一次性服务器能够关闭.
     monkeypatch.setattr(router,'MAX_HEADER_SECONDS',5)
     monkeypatch.setattr(router,'MAX_STREAM_SECONDS',5)
     body=json.dumps({'model':model,'messages':[{'role':'user','content':'question'}],'stream':False}).encode()
     with serve(provider) as provider_port,serve(observed) as gateway_port:
         monkeypatch.setattr(router,'get_chat_model_config',lambda:{'api':f'http://127.0.0.1:{provider_port}/v1','key':'synthetic-server-key','model':model})
-        reader,writer=await asyncio.open_connection('127.0.0.1',gateway_port)
+        _reader,writer=await asyncio.open_connection('127.0.0.1',gateway_port)
         try:
             headers=f'POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {raw}\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n'.encode()
             writer.write(headers+(body[:5] if stage=='body' else body));await writer.drain()
@@ -2069,7 +2137,7 @@ async def test_model_native_client_disconnect_releases_wait(postgres,monkeypatch
 
 
 @pytest.mark.parametrize('stage,end',[('body','revoke'),('headers','revoke'),('body','timeout'),('headers','timeout'),('headers','completed-revoked')])
-async def test_ui_admission_current_permission_and_timeout(postgres,infrastructure,monkeypatch,stage,end):
+async def test_ui_admission_current_permission_and_timeout(postgres: Any,infrastructure: Any,monkeypatch: Any,stage: Any,end: Any) -> None:
     from urllib.parse import urlsplit,parse_qs
     import httpx
     from fastapi import FastAPI
@@ -2090,7 +2158,8 @@ async def test_ui_admission_current_permission_and_timeout(postgres,infrastructu
         parsed=urlsplit(issued['launch_url'])
         raw,_=ui_tickets.redeem(db,parse_qs(parsed.query)['ticket'][0],parsed.netloc)
     entered,closed=asyncio.Event(),asyncio.Event()
-    clients,responses=[],[]
+    clients: list[httpx.AsyncClient] = []
+    responses: list[httpx.Response] = []
     def revoke():
         with postgres.begin() as db:db.execute(text("UPDATE workspace_members SET role='viewer' WHERE user_id=1"))
     class Upload(httpx.AsyncByteStream):
@@ -2099,7 +2168,7 @@ async def test_ui_admission_current_permission_and_timeout(postgres,infrastructu
                 yield b'partial';entered.set();await asyncio.Event().wait();yield b'private-late'
             finally:closed.set()
     real_client=httpx.AsyncClient
-    async def provider(request):
+    async def provider(request: Any):
         try:
             entered.set()
             if end!='completed-revoked':await asyncio.Event().wait()
@@ -2108,7 +2177,7 @@ async def test_ui_admission_current_permission_and_timeout(postgres,infrastructu
             assert not response.is_closed
             responses.append(response);return response
         finally:closed.set()
-    def upstream(**kwargs):
+    def upstream(**kwargs: Any):
         client=real_client(transport=httpx.MockTransport(provider),**kwargs);clients.append(client);return client
     monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',upstream)
     if end=='timeout':monkeypatch.setattr(ui_gateway,'MAX_BODY_SECONDS' if stage=='body' else 'MAX_HEADER_SECONDS',0.05)
@@ -2128,7 +2197,7 @@ async def test_ui_admission_current_permission_and_timeout(postgres,infrastructu
 
 
 @pytest.mark.parametrize('change,quiet',[('membership',False),('membership',True),('version',True),('family',True),('stop',True),('expiry',True)])
-async def test_ui_response_current_identity_after_forwarded_chunk(postgres,infrastructure,monkeypatch,change,quiet):
+async def test_ui_response_current_identity_after_forwarded_chunk(postgres: Any,infrastructure: Any,monkeypatch: Any,change: Any,quiet: Any) -> None:
     import time
     import httpx
     import jwt
@@ -2149,17 +2218,26 @@ async def test_ui_response_current_identity_after_forwarded_chunk(postgres,infra
     monkeypatch.setenv('APP_ORIGIN','http://app.skycloud.localhost')
     monkeypatch.setenv('RUNTIME_UI_ORIGIN_TEMPLATE','http://r{runtime_id}.skycloud.localhost:8081')
     parent=None
+    access: Any = None
     with factory() as db:
         if change=='family':
-            _,access=refresh_sessions.create(db,jwt.decode(generate_token(1,0),SECRET_KEY,algorithms=['HS256']))
-            parent=jwt.decode(access['token'],SECRET_KEY,algorithms=['HS256'])['sid']
+            gen_tok = generate_token(1, 0)
+            assert gen_tok is not None
+            raw_claims: Any = jwt.decode(gen_tok,SECRET_KEY,algorithms=['HS256'])
+            c_claims: refresh_sessions.AccessClaims = {'sub': str(raw_claims['sub']), 'ver': int(raw_claims['ver'])}
+            _, access = refresh_sessions.create(db, c_claims)
+            access_token = str(access['token'])
+            parent = jwt.decode(access_token,SECRET_KEY,algorithms=['HS256'])['sid']
         issued=ui_tickets.issue(db,1,1,parent_session=parent)
         parsed=urlsplit(issued['launch_url'])
         raw,_=ui_tickets.redeem(db,parse_qs(parsed.query)['ticket'][0],parsed.netloc)
     if change=='expiry':
         key=ui_tickets._key('session',raw)
-        payload=json.loads(infrastructure['redis'].get(key));payload['expires_at']=time.time()+3
-        infrastructure['redis'].set(key,json.dumps(payload),ex=60)
+        raw_val = infrastructure['redis'].get(key)
+        assert raw_val is not None
+        payload: Any = json.loads(raw_val)
+        payload['expires_at'] = time.time() + 3
+        infrastructure['redis'].set(key, json.dumps(payload), ex=60)
     def revoke():
         if change=='family':refresh_sessions.revoke_access('Bearer '+access['token'])
         elif change!='expiry':
@@ -2180,15 +2258,15 @@ async def test_ui_response_current_identity_after_forwarded_chunk(postgres,infra
             finally:closed.set()
         async def aclose(self):await self.iterator.aclose()
     real_client=httpx.AsyncClient
-    clients=[]
-    def upstream(**kwargs):
+    clients: list[httpx.AsyncClient] = []
+    def upstream(**kwargs: Any):
         client=real_client(transport=httpx.MockTransport(lambda request:httpx.Response(200,stream=Stream())),**kwargs)
         clients.append(client);return client
     monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',upstream)
     app=FastAPI();app.include_router(ui_gateway.router)
     app.dependency_overrides[get_session_factory]=lambda:factory
-    async def observed(scope,receive,send):
-        async def forwarded(message):
+    async def observed(scope: Any,receive: Any,send: Any):
+        async def forwarded(message: Any):
             await send(message)
             if message['type']=='http.response.body' and b'allowed' in message.get('body',b''):entered.set()
         await app(scope,receive,forwarded)
@@ -2203,7 +2281,7 @@ async def test_ui_response_current_identity_after_forwarded_chunk(postgres,infra
 
 
 @pytest.mark.parametrize('kind',['model','ui'])
-async def test_http_completed_header_teardown_cancel_closes_native_upstream(postgres,infrastructure,monkeypatch,kind):
+async def test_http_completed_header_teardown_cancel_closes_native_upstream(postgres: Any,infrastructure: Any,monkeypatch: Any,kind: Any) -> None:
     import threading
     import httpx
     from fastapi import FastAPI
@@ -2222,12 +2300,20 @@ async def test_http_completed_header_teardown_cancel_closes_native_upstream(post
         db.execute(text("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES (1,1,'editor')"))
         db.execute(text("INSERT INTO opencode_runtimes(id,workspace_id,user_id,status,container_id) VALUES (1,1,1,'running',:id)"),{'id':'a'*64})
     factory=sessionmaker(bind=postgres)
+    model_name: str = ""
+    import types
+    gateway: types.ModuleType
     if kind=='model':
-        with factory() as db:raw=tokens.issue_token(db,db.get(OpenCodeRuntime,1))
+        with factory() as db:
+            rt = db.get(OpenCodeRuntime, 1)
+            assert rt is not None
+            raw = tokens.issue_token(db, rt)
         headers={'Authorization':'Bearer '+raw};base='http://test';path='/v1/chat/completions'
         model_name=get_chat_model_config()['model']
         body=json.dumps({'model':model_name,'messages':[{'role':'user','content':'question'}],'stream':True}).encode()
-        monkeypatch.setattr(model.quota,'reserve',lambda *args:None)
+        def mock_reserve(*args: Any, **kwargs: Any) -> None:
+            pass
+        monkeypatch.setattr(model.quota, 'reserve', mock_reserve)
         gateway=model
     else:
         monkeypatch.setattr(ui_tickets,'redis_client',infrastructure['redis'])
@@ -2238,9 +2324,11 @@ async def test_http_completed_header_teardown_cancel_closes_native_upstream(post
             raw,_=ui_tickets.redeem(db,parse_qs(parsed.query)['ticket'][0],parsed.netloc)
         base=f'{parsed.scheme}://{parsed.netloc}';headers={'Cookie':ui_tickets.COOKIE+'='+raw,'Origin':base}
         path='/runtime-ui/event';body=b'question';gateway=ui_gateway
-    clients,responses,forwarded=[],[],[]
+    clients: list[httpx.AsyncClient] = []
+    responses: list[httpx.Response] = []
+    forwarded: list[str] = []
     upstream_closed=threading.Event()
-    async def provider(scope,receive,send):
+    async def provider(scope: Any,receive: Any,send: Any):
         try:
             while (await receive()).get('more_body'):pass
             await send({'type':'http.response.start','status':200,'headers':[(b'content-type',b'text/event-stream')]})
@@ -2248,27 +2336,29 @@ async def test_http_completed_header_teardown_cancel_closes_native_upstream(post
             while (await receive())['type']!='http.disconnect':pass
         finally:upstream_closed.set()
     real_client=httpx.AsyncClient
-    def upstream(**kwargs):
+    def upstream(**kwargs: Any):
         client=real_client(**kwargs);clients.append(client)
         send=client.send
-        async def opened(*args,**kw):
+        async def opened(*args: Any,**kw: Any):
             response=await send(*args,**kw);responses.append(response)
             assert not response.is_closed
             return response
-        client.send=opened
+        setattr(client, 'send', opened)
         return client
-    async def checked_wait(operation, policy):
+    async def checked_wait(operation: Any, policy: Any):
         async def checked():
             await policy.check()
-            if responses:asyncio.get_running_loop().call_soon(asyncio.current_task().cancel)
+            cur_task = asyncio.current_task()
+            if responses and cur_task is not None:
+                asyncio.get_running_loop().call_soon(cur_task.cancel)
         return await guarded_wait(operation, replace(policy, check=checked))
     monkeypatch.setattr(gateway,'guarded_wait',checked_wait)
     if kind=='model':monkeypatch.setattr(gateway,'upstream_client',lambda:upstream(timeout=60,trust_env=False))
     else:monkeypatch.setattr(gateway.httpx,'AsyncClient',upstream)
     app=FastAPI();app.include_router(gateway.router)
     app.dependency_overrides[get_session_factory]=lambda:factory
-    async def observed(scope,receive,send):
-        async def sent(message):
+    async def observed(scope: Any,receive: Any,send: Any):
+        async def sent(message: Any):
             forwarded.append(message['type']);await send(message)
         await app(scope,receive,sent)
     with serve(provider) as port:
@@ -2283,7 +2373,7 @@ async def test_http_completed_header_teardown_cancel_closes_native_upstream(post
 
 
 @pytest.mark.parametrize('stage,end',[('body','disconnect'),('headers','disconnect'),('response','disconnect'),('response','membership-ready'),('response','membership'),('response','version'),('response','family'),('response','stop'),('response','expiry')])
-async def test_ui_native_chain_current_identity_and_disconnect(postgres,infrastructure,monkeypatch,stage,end):
+async def test_ui_native_chain_current_identity_and_disconnect(postgres: Any,infrastructure: Any,monkeypatch: Any,stage: Any,end: Any) -> None:
     """通过原生 UI、Controller 与提供商 Socket 验证规范 SQL/Redis 凭据."""
     import threading
     import time
@@ -2310,20 +2400,32 @@ async def test_ui_native_chain_current_identity_and_disconnect(postgres,infrastr
     monkeypatch.setenv('APP_ORIGIN','http://app.skycloud.localhost')
     monkeypatch.setenv('RUNTIME_UI_ORIGIN_TEMPLATE','http://r{runtime_id}.skycloud.localhost:8081')
     parent=None
+    access: Any = None
     with factory() as db:
         if end=='family':
-            _,access=refresh_sessions.create(db,jwt.decode(generate_token(1,0),SECRET_KEY,algorithms=['HS256']))
-            parent=jwt.decode(access['token'],SECRET_KEY,algorithms=['HS256'])['sid']
+            gen_tok = generate_token(1, 0)
+            assert gen_tok is not None
+            raw_claims: Any = jwt.decode(gen_tok,SECRET_KEY,algorithms=['HS256'])
+            c_claims: refresh_sessions.AccessClaims = {'sub': str(raw_claims['sub']), 'ver': int(raw_claims['ver'])}
+            _, access = refresh_sessions.create(db, c_claims)
+            access_token = str(access['token'])
+            parent = jwt.decode(access_token,SECRET_KEY,algorithms=['HS256'])['sid']
         issued=ui_tickets.issue(db,1,1,parent_session=parent);parsed=urlsplit(issued['launch_url'])
         raw,_=ui_tickets.redeem(db,parse_qs(parsed.query)['ticket'][0],parsed.netloc)
     if end=='expiry':
         key=ui_tickets._key('session',raw)
-        payload=json.loads(infrastructure['redis'].get(key));payload['expires_at']=time.time()+3
-        infrastructure['redis'].set(key,json.dumps(payload),ex=60)
+        raw_val = infrastructure['redis'].get(key)
+        assert raw_val is not None
+        payload: Any = json.loads(raw_val)
+        payload['expires_at'] = time.time() + 3
+        infrastructure['redis'].set(key, json.dumps(payload), ex=60)
     late_ready=threading.Event()
     received,provider_ready,provider_closed,finished=(threading.Event() for _ in range(4))
-    clients,responses,errors,forwarded=[],[],[],[]
-    async def provider(scope,receive,send):
+    clients: list[httpx.AsyncClient] = []
+    responses: list[httpx.Response] = []
+    errors: list[str] = []
+    forwarded: list[bytes] = []
+    async def provider(scope: Any,receive: Any,send: Any):
         try:
             while True:
                 message=await receive()
@@ -2339,33 +2441,33 @@ async def test_ui_native_chain_current_identity_and_disconnect(postgres,infrastr
         finally:provider_closed.set()
     app=FastAPI();app.include_router(ui_gateway.router)
     app.dependency_overrides[get_session_factory]=lambda:factory
-    async def observed(scope,receive,send):
+    async def observed(scope: Any,receive: Any,send: Any):
         async def read():
             message=await receive()
             if message['type']=='http.request':received.set()
             return message
-        async def sent(message):
+        async def sent(message: Any):
             if message['type']=='http.response.body':forwarded.append(message.get('body',b''))
             await send(message)
         try:await app(scope,read,sent)
         except BaseException as exc:errors.append(type(exc).__name__);raise
         finally:finished.set()
     real_client=httpx.AsyncClient
-    def upstream(**kwargs):
+    def upstream(**kwargs: Any):
         client=real_client(**kwargs);clients.append(client)
         actual_send=client.send
-        async def opened(*args,**kw):
+        async def opened(*args: Any,**kw: Any):
             response=await actual_send(*args,**kw)
             assert not response.is_closed
             responses.append(response);return response
-        client.send=opened
+        setattr(client, 'send', opened)
         return client
     monkeypatch.setattr(ui_gateway.httpx,'AsyncClient',upstream)
     # 仅限故障边界允许隔离服务器关闭 (即使断开连接断言失败);
     # 生产 1 秒检查依然保留.
     monkeypatch.setattr(ui_gateway,'MAX_HEADER_SECONDS',5)
     body=b'question'
-    async def exercise(controller_port,gateway_port):
+    async def exercise(controller_port: Any,gateway_port: Any):
         monkeypatch.setattr(ui_gateway,'controller_url',lambda:f'http://127.0.0.1:{controller_port}')
         reader,writer=await asyncio.open_connection('127.0.0.1',gateway_port)
         try:
@@ -2396,11 +2498,11 @@ async def test_ui_native_chain_current_identity_and_disconnect(postgres,infrastr
     monkeypatch.setattr(controller,'MAX_EVENT_SECONDS',5)
     with serve(provider) as provider_port:
         class Target:
-            def target(self,ref):
+            def target(self,ref: Any):
                 assert ref=='a'*64
                 return f'http://127.0.0.1:{provider_port}',('server','disposable')
         settings=Settings('T'*48,'S'*48,'test/runtime@sha256:'+'a'*64,'test','1g',100000,'test','/unused')
-        with serve(controller.create_app(settings,Target())) as controller_port,serve(observed) as gateway_port:
+        with serve(controller.create_app(settings,cast(Any, Target()))) as controller_port,serve(observed) as gateway_port:
             await exercise(controller_port,gateway_port)
     assert not errors
     assert len(clients)==2*(stage!='body') and len(responses)==2*(stage=='response')

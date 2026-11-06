@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """跨 REST/MCP 服务与限定范围整理器写入者的真实 PostgreSQL 排序测试."""
 import concurrent.futures
 import os
@@ -7,6 +9,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 from tests.integration.test_migrations import postgres
+
+__all__ = ["postgres"]
 from entry.migrate import upgrade
 from app.features.folder import repository, service, tree
 from app.features.folder.organize import tools
@@ -19,7 +23,7 @@ from app.exceptions import BusinessRuleError, ResourceNotFoundError
 pytestmark=pytest.mark.skipif(os.getenv('RUN_FOLDER_TREE_TESTS')!='1',reason='Opt-in isolated PostgreSQL folder ordering')
 
 @pytest.fixture
-def graph(postgres):
+def graph(postgres: Any):
     upgrade(postgres)
     factory=sessionmaker(bind=postgres)
     with factory() as db:
@@ -34,7 +38,7 @@ def graph(postgres):
     return factory,ids,postgres
 
 
-def assert_waiting(engine, workspace, future):
+def assert_waiting(engine: Any, workspace: Any, future: Any):
     deadline=time.monotonic()+5
     while time.monotonic()<deadline:
         with engine.connect() as conn:
@@ -49,11 +53,11 @@ def assert_waiting(engine, workspace, future):
 
 
 @pytest.mark.parametrize('other_writer',['service','organizer'])
-def test_opposite_moves_are_ordered_and_stale_ancestry_cannot_make_cycle(graph,monkeypatch,other_writer):
+def test_opposite_moves_are_ordered_and_stale_ancestry_cannot_make_cycle(graph: Any,monkeypatch: Any,other_writer: Any) -> None:
     factory,ids,engine=graph
     entered,release=threading.Event(),threading.Event()
     original=tree.validate_parent
-    def pause(*args,**kwargs):
+    def pause(*args: Any,**kwargs: Any):
         parent=original(*args,**kwargs)
         if kwargs.get('moving_id')==ids['a']:
             entered.set();assert release.wait(10)
@@ -94,14 +98,14 @@ def test_opposite_moves_are_ordered_and_stale_ancestry_cannot_make_cycle(graph,m
         assert db.get(Folder,ids['a']).to_dict()['path']=='/B/A'
 
 
-def test_deleted_parent_tree_cannot_be_resurrected_from_cached_child(graph,monkeypatch):
+def test_deleted_parent_tree_cannot_be_resurrected_from_cached_child(graph: Any,monkeypatch: Any) -> None:
     factory,ids,engine=graph
     with factory() as db:
         child=Folder(name='child',workspace_id=ids['workspace'],parent_id=ids['a'])
         db.add(child);db.commit();child_id=child.id
     entered,release=threading.Event(),threading.Event()
     original=repository.lock_tree
-    def pause(db,workspace):
+    def pause(db: Any,workspace: Any):
         original(db,workspace)
         if db.info.get('deleting'):
             entered.set();assert release.wait(10)

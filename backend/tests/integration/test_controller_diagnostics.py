@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """独立 Controller、实际 Uvicorn/Docker SDK 与合成守护进程故障测试."""
 import os
 import time
@@ -5,12 +7,14 @@ import httpx
 import pytest
 from tests.integration.test_runtime_security import infrastructure, controller, docker
 
+__all__ = ["infrastructure", "controller", "docker"]
+
 pytestmark = pytest.mark.skipif(os.getenv('RUN_CONTROLLER_DIAGNOSTICS') != '1', reason='Opt-in rebuilt Controller diagnostics')
 SECRET = 'private-controller-daemon-body-sentinel'
 
 
 @pytest.fixture
-def fault_controller(request, infrastructure, monkeypatch):
+def fault_controller(request: Any, infrastructure: Any, monkeypatch: Any):
     # 这是一个守护进程协议故障接缝, 并非真实 Docker 管理端点.
     name = infrastructure['target'] + '-fault-daemon'
     infrastructure['cleanup'].append(name)
@@ -36,7 +40,7 @@ HTTPServer(('0.0.0.0',2375),Handler).serve_forever()
     return request.getfixturevalue('controller')
 
 
-def test_daemon_private_failure_is_absent_from_http_and_standalone_logs(fault_controller):
+def test_daemon_private_failure_is_absent_from_http_and_standalone_logs(fault_controller: Any) -> None:
     headers = {'X-Runtime-Controller-Token':fault_controller['token']}
     base = fault_controller['url']
     with httpx.Client(trust_env=False, timeout=10) as client:

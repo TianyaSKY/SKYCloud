@@ -1,3 +1,6 @@
+from collections.abc import Generator
+from typing import Any
+# pyright: reportPrivateUsage=false
 """PostgreSQL/MinIO 删除原子性、重试与克隆竞争测试."""
 import hashlib
 import os
@@ -5,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 import time
 
+from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
@@ -16,12 +20,14 @@ from entry.migrate import upgrade
 from tests.integration.test_migrations import postgres
 from tests.integration.test_upload_storage import minio_storage
 
+__all__ = ["postgres", "minio_storage"]
+
 pytestmark = pytest.mark.skipif(os.getenv('RUN_OBJECT_DELETION_TESTS') != '1',
                                reason='Opt-in isolated PostgreSQL/MinIO object deletion')
 
 
 @pytest.fixture
-def object_context(postgres,minio_storage,monkeypatch,tmp_path):
+def object_context(postgres: Any,minio_storage: Any,monkeypatch: Any,tmp_path: Any):
     upgrade(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'owner','x','common')"))
@@ -31,13 +37,19 @@ def object_context(postgres,minio_storage,monkeypatch,tmp_path):
     payload = tmp_path/'payload'
     payload.write_bytes(b'abc')
     minio_storage.upload_file(str(payload),'shared')
-    monkeypatch.setattr(service,'get_storage_client',lambda:minio_storage)
-    monkeypatch.setattr(service.change_log_service,'log_event',lambda _params:None)
+    def mock_log_event(_params: Any) -> None:
+        pass
+
+    monkeypatch.setattr(service, 'get_storage_client', lambda: minio_storage)
+    monkeypatch.setattr(service.change_log_service, 'log_event', mock_log_event)
     factory = sessionmaker(bind=postgres)
-    return postgres,minio_storage,factory
+    return postgres, minio_storage, factory
+
 
 @pytest.fixture
-def object_http(object_context, monkeypatch, tmp_path):
+def object_http(
+    object_context: Any, monkeypatch: Any, tmp_path: Any
+) -> Generator[tuple[TestClient, dict[str, str]], None, None]:
     """通过已认证的 HTTP 契约暴露秒传功能."""
     from fastapi.testclient import TestClient
     from app.api.factory import create_fastapi_app
@@ -58,8 +70,10 @@ def object_http(object_context, monkeypatch, tmp_path):
     app.dependency_overrides[get_db] = database
     app.dependency_overrides[get_session_factory] = lambda: factory
     client = TestClient(app)
-    headers = {
-        "authorization": "Bearer " + generate_token(1),
+    token = generate_token(1)
+    assert token is not None
+    headers: dict[str, str] = {
+        "authorization": "Bearer " + token,
         "X-Workspace-Id": "1",
     }
     try:
@@ -68,17 +82,17 @@ def object_http(object_context, monkeypatch, tmp_path):
         client.close()
 
 
-def clean(context,**kwargs):
+def clean(context: Any,**kwargs: Any):
     _,storage,factory = context
     return delete_pending_objects(session_factory=factory,storage_factory=lambda:storage,**kwargs)
 
 
-def delete_source(context):
+def delete_source(context: Any):
     with context[2]() as session:
         service.delete_file(session,1)
 
 
-def test_metadata_commit_failure_preserves_real_object_and_rolls_back_intent(object_context):
+def test_metadata_commit_failure_preserves_real_object_and_rolls_back_intent(object_context: Any) -> None:
     db,storage,factory = object_context
     with db.begin() as connection:
         connection.execute(text("""CREATE FUNCTION reject_file_delete() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -100,8 +114,8 @@ def test_metadata_commit_failure_preserves_real_object_and_rolls_back_intent(obj
         assert connection.scalar(text('SELECT count(*) FROM file_object_deletions')) == 0
 
 
-def test_shared_object_survives_until_last_committed_reference(object_context):
-    db,storage,factory = object_context
+def test_shared_object_survives_until_last_committed_reference(object_context: Any) -> None:
+    _db, storage, factory = object_context
     with factory() as session:
         session.add(File(name='two',file_path='shared',file_size=3,status='success',workspace_id=1,uploader_id=1))
         session.commit()
@@ -113,11 +127,11 @@ def test_shared_object_survives_until_last_committed_reference(object_context):
     assert clean(object_context) == 1 and not storage.file_exists('shared')
 
 
-def test_storage_failure_is_persisted_then_actual_delete_retries(object_context,monkeypatch):
+def test_storage_failure_is_persisted_then_actual_delete_retries(object_context: Any,monkeypatch: Any) -> None:
     db,storage,_ = object_context
     delete_source(object_context)
     original = storage.delete_file
-    def reject(name):
+    def reject(name: Any):
         raise RuntimeError('injected storage rejection')
     monkeypatch.setattr(storage,'delete_file',reject)
     assert clean(object_context) == 0 and storage.file_exists('shared')
@@ -129,7 +143,7 @@ def test_storage_failure_is_persisted_then_actual_delete_retries(object_context,
     assert clean(object_context) == 1 and not storage.file_exists('shared')
 
 
-def test_post_delete_sql_failure_replays_idempotently(object_context):
+def test_post_delete_sql_failure_replays_idempotently(object_context: Any) -> None:
     db,storage,_ = object_context
     delete_source(object_context)
     with db.begin() as connection:
@@ -146,7 +160,7 @@ def test_post_delete_sql_failure_replays_idempotently(object_context):
     assert clean(object_context) == 1
 
 
-def test_two_dispatchers_complete_duplicate_intents_without_losing_state(object_context):
+def test_two_dispatchers_complete_duplicate_intents_without_losing_state(object_context: Any) -> None:
     db,storage,_ = object_context
     delete_source(object_context)
     with db.begin() as connection:
@@ -160,15 +174,15 @@ def test_two_dispatchers_complete_duplicate_intents_without_losing_state(object_
 
 
 def test_public_preflight_does_not_clone_object_removed_after_lookup(
-    object_context, object_http, monkeypatch,
-):
+    object_context: Any, object_http: Any, monkeypatch: Any,
+) -> None:
     db, storage, _ = object_context
     client, headers = object_http
     original_exists = storage.file_exists
     original_delete = storage.delete_file
     probes = 0
 
-    def remove_after_lookup(name):
+    def remove_after_lookup(name: Any):
         nonlocal probes
         probes += 1
         if probes == 1:
@@ -198,8 +212,8 @@ def test_public_preflight_does_not_clone_object_removed_after_lookup(
 
 
 def test_clone_revalidates_source_workspace_after_committed_change(
-    object_context,
-):
+    object_context: Any,
+) -> None:
     from app.exceptions import PermissionDeniedError
     from app.features.file.upload_service import CloneSourceParams, get_upload_service
 
@@ -239,8 +253,8 @@ def test_clone_revalidates_source_workspace_after_committed_change(
 
 
 def test_cleaner_waits_for_public_clone_commit_and_retains_shared_object(
-    object_context, object_http, monkeypatch,
-):
+    object_context: Any, object_http: Any, monkeypatch: Any,
+) -> None:
     from app.models.file_object_deletion import FileObjectDeletion
 
     db, storage, factory = object_context
@@ -252,7 +266,7 @@ def test_cleaner_waits_for_public_clone_commit_and_retains_shared_object(
     original_exists = storage.file_exists
     probes = 0
 
-    def pause_after_object_lock(name):
+    def pause_after_object_lock(name: Any):
         nonlocal probes
         probes += 1
         if probes == 2:
@@ -305,7 +319,7 @@ def test_cleaner_waits_for_public_clone_commit_and_retains_shared_object(
         ).all() == [(new_id, "shared")]
 
 
-def test_recursive_foreign_child_refuses_deletion_without_losing_real_object(object_context):
+def test_recursive_foreign_child_refuses_deletion_without_losing_real_object(object_context: Any) -> None:
     from app.features.folder import service as folders
     from app.exceptions import PermissionDeniedError
     db,storage,factory = object_context
@@ -323,7 +337,7 @@ def test_recursive_foreign_child_refuses_deletion_without_losing_real_object(obj
         assert connection.scalar(text('SELECT count(*) FROM file_object_deletions')) == 0
 
 
-def test_recursive_root_lock_blocks_new_foreign_child_during_enumeration(object_context,monkeypatch):
+def test_recursive_root_lock_blocks_new_foreign_child_during_enumeration(object_context: Any,monkeypatch: Any) -> None:
     from app.features.folder import service as folders
     db,_,factory = object_context
     with db.begin() as connection:
@@ -332,7 +346,7 @@ def test_recursive_root_lock_blocks_new_foreign_child_during_enumeration(object_
         connection.execute(text("UPDATE files SET parent_id=1"))
     entered,release = Event(),Event()
     original = folders._delete_folder_recursive
-    def pause(session,folder,events,visited=None):
+    def pause(session: Any,folder: Any,events: Any,visited: Any=None):
         entered.set()
         assert release.wait(5)
         return original(session,folder,events,visited)
@@ -355,7 +369,7 @@ def test_recursive_root_lock_blocks_new_foreign_child_during_enumeration(object_
 
 
 @pytest.mark.parametrize('entity',['file','workspace','user'])
-def test_bulk_and_database_cascades_stage_cleanup_in_same_transaction(object_context,entity):
+def test_bulk_and_database_cascades_stage_cleanup_in_same_transaction(object_context: Any,entity: Any) -> None:
     db,storage,_ = object_context
     statement = {'file':'DELETE FROM files WHERE id=1','workspace':'DELETE FROM workspaces WHERE id=1',
                  'user':'DELETE FROM users WHERE id=1'}[entity]
@@ -377,10 +391,12 @@ def test_bulk_and_database_cascades_stage_cleanup_in_same_transaction(object_con
     assert clean(object_context) == 1 and not storage.file_exists('shared')
 
 
-def test_workspace_service_cascade_retains_shared_foreign_object(object_context,monkeypatch):
+def test_workspace_service_cascade_retains_shared_foreign_object(object_context: Any,monkeypatch: Any) -> None:
     from app.features.workspace import service as workspaces,docker_service
     db,storage,factory = object_context
-    monkeypatch.setattr(docker_service,'remove_container',lambda workspace,session:None)
+    def mock_remove_container(workspace: Any, session: Any) -> None:
+        pass
+    monkeypatch.setattr(docker_service,'remove_container',mock_remove_container)
     with db.begin() as connection:
         connection.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (2,'foreign','x','common')"))
         connection.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (2,'foreign',2)"))
@@ -393,7 +409,7 @@ def test_workspace_service_cascade_retains_shared_foreign_object(object_context,
     assert clean(object_context) == 1 and storage.file_exists('shared')
 
 
-def test_user_database_cascade_keeps_foreign_workspace_file_and_clears_uploader(object_context):
+def test_user_database_cascade_keeps_foreign_workspace_file_and_clears_uploader(object_context: Any) -> None:
     db,storage,_ = object_context
     with db.begin() as connection:
         connection.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (2,'foreign','x','common')"))
@@ -407,16 +423,16 @@ def test_user_database_cascade_keeps_foreign_workspace_file_and_clears_uploader(
 
 
 @pytest.fixture
-def account_graph(object_context, monkeypatch):
+def account_graph(object_context: Any, monkeypatch: Any) -> list[str]:
     from types import SimpleNamespace
     from app.features.workspace import docker_service
-    db, storage, factory = object_context
-    removed = []
-    def inspect(identifier):
+    db, _storage, _factory = object_context
+    removed: list[str] = []
+    def inspect(identifier: Any) -> dict[str, Any]:
         return {"id": identifier, "labels": {}}
-    def action(identifier, operation):
+    def action(identifier: Any, operation: Any) -> None:
         assert operation == "remove"
-        removed.append(identifier)
+        removed.append(str(identifier))
     from app.infra import runtime_container_deletion
     client = SimpleNamespace(inspect=inspect, action=action)
     monkeypatch.setattr(runtime_container_deletion, "controller_client", lambda: client)
@@ -441,7 +457,7 @@ def account_graph(object_context, monkeypatch):
     return removed
 
 
-def assert_account_deleted(context, removed):
+def assert_account_deleted(context: Any, removed: Any):
     db, storage, _ = context
     from app.infra.runtime_container_deletion import delete_pending_containers
     assert removed == []
@@ -460,7 +476,7 @@ def assert_account_deleted(context, removed):
     assert clean(context) == 1 and storage.file_exists('shared')
 
 
-def test_account_service_deletes_loaded_graph_preserves_foreign_workspace(object_context, account_graph):
+def test_account_service_deletes_loaded_graph_preserves_foreign_workspace(object_context: Any, account_graph: Any) -> None:
     from app.features.auth.user_service import delete_user
     from app.models.user import User
     with object_context[2]() as session:
@@ -473,7 +489,7 @@ def test_account_service_deletes_loaded_graph_preserves_foreign_workspace(object
     assert_account_deleted(object_context, account_graph)
 
 
-def test_account_http_self_delete_forbidden_other_and_old_token_rejected(object_context, account_graph):
+def test_account_http_self_delete_forbidden_other_and_old_token_rejected(object_context: Any, account_graph: Any) -> None:
     from fastapi.testclient import TestClient
     from app.api.factory import create_fastapi_app
     from app.features.auth.service import generate_token
@@ -485,7 +501,9 @@ def test_account_http_self_delete_forbidden_other_and_old_token_rejected(object_
     app.dependency_overrides[get_db] = database
     app.dependency_overrides[get_session_factory] = lambda: object_context[2]
     client = TestClient(app)
-    headers = {'authorization':'Bearer '+generate_token(1)}
+    token = generate_token(1)
+    assert token is not None
+    headers: dict[str, str] = {'authorization': 'Bearer ' + token}
     denied = client.delete('/api/users/2', headers=headers)
     assert denied.status_code == 403, denied.text
     assert account_graph == []
@@ -495,10 +513,12 @@ def test_account_http_self_delete_forbidden_other_and_old_token_rejected(object_
     assert_account_deleted(object_context, account_graph)
 
 
-def test_account_delete_sql_failure_preserves_metadata_and_object_intents(object_context,monkeypatch):
+def test_account_delete_sql_failure_preserves_metadata_and_object_intents(object_context: Any,monkeypatch: Any) -> None:
     from app.features.auth.user_service import delete_user
     from app.features.workspace import docker_service
-    monkeypatch.setattr(docker_service,'remove_container',lambda *args:None)
+    def mock_remove_container_args(*args: Any) -> None:
+        pass
+    monkeypatch.setattr(docker_service,'remove_container',mock_remove_container_args)
     db,storage,factory = object_context
     with db.begin() as connection:
         connection.execute(text("""CREATE FUNCTION reject_account_delete() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -518,14 +538,14 @@ def test_account_delete_sql_failure_preserves_metadata_and_object_intents(object
 
 
 @pytest.mark.parametrize('entity',['workspace','collaborator_runtime'])
-def test_account_locks_prevent_new_resources_after_cleanup_enumeration(object_context,monkeypatch,entity):
+def test_account_locks_prevent_new_resources_after_cleanup_enumeration(object_context: Any,monkeypatch: Any,entity: Any) -> None:
     from app.features.auth.user_service import delete_user
     from app.features.workspace import docker_service
     db,storage,factory = object_context
     with db.begin() as connection:
         connection.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (2,'other','x','common')"))
     enumerated,release = Event(),Event()
-    def pause(workspace,session):
+    def pause(workspace: Any,session: Any):
         enumerated.set()
         assert release.wait(timeout=10)
     monkeypatch.setattr(docker_service,'remove_container',pause)

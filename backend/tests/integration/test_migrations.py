@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """与现有部署隔离的真实 PostgreSQL 迁移测试."""
 
 import concurrent.futures
@@ -18,7 +20,7 @@ pytestmark = pytest.mark.skipif(os.getenv("RUN_MIGRATION_TESTS") != "1", reason=
 
 
 @pytest.mark.parametrize('denied', [False, True])
-def test_lifecycle_lock_disconnect_keeps_outcome_and_allows_next_owner(postgres, denied):
+def test_lifecycle_lock_disconnect_keeps_outcome_and_allows_next_owner(postgres: Any, denied: Any) -> None:
     from sqlalchemy.orm import Session
     from app.exceptions import PermissionDeniedError
     from app.features.workspace.runtime_execution import execution
@@ -76,9 +78,10 @@ def postgres():
         docker("rm", "-f", "-v", name, check=False)
 
 
-def test_fresh_upgrade_matches_models_and_supports_vectors(postgres):
+def test_fresh_upgrade_matches_models_and_supports_vectors(postgres: Any) -> None:
     from app.infra.extensions import Base
     import app.models
+    _ = app.models
 
     with pytest.raises(RuntimeError, match="unversioned"):
         check_schema(postgres)
@@ -150,7 +153,7 @@ def test_fresh_upgrade_matches_models_and_supports_vectors(postgres):
         assert conn.scalar(text("SELECT count(*) FROM users")) == 0
         assert conn.scalar(text("SELECT value FROM sys_dict WHERE key='site_name'")) == "SKYCloud"
 
-def test_unversioned_database_upgrade_is_rejected_without_changes(postgres):
+def test_unversioned_database_upgrade_is_rejected_without_changes(postgres: Any) -> None:
     with postgres.begin() as conn:
         conn.execute(text("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)"))
         conn.execute(text("INSERT INTO users VALUES (7, 'preserved')"))
@@ -163,7 +166,7 @@ def test_unversioned_database_upgrade_is_rejected_without_changes(postgres):
     with postgres.connect() as conn:
         assert conn.execute(text("SELECT id, username FROM users")).one() == (7, "preserved")
 
-def test_old_revision_upgrade_is_rejected_without_changes(postgres):
+def test_old_revision_upgrade_is_rejected_without_changes(postgres: Any) -> None:
     with postgres.begin() as conn:
         conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
         conn.execute(text("INSERT INTO alembic_version VALUES ('0019_sql_cache_revisions')"))
@@ -180,14 +183,14 @@ def test_old_revision_upgrade_is_rejected_without_changes(postgres):
 
 
 
-def test_concurrent_upgrade_is_serialized(postgres):
+def test_concurrent_upgrade_is_serialized(postgres: Any) -> None:
     # Alembic 的 Python 上下文是进程全局的; 在独立进程中执行.
     import subprocess
     import sys
     root = Path(__file__).resolve().parents[2]
     env = {**os.environ, "DATABASE_URL": postgres.url.render_as_string(hide_password=False)}
 
-    def run(_):
+    def run(_: Any):
         result = subprocess.run([sys.executable, "-m", "entry.migrate"], cwd=root, env=env, capture_output=True, text=True, timeout=40)
         assert result.returncode == 0, result.stderr
 
@@ -196,7 +199,7 @@ def test_concurrent_upgrade_is_serialized(postgres):
     check_schema(postgres)
 
 
-def test_standard_alembic_cli_upgrade(postgres):
+def test_standard_alembic_cli_upgrade(postgres: Any) -> None:
     import subprocess
     import sys
     root = Path(__file__).resolve().parents[2]
@@ -209,7 +212,7 @@ def test_standard_alembic_cli_upgrade(postgres):
     check_schema(postgres)
 
 
-def test_application_startup_works_with_read_only_database_role(postgres, tmp_path):
+def test_application_startup_works_with_read_only_database_role(postgres: Any, tmp_path: Any) -> None:
     from unittest.mock import patch
     from app import initialize_application
 
@@ -229,7 +232,7 @@ def test_application_startup_works_with_read_only_database_role(postgres, tmp_pa
         reader.dispose()
 
 
-def test_password_change_is_atomic_and_concurrent_requests_cannot_reuse_old_password(postgres):
+def test_password_change_is_atomic_and_concurrent_requests_cannot_reuse_old_password(postgres: Any) -> None:
     from unittest.mock import patch
     from sqlalchemy.orm import Session
     from app.exceptions import BusinessRuleError
@@ -248,16 +251,19 @@ def test_password_change_is_atomic_and_concurrent_requests_cannot_reuse_old_pass
         original = user.password_hash
         old_session = generate_token(user_id, user.auth_version)
         _, external = ensure_user_mcp_token(session, user_id)
+        assert old_session is not None and external is not None
         with patch.object(session, "commit", side_effect=RuntimeError("Commit failed")):
             with pytest.raises(RuntimeError, match="Commit failed"):
                 change_password(session, ChangePasswordParams(actor_id=user_id, actor_role="common", user_id=user_id, old_password="old-long-password", new_password="new-long-password"))
         session.rollback()
         session.expire_all()
-        assert session.get(User, user_id).password_hash == original
+        curr_user = session.get(User, user_id)
+        assert curr_user is not None
+        assert curr_user.password_hash == original
         assert decode_token(session, old_session) == str(user_id)
         assert get_active_mcp_token(session, external)
 
-    def change(index):
+    def change(index: Any):
         with Session(postgres) as session:
             try:
                 change_password(session, ChangePasswordParams(actor_id=user_id, actor_role="common", user_id=user_id, old_password="old-long-password", new_password=f"new-long-password-{index}"))
@@ -270,14 +276,16 @@ def test_password_change_is_atomic_and_concurrent_requests_cannot_reuse_old_pass
         results = list(workers.map(change, range(2)))
     assert results.count(True) == 1
     with Session(postgres) as session:
-        assert session.get(User, user_id).auth_version == 1
+        reloaded_user = session.get(User, user_id)
+        assert reloaded_user is not None
+        assert reloaded_user.auth_version == 1
         assert "revoked" in decode_token(session, old_session).lower()
         assert get_active_mcp_token(session, external) is None
 
 
 
 
-def test_legacy_admin_gate_and_operator_recovery_preserve_workspace_data(postgres):
+def test_legacy_admin_gate_and_operator_recovery_preserve_workspace_data(postgres: Any) -> None:
     from sqlalchemy.orm import Session
     from app.features.auth.legacy_admin import LEGACY_ADMIN_HASH, check_legacy_admin
     from app.features.auth.service import authenticate_user
@@ -298,7 +306,7 @@ def test_legacy_admin_gate_and_operator_recovery_preserve_workspace_data(postgre
         assert conn.scalar(text("SELECT count(*) FROM workspaces WHERE owner_id=:user"), {"user": user_id}) == 1
 
 
-def test_baseline_downgrade_is_rejected(postgres):
+def test_baseline_downgrade_is_rejected(postgres: Any) -> None:
     upgrade(postgres)
     with pytest.raises(RuntimeError, match="downgrade|backup"):
         with postgres.begin() as conn:
@@ -310,7 +318,7 @@ def test_baseline_downgrade_is_rejected(postgres):
 
 
 @pytest.mark.parametrize('shared', ['user', 'workspace', 'daily'])
-def test_upload_quota_concurrent_admission_cannot_overbook(postgres, monkeypatch, shared):
+def test_upload_quota_concurrent_admission_cannot_overbook(postgres: Any, monkeypatch: Any, shared: Any) -> None:
     from sqlalchemy.orm import Session
     from app.features.file import upload_quota as quota
     from app.exceptions import BusinessRuleError
@@ -321,8 +329,8 @@ def test_upload_quota_concurrent_admission_cannot_overbook(postgres, monkeypatch
     monkeypatch.setattr(quota, 'USER_CAPACITY', 10 if shared == 'user' else 100)
     monkeypatch.setattr(quota, 'WORKSPACE_CAPACITY', 10 if shared == 'workspace' else 100)
     monkeypatch.setattr(quota, 'DAILY_ATTEMPTS', 1 if shared == 'daily' else 200)
-    errors = []
-    def admission(index):
+    errors: list[str] = []
+    def admission(index: Any):
         uid, wid = (1, index + 1) if shared != 'workspace' else (index + 1, 1)
         with Session(postgres) as session:
             try:
@@ -341,7 +349,7 @@ def test_upload_quota_concurrent_admission_cannot_overbook(postgres, monkeypatch
         assert conn.scalar(text("SELECT sum(attempts) FROM upload_daily_usage")) == 1
 
 
-def test_upload_consumption_rollback_and_concurrent_completion(postgres):
+def test_upload_consumption_rollback_and_concurrent_completion(postgres: Any) -> None:
     from sqlalchemy.orm import Session
     from sqlalchemy.exc import IntegrityError
     from app.features.file import upload_quota as quota
@@ -359,8 +367,10 @@ def test_upload_consumption_rollback_and_concurrent_completion(postgres):
         with pytest.raises(IntegrityError):
             session.commit()
         session.rollback()
-        assert session.get(UploadReservation, rid).status == 'active'
-    def completion(index):
+        reservation = session.get(UploadReservation, rid)
+        assert reservation is not None
+        assert reservation.status == 'active'
+    def completion(index: Any):
         with Session(postgres) as session:
             try:
                 quota.consume(session, 1, 1, rid, 6)

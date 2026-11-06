@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """真实 SQL 排序; 提供商确认作为显式测试接缝测试."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -6,7 +8,7 @@ import threading
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from app.exceptions import PermissionDeniedError, ConflictError
 from app.features.assistant.engines import expert_engine as module
@@ -17,18 +19,22 @@ from app.models.assistant import (
     AssistantRun,
 )
 from app.models.opencode_runtime import OpenCodeRuntime
-from app.models.workspace import Workspace, WorkspaceMember
+from app.models.workspace import WorkspaceMember
 from tests.integration.test_migrations import postgres
+
+__all__ = ["postgres"]
 from tests.integration.test_assistant_lease import create_run
 
 pytestmark=pytest.mark.skipif(os.getenv('RUN_MIGRATION_TESTS')!='1',reason='Opt-in isolated PostgreSQL ordering')
 
 
-def prepared(postgres,monkeypatch,entered,release,calls):
+def prepared(postgres: Any,monkeypatch: Any,entered: Any,release: Any,calls: Any):
     run_id=create_run(postgres)
     with Session(postgres) as session:
         run=session.get(AssistantRun,run_id)
+        assert run is not None and run.conversation_id is not None
         conversation=session.get(AssistantConversation,run.conversation_id)
+        assert conversation is not None
         ws,user=conversation.workspace_id,conversation.user_id
         session.add(WorkspaceMember(workspace_id=ws,user_id=user,role='editor'))
         runtime=OpenCodeRuntime(workspace_id=ws,user_id=user,container_id='a'*64,status='running')
@@ -42,10 +48,10 @@ def prepared(postgres,monkeypatch,entered,release,calls):
         connection=module.RuntimeConnection(runtime.id,'http://test-provider','a'*64)
     main_thread=threading.get_ident()
     class Provider:
-        def __init__(self,*args,**kwargs): assert threading.get_ident()!=main_thread
+        def __init__(self,*args: Any,**kwargs: Any): assert threading.get_ident()!=main_thread
         async def __aenter__(self): return self
-        async def __aexit__(self,*args): pass
-        async def respond_permission(self,*args,**kwargs):
+        async def __aexit__(self,*args: Any): pass
+        async def respond_permission(self,*args: Any,**kwargs: Any):
             calls.append(args)
             entered.set()
             assert await asyncio.to_thread(release.wait,3)
@@ -58,9 +64,9 @@ def prepared(postgres,monkeypatch,entered,release,calls):
 
 
 @pytest.mark.parametrize('change',['demote','remove'])
-def test_dispatch_lock_orders_revocation_after_ack(postgres,monkeypatch,change):
+def test_dispatch_lock_orders_revocation_after_ack(postgres: Any,monkeypatch: Any,change: Any) -> None:
     entered,release,started=threading.Event(),threading.Event(),threading.Event()
-    calls=[]
+    calls: list[Any] = []
     engine,args,run_id=prepared(postgres,monkeypatch,entered,release,calls)
     def revoke():
         with postgres.begin() as db:
@@ -78,6 +84,7 @@ def test_dispatch_lock_orders_revocation_after_ack(postgres,monkeypatch,change):
     assert len(calls)==1
     with Session(postgres) as session:
         run=session.get(AssistantRun,run_id)
+        assert run is not None
         assert run.pending_permission_id is None and run.status=='running'
         permission = session.get(AssistantPermission, (run_id, "p1"))
         assert permission is not None
@@ -89,9 +96,9 @@ def test_dispatch_lock_orders_revocation_after_ack(postgres,monkeypatch,change):
 
 
 @pytest.mark.parametrize('change',['demote','remove','runtime','cancel','response'])
-def test_invalidated_dispatch_never_calls_provider(postgres,monkeypatch,change):
+def test_invalidated_dispatch_never_calls_provider(postgres: Any,monkeypatch: Any,change: Any) -> None:
     entered,release=threading.Event(),threading.Event();release.set()
-    calls=[]
+    calls: list[Any] = []
     engine,args,run_id=prepared(postgres,monkeypatch,entered,release,calls)
     statements={
         'demote':"UPDATE workspace_members SET role='viewer'",
@@ -108,15 +115,16 @@ def test_invalidated_dispatch_never_calls_provider(postgres,monkeypatch,change):
     assert calls==[]
     with Session(postgres) as session:
         run = session.get(AssistantRun, run_id)
+        assert run is not None
         permission = session.get(AssistantPermission, (run_id, "p1"))
         assert run.pending_permission_id == "p1"
         assert permission is not None and permission.state == "answered"
 
 
-def test_successful_dispatch_cannot_replay_the_same_sql_response(postgres,monkeypatch):
+def test_successful_dispatch_cannot_replay_the_same_sql_response(postgres: Any,monkeypatch: Any) -> None:
     entered,release=threading.Event(),threading.Event();release.set()
-    calls=[]
-    engine,args,run_id=prepared(postgres,monkeypatch,entered,release,calls)
+    calls: list[Any] = []
+    engine,args,_run_id=prepared(postgres,monkeypatch,entered,release,calls)
     with ThreadPoolExecutor(max_workers=1) as executor:
         executor.submit(engine._dispatch_permission,*args).result(5)
         with pytest.raises(ConflictError): executor.submit(engine._dispatch_permission,*args).result(5)

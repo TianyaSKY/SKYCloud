@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """UTC 存储保持用量按北京时间日历日分组测试."""
 
 from datetime import datetime, timezone
@@ -13,6 +15,8 @@ from app.models.user import User
 from entry.migrate import upgrade
 from tests.integration.test_migrations import postgres  # noqa: F401
 
+__all__ = ["postgres"]
+
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_UTC_STORAGE_TESTS") != "1",
     reason="Opt-in isolated PostgreSQL UTC storage behavior",
@@ -20,7 +24,7 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.parametrize("database_zone", ["UTC", "America/New_York"])
-def test_usage_days_remain_beijing_days_with_utc_storage(postgres, database_zone):
+def test_usage_days_remain_beijing_days_with_utc_storage(postgres: Any, database_zone: Any) -> None:
     upgrade(postgres)
     with postgres.connect() as connection:
         connection.execute(
@@ -44,11 +48,12 @@ def test_usage_days_remain_beijing_days_with_utc_storage(postgres, database_zone
                 "utc_now",
                 return_value=datetime(2025, 6, 1, 4, tzinfo=timezone.utc),
             ):
-                for query, args in (
+                queries: list[tuple[Any, tuple[Any, ...]]] = [
                     (usage.get_daily_stats, (session, 1)),
                     (usage.get_all_users_daily_stats, (session,)),
                     (usage.get_per_user_daily_stats, (session,)),
-                ):
+                ]
+                for query, args in queries:
                     result = query(*args)
                     assert str(result[0]["date"]) == "2025-06-01"
                     assert result[0]["total_tokens"] == 5

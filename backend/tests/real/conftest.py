@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """真实依赖测试 fixtures：使用真实 Redis、真实 SQLite 数据库会话。
 
 本目录下的测试遵循「无 Mock」原则：
@@ -14,12 +15,13 @@
 - TEST_SYMLINK=1     启用需要符号链接权限的测试（Windows 需管理员）
 """
 
+from collections.abc import Generator
 import os
 import sys
 import types
+from typing import Any
 
 import pytest
-from redis import Redis
 
 from app.infra.extensions import redis_client as _real_redis
 
@@ -51,14 +53,14 @@ skip_unless_symlink = pytest.mark.skipif(
 class _RealDocument:
     """等价于 langchain_core.documents.Document 的轻量实现。"""
 
-    def __init__(self, page_content: str = "", metadata: dict | None = None, **kwargs):
+    def __init__(self, page_content: str = "", metadata: dict[str, Any] | None = None, **kwargs: Any) -> None:
         self.page_content = page_content
         self.metadata = metadata if metadata is not None else {}
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Document(page_content={self.page_content!r}, metadata={self.metadata!r})"
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         if not isinstance(other, _RealDocument):
             return NotImplemented
         return self.page_content == other.page_content and self.metadata == other.metadata
@@ -66,7 +68,7 @@ class _RealDocument:
 
 # 替换被 Mock 的 langchain_core.documents 模块
 _real_docs_module = types.ModuleType("langchain_core.documents")
-_real_docs_module.Document = _RealDocument  # type: ignore[attr-defined]
+setattr(_real_docs_module, "Document", _RealDocument)
 sys.modules["langchain_core.documents"] = _real_docs_module
 
 
@@ -74,7 +76,7 @@ sys.modules["langchain_core.documents"] = _real_docs_module
 
 
 @pytest.fixture(autouse=True)
-def mock_redis():
+def mock_redis() -> Generator[Any, None, None]:
     """覆盖父级 mock_redis：使用真实 Redis 客户端。
 
     测试结束后清理 test:* 前缀的键，避免污染。
@@ -92,7 +94,7 @@ def mock_redis():
 
 
 @pytest.fixture(autouse=True)
-def mock_task_queue():
+def mock_task_queue() -> Generator[dict[str, Any], None, None]:
     """覆盖父级 mock_task_queue：不做任何替换。
 
     RabbitMQ 在测试环境不可用（认证被拒绝），发布函数会自然抛出
@@ -113,7 +115,7 @@ def mock_task_queue():
 
 
 @pytest.fixture()
-def real_redis():
+def real_redis() -> Generator[Any, None, None]:
     """提供真实 Redis 客户端，测试后清理所有测试键。"""
     _real_redis.ping()
     yield _real_redis

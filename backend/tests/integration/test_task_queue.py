@@ -1,3 +1,6 @@
+from concurrent.futures import Future
+from typing import Any
+# pyright: reportPrivateUsage=false
 """自选真实 broker 传输与执行器绑定投递生命周期检查."""
 import base64
 import json
@@ -7,6 +10,7 @@ import time
 import uuid
 
 import pika
+import pika.exceptions
 import pytest
 
 from app.infra import task_queue as queue
@@ -21,7 +25,7 @@ IMAGE = "rabbitmq:3.13-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a
 
 
 @pytest.fixture
-def broker(monkeypatch):
+def broker(monkeypatch: Any):
     name = "skycloud-mq-test-" + uuid.uuid4().hex[:12]
     password = uuid.uuid4().hex
     monkeypatch.delenv("RABBITMQ_URL", raising=False)
@@ -51,31 +55,35 @@ def broker(monkeypatch):
         docker("rm", "-f", "-v", name, check=False)
 
 
-def test_confirmed_publish_and_unroutable_rejection(broker):
+def test_confirmed_publish_and_unroutable_rejection(broker: Any) -> None:
     real_publish(queue.FILE_PROCESS_QUEUE, [41, 42])
     with pytest.raises(pika.exceptions.UnroutableError):
         real_publish("missing-" + uuid.uuid4().hex, [99])
     consumer = queue.RabbitMQTaskConsumer()
     try:
         messages = [consumer.get_message(queue.FILE_PROCESS_QUEUE) for _ in range(2)]
-        assert [m.body for m in messages] == ["41", "42"]
-        for message in messages:
+        assert all(m is not None for m in messages)
+        valid_messages = [m for m in messages if m is not None]
+        assert [m.body for m in valid_messages] == ["41", "42"]
+        for message in valid_messages:
             assert consumer.acknowledge(message)
         assert consumer.get_message(queue.FILE_PROCESS_QUEUE) is None
     finally:
         consumer.close()
 
 
-def test_disconnect_requeues_and_old_tag_cannot_ack_new_delivery(broker):
+def test_disconnect_requeues_and_old_tag_cannot_ack_new_delivery(broker: Any) -> None:
     real_publish(queue.FILE_PROCESS_QUEUE, [73])
     consumer = queue.RabbitMQTaskConsumer()
     try:
         original = consumer.get_message(queue.FILE_PROCESS_QUEUE)
+        assert original is not None
         consumer.close()
         deadline = time.monotonic() + 5
         replacement = None
         while replacement is None and time.monotonic() < deadline:
             replacement = consumer.get_message(queue.FILE_PROCESS_QUEUE)
+        assert replacement is not None
         assert replacement.body == "73"
         assert replacement.generation != original.generation
         assert not consumer.acknowledge(original)
@@ -85,11 +93,11 @@ def test_disconnect_requeues_and_old_tag_cannot_ack_new_delivery(broker):
         consumer.close()
 
 
-def test_worker_capacity_heartbeat_and_completion_ack(broker, monkeypatch):
+def test_worker_capacity_heartbeat_and_completion_ack(broker: Any, monkeypatch: Any) -> None:
     from app.infra import worker_runtime
     started, release = threading.Event(), threading.Event()
-    calls = []
-    def job(file_id):
+    calls: list[tuple[Any, int]] = []
+    def job(file_id: Any):
         calls.append((file_id, threading.get_ident()))
         started.set()
         assert release.wait(10)
@@ -97,7 +105,7 @@ def test_worker_capacity_heartbeat_and_completion_ack(broker, monkeypatch):
     real_publish(queue.FILE_PROCESS_QUEUE, [1, 2])
     consumer = queue.RabbitMQTaskConsumer(.05)
     runtime = WorkerRuntime(1)
-    inflight = {}
+    inflight: dict[Future[Any], queue.QueueMessage] = {}
     try:
         worker_step(runtime, consumer, inflight)
         assert started.wait(2)
@@ -107,8 +115,8 @@ def test_worker_capacity_heartbeat_and_completion_ack(broker, monkeypatch):
             worker_step(runtime, consumer, inflight)
         assert len(inflight) == 1
         assert calls[0][1] != threading.get_ident()
-        assert consumer._connection.is_open
-        assert consumer._channel.queue_declare(queue=queue.FILE_PROCESS_QUEUE, passive=True).method.message_count == 1
+        assert consumer._connection is not None and consumer._connection.is_open
+        assert consumer._channel is not None and consumer._channel.queue_declare(queue=queue.FILE_PROCESS_QUEUE, passive=True).method.message_count == 1
         release.set()
         next(iter(inflight)).result(timeout=2)
         worker_step(runtime, consumer, inflight)
@@ -125,15 +133,15 @@ def test_worker_capacity_heartbeat_and_completion_ack(broker, monkeypatch):
         runtime.shutdown()
 
 
-def test_poison_and_task_error_are_parked_durably(broker, monkeypatch):
+def test_poison_and_task_error_are_parked_durably(broker: Any, monkeypatch: Any) -> None:
     from app.infra import worker_runtime
-    def fail(_):
+    def fail(_: Any):
         raise RuntimeError("synthetic failure")
     monkeypatch.setattr(worker_runtime, "process_task", fail)
     real_publish(queue.FILE_PROCESS_QUEUE, ["invalid-id", 5])
     consumer = queue.RabbitMQTaskConsumer(.01)
     runtime = WorkerRuntime(1)
-    inflight = {}
+    inflight: dict[Future[Any], queue.QueueMessage] = {}
     try:
         worker_step(runtime, consumer, inflight)
         worker_step(runtime, consumer, inflight)
@@ -141,10 +149,12 @@ def test_poison_and_task_error_are_parked_durably(broker, monkeypatch):
         while inflight and time.monotonic() < deadline:
             worker_step(runtime, consumer, inflight)
         failed = [consumer.get_message(queue.FAILED_TASK_QUEUE) for _ in range(2)]
-        payloads = [json.loads(item.body) for item in failed]
+        assert all(item is not None for item in failed)
+        valid_failed = [item for item in failed if item is not None]
+        payloads = [json.loads(item.body) for item in valid_failed]
         assert [base64.b64decode(p["body_base64"]) for p in payloads] == [b"invalid-id", b"5"]
         assert [p["error_type"] for p in payloads] == ["ValueError", "RuntimeError"]
-        for item in failed:
+        for item in valid_failed:
             consumer.acknowledge(item)
         assert consumer.get_message(queue.FILE_PROCESS_QUEUE) is None
     finally:
@@ -152,7 +162,7 @@ def test_poison_and_task_error_are_parked_durably(broker, monkeypatch):
         runtime.shutdown()
 
 
-def test_confirmed_messages_survive_broker_restart(broker, monkeypatch):
+def test_confirmed_messages_survive_broker_restart(broker: Any, monkeypatch: Any) -> None:
     real_publish(queue.FILE_PROCESS_QUEUE, [88])
     docker("restart", broker)
     port = docker("port", broker, "5672/tcp").stdout.strip().rsplit(":", 1)[1]
@@ -170,6 +180,7 @@ def test_confirmed_messages_survive_broker_restart(broker, monkeypatch):
     consumer = queue.RabbitMQTaskConsumer()
     try:
         message = consumer.get_message(queue.FILE_PROCESS_QUEUE)
+        assert message is not None
         assert message.body == "88"
         assert consumer.acknowledge(message)
         assert consumer.get_message(queue.FILE_PROCESS_QUEUE) is None
@@ -177,12 +188,12 @@ def test_confirmed_messages_survive_broker_restart(broker, monkeypatch):
         consumer.close()
 
 
-def test_actual_auth_rejection_reconnects_without_private_failure_logs(broker, monkeypatch):
+def test_actual_auth_rejection_reconnects_without_private_failure_logs(broker: Any, monkeypatch: Any) -> None:
     from loguru import logger
     secret = 'private-broker-auth-rejection-sentinel'
     real_publish(queue.FILE_PROCESS_QUEUE, ['retry-after-auth-failure'])
     original = queue.open_connection
-    attempts = []
+    attempts: list[int] = []
     username, password = os.environ['RABBITMQ_USER'], os.environ['RABBITMQ_PASSWORD']
     def open_after_one_denial():
         attempts.append(1)
@@ -198,8 +209,10 @@ def test_actual_auth_rejection_reconnects_without_private_failure_logs(broker, m
     monkeypatch.setattr(queue, 'open_connection', open_after_one_denial)
     monkeypatch.setattr(queue, 'RABBITMQ_RECONNECT_DELAY_SECONDS', 0)
     consumer = queue.RabbitMQTaskConsumer()
-    captured = []
-    sink = logger.add(lambda message: captured.append((str(message), message.record['exception'])), format='{message}')
+    captured: list[tuple[str, Any]] = []
+    def log_sink(message: Any) -> None:
+        captured.append((str(message), message.record['exception']))
+    sink = logger.add(log_sink, format='{message}')
     try:
         message = consumer.get_next_message()
         assert message.body == 'retry-after-auth-failure'

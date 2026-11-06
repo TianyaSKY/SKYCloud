@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """真实整理器准入/投递/租约/隔离与进程崩溃恢复测试."""
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
@@ -21,6 +23,8 @@ from app.features.folder.organize.tasks import (
 from app.infra.task_queue import RabbitMQTaskConsumer, ORGANIZE_FILE_QUEUE, publish_organize_task as real_publish
 from app.models.organize_task import OrganizeTask
 from tests.integration.test_migrations import postgres  # noqa: F401
+
+__all__ = ["postgres", "broker"]
 from entry.migrate import upgrade
 
 pytestmark = pytest.mark.skipif(
@@ -29,7 +33,7 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture
-def tasks(postgres):
+def tasks(postgres: Any):
     upgrade(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'organizer','synthetic','common')"))
@@ -38,15 +42,15 @@ def tasks(postgres):
     return sessionmaker(bind=postgres)
 
 
-def admitted(factory):
+def admitted(factory: Any):
     with factory() as db:
         assert admit_task(db,1,1)
         return db.query(OrganizeTask).one().id
 
 
-def test_concurrent_admission_commits_one_active_task(tasks):
+def test_concurrent_admission_commits_one_active_task(tasks: Any) -> None:
     barrier = threading.Barrier(4)
-    def submit(_):
+    def submit(_: Any):
         barrier.wait(timeout=5)
         with tasks() as db:
             return admit_task(db,1,1)
@@ -56,7 +60,7 @@ def test_concurrent_admission_commits_one_active_task(tasks):
         assert db.query(OrganizeTask).count() == 1
 
 
-def test_terminal_replay_skips_and_live_executor_is_exclusive(tasks):
+def test_terminal_replay_skips_and_live_executor_is_exclusive(tasks: Any) -> None:
     task_id = admitted(tasks)
     with task_execution(1,1,task_id,session_factory=tasks) as claim:
         with pytest.raises(RetryTaskLater):
@@ -71,7 +75,7 @@ def test_terminal_replay_skips_and_live_executor_is_exclusive(tasks):
         assert claim is None
 
 
-def test_failed_claim_replacement_cannot_write(tasks):
+def test_failed_claim_replacement_cannot_write(tasks: Any) -> None:
     from app.exceptions import PermissionDeniedError
     task_id = admitted(tasks)
     with task_execution(1,1,task_id,session_factory=tasks) as original:
@@ -85,7 +89,7 @@ def test_failed_claim_replacement_cannot_write(tasks):
             assert_task_claim(db,task_id,current,1,1)
 
 
-def test_broker_refusal_is_retryable(tasks, request, monkeypatch):
+def test_broker_refusal_is_retryable(tasks: Any, request: Any, monkeypatch: Any) -> None:
     # 仅在需要 broker 的测试中解析共享真实 RabbitMQ fixture.
     request.getfixturevalue("broker")
     task_id = admitted(tasks)
@@ -103,6 +107,7 @@ def test_broker_refusal_is_retryable(tasks, request, monkeypatch):
     consumer = RabbitMQTaskConsumer()
     try:
         message = consumer.get_message(ORGANIZE_FILE_QUEUE)
+        assert message is not None
         assert json.loads(message.body) == {"workspace_id":1,"user_id":1,"lock_token":task_id}
         consumer.acknowledge(message)
     finally:
@@ -123,7 +128,7 @@ with task_execution(1,1,sys.argv[1]) as claim:
 """
 
 
-def test_killed_process_releases_workspace_lease_and_unacked_delivery(tasks, postgres, request):
+def test_killed_process_releases_workspace_lease_and_unacked_delivery(tasks: Any, postgres: Any, request: Any) -> None:
     request.getfixturevalue("broker")
     task_id = admitted(tasks)
     assert deliver_pending_organize_tasks(session_factory=tasks,publisher=real_publish) == 1
@@ -132,6 +137,7 @@ def test_killed_process_releases_workspace_lease_and_unacked_delivery(tasks, pos
         cwd=Path(__file__).resolve().parents[2],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     consumer = RabbitMQTaskConsumer()
     try:
+        assert child.stdout is not None and child.stderr is not None
         ready, _, _ = select.select([child.stdout],[],[],10)
         assert ready, "Disposable child did not acquire its lease"
         line = child.stdout.readline().strip()
@@ -157,8 +163,10 @@ def test_killed_process_releases_workspace_lease_and_unacked_delivery(tasks, pos
         if child.poll() is None:
             child.kill()
             child.wait(timeout=5)
-        child.stdout.close()
-        child.stderr.close()
+        if child.stdout:
+            child.stdout.close()
+        if child.stderr:
+            child.stderr.close()
         consumer.close()
 
 

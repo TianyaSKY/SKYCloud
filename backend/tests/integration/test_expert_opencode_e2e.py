@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """官方 OpenCode 专家运行时自选端到端测试."""
 
 import asyncio
@@ -10,13 +11,13 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from sqlalchemy.orm import sessionmaker
 
 from app.features.assistant import repository, service
-from app.features.assistant.clients.opencode_auth import server_password, server_username
+from app.features.assistant.clients.opencode_auth import server_password
 from app.features.assistant.clients.opencode_client import OpenCodeClient
 from app.features.workspace import docker_service, runtime_service
 
@@ -82,9 +83,9 @@ def _build_config(chat: dict[str, str] | None) -> dict[str, Any]:
     config: dict[str, Any] = {}
     if chat:
         config = docker_service.merge_opencode_chat_provider(config, chat)
-    known_agent = docker_service.merge_opencode_expert_agent({})["agent"][
-        docker_service.OPENCODE_EXPERT_AGENT
-    ]
+    expert_merged = cast(dict[str, Any], docker_service.merge_opencode_expert_agent({}))
+    agent_dict = cast(dict[str, Any], expert_merged["agent"])
+    known_agent = agent_dict[docker_service.OPENCODE_EXPERT_AGENT]
     config["agent"] = {"skycloud-e2e": known_agent}
     return config
 
@@ -157,7 +158,7 @@ class _OpenCodeRuntime:
             self._cleanup(show_logs=True)
             raise
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self._cleanup(show_logs=exc_type is not None)
 
     def _cleanup(self, *, show_logs: bool) -> None:
@@ -182,6 +183,7 @@ class _OpenCodeRuntime:
 
     def _wait_for_health(self) -> None:
         assert self.base_url is not None
+        base_url = self.base_url
 
         async def poll() -> None:
             deadline = time.monotonic() + STARTUP_TIMEOUT
@@ -189,7 +191,7 @@ class _OpenCodeRuntime:
             while time.monotonic() < deadline:
                 try:
                     async with OpenCodeClient(
-                        self.base_url,
+                        base_url,
                         USERNAME,
                         self.password,
                         timeout=3,
@@ -210,13 +212,14 @@ def test_official_opencode_runtime_health_mcp_and_session() -> None:
 
     with _OpenCodeRuntime(chat=None) as runtime:
         assert runtime.base_url is not None
+        base_url = runtime.base_url
         mcp_url = os.getenv("OPENCODE_E2E_MCP_URL", "").strip()
 
         async def exercise() -> tuple[
             dict[str, Any], dict[str, Any] | None, dict[str, Any], str
         ]:
             async with OpenCodeClient(
-                runtime.base_url,
+                base_url,
                 USERNAME,
                 runtime.password,
                 timeout=10,
@@ -252,9 +255,9 @@ def test_official_opencode_runtime_health_mcp_and_session() -> None:
     reason="设置 RUN_OPENCODE_MODEL_E2E=1 才执行真实模型调用",
 )
 def test_expert_engine_streams_through_official_opencode_runtime(
-    session,
-    test_user,
-    test_workspace,
+    session: Any,
+    test_user: Any,
+    test_workspace: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """真实的 ExpertEngine 运行连接 OpenCode 并持久化其回答."""
@@ -295,17 +298,27 @@ def test_expert_engine_streams_through_official_opencode_runtime(
         runtime.container_id = opencode.name
         runtime.status = "running"
         session.commit()
+
+        def mock_uses_configured_image(_runtime: Any) -> bool:
+            return True
+
+        def mock_get_runtime_base_url(*_args: Any, **_kwargs: Any) -> str | None:
+            return opencode.base_url
+
+        def mock_setup_mcp(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
         monkeypatch.setattr(
             docker_service,
             "runtime_uses_configured_image",
-            lambda _: True,
+            mock_uses_configured_image,
         )
         monkeypatch.setattr(
             docker_service,
             "get_runtime_base_url",
-            lambda *_args, **_kwargs: opencode.base_url,
+            mock_get_runtime_base_url,
         )
-        monkeypatch.setattr(docker_service, "setup_mcp", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(docker_service, "setup_mcp", mock_setup_mcp)
         monkeypatch.setenv("OPENCODE_EXPERT_AGENT", "skycloud-e2e")
 
         factory = sessionmaker(

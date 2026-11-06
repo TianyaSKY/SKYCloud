@@ -1,6 +1,7 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """真实数据库回滚与文件索引并发行为测试."""
 import concurrent.futures
-import os
 import threading
 
 import pytest
@@ -15,9 +16,11 @@ from app.models.workspace import Workspace
 from entry.migrate import upgrade
 from tests.integration.test_migrations import postgres  # noqa: F401
 
+__all__ = ["postgres"]
+
 
 @pytest.fixture
-def file_database(postgres, monkeypatch):
+def file_database(postgres: Any, monkeypatch: Any):
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(handler, "SessionLocal", factory)
@@ -34,7 +37,7 @@ def file_database(postgres, monkeypatch):
         yield factory, file_id, workspace_id
 
 
-def test_failure_status_database_error_propagates_and_rolls_back(file_database, postgres):
+def test_failure_status_database_error_propagates_and_rolls_back(file_database: Any, postgres: Any) -> None:
     factory, file_id, _ = file_database
     with postgres.begin() as db:
         db.execute(text("""
@@ -51,14 +54,14 @@ def test_failure_status_database_error_propagates_and_rolls_back(file_database, 
         assert db.get(File, file_id).status == "processing"
 
 
-def test_overlapping_index_results_replace_chunks_atomically(file_database, postgres):
+def test_overlapping_index_results_replace_chunks_atomically(file_database: Any, postgres: Any) -> None:
     factory, file_id, workspace_id = file_database
     barrier = threading.Barrier(2)
-    def overlap(conn, cursor, statement, parameters, context, executemany):
+    def overlap(conn: Any, cursor: Any, statement: Any, parameters: Any, context: Any, executemany: Any):
         if "FOR UPDATE" in statement:
             barrier.wait(timeout=5)
     event.listen(postgres, "before_cursor_execute", overlap)
-    def result(label):
+    def result(label: Any):
         return handler.FileIndexResult(
             file_id, workspace_id, "worker.txt", label, [1.0] + [0.0] * 1023,
             [handler.ChunkIndexResult(i, None, label + str(i), [1.0] + [0.0] * 1023) for i in range(2)],

@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """自选源码构建 MinIO 持久化与旧卷兼容性测试."""
 from io import BytesIO
 import json
@@ -15,7 +17,7 @@ from tests.integration.test_runtime_security import docker
 pytestmark = pytest.mark.skipif(os.getenv('RUN_MINIO_IMAGE_TESTS') != '1', reason='Opt-in isolated MinIO image integration')
 
 
-def start(name, image, volume, access, secret):
+def start(name: Any, image: Any, volume: Any, access: Any, secret: Any):
     docker('run', '-d', '--pull', 'never', '--name', name, '-e', 'MINIO_ROOT_USER=' + access,
            '-e', 'MINIO_ROOT_PASSWORD=' + secret, '-p', '127.0.0.1::9000',
            '-v', volume + ':/data', image, 'server', '/data')
@@ -32,7 +34,7 @@ def start(name, image, volume, access, secret):
     raise AssertionError('Isolated MinIO did not start: ' + docker('logs', name, check=False).stderr)
 
 
-def read(client, bucket, key):
+def read(client: Any, bucket: Any, key: Any):
     response = client.get_object(bucket, key)
     try:
         return response.read()
@@ -42,16 +44,17 @@ def read(client, bucket, key):
 
 
 @pytest.mark.parametrize('legacy', [False, True], ids=['source-restart', 'legacy-volume-upgrade'])
-def test_storage_image_preserves_objects_across_restart_and_upgrade(legacy):
+def test_storage_image_preserves_objects_across_restart_and_upgrade(legacy: Any) -> None:
     image = os.getenv('SKYCLOUD_TEST_MINIO_IMAGE')
     assert image and image.startswith('sha256:'), 'Set SKYCLOUD_TEST_MINIO_IMAGE to the built immutable local image ID'
     initial_image = image
     if legacy:
-        initial_image = os.getenv('SKYCLOUD_TEST_LEGACY_MINIO_IMAGE')
-        if not initial_image:
+        legacy_image = os.getenv('SKYCLOUD_TEST_LEGACY_MINIO_IMAGE')
+        if not legacy_image:
             pytest.skip('Set SKYCLOUD_TEST_LEGACY_MINIO_IMAGE to a cached immutable legacy image ID')
-        assert initial_image.startswith('sha256:')
-        docker('image', 'inspect', initial_image)
+        assert legacy_image.startswith('sha256:')
+        docker('image', 'inspect', legacy_image)
+        initial_image = legacy_image
     name = 'skycloud-minio-image-test-' + uuid.uuid4().hex[:12]
     volume = name + '-data'
     access, secret = uuid.uuid4().hex, uuid.uuid4().hex + uuid.uuid4().hex

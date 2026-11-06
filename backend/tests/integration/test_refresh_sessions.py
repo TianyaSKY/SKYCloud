@@ -1,7 +1,8 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """真实 Redis 原子轮转与 PostgreSQL 权威账户状态测试."""
 import concurrent.futures
 import os
-import time
 
 import jwt
 import pytest
@@ -17,25 +18,30 @@ from app.features.auth.service import generate_token
 from app.infra.extensions import SECRET_KEY
 from app.models.user import User
 
+__all__ = ["infrastructure", "postgres"]
+
 pytestmark = pytest.mark.skipif(os.getenv('RUN_REFRESH_SESSION_TESTS') != '1', reason='Opt-in real refresh session integration')
 
 
 @pytest.fixture
-def live(infrastructure, postgres, monkeypatch):
+def live(infrastructure: Any, postgres: Any, monkeypatch: Any):
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(refresh, 'redis_client', infrastructure['redis'])
     with factory() as db:
         user = User(username='isolated-browser-user', role='common', password_hash='isolated-test-only')
         db.add(user); db.commit()
-        claims = jwt.decode(generate_token(user.id, user.auth_version), SECRET_KEY, algorithms=['HS256'])
+        token = generate_token(user.id, user.auth_version)
+        assert token is not None
+        claims_decoded: dict[str, Any] = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+        claims: refresh.AccessClaims = {"sub": str(claims_decoded["sub"]), "ver": int(claims_decoded["ver"])}
         raw, response = refresh.create(db, claims)
     return factory, raw, response
 
 
-def test_parallel_reuse_has_one_rotation_winner_and_revokes_the_family(live):
+def test_parallel_reuse_has_one_rotation_winner_and_revokes_the_family(live: Any) -> None:
     factory, raw, _ = live
-    def invoke(_):
+    def invoke(_: Any):
         with factory() as db:
             try:
                 return refresh.refresh(db, raw)
@@ -51,7 +57,7 @@ def test_parallel_reuse_has_one_rotation_winner_and_revokes_the_family(live):
     assert not refresh.access_active(claims)  # A consumed refresh credential was replayed.
 
 
-def test_rotations_keep_absolute_expiry_hash_only_storage_and_new_connection_revocation(live):
+def test_rotations_keep_absolute_expiry_hash_only_storage_and_new_connection_revocation(live: Any) -> None:
     factory, raw, response = live
     claims = jwt.decode(response['token'], SECRET_KEY, algorithms=['HS256'])
     original_expiry = refresh.load_family(claims['sid'])['expires_at']
@@ -64,6 +70,7 @@ def test_rotations_keep_absolute_expiry_hash_only_storage_and_new_connection_rev
         assert refresh.load_family(claims['sid'])['expires_at'] == original_expiry
     for key in refresh.redis_client.scan_iter('web-auth:*'):
         value = refresh.redis_client.get(key)
+        assert value is not None
         assert all(secret not in key and secret not in value for secret in secrets)
         assert 0 < refresh.redis_client.ttl(key) <= refresh.REFRESH_TTL
     with factory() as changed:
@@ -75,7 +82,7 @@ def test_rotations_keep_absolute_expiry_hash_only_storage_and_new_connection_rev
 
 
 @pytest.mark.parametrize('store', ['redis', 'postgres'])
-async def test_auth_store_failure_returns_503_and_preserves_live_login(live, postgres, monkeypatch, store):
+async def test_auth_store_failure_returns_503_and_preserves_live_login(live: Any, postgres: Any, monkeypatch: Any, store: Any) -> None:
     from contextlib import contextmanager
     import httpx
     from redis import Redis
@@ -85,7 +92,7 @@ async def test_auth_store_failure_returns_503_and_preserves_live_login(live, pos
     from app.exceptions import register_exception_handlers
     from app.infra.extensions import get_db, get_session_factory
     factory, raw, response = live
-    admin = refresh.redis_client
+    admin: Any = refresh.redis_client
     restricted, lock, transaction = None, None, None
     @contextmanager
     def owned():
@@ -98,16 +105,16 @@ async def test_auth_store_failure_returns_503_and_preserves_live_login(live, pos
     app.dependency_overrides[get_db] = lambda: None
     app.dependency_overrides[get_session_factory] = lambda: owned
     @app.get('/protected')
-    async def protected(user=Depends(get_current_user)):
+    async def protected(user: Any=Depends(get_current_user)):
         return {'id': user.id}
     try:
         if store == 'redis':
             admin.acl_setuser('auth-read-denied', enabled=True, reset=True,
                              passwords=['+disposable-test-password'], commands=['+ping'], keys=['web-auth:*'])
-            options = dict(admin.connection_pool.connection_kwargs)
+            options: dict[str, Any] = dict(admin.connection_pool.connection_kwargs)
             options.update(username='auth-read-denied', password='disposable-test-password')
             restricted = Redis(**options)
-            assert restricted.ping()
+            assert bool(getattr(restricted, 'ping')())
             monkeypatch.setattr(refresh, 'redis_client', restricted)
         else:
             lock = postgres.connect()

@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """真实 PostgreSQL/Controller/Docker 清理与一次性托管 Redis 容器测试."""
 import os
 import uuid
@@ -15,11 +17,13 @@ from runtime_controller.client import ControllerClient, ControllerNotFound
 from tests.integration.test_migrations import postgres
 from tests.integration.test_runtime_security import infrastructure, controller, docker
 
+__all__ = ["postgres", "infrastructure", "controller", "docker"]
+
 pytestmark = pytest.mark.skipif(os.getenv('RUN_CONTAINER_DELETION_TESTS') != '1', reason='Opt-in isolated Controller/Docker cleanup')
 
 
 @pytest.fixture
-def graph(postgres, infrastructure, controller):
+def graph(postgres: Any, infrastructure: Any, controller: Any) -> dict[str, Any]:
     upgrade(postgres)
     identity = int(uuid.uuid4().hex[:6],16) + 1000
     other = identity + 1
@@ -45,12 +49,12 @@ def graph(postgres, infrastructure, controller):
     return {'db':postgres,'factory':sessionmaker(bind=postgres),'id':identity,'other':other,'containers':containers,'client':controller['client'],'token':controller['token']}
 
 
-def delete_account(graph):
+def delete_account(graph: Any):
     with graph['factory']() as session:
         delete_user(session,graph['id'])
 
 
-def exists(graph, runtime):
+def exists(graph: Any, runtime: Any):
     try:
         graph['client'].inspect(graph['containers'][runtime])
         return True
@@ -58,11 +62,11 @@ def exists(graph, runtime):
         return False
 
 
-def cleanup(graph, **kwargs):
+def cleanup(graph: Any, **kwargs: Any):
     return delete_pending_containers(session_factory=graph['factory'],**kwargs)
 
 
-def test_account_commit_then_controller_refusal_and_retry_removes_exact_resources(graph,monkeypatch):
+def test_account_commit_then_controller_refusal_and_retry_removes_exact_resources(graph: Any,monkeypatch: Any) -> None:
     delete_account(graph)
     assert all(exists(graph,runtime) for runtime in graph['containers'])
     with graph['db'].connect() as db:
@@ -79,7 +83,7 @@ def test_account_commit_then_controller_refusal_and_retry_removes_exact_resource
         assert exists(graph,runtime) == (runtime == graph['other'])
 
 
-def test_account_sql_commit_failure_never_removes_containers_or_keeps_intents(graph):
+def test_account_sql_commit_failure_never_removes_containers_or_keeps_intents(graph: Any) -> None:
     with graph['db'].begin() as db:
         db.execute(text("""CREATE FUNCTION reject_account_commit() RETURNS trigger LANGUAGE plpgsql AS $$
             BEGIN RAISE EXCEPTION 'injected account rollback'; END $$"""))
@@ -97,7 +101,7 @@ def test_account_sql_commit_failure_never_removes_containers_or_keeps_intents(gr
         assert db.scalar(text('SELECT count(*) FROM mcp_runtime_tokens WHERE revoked_at IS NULL')) == 4
 
 
-def test_actual_removal_followed_by_sql_marker_failure_replays_not_found(graph):
+def test_actual_removal_followed_by_sql_marker_failure_replays_not_found(graph: Any) -> None:
     target = graph['id']
     with graph['db'].begin() as db:
         db.execute(text('DELETE FROM opencode_runtimes WHERE id=:id'),{'id':target})
@@ -115,7 +119,7 @@ def test_actual_removal_followed_by_sql_marker_failure_replays_not_found(graph):
     assert all(exists(graph,runtime) for runtime in graph['containers'] if runtime != target)
 
 
-def test_overlapping_duplicate_intents_idempotently_remove_one_container(graph):
+def test_overlapping_duplicate_intents_idempotently_remove_one_container(graph: Any) -> None:
     target = graph['id']
     with graph['db'].begin() as db:
         db.execute(text('DELETE FROM opencode_runtimes WHERE id=:id'),{'id':target})
@@ -125,15 +129,17 @@ def test_overlapping_duplicate_intents_idempotently_remove_one_container(graph):
         def __init__(self):
             self.client = ControllerClient()
 
-        def __getattr__(self, name):
+        def __getattr__(self, name: Any):
             return getattr(self.client, name)
 
-        def action(self, container_id, action):
+        def action(self, container_id: Any, action: Any):
             if action == "remove":
                 barrier.wait(timeout=10)
             return self.client.action(container_id, action)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _:cleanup(graph,controller_factory=Client,limit=1),range(2)))
+        def run_cleanup(_: int) -> int:
+            return cleanup(graph, controller_factory=Client, limit=1)
+        results = list(pool.map(run_cleanup, range(2)))
     assert sorted(results) in ([0,1],[1,1])
     if sum(results) == 1:
         # Docker 可能会以正在进行为由拒绝第二次重叠删除.
@@ -147,7 +153,7 @@ def test_overlapping_duplicate_intents_idempotently_remove_one_container(graph):
         assert db.scalar(text('SELECT count(*) FROM runtime_container_deletions WHERE completed_at IS NOT NULL')) == 2
 
 
-def test_current_reference_protects_container_and_later_detach_creates_fresh_intent(graph):
+def test_current_reference_protects_container_and_later_detach_creates_fresh_intent(graph: Any) -> None:
     target = graph['id']
     with graph['db'].begin() as db:
         db.execute(text('INSERT INTO runtime_container_deletions(container_id) VALUES (:id)'),{'id':graph['containers'][target]})
@@ -158,7 +164,7 @@ def test_current_reference_protects_container_and_later_detach_creates_fresh_int
 
 
 
-def test_workspace_delete_with_loaded_conversations_defers_own_container_cleanup(graph):
+def test_workspace_delete_with_loaded_conversations_defers_own_container_cleanup(graph: Any) -> None:
     from app.features.workspace.service import delete_workspace
     from app.models.workspace import Workspace
     with graph['db'].begin() as db:
@@ -178,7 +184,7 @@ def test_workspace_delete_with_loaded_conversations_defers_own_container_cleanup
 
 
 
-def test_member_removal_revokes_now_and_cleans_only_members_runtime_after_commit(graph):
+def test_member_removal_revokes_now_and_cleans_only_members_runtime_after_commit(graph: Any) -> None:
     from app.features.workspace.service import remove_member
     target = graph['id'] + 2
     with graph['factory']() as session:
@@ -195,7 +201,7 @@ def test_member_removal_revokes_now_and_cleans_only_members_runtime_after_commit
 
 
 @pytest.mark.parametrize('legacy_name',['workspace','per_user'])
-def test_account_retirement_cleans_known_legacy_format_through_authenticated_controller(postgres,infrastructure,controller,legacy_name):
+def test_account_retirement_cleans_known_legacy_format_through_authenticated_controller(postgres: Any,infrastructure: Any,controller: Any,legacy_name: Any) -> None:
     upgrade(postgres)
     identity = int(uuid.uuid4().hex[:6],16) + 1000
     name = f'skycloud-workspace-{identity}' if legacy_name == 'workspace' else f'skycloud-opencode-w{identity}-u{identity}'
@@ -218,7 +224,7 @@ def test_account_retirement_cleans_known_legacy_format_through_authenticated_con
         assert db.scalar(text('SELECT completed_at FROM runtime_container_deletions')) is not None
 
 
-def test_cleanup_cannot_remove_unlabeled_infrastructure_even_with_full_id(postgres,infrastructure,controller):
+def test_cleanup_cannot_remove_unlabeled_infrastructure_even_with_full_id(postgres: Any,infrastructure: Any,controller: Any) -> None:
     import json
     upgrade(postgres)
     ref = json.loads(docker('inspect',infrastructure['target']).stdout)[0]['Id']
@@ -230,7 +236,7 @@ def test_cleanup_cannot_remove_unlabeled_infrastructure_even_with_full_id(postgr
         assert db.execute(text('SELECT completed_at,attempts,last_error_type FROM runtime_container_deletions')).all() == [(None,1,'ControllerError')]
 
 
-def test_generation_prepare_preserves_old_runtime_and_replays_stopped_identity(generation_graph,infrastructure):
+def test_generation_prepare_preserves_old_runtime_and_replays_stopped_identity(generation_graph: Any,infrastructure: Any) -> None:
     graph = generation_graph
     generation = uuid.uuid4().hex
     name = f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
@@ -251,13 +257,13 @@ def test_generation_prepare_preserves_old_runtime_and_replays_stopped_identity(g
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
-def test_overlapping_generation_prepares_create_only_one_stopped_container(generation_graph,infrastructure):
+def test_overlapping_generation_prepares_create_only_one_stopped_container(generation_graph: Any,infrastructure: Any) -> None:
     graph = generation_graph
     generation = uuid.uuid4().hex
     name = f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
     infrastructure['cleanup'].append(name)
     barrier = Barrier(2)
-    def invoke(_):
+    def invoke(_: Any):
         barrier.wait(timeout=10)
         return ControllerClient().prepare(graph['id'],graph['id'],graph['id'],generation)
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -268,7 +274,7 @@ def test_overlapping_generation_prepares_create_only_one_stopped_container(gener
 
 
 @pytest.fixture
-def generation_graph(request,monkeypatch):
+def generation_graph(request: Any, monkeypatch: Any) -> Any:
     import json
     # Redis 声明了匿名 /data 卷, 与运行时策略不兼容.
     # 准备阶段使用无卷 Controller 镜像而不启动其进程;
@@ -281,7 +287,7 @@ def generation_graph(request,monkeypatch):
 
 
 
-def test_container_cleanup_uses_database_clock_despite_worker_clock_skew(graph,monkeypatch):
+def test_container_cleanup_uses_database_clock_despite_worker_clock_skew(graph: Any,monkeypatch: Any) -> None:
     from datetime import datetime,timezone
     from app.infra import runtime_container_deletion
     monkeypatch.setattr(runtime_container_deletion,'utc_now',lambda:datetime(2000,1,1,tzinfo=timezone.utc))
@@ -292,7 +298,7 @@ def test_container_cleanup_uses_database_clock_despite_worker_clock_skew(graph,m
         assert db.scalar(text("SELECT completed_at > now()-interval '1 minute' FROM runtime_container_deletions"))
 
 
-def test_retired_generation_survives_controller_restart_and_rejects_late_prepare(generation_graph,infrastructure,controller,monkeypatch):
+def test_retired_generation_survives_controller_restart_and_rejects_late_prepare(generation_graph: Any,infrastructure: Any,controller: Any,monkeypatch: Any) -> None:
     from runtime_controller.client import ControllerError
     graph = generation_graph
     generation = uuid.uuid4().hex
@@ -317,7 +323,7 @@ def test_retired_generation_survives_controller_restart_and_rejects_late_prepare
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
-def test_retire_before_late_prepare_never_creates_container(generation_graph,infrastructure):
+def test_retire_before_late_prepare_never_creates_container(generation_graph: Any,infrastructure: Any) -> None:
     from runtime_controller.client import ControllerError
     graph = generation_graph
     generation = uuid.uuid4().hex
@@ -329,7 +335,7 @@ def test_retire_before_late_prepare_never_creates_container(generation_graph,inf
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
-def test_parallel_prepare_and_retire_end_with_durable_retirement(generation_graph,infrastructure):
+def test_parallel_prepare_and_retire_end_with_durable_retirement(generation_graph: Any,infrastructure: Any) -> None:
     from runtime_controller.client import ControllerError
     graph = generation_graph
     generation = uuid.uuid4().hex
@@ -351,7 +357,7 @@ def test_parallel_prepare_and_retire_end_with_durable_retirement(generation_grap
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
-def test_prepared_generation_replays_same_identity_after_controller_restart(generation_graph,infrastructure,controller,monkeypatch):
+def test_prepared_generation_replays_same_identity_after_controller_restart(generation_graph: Any,infrastructure: Any,controller: Any,monkeypatch: Any) -> None:
     graph = generation_graph
     generation = uuid.uuid4().hex
     name = f"skycloud-opencode-w{graph['id']}-u{graph['id']}-g{generation}"
@@ -375,7 +381,7 @@ def test_prepared_generation_replays_same_identity_after_controller_restart(gene
     graph['client'].action(replay["id"], "remove")
 
 
-def test_durable_candidate_survives_sql_switch_failure_and_can_be_retired(generation_graph,infrastructure):
+def test_durable_candidate_survives_sql_switch_failure_and_can_be_retired(generation_graph: Any,infrastructure: Any) -> None:
     from app.features.workspace import runtime_operation_repository as repository
     from app.infra.runtime_operation_cleanup import retire_cancelled_operations
     from app.models.runtime_operation import RuntimeOperation
@@ -412,10 +418,11 @@ def test_durable_candidate_survives_sql_switch_failure_and_can_be_retired(genera
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
-def test_member_demotion_cancels_generation_atomically_and_worker_retires(generation_graph,infrastructure):
+def test_member_demotion_cancels_generation_atomically_and_worker_retires(generation_graph: Any,infrastructure: Any) -> None:
     from app.features.workspace import runtime_operation_repository as repository
     from app.infra.runtime_operation_cleanup import retire_cancelled_operations
     from app.models.runtime_operation import RuntimeOperation
+    _ = RuntimeOperation
     from runtime_controller.client import ControllerError
     graph = generation_graph
     with graph['factory']() as session:
@@ -438,7 +445,7 @@ def test_member_demotion_cancels_generation_atomically_and_worker_retires(genera
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
-def test_owner_cascade_retains_cancelled_generation_without_foreign_keys(generation_graph,infrastructure):
+def test_owner_cascade_retains_cancelled_generation_without_foreign_keys(generation_graph: Any,infrastructure: Any) -> None:
     from app.features.workspace import runtime_operation_repository as repository
     from app.infra.runtime_operation_cleanup import retire_cancelled_operations
     graph = generation_graph
@@ -457,10 +464,10 @@ def test_owner_cascade_retains_cancelled_generation_without_foreign_keys(generat
     assert exists(graph,graph['other'])
 
 
-def test_parallel_sql_admission_commits_only_one_replayable_generation(graph):
+def test_parallel_sql_admission_commits_only_one_replayable_generation(graph: Any) -> None:
     from app.features.workspace import runtime_operation_repository as repository
     barrier = Barrier(2)
-    def admit(_):
+    def admit(_: Any):
         barrier.wait(timeout=10)
         with graph['factory']() as session:
             generation = repository.admit(session,graph['id'],graph['id']).generation
@@ -474,7 +481,7 @@ def test_parallel_sql_admission_commits_only_one_replayable_generation(graph):
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
-def test_committed_candidate_switch_captures_only_old_identity_and_stop_cancels(generation_graph,infrastructure):
+def test_committed_candidate_switch_captures_only_old_identity_and_stop_cancels(generation_graph: Any,infrastructure: Any) -> None:
     from app.features.workspace import runtime_operation_repository as repository
     from app.infra.runtime_operation_cleanup import retire_cancelled_operations
     graph = generation_graph
@@ -502,7 +509,7 @@ def test_committed_candidate_switch_captures_only_old_identity_and_stop_cancels(
     assert all(exists(graph,runtime) for runtime in graph['containers'] if runtime != graph['id'])
 
 
-def test_generation_retirement_sql_marker_failure_replays_durable_fence(generation_graph,infrastructure):
+def test_generation_retirement_sql_marker_failure_replays_durable_fence(generation_graph: Any,infrastructure: Any) -> None:
     from app.features.workspace import runtime_operation_repository as repository
     from app.infra.runtime_operation_cleanup import retire_cancelled_operations
     graph = generation_graph
@@ -529,7 +536,7 @@ def test_generation_retirement_sql_marker_failure_replays_durable_fence(generati
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
-def test_production_start_sql_failure_preserves_old_and_durable_candidate(generation_graph,infrastructure):
+def test_production_start_sql_failure_preserves_old_and_durable_candidate(generation_graph: Any,infrastructure: Any) -> None:
     from app.features.workspace import docker_service
     from app.models.workspace import Workspace
     graph = generation_graph
@@ -558,7 +565,7 @@ def test_production_start_sql_failure_preserves_old_and_durable_candidate(genera
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
-def test_lifecycle_pg_mutex_survives_sql_commit_and_releases_on_exit(graph):
+def test_lifecycle_pg_mutex_survives_sql_commit_and_releases_on_exit(graph: Any) -> None:
     from app.features.workspace.runtime_execution import execution
     from app.exceptions import ConflictError
     with graph['factory']() as first:
@@ -576,7 +583,7 @@ def test_lifecycle_pg_mutex_survives_sql_commit_and_releases_on_exit(graph):
 
 
 @pytest.fixture
-def delayed_generation_graph(request,infrastructure,monkeypatch):
+def delayed_generation_graph(request: Any, infrastructure: Any, monkeypatch: Any) -> Any:
     from pathlib import Path
     name = infrastructure['target']+'-daemon-proxy'
     infrastructure['cleanup'].append(name)
@@ -593,7 +600,7 @@ def delayed_generation_graph(request,infrastructure,monkeypatch):
     return graph
 
 
-def test_killed_controller_retirement_collects_create_delayed_until_after_fence(delayed_generation_graph,infrastructure,controller,monkeypatch):
+def test_killed_controller_retirement_collects_create_delayed_until_after_fence(delayed_generation_graph: Any,infrastructure: Any,controller: Any,monkeypatch: Any) -> None:
     import httpx,re,time
     from runtime_controller.client import ControllerError
     graph=delayed_generation_graph
@@ -637,7 +644,7 @@ def test_killed_controller_retirement_collects_create_delayed_until_after_fence(
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
-def test_missing_ready_candidate_reports_exact_identity_without_recreating(generation_graph,infrastructure):
+def test_missing_ready_candidate_reports_exact_identity_without_recreating(generation_graph: Any,infrastructure: Any) -> None:
     from runtime_controller.client import ControllerGenerationMissing
     graph=generation_graph
     generation=uuid.uuid4().hex
@@ -652,7 +659,7 @@ def test_missing_ready_candidate_reports_exact_identity_without_recreating(gener
     assert all(exists(graph,runtime) for runtime in graph['containers'])
 
 
-def test_detached_completed_generation_is_fenced_even_when_physical_id_already_missing(generation_graph,infrastructure):
+def test_detached_completed_generation_is_fenced_even_when_physical_id_already_missing(generation_graph: Any,infrastructure: Any) -> None:
     from app.features.workspace import runtime_operation_repository as operations
     from app.models.runtime_operation import RuntimeOperation
     graph=generation_graph
@@ -684,15 +691,19 @@ def test_detached_completed_generation_is_fenced_even_when_physical_id_already_m
 
 
 @pytest.mark.parametrize('action', ['stop', 'restart'])
-def test_lifecycle_controller_auth_rejection_keeps_sql_identity_and_private_logs(graph, monkeypatch, action):
+def test_lifecycle_controller_auth_rejection_keeps_sql_identity_and_private_logs(graph: Any, monkeypatch: Any, action: Any) -> None:
     from loguru import logger
     from app.features.workspace import docker_service
     from app.models.workspace import Workspace
     from app.models.opencode_runtime import OpenCodeRuntime
     secret = 'private-controller-auth-failure-sentinel'
     monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN', secret)
-    captured = []
-    sink = logger.add(lambda message: captured.append((str(message), message.record['exception'])), format='{message}')
+    captured: list[tuple[str, Any]] = []
+
+    def sink_handler(message: Any) -> None:
+        captured.append((str(message), message.record['exception']))
+
+    sink = logger.add(sink_handler, format='{message}')
     try:
         with graph['factory']() as session:
             workspace = session.get(Workspace, graph['id'])

@@ -1,8 +1,12 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """成员变更后的实际 PostgreSQL 分享准入测试."""
 import os
 import pytest
 from sqlalchemy.orm import sessionmaker
 from tests.integration.test_migrations import postgres
+
+__all__ = ["postgres"]
 from entry.migrate import upgrade
 from app.exceptions import PermissionDeniedError
 from app.features.share.service import CreateShareLinkParams, create_share_link
@@ -14,7 +18,7 @@ from app.models.workspace import WorkspaceMember
 
 pytestmark=pytest.mark.skipif(os.getenv('RUN_SHARE_ACCESS_TESTS')!='1',reason='Opt-in isolated PostgreSQL share access')
 
-def test_cached_member_cannot_publish_after_committed_removal(postgres):
+def test_cached_member_cannot_publish_after_committed_removal(postgres: Any) -> None:
     upgrade(postgres)
     factory=sessionmaker(bind=postgres)
     with factory() as seed:
@@ -29,6 +33,7 @@ def test_cached_member_cannot_publish_after_committed_removal(postgres):
         wid,vid,oid,fid,mid=workspace.id,viewer.id,outsider.id,row.id,member.id
     with factory() as reader:
         cached=reader.get(WorkspaceMember,mid)
+        assert cached is not None
         assert cached.role=='viewer'
         first=create_share_link(reader, CreateShareLinkParams(user_id=vid, file_id=fid))
         assert first.user_id==vid
@@ -39,6 +44,7 @@ def test_cached_member_cannot_publish_after_committed_removal(postgres):
         with factory() as remover:
             remover.query(WorkspaceMember).filter_by(workspace_id=wid,user_id=vid).delete()
             remover.commit()
+        assert cached is not None
         assert cached.role=='viewer'
         with pytest.raises(PermissionDeniedError):create_share_link(reader, CreateShareLinkParams(user_id=vid, file_id=fid))
         reader.rollback()

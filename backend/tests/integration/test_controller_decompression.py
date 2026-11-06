@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """独立 Controller 与原生 HTTP; 引擎目标为合成接缝测试."""
 import os
 import time
@@ -10,7 +12,7 @@ pytestmark=pytest.mark.skipif(os.getenv('RUN_CONTROLLER_DIAGNOSTICS')!='1',reaso
 
 
 @pytest.fixture
-def relay_controller(request):
+def relay_controller(request: Any):
     name='skycloud-controller-decode-'+uuid.uuid4().hex[:12]
     script='''
 import gzip,threading,json,time
@@ -120,7 +122,7 @@ uvicorn.run(application,host='0.0.0.0',port=9101,log_level='warning')
     finally:docker('rm','-f','-v',name,check=False)
 
 
-def test_native_controller_compression_routes(relay_controller):
+def test_native_controller_compression_routes(relay_controller: Any) -> None:
     _,url,headers=relay_controller
     with httpx.Client(trust_env=False,timeout=5) as client:
         for path,event in [('http/global',False),('http/event',True),('ui/event',True)]:
@@ -132,7 +134,7 @@ def test_native_controller_compression_routes(relay_controller):
                 assert 'Traceback' not in response.text and 'disposable' not in response.text
 
 
-def test_rebuilt_controller_decoder_allocation_bound(relay_controller):
+def test_rebuilt_controller_decoder_allocation_bound(relay_controller: Any) -> None:
     name,_,_=relay_controller
     script='''
 import asyncio,gzip,tracemalloc,httpx
@@ -162,7 +164,7 @@ asyncio.run(main())
 
 
 @pytest.mark.parametrize('path,event',[('http/global',False),('http/event',True),('ui/event',True)])
-def test_native_controller_quiet_deadline_disconnects_upstream(relay_controller,path,event):
+def test_native_controller_quiet_deadline_disconnects_upstream(relay_controller: Any,path: Any,event: Any) -> None:
     _,url,headers=relay_controller
     with httpx.Client(trust_env=False,timeout=2) as client:
         response=client.get(url+'/runtimes/'+'a'*64+'/'+path+'/quiet',headers=headers)
@@ -180,7 +182,7 @@ def test_native_controller_quiet_deadline_disconnects_upstream(relay_controller,
 
 
 @pytest.mark.parametrize('path',['http/session/headerquiet','ui/event/headerquiet','http/global/health','http/session/trickle'])
-def test_native_controller_header_deadline_closes_connection(relay_controller,path):
+def test_native_controller_header_deadline_closes_connection(relay_controller: Any,path: Any) -> None:
     _,url,headers=relay_controller
     with httpx.Client(trust_env=False,timeout=2) as client:
         response=client.get(url+'/runtimes/'+'a'*64+'/'+path,headers=headers)
@@ -194,12 +196,13 @@ def test_native_controller_header_deadline_closes_connection(relay_controller,pa
 
 
 @pytest.mark.parametrize('relay_controller',['disconnect'],indirect=True)
-def test_native_controller_caller_disconnect_during_headers(relay_controller):
+def test_native_controller_caller_disconnect_during_headers(relay_controller: Any) -> None:
     import socket
     from urllib.parse import urlparse
     _,url,headers=relay_controller
-    location=urlparse(url)
-    with socket.create_connection((location.hostname,location.port),timeout=2) as downstream:
+    location = urlparse(str(url))
+    assert location.hostname is not None and location.port is not None
+    with socket.create_connection((location.hostname, location.port), timeout=2) as downstream:
         raw=('GET /runtimes/'+'a'*64+'/http/session/headerquiet HTTP/1.1\r\nHost: controller.test\r\nX-Runtime-Controller-Token: '+headers['X-Runtime-Controller-Token']+'\r\n\r\n')
         downstream.sendall(raw.encode())
         # 在关闭调用方之前独立确认原生上游准入.
@@ -219,12 +222,13 @@ def test_native_controller_caller_disconnect_during_headers(relay_controller):
             time.sleep(.02)
 
 
-def test_native_controller_drip_body_rejected_before_dispatch(relay_controller):
+def test_native_controller_drip_body_rejected_before_dispatch(relay_controller: Any) -> None:
     import socket
     from urllib.parse import urlparse
     _,url,headers=relay_controller
-    location=urlparse(url)
-    with socket.create_connection((location.hostname,location.port),timeout=2) as downstream:
+    location = urlparse(str(url))
+    assert location.hostname is not None and location.port is not None
+    with socket.create_connection((location.hostname, location.port), timeout=2) as downstream:
         raw=('POST /runtimes/'+'a'*64+'/http/session/valid HTTP/1.1\r\nHost: controller.test\r\nContent-Length: 6\r\nConnection: close\r\nX-Runtime-Controller-Token: '+headers['X-Runtime-Controller-Token']+'\r\n\r\n')
         downstream.sendall(raw.encode())
         for _ in range(6):
@@ -243,12 +247,13 @@ def test_native_controller_drip_body_rejected_before_dispatch(relay_controller):
 
 
 @pytest.mark.parametrize('relay_controller',['body-disconnect'],indirect=True)
-def test_native_controller_buffered_body_caller_disconnect(relay_controller):
+def test_native_controller_buffered_body_caller_disconnect(relay_controller: Any) -> None:
     import socket
     from urllib.parse import urlparse
     _,url,headers=relay_controller
-    location=urlparse(url)
-    with socket.create_connection((location.hostname,location.port),timeout=2) as downstream:
+    location = urlparse(str(url))
+    assert location.hostname is not None and location.port is not None
+    with socket.create_connection((location.hostname, location.port), timeout=2) as downstream:
         raw=('GET /runtimes/'+'a'*64+'/http/session/bodyquiet HTTP/1.1\r\nHost: controller.test\r\nX-Runtime-Controller-Token: '+headers['X-Runtime-Controller-Token']+'\r\n\r\n')
         downstream.sendall(raw.encode())
         with httpx.Client(trust_env=False,timeout=2) as observer:

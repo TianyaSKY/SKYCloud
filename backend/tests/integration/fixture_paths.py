@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """集成测试套件的诊断与 fixture 文件路径解析."""
 import os
 import tempfile

@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """自选浏览器测试套件; 仅在环回口提供隔离 fixture 数据."""
 from tests.integration.fixture_paths import FIXTURE_DIR
 import json
@@ -11,7 +13,7 @@ import uvicorn
 from fastapi.responses import HTMLResponse, Response
 
 
-def exercise_browser(app, monkeypatch, user_id, workspace_id, auth, temporary):
+def exercise_browser(app: Any, monkeypatch: Any, user_id: Any, workspace_id: Any, auth: Any, temporary: Any):
     root = Path(__file__).resolve().parents[3]
     listener = socket.socket(); listener.bind(('127.0.0.1', 0)); listener.listen(128)
     port = listener.getsockname()[1]
@@ -55,7 +57,7 @@ def exercise_browser(app, monkeypatch, user_id, workspace_id, auth, temporary):
           window.addEventListener('message',event=>{if(event.data?.type==='skycloud-runtime-ui-renewed') {
             renewals++;document.querySelector('#status').textContent='Renewed '+renewals+'; main loads: '+loads;}});
           </script>'''.replace('AUTH', json.dumps(auth['Authorization'])).replace('WS', str(workspace_id)))
-    async def ingress(scope, receive, send):
+    async def ingress(scope: Any, receive: Any, send: Any):
         host = dict(scope.get('headers', [])).get(b'host', b'').decode().split(':', 1)[0]
         if host.startswith('r') and host.endswith('.skycloud.localhost'):
             scope = {**scope, 'path': '/runtime-ui' + scope['path'],

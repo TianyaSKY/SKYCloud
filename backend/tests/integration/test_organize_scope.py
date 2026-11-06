@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """带 PostgreSQL 范围/角色强制的真实锁定 LangChain 工具调用测试."""
 import json
 import os
@@ -14,6 +16,8 @@ from app.models.workspace import Workspace, WorkspaceMember
 from tests.integration.test_migrations import postgres  # noqa: F401
 from tests.integration.test_worker_outcomes import file_database  # noqa: F401
 from tests.integration.test_runtime_security import infrastructure  # noqa: F401
+
+__all__ = ["postgres", "file_database", "infrastructure"]
 
 pytestmark = pytest.mark.skipif(os.getenv("RUN_ORGANIZE_SCOPE_TESTS") != "1", reason="Opt-in isolated organize tool identities")
 
@@ -71,7 +75,7 @@ print('ORGANIZE_SCOPE_VERIFIED')
 """
 
 
-def test_bound_tools_deny_foreign_scope_and_revoked_membership(file_database, postgres, infrastructure):
+def test_bound_tools_deny_foreign_scope_and_revoked_membership(file_database: Any, postgres: Any, infrastructure: Any) -> None:
     factory, file_id, workspace_id = file_database
     with factory() as db:
         own_user = db.get(File, file_id).uploader_id

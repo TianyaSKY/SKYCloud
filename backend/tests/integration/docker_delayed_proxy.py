@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """仅限测试的专用网络 Docker 代理, 用于延迟已接收的容器创建."""
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,7 +22,7 @@ lock = threading.Lock()
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):
+    def log_message(self, format: str, *args: Any) -> None:
         pass
 
     def forward(self):

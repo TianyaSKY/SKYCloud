@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """旧版时间戳列的原生 PostgreSQL 时区无关性测试."""
 import os
 
@@ -7,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from entry.migrate import upgrade
 from tests.integration.test_migrations import postgres  # noqa: F401
+
+__all__ = ["postgres"]
 from tests.test_time_boundaries import assert_share_and_usage_times
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
@@ -16,7 +20,7 @@ pytestmark = pytest.mark.skipif(os.getenv("RUN_TIME_BOUNDARY_TESTS") != "1",
 
 
 @pytest.mark.parametrize("database_zone", ["UTC", "America/New_York"])
-def test_expiry_and_filters_ignore_database_session_timezone(postgres, database_zone):
+def test_expiry_and_filters_ignore_database_session_timezone(postgres: Any, database_zone: Any) -> None:
     upgrade(postgres)
     with postgres.connect() as connection:
         connection.execute(text("SELECT set_config('TimeZone', :zone, false)"), {"zone": database_zone})

@@ -1,3 +1,5 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """真实 PostgreSQL 列表对齐与并发重建检查测试."""
 import os
 from datetime import timedelta
@@ -16,18 +18,21 @@ from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.mcp_runtime_token import McpRuntimeToken
 from tests.integration.test_migrations import postgres
 
+__all__ = ["postgres"]
+
 pytestmark = pytest.mark.skipif(os.getenv('RUN_WORKSPACE_LIST_TESTS') != '1',
                                reason='Opt-in isolated PostgreSQL workspace list checks')
 
 
 @pytest.mark.parametrize('state', ['running', 'missing', 'recreated'])
-def test_postgres_bulk_list_and_concurrent_recreation(postgres, state):
+def test_postgres_bulk_list_and_concurrent_recreation(postgres: Any, state: Any) -> None:
     upgrade(postgres)
     with Session(postgres) as session:
         user = User(username='list-owner', password_hash='isolated-test-hash', role='common')
         session.add(user); session.commit()
         user_id = user.id
-        expected, snapshot = {}, []
+        expected: dict[int, int] = {}
+        snapshot: list[dict[str, Any]] = []
         for number in range(25):
             workspace = create_workspace(session, user_id, f'PG list {number}')
             runtime = OpenCodeRuntime(workspace_id=workspace.id, user_id=user_id,
@@ -40,7 +45,7 @@ def test_postgres_bulk_list_and_concurrent_recreation(postgres, state):
             snapshot.append(dict(id=runtime.container_id, runtime_id=runtime.id,
                                  workspace_id=workspace.id, user_id=user_id, status='running'))
         session.commit(); session.expire_all()
-        def observe(_):
+        def observe(_: Any) -> list[dict[str, Any]]:
             if state == 'recreated':
                 # 独立连接在列表事务处于打开状态时提交.
                 with Session(postgres) as writer:
@@ -49,8 +54,8 @@ def test_postgres_bulk_list_and_concurrent_recreation(postgres, state):
                     writer.commit()
             return snapshot if state == 'running' else []
         controller = Mock(); controller.user_snapshot.side_effect = observe
-        queries = []
-        def record(conn, cursor, statement, parameters, context, executemany):
+        queries: list[str] = []
+        def record(conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool) -> None:
             # 仅记录列表连接, 排除并发写入方.
             if conn is connection:
                 queries.append(statement)
@@ -79,7 +84,7 @@ def test_postgres_bulk_list_and_concurrent_recreation(postgres, state):
             assert all(runtime.status == 'stopped' and runtime.container_id is None for runtime in runtimes)
 
 
-def test_pending_candidate_observation_preserves_operation_and_identity(postgres):
+def test_pending_candidate_observation_preserves_operation_and_identity(postgres: Any) -> None:
     from app.features.workspace import runtime_operation_repository as operations
     from app.models.runtime_operation import RuntimeOperation
     upgrade(postgres)
@@ -99,4 +104,6 @@ def test_pending_candidate_observation_preserves_operation_and_identity(postgres
             list_summaries(session,rows,user.id)
         session.expire_all()
         assert runtime.container_id == 'b'*64 and runtime.status == 'provisioning'
-        assert session.get(RuntimeOperation,operation.generation).state == 'switched'
+        op = session.get(RuntimeOperation, operation.generation)
+        assert op is not None
+        assert op.state == 'switched'

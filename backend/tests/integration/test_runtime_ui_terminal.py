@@ -1,10 +1,11 @@
+from typing import Any
+# pyright: reportPrivateUsage=false
 """真实 PostgreSQL/Redis/Controller/OpenCode 交互式终端与撤销测试."""
 import os
 import json
 import time
 import uuid
 import threading
-from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
@@ -27,13 +28,15 @@ from app.features.workspace import docker_service, ui_gateway, ui_tickets
 from app.features.workspace.router import router
 from app.features.auth.service import generate_token
 
+__all__ = ["infrastructure", "controller", "docker", "postgres"]
+
 pytestmark = pytest.mark.skipif(os.getenv('RUN_RUNTIME_UI_TESTS') != '1',
                                reason='Opt-in real runtime terminal integration')
 
 
 @pytest.mark.parametrize('use_ticket', [False, True])
 @pytest.mark.parametrize('revocation', ['membership', 'refresh-replay'])
-def test_real_terminal_and_current_session_revocation(infrastructure, controller, postgres, monkeypatch, use_ticket, revocation, tmp_path):
+def test_real_terminal_and_current_session_revocation(infrastructure: Any, controller: Any, postgres: Any, monkeypatch: Any, use_ticket: Any, revocation: Any, tmp_path: Any) -> None:
     upgrade(postgres)
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(ui_tickets, 'redis_client', infrastructure['redis'])
@@ -57,6 +60,7 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
         db.add(OpenCodeRuntime(id=runtime_id, workspace_id=ws_id, user_id=user_id, status='stopped'))
         db.commit()
         workspace = db.get(Workspace, ws_id)
+        assert workspace is not None
         try:
             docker_service.start(db, workspace, user_id)
         finally:
@@ -70,6 +74,7 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
                             infrastructure['cleanup'].append(identity)
         db.expire_all()
         runtime = db.get(OpenCodeRuntime, runtime_id)
+        assert runtime is not None
         assert runtime.status=='running' and runtime.config_version>0
         operation=db.query(RuntimeOperation).filter_by(runtime_id=runtime_id).one()
         assert operation.state=='complete' and operation.finished_at is not None
@@ -91,17 +96,24 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
             yield db
     app.dependency_overrides[get_db] = database
     app.dependency_overrides[get_session_factory] = lambda: factory
-    auth = {'Authorization': 'Bearer ' + generate_token(user_id, 0)}
+    token = generate_token(user_id, 0)
+    assert token is not None
+    auth: dict[str, str] = {'Authorization': 'Bearer ' + token}
+    refresh_raw_token: str | None = None
     if revocation == 'refresh-replay':
         import jwt
         from app.features.auth import refresh_sessions
+        from app.features.auth.refresh_sessions import AccessClaims
         from app.infra.extensions import SECRET_KEY
         monkeypatch.setattr(refresh_sessions, 'redis_client', infrastructure['redis'])
         with factory() as db:
-            refresh_raw, access = refresh_sessions.create(db, jwt.decode(auth['Authorization'][7:], SECRET_KEY, algorithms=['HS256']))
+            decoded: dict[str, Any] = jwt.decode(auth['Authorization'][7:], SECRET_KEY, algorithms=['HS256'])
+            claims: AccessClaims = {"sub": str(decoded["sub"]), "ver": int(decoded["ver"])}
+            refresh_raw, access = refresh_sessions.create(db, claims)
+            refresh_raw_token = refresh_raw
             replacement, _, _ = refresh_sessions.refresh(db, refresh_raw)
         assert replacement != refresh_raw
-        auth = {'Authorization': 'Bearer ' + access['token']}
+        auth = {'Authorization': 'Bearer ' + str(access['token'])}
     if os.getenv('RUN_RUNTIME_UI_BROWSER') == '1':
         from tests.integration.runtime_ui_browser import exercise_browser
         exercise_browser(app, monkeypatch, user_id, ws_id, auth, tmp_path)
@@ -110,19 +122,25 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
     with TestClient(app) as client:
         issued = client.post(f'/api/workspace/{ws_id}/opencode/ui-ticket', headers=auth)
         assert issued.status_code == 200, issued.text
-        parsed = urlsplit(issued.json()['data']['launch_url']); host = parsed.netloc
-        launch = client.get('/runtime-ui/__skycloud/launch?' + parsed.query,
+        launch_url = str(issued.json()['data']['launch_url'])
+        parsed = urlsplit(launch_url)
+        host = str(parsed.netloc)
+        launch = client.get('/runtime-ui/__skycloud/launch?' + str(parsed.query),
                             headers={'Host': host}, follow_redirects=False)
         assert launch.status_code == 303
-        headers = {'Host': host, 'Origin': 'http://' + host,
-                   'Cookie': ui_tickets.COOKIE + '=' + launch.cookies[ui_tickets.COOKIE]}
+        headers: dict[str, str] = {
+            'Host': host,
+            'Origin': 'http://' + host,
+            'Cookie': ui_tickets.COOKIE + '=' + str(launch.cookies[ui_tickets.COOKIE]),
+        }
         deadline = time.monotonic() + 20
+        health = None
         while time.monotonic() < deadline:
             health = client.get('/runtime-ui/global/health', headers=headers)
             if health.status_code == 200:
                 break
             time.sleep(0.2)
-        assert health.status_code == 200, health.text
+        assert health is not None and health.status_code == 200, getattr(health, 'text', '')
         created = client.post('/runtime-ui/pty?directory=%2Fworkspace', headers=headers,
             json={'command': 'sh', 'args': [], 'cwd': '/workspace', 'title': 'Real terminal', 'env': {}})
         if created.status_code != 200:
@@ -158,8 +176,10 @@ def test_real_terminal_and_current_session_revocation(infrastructure, controller
                     db.commit()
                 else:
                     from fastapi import HTTPException
+                    from app.features.auth import refresh_sessions
+                    assert refresh_raw_token is not None
                     with pytest.raises(HTTPException) as replay:
-                        refresh_sessions.refresh(db, refresh_raw)
+                        refresh_sessions.refresh(db, refresh_raw_token)
                     assert replay.value.status_code == 401
                     assert db.query(WorkspaceMember.role).filter_by(workspace_id=ws_id,user_id=user_id).scalar() == 'editor'
             while True:

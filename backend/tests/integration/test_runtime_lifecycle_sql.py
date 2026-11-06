@@ -1,7 +1,8 @@
+# pyright: reportPrivateUsage=false
 """停止/替换身份转换的真实 PostgreSQL 恢复语义测试."""
 import os
 from types import SimpleNamespace
-from typing import Literal
+from typing import Any, Literal, cast
 
 import pytest
 from app.exceptions import PermissionDeniedError
@@ -19,6 +20,8 @@ from tests.integration.test_migrations import (
     postgres,  # noqa: F401  (fixture re-export)
 )
 
+__all__ = ["postgres"]
+
 pytestmark = pytest.mark.skipif(
     os.getenv('RUN_RUNTIME_LIFECYCLE_TESTS') != '1',
     reason='Opt-in isolated PostgreSQL runtime lifecycle recovery',
@@ -30,7 +33,7 @@ NEW_CONTAINER = 'b' * 64
 
 
 @pytest.fixture
-def graph(postgres):  # noqa: F811
+def graph(postgres: Any):  # noqa: F811
     upgrade(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (:id,'lifecycle','x','common')"),
@@ -46,7 +49,10 @@ def graph(postgres):  # noqa: F811
 class RecordingController(RuntimeController):
     """显式 Controller RPC 契约的记录实现."""
 
-    def __init__(self, recorder):
+    events: list[tuple[str, Any]]
+    prepare_hook: Any
+
+    def __init__(self, recorder: dict[str, Any]):
         self.events = recorder['events']
         self.prepare_hook = recorder['prepare_hook']
 
@@ -95,32 +101,39 @@ class RecordingController(RuntimeController):
 
 
 @pytest.fixture
-def controller(monkeypatch):
-    recorder = {'events': [], 'prepare_hook': lambda runtime_id: None}
+def controller(monkeypatch: Any) -> dict[str, Any]:
+    def default_prepare_hook(runtime_id: Any) -> None:
+        pass
+
+    def mock_sync_mcp(*args: Any, **kwargs: Any) -> None:
+        pass
+
+    recorder: dict[str, Any] = {'events': [], 'prepare_hook': default_prepare_hook}
     monkeypatch.setattr(docker_service, '_client', lambda: RecordingController(recorder))
-    monkeypatch.setattr(docker_service, '_sync_mcp_via_runtime_api', lambda *args, **kwargs: None)
+    monkeypatch.setattr(docker_service, '_sync_mcp_via_runtime_api', mock_sync_mcp)
     return recorder
 
 
-def admitted(factory):
+def admitted(factory: Any) -> str:
     with factory() as session:
         operation = repository.admit(session, WORKSPACE, USER)
-        generation = operation.generation
+        generation = str(operation.generation)
         session.commit()
     return generation
 
 
-def operation_state(factory, generation):
+def operation_state(factory: Any, generation: Any) -> str | None:
     with factory() as session:
-        return session.get(RuntimeOperation, generation).state
+        op = session.get(RuntimeOperation, generation)
+        return op.state if op is not None else None
 
 
-def runtime_id(postgres):
+def runtime_id(postgres: Any) -> int:
     with postgres.connect() as db:
-        return db.scalar(text("SELECT id FROM opencode_runtimes WHERE workspace_id=:id"), {'id': WORKSPACE})
+        return int(db.scalar(text("SELECT id FROM opencode_runtimes WHERE workspace_id=:id"), {'id': WORKSPACE}))
 
 
-def test_stop_cancellation_commits_before_the_rpc_and_survives_lost_commit(graph, controller, postgres):
+def test_stop_cancellation_commits_before_the_rpc_and_survives_lost_commit(graph: Any, controller: Any, postgres: Any) -> None:
     # 在准入前发布运行中容器: 在拥有活跃代系时更新 container_id/status
     # 会 (正确地) 通过 0015 触发器将其取消.
     with postgres.begin() as db:
@@ -129,7 +142,7 @@ def test_stop_cancellation_commits_before_the_rpc_and_survives_lost_commit(graph
     generation = admitted(graph)
     assert operation_state(graph, generation) == 'preparing'
 
-    def crash(*args, **kwargs):
+    def crash(*args: Any, **kwargs: Any):
         raise RuntimeError('process lost after the stop RPC')
 
     controller['crash'] = crash
@@ -139,7 +152,7 @@ def test_stop_cancellation_commits_before_the_rpc_and_survives_lost_commit(graph
     try:
         with graph() as session:
             with pytest.raises(RuntimeError):
-                docker_service.stop(session, SimpleNamespace(id=WORKSPACE), USER)
+                docker_service.stop(session, cast(Any, SimpleNamespace(id=WORKSPACE)), USER)
     finally:
         runtime_token_service.revoke_runtime_tokens = original
 
@@ -151,10 +164,10 @@ def test_stop_cancellation_commits_before_the_rpc_and_survives_lost_commit(graph
     assert [event for event in controller['events'] if event[0] in ('prepare', 'start')] == []
 
 
-def test_losing_edit_permission_during_prepare_retires_generation_and_denies(graph, controller, postgres):
+def test_losing_edit_permission_during_prepare_retires_generation_and_denies(graph: Any, controller: dict[str, Any], postgres: Any) -> None:
     expected_runtime = runtime_id(postgres)
 
-    def demote(runtime):
+    def demote(runtime: Any):
         # 并发管理员在准备进行期间降级了调用方;
         # 0015 触发器在同一事务中取消已准入的代系.
         with postgres.begin() as db:
@@ -164,7 +177,7 @@ def test_losing_edit_permission_during_prepare_retires_generation_and_denies(gra
     controller['prepare_hook'] = demote
     with graph() as session:
         with pytest.raises(PermissionDeniedError):
-            docker_service.start(session, SimpleNamespace(id=WORKSPACE), USER)
+            docker_service.start(session, cast(Any, SimpleNamespace(id=WORKSPACE)), USER)
 
     prepared = [event for event in controller['events'] if event[0] == 'prepare']
     retired = [event for event in controller['events'] if event[0] == 'retire']

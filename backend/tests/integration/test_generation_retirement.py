@@ -1,3 +1,5 @@
+from typing import Any, cast
+# pyright: reportPrivateUsage=false
 """已完成代系在最后一个引用 (包括历史记录) 后必须退役测试."""
 import os
 import pytest
@@ -6,10 +8,12 @@ from entry.migrate import upgrade
 from app.infra.schema import check_schema
 from tests.integration.test_migrations import postgres
 
+__all__ = ["postgres", "infrastructure", "controller"]
+
 pytestmark = pytest.mark.skipif(os.getenv('RUN_MIGRATION_TESTS') != '1', reason='Opt-in isolated PostgreSQL migrations')
 
 
-def test_completed_generation_retires_after_last_reference(postgres):
+def test_completed_generation_retires_after_last_reference(postgres: Any) -> None:
     upgrade(postgres)
     ids = {"current": "a" * 64, "shared": "b" * 64}
     with postgres.begin() as db:
@@ -30,7 +34,7 @@ def test_completed_generation_retires_after_last_reference(postgres):
 
     check_schema(postgres)
     with postgres.begin() as db:
-        def state(number):
+        def state(number: Any):
             return db.execute(
                 text("SELECT state,finished_at IS NULL FROM runtime_operations WHERE generation=:generation"),
                 {"generation": str(number) * 32},
@@ -60,8 +64,8 @@ def test_completed_generation_retires_after_last_reference(postgres):
 
 @pytest.mark.skipif(os.getenv("RUN_CONTAINER_DELETION_TESTS") != "1", reason="Opt-in authenticated Controller/Docker")
 def test_cancelled_generation_is_retired_after_last_reference_detaches(
-    postgres, infrastructure, controller
-):
+    postgres: Any, infrastructure: Any, controller: Any
+) -> None:
     import uuid
     from sqlalchemy.orm import sessionmaker
     from app.infra.runtime_operation_cleanup import retire_cancelled_operations
@@ -100,10 +104,10 @@ def test_cancelled_generation_is_retired_after_last_reference_detaches(
 
     factory = sessionmaker(bind=postgres)
     class Unavailable:
-        def retire_generation(self, *args):
+        def retire_generation(self, *args: Any):
             raise ControllerError("unavailable")
 
-    assert retire_cancelled_operations(session_factory=factory, controller_factory=Unavailable) == 0
+    assert retire_cancelled_operations(session_factory=factory, controller_factory=cast(Any, Unavailable)) == 0
     assert controller["client"].inspect(candidate_id)["id"] == candidate_id
     with postgres.begin() as db:
         assert db.execute(
