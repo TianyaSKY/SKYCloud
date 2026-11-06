@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from typing import Any
 
 import pytest
 
@@ -12,7 +13,13 @@ SCRIPT = ROOT / "scripts/check_ruff_baseline.py"
 S104_MESSAGE = "Possible binding to all interfaces"
 
 
-def diagnostic(path="backend/entry/api.py", row=18, column=39, code="S104", message=S104_MESSAGE):
+def diagnostic(
+    path: str = "backend/entry/api.py",
+    row: int = 18,
+    column: int = 39,
+    code: str = "S104",
+    message: str = S104_MESSAGE,
+) -> dict[str, Any]:
     return {
         "filename": str(ROOT / path),
         "code": code,
@@ -22,8 +29,13 @@ def diagnostic(path="backend/entry/api.py", row=18, column=39, code="S104", mess
     }
 
 
-def baseline_entry(path="backend/entry/api.py", row=18, column=39, **overrides):
-    entry = {
+def baseline_entry(
+    path: str = "backend/entry/api.py",
+    row: int = 18,
+    column: int = 39,
+    **overrides: Any,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
         "path": path,
         "code": "S104",
         "row": row,
@@ -38,7 +50,11 @@ def baseline_entry(path="backend/entry/api.py", row=18, column=39, **overrides):
     return entry
 
 
-def run_gate(tmp_path, report, baseline):
+def run_gate(
+    tmp_path: Path,
+    report: list[dict[str, Any]],
+    baseline: list[dict[str, Any]],
+) -> subprocess.CompletedProcess[str]:
     report_path = tmp_path / "report.json"
     baseline_path = tmp_path / "baseline.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
@@ -59,7 +75,7 @@ def run_gate(tmp_path, report, baseline):
     )
 
 
-def test_confirmed_entry_passes_and_stays_visible(tmp_path):
+def test_confirmed_entry_passes_and_stays_visible(tmp_path: Path) -> None:
     result = run_gate(tmp_path, [diagnostic()], [baseline_entry()])
     assert result.returncode == 0, result.stderr
     assert "CONFIRMED backend/entry/api.py:18:39 S104" in result.stdout
@@ -67,7 +83,7 @@ def test_confirmed_entry_passes_and_stays_visible(tmp_path):
     assert "confirmed=1 new=0 stale=0" in result.stdout
 
 
-def test_extra_diagnostic_fails_without_count_discount(tmp_path):
+def test_extra_diagnostic_fails_without_count_discount(tmp_path: Path) -> None:
     result = run_gate(
         tmp_path,
         [diagnostic(), diagnostic(path="backend/entry/mcp_run.py", row=30, column=27)],
@@ -78,8 +94,7 @@ def test_extra_diagnostic_fails_without_count_discount(tmp_path):
     assert "confirmed=1 new=1 stale=0" in result.stdout
 
 
-
-def test_runtime_common_is_an_allowed_production_tree(tmp_path):
+def test_runtime_common_is_an_allowed_production_tree(tmp_path: Path) -> None:
     result = run_gate(
         tmp_path,
         [
@@ -98,14 +113,18 @@ def test_runtime_common_is_an_allowed_production_tree(tmp_path):
         "NEW backend/runtime_common/http_stream.py:1:1 E501 Line too long"
         in result.stdout
     )
-def test_line_shift_creates_new_and_stale_diagnostics(tmp_path):
+
+
+def test_line_shift_creates_new_and_stale_diagnostics(tmp_path: Path) -> None:
     result = run_gate(tmp_path, [diagnostic(row=19)], [baseline_entry(row=18)])
     assert result.returncode == 1
     assert "NEW backend/entry/api.py:19:39 S104" in result.stdout
     assert "STALE backend/entry/api.py:18:39 S104" in result.stdout
 
 
-def test_empty_sets_pass_but_nonempty_baseline_with_empty_report_fails(tmp_path):
+def test_empty_sets_pass_but_nonempty_baseline_with_empty_report_fails(
+    tmp_path: Path,
+) -> None:
     empty = run_gate(tmp_path, [], [])
     assert empty.returncode == 0
     nonempty = run_gate(tmp_path, [], [baseline_entry()])
@@ -113,7 +132,7 @@ def test_empty_sets_pass_but_nonempty_baseline_with_empty_report_fails(tmp_path)
     assert "STALE backend/entry/api.py:18:39 S104" in nonempty.stdout
 
 
-def test_unregistered_rule_is_visible_and_fails_as_new(tmp_path):
+def test_unregistered_rule_is_visible_and_fails_as_new(tmp_path: Path) -> None:
     result = run_gate(
         tmp_path,
         [diagnostic(code="E501", message="Line too long")],
@@ -124,14 +143,21 @@ def test_unregistered_rule_is_visible_and_fails_as_new(tmp_path):
     assert "confirmed=0 new=1 stale=0" in result.stdout
 
 
-def test_only_approved_mcp_list_files_parameter_count_can_be_registered(tmp_path):
+def test_only_approved_mcp_list_files_parameter_count_can_be_registered(
+    tmp_path: Path,
+) -> None:
     path = "backend/app/mcp/server.py"
     message = "Too many arguments in function definition (6 > 5)"
     report = diagnostic(path=path, row=220, column=11, code="PLR0913", message=message)
-    report["end_location"]["column"] = 21
+    cast_end_loc: dict[str, int] = report["end_location"]
+    cast_end_loc["column"] = 21
     approved = baseline_entry(
-        path=path, row=220, column=11, end_column=21,
-        code="PLR0913", message=message,
+        path=path,
+        row=220,
+        column=11,
+        end_column=21,
+        code="PLR0913",
+        message=message,
     )
     result = run_gate(tmp_path, [report], [approved])
     assert result.returncode == 0, result.stderr
@@ -144,7 +170,7 @@ def test_only_approved_mcp_list_files_parameter_count_can_be_registered(tmp_path
 
 
 @pytest.mark.parametrize(
-    "report,baseline,expected",
+    ("report", "baseline", "expected"),
     [
         ([diagnostic()], [baseline_entry(), baseline_entry()], "duplicate"),
         ([diagnostic()], [baseline_entry(reason="")], "reason"),
@@ -153,13 +179,18 @@ def test_only_approved_mcp_list_files_parameter_count_can_be_registered(tmp_path
         ([diagnostic(path="README.md")], [], "outside"),
     ],
 )
-def test_schema_failures_exit_two(tmp_path, report, baseline, expected):
+def test_schema_failures_exit_two(
+    tmp_path: Path,
+    report: list[dict[str, Any]],
+    baseline: list[dict[str, Any]],
+    expected: str,
+) -> None:
     result = run_gate(tmp_path, report, baseline)
     assert result.returncode == 2
     assert expected in result.stderr
 
 
-def test_malformed_and_missing_reports_exit_two(tmp_path):
+def test_malformed_and_missing_reports_exit_two(tmp_path: Path) -> None:
     malformed = tmp_path / "report.json"
     malformed.write_text("{", encoding="utf-8")
     result = subprocess.run(

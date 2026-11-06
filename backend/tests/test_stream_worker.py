@@ -1,6 +1,8 @@
+# pyright: reportPrivateUsage=false
 """取消操作必须在其所有者线程中于 Session 清理前排干 SQL 工作测试."""
 import asyncio
 import threading
+from typing import Any, cast
 
 import pytest
 
@@ -8,14 +10,16 @@ from app.features.assistant import service
 from app.features.assistant.stream_persistence import StreamWorker
 
 
-async def test_worker_serializes_and_drains_repeated_cancellation():
+async def test_worker_serializes_and_drains_repeated_cancellation() -> None:
     entered, release = threading.Event(), threading.Event()
-    calls = []
-    def slow():
+    calls: list[tuple[str, int]] = []
+
+    def slow() -> None:
         calls.append(('start', threading.get_ident()))
         entered.set()
         assert release.wait(5)
         calls.append(('finish', threading.get_ident()))
+
     async with StreamWorker() as worker:
         operation = asyncio.create_task(worker.call(slow))
         try:
@@ -38,23 +42,27 @@ async def test_worker_serializes_and_drains_repeated_cancellation():
     assert calls[0][1] != threading.get_ident()
 
 
-async def test_cancel_during_stream_session_creation_closes_on_owner_thread():
+async def test_cancel_during_stream_session_creation_closes_on_owner_thread() -> None:
     entered, release = threading.Event(), threading.Event()
-    calls = []
+    calls: list[str] = []
+
     class Session:
-        def __init__(self):
+        def __init__(self) -> None:
             self.owner = threading.get_ident()
             calls.append('create')
-        def get(self, model, identifier):
+
+        def get(self, model: Any, identifier: Any) -> None:
             assert threading.get_ident() == self.owner
             entered.set()
             assert release.wait(5)
             return None  # Lookup failure after cancellation must still close.
-        def close(self):
+
+        def close(self) -> None:
             assert threading.get_ident() == self.owner
             calls.append('close')
+
     events = service.stream_run(service.StreamRunParams(
-        session_factory=Session,
+        session_factory=cast(Any, Session),
         workspace_id=1,
         user_id=2,
         conversation_id=3,
@@ -75,11 +83,12 @@ async def test_cancel_during_stream_session_creation_closes_on_owner_thread():
     assert calls == ['create', 'close']
 
 
-async def test_actual_stream_sql_runs_on_worker_while_loop_is_responsive(session, test_user, test_workspace, monkeypatch):
+async def test_actual_stream_sql_runs_on_worker_while_loop_is_responsive(session: Any, test_user: Any, test_workspace: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from sqlalchemy import event
     from sqlalchemy.orm import sessionmaker
     from app.features.assistant import repository
     from app.features.assistant.event_protocol import AssistantEvent
+
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -99,20 +108,24 @@ async def test_actual_stream_sql_runs_on_worker_while_loop_is_responsive(session
             query='query',
         ),
     )
+
     class Engine:
-        async def stream(self, request):
+        async def stream(self, request: Any) -> Any:
             yield AssistantEvent('token', {'content': 'Answer'})
+
     monkeypatch.setattr(
         'app.features.assistant.engines.fast_engine.FastEngine', Engine)
     loop_thread = threading.get_ident()
     entered, release = threading.Event(), threading.Event()
-    owners = set()
-    def record(conn, cursor, statement, parameters, context, executemany):
+    owners: set[int] = set()
+
+    def record(conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool) -> None:
         assert threading.get_ident() != loop_thread
         owners.add(threading.get_ident())
         if statement.startswith('UPDATE assistant_messages'):
             entered.set()
             assert release.wait(5)
+
     workspace_id = int(test_workspace.id)
     user_id = int(test_user.id)
     conversation_id = int(conversation.id)
@@ -120,7 +133,8 @@ async def test_actual_stream_sql_runs_on_worker_while_loop_is_responsive(session
     engine = session.get_bind()
     event.listen(engine, 'before_cursor_execute', record)
     factory = sessionmaker(bind=engine, join_transaction_mode='create_savepoint')
-    async def collect():
+
+    async def collect() -> list[AssistantEvent]:
         return [
             item
             async for item in service.stream_run(
@@ -134,12 +148,15 @@ async def test_actual_stream_sql_runs_on_worker_while_loop_is_responsive(session
                 )
             )
         ]
+
     operation = asyncio.create_task(collect())
     try:
         assert await asyncio.to_thread(entered.wait, 2)
-        async def probe():
+
+        async def probe() -> bool:
             assert not release.is_set()
             return True
+
         assert await asyncio.wait_for(probe(), 1)
         assert not operation.done()
     finally:
@@ -152,13 +169,14 @@ async def test_actual_stream_sql_runs_on_worker_while_loop_is_responsive(session
     assert len(owners) == 1
 
 
-def test_replayed_permission_preserves_response_and_finish_preserves_terminal(session, test_user, test_workspace):
+def test_replayed_permission_preserves_response_and_finish_preserves_terminal(session: Any, test_user: Any, test_workspace: Any) -> None:
     from app.features.assistant import repository
     from app.features.assistant.stream_persistence import (
         FinalOutcome,
         StreamPersistence,
         StreamProgress,
     )
+
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -224,35 +242,44 @@ def test_replayed_permission_preserves_response_and_finish_preserves_terminal(se
     assert assistant.content == 'Existing final answer'
 
 
-async def test_http_stream_disconnect_closes_underlying_iterator(monkeypatch):
+async def test_http_stream_disconnect_closes_underlying_iterator(monkeypatch: pytest.MonkeyPatch) -> None:
     from types import SimpleNamespace
     from unittest.mock import Mock
     from app.features.assistant import router as module
     from app.api.dependencies import RequestContext
     from app.features.assistant.schemas import AssistantMessageRequest
     from app.features.assistant.event_protocol import AssistantEvent
+
     conversation = SimpleNamespace(id=3, mode='fast')
     run = SimpleNamespace(id=4)
-    closed = []
-    monkeypatch.setattr(service, 'get_user_conversation', lambda *args: conversation)
-    monkeypatch.setattr(service, 'prepare_run', lambda *args, **kwargs: (conversation, run, []))
-    async def events(*args, **kwargs):
+    closed: list[bool] = []
+    def fake_get_conv(*_args: Any, **_kwargs: Any) -> Any:
+        return conversation
+
+    def fake_prepare(*_args: Any, **_kwargs: Any) -> tuple[Any, Any, list[Any]]:
+        return (conversation, run, [])
+
+    monkeypatch.setattr(service, 'get_user_conversation', fake_get_conv)
+    monkeypatch.setattr(service, 'prepare_run', fake_prepare)
+
+    async def events(*args: Any, **kwargs: Any) -> Any:
         try:
             yield AssistantEvent('run_started', {'status': 'running'}, run_id=4)
             await asyncio.Event().wait()
         finally:
             closed.append(True)
+
     monkeypatch.setattr(service, 'stream_run', events)
     response = await module.stream_assistant_message(
         3,
         AssistantMessageRequest(query='query'),
-        SimpleNamespace(headers={}),
+        cast(Any, SimpleNamespace(headers={})),
         RequestContext(
-            user=SimpleNamespace(id=1, http_stream_credential=None),
+            user=cast(Any, SimpleNamespace(id=1, http_stream_credential=None)),
             session_factory=Mock,
         ),
-        SimpleNamespace(id=2),
+        cast(Any, SimpleNamespace(id=2)),
     )
-    assert 'run_started' in await anext(response.body_iterator)
-    await response.body_iterator.aclose()
+    assert 'run_started' in await anext(cast(Any, response).body_iterator)
+    await cast(Any, response).body_iterator.aclose()
     assert closed == [True]

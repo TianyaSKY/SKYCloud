@@ -2,6 +2,7 @@
 import asyncio
 import threading
 from types import SimpleNamespace
+from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -25,29 +26,48 @@ from app.infra.extensions import get_session_factory
     ('POST','/assistant/runs/2/permissions/p1',{'response':'once'},'respond_permission'),
     ('POST','/assistant/conversations/2/handoff',{},'handoff_to_expert'),
 ])
-async def test_assistant_worker_session_cleanup_and_responsiveness(monkeypatch, method, path, body, boundary):
+async def test_assistant_worker_session_cleanup_and_responsiveness(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    path: str,
+    body: dict[str, Any] | None,
+    boundary: str,
+) -> None:
     loop_thread = threading.get_ident()
     entered, release = threading.Event(), threading.Event()
-    opened, closed = [], []
+    opened: list["Owned"] = []
+    closed: list["Owned"] = []
+
     class Owned:
-        def __init__(self):
+        def __init__(self) -> None:
             self.thread = threading.get_ident()
             assert self.thread != loop_thread
             opened.append(self)
-        def __enter__(self):
+
+        def __enter__(self) -> "Owned":
             return self
-        def __exit__(self, *args):
+
+        def __exit__(self, *args: object) -> None:
             self.close()
-        def close(self):
+
+        def close(self) -> None:
             assert threading.get_ident() == self.thread
             closed.append(self)
-    def missing(session, *args, **kwargs):
+
+    def missing(session: Owned, *args: object, **kwargs: object) -> None:
         assert threading.get_ident() == session.thread
-        entered.set(); assert release.wait(5)
+        entered.set()
+        assert release.wait(5)
         raise ResourceNotFoundError('Not found')
+
+    def noop_assert_member(*args: object, **kwargs: object) -> None:
+        pass
+
     monkeypatch.setattr(repository if boundary == "get_owned_run" else router.service, boundary, missing)
-    monkeypatch.setattr(router, "assert_member", lambda *args: None)
-    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    monkeypatch.setattr(router, "assert_member", noop_assert_member)
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(router.router)
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
         id=1, http_stream_credential=None,
     )

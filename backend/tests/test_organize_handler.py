@@ -1,5 +1,8 @@
+# pyright: reportPrivateUsage=false
 """organize/handler.py 和 description.py 单元测试。"""
+from typing import Any, cast
 from sqlalchemy.orm import Session
+from pathlib import Path
 
 from unittest.mock import MagicMock, patch
 
@@ -9,7 +12,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 
 class TestHandlerHelpers:
-    def test_get_llm_config(self):
+    def test_get_llm_config(self) -> None:
         from app.features.folder.organize.handler import get_llm_config
         with patch("app.features.folder.organize.handler.get_chat_model_config",
                    return_value={"api": "http://x", "key": "y", "model": "z"}):
@@ -18,45 +21,45 @@ class TestHandlerHelpers:
         assert key == "y"
         assert model == "z"
 
-    def test_build_full_prompt(self):
+    def test_build_full_prompt(self) -> None:
         from app.features.folder.organize.handler import _build_full_prompt
         prompt = _build_full_prompt(42)
         assert "42" in prompt
         assert "get_all_files" in prompt
 
-    def test_format_files_detail_empty(self):
+    def test_format_files_detail_empty(self) -> None:
         from app.features.folder.organize.handler import _format_files_detail
         assert _format_files_detail([]) == "  (none)"
 
-    def test_format_files_detail(self):
+    def test_format_files_detail(self) -> None:
         from app.features.folder.organize.handler import _format_files_detail
-        result = _format_files_detail([
+        result = _format_files_detail(cast(Any, [
             {"name": "a.txt", "id": 1, "path": "/root"}
-        ])
+        ]))
         assert "a.txt" in result
         assert "/root" in result
 
-    def test_format_folders_detail_empty(self):
+    def test_format_folders_detail_empty(self) -> None:
         from app.features.folder.organize.handler import _format_folders_detail
         assert _format_folders_detail([]) == "  (none)"
 
-    def test_format_folders_detail(self):
+    def test_format_folders_detail(self) -> None:
         from app.features.folder.organize.handler import _format_folders_detail
-        result = _format_folders_detail([
+        result = _format_folders_detail(cast(Any, [
             {"name": "folder1", "id": 2, "path": "/root/folder1"}
-        ])
+        ]))
         assert "folder1" in result
 
-    def test_build_incremental_prompt(self):
+    def test_build_incremental_prompt(self) -> None:
         from app.features.folder.organize.handler import _build_incremental_prompt
-        context = {
+        context: dict[str, Any] = {
             "summary_text": "Files changed",
             "checkpoint_event_id": 10,
             "target_event_id": 20,
             "changed_files_detail": [{"name": "a.txt", "id": 1, "path": "/"}],
             "changed_folders_detail": [{"name": "f", "id": 2, "path": "/f"}],
         }
-        prompt = _build_incremental_prompt(5, context)
+        prompt = _build_incremental_prompt(5, cast(Any, context))
         assert "5" in prompt
         assert "INCREMENTAL" in prompt
         assert "a.txt" in prompt
@@ -64,10 +67,10 @@ class TestHandlerHelpers:
 
 
 class TestOrganizeFiles:
-    def test_no_changes_with_checkpoint(self, session, test_workspace):
+    def test_no_changes_with_checkpoint(self, session: Any, test_workspace: Any) -> None:
         """有 checkpoint 且无变更时跳过。"""
         from app.features.folder.organize.handler import organize_files
-        mock_ctx = {
+        mock_ctx: dict[str, Any] = {
             "has_changes": False,
             "has_checkpoint": True,
             "target_event_id": 10,
@@ -86,10 +89,10 @@ class TestOrganizeFiles:
         assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         mock_agent.stream.assert_not_called()
 
-    def test_no_changes_no_checkpoint_full_scan(self, session, test_workspace):
+    def test_no_changes_no_checkpoint_full_scan(self, session: Any, test_workspace: Any) -> None:
         """无 checkpoint 时执行全量扫描。"""
         from app.features.folder.organize.handler import organize_files
-        mock_ctx = {
+        mock_ctx: dict[str, Any] = {
             "has_changes": False,
             "has_checkpoint": False,
             "target_event_id": 0,
@@ -108,12 +111,12 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
+            usage, _results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert usage["input_tokens"] == 0
 
     def test_model_updates_preserve_usage_messages_and_checkpoint(
-        self, session, test_workspace,
-    ):
+        self, session: Any, test_workspace: Any,
+    ) -> None:
         """模型/工具增量在验证重试中幸存且不重复计费."""
         from app.features.folder.organize.handler import organize_files
 
@@ -185,10 +188,10 @@ class TestOrganizeFiles:
         assert "file listing" in results
         assert "checkpoint" in results
 
-    def test_incremental_mode(self, session, test_workspace):
+    def test_incremental_mode(self, session: Any, test_workspace: Any) -> None:
         """增量模式。"""
         from app.features.folder.organize.handler import organize_files
-        mock_ctx = {
+        mock_ctx: dict[str, Any] = {
             "has_changes": True,
             "overflow": False,
             "has_checkpoint": True,
@@ -213,13 +216,13 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
+            _usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert "增量" in results
 
-    def test_overflow_full_scan(self, session, test_workspace):
+    def test_overflow_full_scan(self, session: Any, test_workspace: Any) -> None:
         """增量事件溢出回退全量。"""
         from app.features.folder.organize.handler import organize_files
-        mock_ctx = {
+        mock_ctx: dict[str, Any] = {
             "has_changes": True,
             "overflow": True,
             "has_checkpoint": True,
@@ -242,10 +245,10 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
+            _usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert "全量" in results
 
-    def test_load_context_fallback(self, session, test_workspace):
+    def test_load_context_fallback(self, session: Any, test_workspace: Any) -> None:
         """load_incremental_context 异常时回退全量。"""
         from app.features.folder.organize.handler import organize_files
         mock_agent = MagicMock()
@@ -262,15 +265,15 @@ class TestOrganizeFiles:
                    return_value=(True, "clean")), \
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
-            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
+            _usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         # 回退全量模式，包含 incremental_context_error 或 首次全量
         assert "incremental_context_error" in results or "全量" in results or "首次" in results
 
     @pytest.mark.parametrize("eventually_clean", [True, False])
-    def test_validation_retry(self, session, test_workspace, eventually_clean):
+    def test_validation_retry(self, session: Any, test_workspace: Any, eventually_clean: bool) -> None:
         """校验失败后重试。"""
         from app.features.folder.organize.handler import organize_files
-        mock_ctx = {
+        mock_ctx: dict[str, Any] = {
             "has_changes": False,
             "has_checkpoint": False,
             "target_event_id": 0,
@@ -297,13 +300,13 @@ class TestOrganizeFiles:
                 with pytest.raises(RuntimeError, match="final structure validation"):
                     organize_files(test_workspace.id, test_workspace.owner_id)
                 return
-            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
+            _usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert "校验失败" in results or "校验通过" in results
 
-    def test_recursion_error_handling(self, session, test_workspace):
+    def test_recursion_error_handling(self, session: Any, test_workspace: Any) -> None:
         """Agent 达到递归限制（名称含 RecursionError 时被捕获）。"""
         from app.features.folder.organize.handler import organize_files
-        mock_ctx = {
+        mock_ctx: dict[str, Any] = {
             "has_changes": False,
             "has_checkpoint": False,
             "target_event_id": 0,
@@ -327,25 +330,25 @@ class TestOrganizeFiles:
              patch("app.features.folder.organize.handler.check_empty_folders_internal",
                    return_value=(True, "clean")):
             # GraphRecursionError 名称含 "RecursionError" -> 被捕获不抛出
-            usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
+            _usage, results = organize_files(test_workspace.id, test_workspace.owner_id)
         assert "最大步数限制" in results or "校验通过" in results
 
 
 class TestHandleOrganizeProcess:
-    def test_handle_organize_success(self, session, test_workspace, test_user):
+    def test_handle_organize_success(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """整理入口：成功写收件箱。"""
         from app.features.folder.organize.handler import handle_organize_process
         with patch("app.features.folder.organize.handler.organize_files",
                    return_value=({"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}, "done")), \
              patch("app.features.folder.organize.handler.SessionLocal", side_effect=lambda: Session(bind=session.get_bind(), join_transaction_mode="create_savepoint")), \
-             patch("app.infra.llm.sync_client.record_llm_usage") as m_rec, \
+             patch("app.infra.llm.sync_client.record_llm_usage"), \
              patch("app.infra.llm.config.get_chat_model_config", return_value={"model": "test"}), \
              patch("app.features.inbox.service.create_inbox_message") as m_inbox:
              result = handle_organize_process(test_workspace.id, test_user.id)
         m_inbox.assert_called_once()
         assert result["total_tokens"] == 15
 
-    def test_handle_organize_no_tokens(self, session, test_workspace, test_user):
+    def test_handle_organize_no_tokens(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """Token 为 0 时不记录用量。"""
         from app.features.folder.organize.handler import handle_organize_process
         with patch("app.features.folder.organize.handler.organize_files",
@@ -357,7 +360,7 @@ class TestHandleOrganizeProcess:
              result = handle_organize_process(test_workspace.id, test_user.id)
         assert result["total_tokens"] == 0
 
-    def test_handle_organize_exception(self, session, test_workspace, test_user):
+    def test_handle_organize_exception(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         """整理失败时写错误收件箱。"""
         from app.features.folder.organize.handler import handle_organize_process
         with patch("app.features.folder.organize.handler.organize_files",
@@ -372,40 +375,40 @@ class TestHandleOrganizeProcess:
 
 
 class TestDescription:
-    def test_image_to_base64(self, tmp_path):
+    def test_image_to_base64(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import image_to_base64
         img = tmp_path / "test.jpg"
         img.write_bytes(b"\xff\xd8\xff\xe0")  # JPEG header
         result = image_to_base64(str(img))
         assert result.startswith("data:image/jpeg;base64,")
 
-    def test_image_to_base64_unknown_mime(self, tmp_path):
+    def test_image_to_base64_unknown_mime(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import image_to_base64
         img = tmp_path / "test.unrecognized_mime_extension"
         img.write_bytes(b"data")
         result = image_to_base64(str(img))
         assert result.startswith("data:image/jpeg;base64,")
 
-    def test_extract_text_content_not_exists(self, tmp_path):
+    def test_extract_text_content_not_exists(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import _extract_text_content
         result = _extract_text_content(str(tmp_path / "nonexistent.txt"))
         assert result == ""
 
-    def test_extract_text_content_text_file(self, tmp_path):
+    def test_extract_text_content_text_file(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import _extract_text_content
         f = tmp_path / "code.py"
         f.write_text("print('hello')")
         result = _extract_text_content(str(f))
         assert "hello" in result
 
-    def test_extract_text_content_empty_ext(self, tmp_path):
+    def test_extract_text_content_empty_ext(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import _extract_text_content
         f = tmp_path / "noext"
         f.write_text("plain text")
         result = _extract_text_content(str(f))
         assert "plain text" in result
 
-    def test_extract_text_content_video(self, tmp_path):
+    def test_extract_text_content_video(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import _extract_text_content
         f = tmp_path / "video.mp4"
         f.write_bytes(b"\x00\x00\x00")  # Fake video
@@ -413,7 +416,7 @@ class TestDescription:
         # cv2 是 mock 的，所以会进入 except 返回 Video File
         assert "Video File" in result or "Video Info" in result
 
-    def test_extract_text_content_docx(self, tmp_path):
+    def test_extract_text_content_docx(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import _extract_text_content
         f = tmp_path / "doc.docx"
         f.write_bytes(b"fake docx")
@@ -421,28 +424,28 @@ class TestDescription:
         # docx 是 mock，会进入 except 返回空
         assert result == ""
 
-    def test_get_visual_urls_audio_rejected(self, tmp_path):
+    def test_get_visual_urls_audio_rejected(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import _get_visual_urls
         f = tmp_path / "audio.mp3"
         f.write_bytes(b"fake audio")
         with pytest.raises(ValueError, match="音频"):
             _get_visual_urls(str(f))
 
-    def test_get_visual_urls_unsupported(self, tmp_path):
+    def test_get_visual_urls_unsupported(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import _get_visual_urls
         f = tmp_path / "data.xyz"
         f.write_bytes(b"data")
         with pytest.raises(ValueError, match="Unsupported"):
             _get_visual_urls(str(f))
 
-    def test_get_visual_urls_text_returns_empty(self, tmp_path):
+    def test_get_visual_urls_text_returns_empty(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import _get_visual_urls
         f = tmp_path / "code.py"
         f.write_text("print('hello')")
         result = _get_visual_urls(str(f))
         assert result == []
 
-    def test_generate_text_description_empty_file(self, tmp_path):
+    def test_generate_text_description_empty_file(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import _generate_text_description
         f = tmp_path / "empty.txt"
         f.write_text("")
@@ -450,7 +453,7 @@ class TestDescription:
             str(f), {"api": "x", "key": "y", "model": "z"})
         assert result == "空文件"
 
-    def test_generate_text_description_success(self, tmp_path):
+    def test_generate_text_description_success(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import _generate_text_description
         f = tmp_path / "doc.txt"
         f.write_text("This is a test document about Python programming.")
@@ -463,7 +466,7 @@ class TestDescription:
                 str(f), {"api": "x", "key": "y", "model": "z"})
         assert result == "Python 编程文档"
 
-    def test_generate_text_description_no_content(self, tmp_path):
+    def test_generate_text_description_no_content(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import _generate_text_description
         f = tmp_path / "doc2.txt"
         f.write_text("Some content here")
@@ -476,7 +479,7 @@ class TestDescription:
                 _generate_text_description(
                     str(f), {"api": "x", "key": "y", "model": "z"})
 
-    def test_generate_file_description_text_path(self, tmp_path):
+    def test_generate_file_description_text_path(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import generate_file_description
         f = tmp_path / "code.py"
         f.write_text("def hello(): pass")
@@ -491,7 +494,7 @@ class TestDescription:
             )
         assert result == "Python function"
 
-    def test_generate_file_description_image_path(self, tmp_path):
+    def test_generate_file_description_image_path(self, tmp_path: Path) -> None:
         from app.features.folder.organize.description import generate_file_description
         f = tmp_path / "img.jpg"
         f.write_bytes(b"\xff\xd8\xff\xe0")  # JPEG header
@@ -518,8 +521,8 @@ class TestDescription:
     ],
 )
 def test_extraction_failure_keeps_original_fallback(
-    tmp_path, suffix, operation, exception_type, expected,
-):
+    tmp_path: Path, suffix: str, operation: str, exception_type: Any, expected: str,
+) -> None:
     from app.features.folder.organize.description import _extract_text_content
 
     source = tmp_path / f"sample{suffix}"
@@ -533,7 +536,7 @@ def test_extraction_failure_keeps_original_fallback(
     assert "PRIVATE_PARSE_FAILURE" not in result
 
 
-def test_pdf_page_failure_falls_back_to_full_text(tmp_path):
+def test_pdf_page_failure_falls_back_to_full_text(tmp_path: Path) -> None:
     from app.features.folder.organize.description import extract_file_sections
 
     source = tmp_path / "sample.pdf"

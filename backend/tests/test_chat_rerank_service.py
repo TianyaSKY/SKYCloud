@@ -1,110 +1,106 @@
 """Chat 模块测试：rerank 纯函数 + service 工具函数。"""
 
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from langchain_core.documents import Document
-
-
+import pytest
 
 # rerank 模块纯函数
-
 from app.features.chat.rerank import (
-    _get_index,
-    _get_score,
-    _extract_ranked_indices,
-    _get_rerank_client,
+    _extract_ranked_indices,  # pyright: ignore[reportPrivateUsage]
+    _get_index,  # pyright: ignore[reportPrivateUsage]
+    _get_score,  # pyright: ignore[reportPrivateUsage]
     rerank_documents,
 )
 
 
 class TestGetIndex:
-    def test_index_int(self):
+    def test_index_int(self) -> None:
         assert _get_index({"index": 3}) == 3
 
-    def test_document_index(self):
+    def test_document_index(self) -> None:
         assert _get_index({"document_index": 5}) == 5
 
-    def test_doc_index(self):
+    def test_doc_index(self) -> None:
         assert _get_index({"doc_index": 7}) == 7
 
-    def test_string_digit(self):
+    def test_string_digit(self) -> None:
         assert _get_index({"index": "2"}) == 2
 
-    def test_none(self):
+    def test_none(self) -> None:
         assert _get_index({"foo": "bar"}) is None
 
-    def test_non_digit_string(self):
+    def test_non_digit_string(self) -> None:
         assert _get_index({"index": "abc"}) is None
 
 
 class TestGetScore:
-    def test_relevance_score(self):
+    def test_relevance_score(self) -> None:
         assert _get_score({"relevance_score": 0.95}, 0.0) == 0.95
 
-    def test_score_int(self):
+    def test_score_int(self) -> None:
         assert _get_score({"score": 3}, 0.0) == 3.0
 
-    def test_similarity(self):
+    def test_similarity(self) -> None:
         assert _get_score({"similarity": 0.8}, 0.0) == 0.8
 
-    def test_string_score(self):
+    def test_string_score(self) -> None:
         assert _get_score({"score": "0.75"}, 0.0) == 0.75
 
-    def test_invalid_string(self):
+    def test_invalid_string(self) -> None:
         assert _get_score({"score": "abc"}, 1.5) == 1.5
 
-    def test_default(self):
+    def test_default(self) -> None:
         assert _get_score({}, 2.0) == 2.0
 
 
 class TestExtractRankedIndices:
-    def test_basic_results(self):
-        payload = {"results": [{"index": 2, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.5}]}
+    def test_basic_results(self) -> None:
+        payload: dict[str, object] = {"results": [{"index": 2, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.5}]}
         assert _extract_ranked_indices(payload) == [2, 0]
 
-    def test_data_field(self):
-        payload = {"data": [{"index": 1, "score": 0.8}, {"index": 0, "score": 0.3}]}
+    def test_data_field(self) -> None:
+        payload: dict[str, object] = {"data": [{"index": 1, "score": 0.8}, {"index": 0, "score": 0.3}]}
         assert _extract_ranked_indices(payload) == [1, 0]
 
-    def test_no_results(self):
+    def test_no_results(self) -> None:
         assert _extract_ranked_indices({}) == []
         assert _extract_ranked_indices({"results": "not_list"}) == []
 
-    def test_dedup(self):
-        payload = {"results": [
+    def test_dedup(self) -> None:
+        payload: dict[str, object] = {"results": [
             {"index": 1, "relevance_score": 0.9},
             {"index": 1, "relevance_score": 0.8},
             {"index": 0, "relevance_score": 0.7},
         ]}
         assert _extract_ranked_indices(payload) == [1, 0]
 
-    def test_non_dict_items_skipped(self):
-        payload = {"results": ["bad", {"index": 0, "score": 1.0}]}
+    def test_non_dict_items_skipped(self) -> None:
+        payload: dict[str, object] = {"results": ["bad", {"index": 0, "score": 1.0}]}
         assert _extract_ranked_indices(payload) == [0]
 
-    def test_no_index_skipped(self):
-        payload = {"results": [{"score": 1.0}, {"index": 2, "score": 0.5}]}
+    def test_no_index_skipped(self) -> None:
+        payload: dict[str, object] = {"results": [{"score": 1.0}, {"index": 2, "score": 0.5}]}
         assert _extract_ranked_indices(payload) == [2]
 
 
 class TestRerankDocuments:
-    async def test_single_doc_passthrough(self):
+    async def test_single_doc_passthrough(self) -> None:
         docs = [Document(page_content="a")]
         result = await rerank_documents("q", docs)
         assert result == docs
 
-    async def test_empty_docs(self):
+    async def test_empty_docs(self) -> None:
         result = await rerank_documents("q", [])
         assert result == []
 
-    async def test_config_incomplete(self):
+    async def test_config_incomplete(self) -> None:
         docs = [Document(page_content="a"), Document(page_content="b")]
         with patch("app.features.chat.rerank.get_rerank_model_config", return_value={"api": "", "key": "", "model": ""}), \
              patch("app.features.chat.rerank.get_rerank_top_k", return_value=5):
             result = await rerank_documents("q", docs)
         assert result == docs
 
-    async def test_successful_rerank(self):
+    async def test_successful_rerank(self) -> None:
         docs = [Document(page_content="a"), Document(page_content="b"), Document(page_content="c")]
         mock_response = MagicMock()
         mock_response.json.return_value = {"results": [{"index": 2, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.5}]}
@@ -121,7 +117,7 @@ class TestRerankDocuments:
         assert len(result) == 2
         assert result[0].page_content == "c"
 
-    async def test_rerank_exception_fallback(self):
+    async def test_rerank_exception_fallback(self) -> None:
         docs = [Document(page_content="a"), Document(page_content="b")]
         mock_client = AsyncMock()
         mock_client.post.side_effect = Exception("network error")
@@ -137,35 +133,35 @@ class TestRerankDocuments:
 # chat service 工具函数
 
 from app.features.chat.service import (
-    _env_int as chat_env_int,
-    _fuse_docs_with_rrf,
+    _env_int as chat_env_int,  # pyright: ignore[reportPrivateUsage]
+    _fuse_docs_with_rrf,  # pyright: ignore[reportPrivateUsage]
     format_docs,
     format_history,
 )
 
 
 class TestChatEnvInt:
-    def test_valid(self, monkeypatch):
+    def test_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEST_CHAT_VAR", "10")
         assert chat_env_int("TEST_CHAT_VAR", 5) == 10
 
-    def test_invalid(self, monkeypatch):
+    def test_invalid(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEST_CHAT_VAR2", "abc")
         assert chat_env_int("TEST_CHAT_VAR2", 5) == 5
 
-    def test_zero_uses_default(self, monkeypatch):
+    def test_zero_uses_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEST_CHAT_VAR3", "0")
         assert chat_env_int("TEST_CHAT_VAR3", 7) == 7
 
-    def test_missing(self):
+    def test_missing(self) -> None:
         assert chat_env_int("NONEXIST_CHAT_VAR_XYZ", 3) == 3
 
 
 class TestFuseDocsWithRRF:
-    def test_empty(self):
+    def test_empty(self) -> None:
         assert _fuse_docs_with_rrf([], 60, 10) == []
 
-    def test_single_set(self):
+    def test_single_set(self) -> None:
         docs = [
             Document(page_content="a", metadata={"id": 1, "distance": 0.1}),
             Document(page_content="b", metadata={"id": 2, "distance": 0.2}),
@@ -174,7 +170,7 @@ class TestFuseDocsWithRRF:
         assert len(result) == 2
         assert result[0].metadata["id"] == 1
 
-    def test_multi_set_fusion(self):
+    def test_multi_set_fusion(self) -> None:
         set1 = [
             Document(page_content="a", metadata={"id": 1, "distance": 0.1}),
             Document(page_content="b", metadata={"id": 2, "distance": 0.2}),
@@ -187,40 +183,40 @@ class TestFuseDocsWithRRF:
         # 文档 2 在两个集合中均出现, 因此应获得更高分数
         assert result[0].metadata["id"] == 2
 
-    def test_top_k_limit(self):
+    def test_top_k_limit(self) -> None:
         docs = [Document(page_content=f"d{i}", metadata={"id": i, "distance": 0.1 * i}) for i in range(10)]
         result = _fuse_docs_with_rrf([docs], 60, 3)
         assert len(result) == 3
 
 
 class TestFormatDocs:
-    def test_basic(self):
+    def test_basic(self) -> None:
         docs = [Document(page_content="内容", metadata={"id": 1, "name": "test.txt", "mime_type": "text/plain"})]
         result = format_docs(docs)
         assert "test.txt" in result
         assert "内容" in result
 
-    def test_image_doc(self):
+    def test_image_doc(self) -> None:
         docs = [Document(page_content="图片", metadata={"id": 5, "name": "img.png", "mime_type": "image/png"})]
         result = format_docs(docs)
         assert "/api/files/5/download" in result
 
-    def test_empty(self):
+    def test_empty(self) -> None:
         assert format_docs([]) == ""
 
 
 class TestFormatHistory:
-    def test_list(self):
+    def test_list(self) -> None:
         history = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
         result = format_history(history)
         assert "user: hello" in result
         assert "assistant: hi" in result
 
-    def test_string(self):
+    def test_string(self) -> None:
         assert format_history("raw text") == "raw text"
 
-    def test_none(self):
+    def test_none(self) -> None:
         assert format_history(None) == ""
 
-    def test_empty_list(self):
+    def test_empty_list(self) -> None:
         assert format_history([]) == ""

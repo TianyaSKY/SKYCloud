@@ -1,115 +1,174 @@
 """即使 ASGI 从未进入响应体, 上游租约也会关闭测试."""
 import asyncio
+from collections.abc import AsyncGenerator
+from typing import Any, cast
 
 import pytest
 from starlette.requests import ClientDisconnect
+from starlette.types import Message, Scope
 
 import runtime_common.http_stream as ui_stream
 
 
-def capture_logs(monkeypatch, logs):
+def capture_logs(monkeypatch: pytest.MonkeyPatch, logs: list[str]) -> None:
+    def _log(message: str, *args: object) -> None:
+        logs.append(message % args)
+
     monkeypatch.setattr(
         ui_stream.logger,
         'error',
-        lambda message, *args: logs.append(message % args),
+        _log,
     )
 
 
-@pytest.mark.parametrize('phase',['header','body','cancel','normal'])
-@pytest.mark.parametrize('fault',['none','response','client','both'])
-async def test_delivery_outcome_and_both_resources_closed_once(monkeypatch,phase,fault):
-    calls,logs=[],[]
+@pytest.mark.parametrize('phase', ['header', 'body', 'cancel', 'normal'])
+@pytest.mark.parametrize('fault', ['none', 'response', 'client', 'both'])
+async def test_delivery_outcome_and_both_resources_closed_once(
+    monkeypatch: pytest.MonkeyPatch, phase: str, fault: str
+) -> None:
+    calls: list[str] = []
+    logs: list[str] = []
+
     class Resource:
-        def __init__(self,name):self.name=name
-        async def aclose(self):
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def aclose(self) -> None:
             calls.append(self.name)
-            if fault in (self.name,'both'):raise RuntimeError('private-upstream-url')
-    lease=ui_stream.UpstreamLease(Resource('client'))
-    lease.upstream=Resource('response')
+            if fault in (self.name, 'both'):
+                raise RuntimeError('private-upstream-url')
+
+    lease = ui_stream.UpstreamLease(cast(Any, Resource('client')))
+    lease.upstream = cast(Any, Resource('response'))
     capture_logs(monkeypatch, logs)
-    closed=[]
-    async def body():
-        try:yield b'allowed'
+    closed: list[bool] = []
+
+    async def body() -> AsyncGenerator[bytes, None]:
+        try:
+            yield b'allowed'
         finally:
             closed.append(True)
             await lease.close()
-    response=ui_stream.UpstreamResponse(body(),lease=lease)
-    async def receive():await asyncio.Event().wait()
-    async def send(message):
-        if phase=='header' or (message['type']=='http.response.body' and phase!='normal'):
-            if phase=='cancel':raise asyncio.CancelledError()
+
+    response = ui_stream.UpstreamResponse(body(), lease=lease)
+
+    async def receive() -> Message:
+        await asyncio.Event().wait()
+        raise RuntimeError("unreachable")
+
+    async def send(message: Message) -> None:
+        if phase == 'header' or (message['type'] == 'http.response.body' and phase != 'normal'):
+            if phase == 'cancel':
+                raise asyncio.CancelledError()
             raise OSError('connection lost')
-    if phase=='normal':await response({'type':'http','asgi':{'spec_version':'2.4'}},receive,send)
+
+    scope: Scope = {'type': 'http', 'asgi': {'spec_version': '2.4'}}
+    if phase == 'normal':
+        await response(scope, receive, send)
     else:
-        with pytest.raises(asyncio.CancelledError if phase=='cancel' else ClientDisconnect):
-            await response({'type':'http','asgi':{'spec_version':'2.4'}},receive,send)
-    assert calls==['response','client'] and closed==([] if phase=='header' else [True])
+        with pytest.raises(asyncio.CancelledError if phase == 'cancel' else ClientDisconnect):
+            await response(scope, receive, send)
+    assert calls == ['response', 'client'] and closed == ([] if phase == 'header' else [True])
     assert 'private-' not in str(logs)
 
 
-async def test_repeated_cancellation_drains_resource_close():
-    entered,release=asyncio.Event(),asyncio.Event()
-    calls=[]
+async def test_repeated_cancellation_drains_resource_close() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls: list[str] = []
+
     class Resource:
-        async def aclose(self):
+        async def aclose(self) -> None:
             entered.set()
             await release.wait()
             calls.append('closed')
-    lease=ui_stream.UpstreamLease(Resource())
-    pending=asyncio.create_task(lease.close())
+
+    lease = ui_stream.UpstreamLease(cast(Any, Resource()))
+    pending = asyncio.create_task(lease.close())
     await entered.wait()
-    pending.cancel();await asyncio.sleep(0)
-    pending.cancel();await asyncio.sleep(0)
+    pending.cancel()
+    await asyncio.sleep(0)
+    pending.cancel()
+    await asyncio.sleep(0)
     assert not pending.done() and not calls
     release.set()
-    with pytest.raises(asyncio.CancelledError):await pending
+    with pytest.raises(asyncio.CancelledError):
+        await pending
     await lease.close()
-    assert calls==['closed']
+    assert calls == ['closed']
 
 
-@pytest.mark.parametrize('delivery',['headers','cancel','normal'])
-@pytest.mark.parametrize('cleanup',['self-cancel','runtime-error','repeat-cancel'])
-async def test_upstream_response_drains_iterator_before_resources(monkeypatch,delivery,cleanup):
-    closing,release=asyncio.Event(),asyncio.Event()
-    calls,logs=[],[]
+@pytest.mark.parametrize('delivery', ['headers', 'cancel', 'normal'])
+@pytest.mark.parametrize('cleanup', ['self-cancel', 'runtime-error', 'repeat-cancel'])
+async def test_upstream_response_drains_iterator_before_resources(
+    monkeypatch: pytest.MonkeyPatch, delivery: str, cleanup: str
+) -> None:
+    closing, release = asyncio.Event(), asyncio.Event()
+    calls: list[str] = []
+    logs: list[str] = []
+
     class Body:
-        def __aiter__(self):return self
-        async def __anext__(self):raise StopAsyncIteration
-        async def aclose(self):
+        def __aiter__(self) -> "Body":
+            return self
+
+        async def __anext__(self) -> bytes:
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
             closing.set()
-            if cleanup=='repeat-cancel':await release.wait()
+            if cleanup == 'repeat-cancel':
+                await release.wait()
             calls.append('iterator')
-            if cleanup=='self-cancel':raise asyncio.CancelledError('private-close-url')
-            if cleanup=='runtime-error':raise RuntimeError('private-close-url')
+            if cleanup == 'self-cancel':
+                raise asyncio.CancelledError('private-close-url')
+            if cleanup == 'runtime-error':
+                raise RuntimeError('private-close-url')
+
     class Resource:
-        def __init__(self,name):self.name=name
-        async def aclose(self):
-            assert calls[0]=='iterator'
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def aclose(self) -> None:
+            assert calls[0] == 'iterator'
             calls.append(self.name)
-    lease=ui_stream.UpstreamLease(Resource('client'));lease.upstream=Resource('response')
+
+    lease = ui_stream.UpstreamLease(cast(Any, Resource('client')))
+    lease.upstream = cast(Any, Resource('response'))
     capture_logs(monkeypatch, logs)
-    response=ui_stream.UpstreamResponse(Body(),lease=lease)
-    async def receive():await asyncio.Event().wait()
-    async def send(message):
-        if delivery=='headers':raise OSError('header delivery failed')
-        if delivery=='cancel':raise asyncio.CancelledError('delivery-cancel')
-    pending=asyncio.create_task(response({'type':'http','asgi':{'spec_version':'2.4'}},receive,send))
+    response = ui_stream.UpstreamResponse(cast(Any, Body()), lease=lease)
+
+    async def receive() -> Message:
+        await asyncio.Event().wait()
+        raise RuntimeError("unreachable")
+
+    async def send(message: Message) -> None:
+        if delivery == 'headers':
+            raise OSError('header delivery failed')
+        if delivery == 'cancel':
+            raise asyncio.CancelledError('delivery-cancel')
+
+    scope: Scope = {'type': 'http', 'asgi': {'spec_version': '2.4'}}
+    pending = asyncio.create_task(response(scope, receive, send))
     try:
-        await asyncio.wait_for(closing.wait(),1)
-        if cleanup=='repeat-cancel':
-            pending.cancel();await asyncio.sleep(0)
-            pending.cancel();await asyncio.sleep(0.01)
+        await asyncio.wait_for(closing.wait(), 1)
+        if cleanup == 'repeat-cancel':
+            pending.cancel()
+            await asyncio.sleep(0)
+            pending.cancel()
+            await asyncio.sleep(0.01)
             assert not pending.done() and not calls
     finally:
         release.set()
-        if delivery=='headers':
-            with pytest.raises(ClientDisconnect):await asyncio.wait_for(pending,1)
-        elif delivery=='cancel' or cleanup=='repeat-cancel':
-            with pytest.raises(asyncio.CancelledError) as error:await asyncio.wait_for(pending,1)
+        if delivery == 'headers':
+            with pytest.raises(ClientDisconnect):
+                await asyncio.wait_for(pending, 1)
+        elif delivery == 'cancel' or cleanup == 'repeat-cancel':
+            with pytest.raises(asyncio.CancelledError) as error:
+                await asyncio.wait_for(pending, 1)
             assert 'private-close-url' not in str(error.value)
-        else:await asyncio.wait_for(pending,1)
+        else:
+            await asyncio.wait_for(pending, 1)
     await lease.close()
-    assert calls==['iterator','response','client']
-    assert ('CancelledError' in str(logs)) is (cleanup=='self-cancel')
-    assert ('RuntimeError' in str(logs)) is (cleanup=='runtime-error')
+    assert calls == ['iterator', 'response', 'client']
+    assert ('CancelledError' in str(logs)) is (cleanup == 'self-cancel')
+    assert ('RuntimeError' in str(logs)) is (cleanup == 'runtime-error')
     assert 'private-close-url' not in str(logs)

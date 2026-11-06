@@ -1,5 +1,6 @@
 """chat/service.py 完整测试。"""
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from langchain_core.documents import Document
@@ -7,14 +8,14 @@ import pytest
 
 
 class TestChatServiceModels:
-    def test_get_chat_model(self):
+    def test_get_chat_model(self) -> None:
         from app.features.chat.service import get_chat_model
         get_chat_model.cache_clear()
         with patch("app.features.chat.service.get_chat_model_config", return_value={"api": "x", "key": "y", "model": "z"}):
             m = get_chat_model()
         assert m is not None
 
-    def test_get_embeddings_model(self):
+    def test_get_embeddings_model(self) -> None:
         from app.features.chat.service import get_embeddings_model
         get_embeddings_model.cache_clear()
         with patch("app.features.chat.service.get_embedding_model_config", return_value={"api": "x", "key": "y", "model": "z"}):
@@ -22,35 +23,38 @@ class TestChatServiceModels:
                 m = get_embeddings_model()
         assert m is not None
 
-    def test_db_search_by_vector(self):
-        from app.features.chat.service import _db_search_by_vector
+    def test_db_search_by_vector(self) -> None:
+        from app.features.chat.service import _db_search_by_vector  # pyright: ignore[reportPrivateUsage]
         mock_session = MagicMock()
         mock_result = MagicMock()
-        mock_result.__getitem__ = MagicMock(
-            side_effect=lambda i: [11, 1, "file.txt", "命中的正文", "text/plain", 0, None, 0.1][i]
-        )
+        row_values: list[object] = [11, 1, "file.txt", "命中的正文", "text/plain", 0, None, 0.1]
+
+        def mock_getitem(i: int) -> object:
+            return row_values[i]
+
+        mock_result.__getitem__.side_effect = mock_getitem
         mock_session.execute.return_value.fetchall.return_value = [mock_result]
         with patch("app.features.chat.service.SessionLocal", return_value=mock_session), patch("app.features.chat.repository.assert_member_locked"):
             docs = _db_search_by_vector([0.1] * 1024, "test", 1, 10, 77)
         assert len(docs) == 1
 
-    def test_db_search_by_vector_empty(self):
-        from app.features.chat.service import _db_search_by_vector
+    def test_db_search_by_vector_empty(self) -> None:
+        from app.features.chat.service import _db_search_by_vector  # pyright: ignore[reportPrivateUsage]
         mock_session = MagicMock()
         mock_session.execute.return_value.fetchall.return_value = []
         with patch("app.features.chat.service.SessionLocal", return_value=mock_session), patch("app.features.chat.repository.assert_member_locked"):
             docs = _db_search_by_vector([0.1] * 1024, "test", 1, 10, 77)
         assert docs == []
 
-    def test_vector_search_docs(self):
-        from app.features.chat.service import _vector_search_docs
+    def test_vector_search_docs(self) -> None:
+        from app.features.chat.service import _vector_search_docs  # pyright: ignore[reportPrivateUsage]
         mock_emb = MagicMock()
         mock_emb.embed_query.return_value = [0.1] * 2048
         with patch("app.features.chat.service._db_search_by_vector", return_value=[]):
             docs = _vector_search_docs([0.1] * 1024, "test", 1, 10, 77)
         assert docs == []
 
-    def test_custom_db_retriever(self):
+    def test_custom_db_retriever(self) -> None:
         from app.features.chat.service import custom_db_retriever
         mock_emb = MagicMock()
         mock_emb.aembed_query = AsyncMock(return_value=[0.1] * 1024)
@@ -64,21 +68,31 @@ class TestChatServiceModels:
 
 class TestChatServiceMultiQuery:
     @pytest.mark.parametrize('vector_count', [0, 1, 3])
-    def test_incomplete_embedding_response_does_not_skip_queries(self, vector_count):
+    def test_incomplete_embedding_response_does_not_skip_queries(self, vector_count: int) -> None:
         from app.features.chat import service
+        from app.features.chat.query_rewrite import RewriteKeywordDimensions
         from app.exceptions import ServiceOperationError
+        dims = RewriteKeywordDimensions(
+            topic_terms=[], entity_terms=[], time_terms=[],
+            file_type_terms=[], action_terms=[], synonym_terms=[],
+        )
         embeddings = MagicMock()
         embeddings.aembed_documents = AsyncMock(return_value=[[.1] * 1024] * vector_count)
         with patch.object(service, 'get_embeddings_model', return_value=embeddings), \
              patch.object(service, 'build_multi_queries', return_value=['one', 'two']), \
              patch.object(service, '_db_search_by_vector', return_value=[]) as search:
             with pytest.raises(ServiceOperationError):
-                asyncio.run(service.multi_query_db_retriever('question', 1, object(), user_id=77))
+                asyncio.run(service.multi_query_db_retriever('question', 1, dims, user_id=77))
         search.assert_not_called()
 
     @pytest.mark.parametrize('found', [False, True])
-    def test_one_successful_recall_remains_usable_after_sibling_failure(self, found):
+    def test_one_successful_recall_remains_usable_after_sibling_failure(self, found: bool) -> None:
         from app.features.chat import service
+        from app.features.chat.query_rewrite import RewriteKeywordDimensions
+        dims = RewriteKeywordDimensions(
+            topic_terms=[], entity_terms=[], time_terms=[],
+            file_type_terms=[], action_terms=[], synonym_terms=[],
+        )
         document = Document(
             page_content="found-file",
             metadata={"id": 1, "name": "found", "distance": 0.1},
@@ -86,18 +100,20 @@ class TestChatServiceMultiQuery:
         rows = [document] if found else []
         embeddings = MagicMock()
         embeddings.aembed_documents = AsyncMock(return_value=[[.1] * 1024] * 2)
-        def search(vector, query, *args):
+
+        def search(vector: list[float], query: str, *args: object) -> list[Document]:
             if query == 'one':
                 raise RuntimeError('private-recall-failure')
             return rows
+
         with patch.object(service, 'get_embeddings_model', return_value=embeddings), \
              patch.object(service, 'build_multi_queries', return_value=['one', 'two']), \
              patch.object(service, '_db_search_by_vector', side_effect=search), \
              patch.object(service, 'build_retrieval_query', return_value='question'), \
              patch.object(service, 'rerank_documents', new_callable=AsyncMock, return_value=rows):
-            assert asyncio.run(service.multi_query_db_retriever('question', 1, object(), user_id=77)) == rows
+            assert asyncio.run(service.multi_query_db_retriever('question', 1, dims, user_id=77)) == rows
 
-    def test_multi_query_db_retriever(self):
+    def test_multi_query_db_retriever(self) -> None:
         from app.features.chat.service import multi_query_db_retriever
         from app.features.chat.query_rewrite import RewriteKeywordDimensions
         dims = RewriteKeywordDimensions(
@@ -114,7 +130,7 @@ class TestChatServiceMultiQuery:
         assert mock_emb.aembed_documents.await_args.kwargs["user_id"] == 77
         assert result == []
 
-    def test_multi_query_db_retriever_with_orig_vector(self):
+    def test_multi_query_db_retriever_with_orig_vector(self) -> None:
         from app.features.chat.service import multi_query_db_retriever
         from app.features.chat.query_rewrite import RewriteKeywordDimensions
         dims = RewriteKeywordDimensions(
@@ -131,7 +147,7 @@ class TestChatServiceMultiQuery:
         assert mock_emb.aembed_documents.await_args.kwargs["user_id"] == 77
         assert result == []
 
-    def test_embed_original_question(self):
+    def test_embed_original_question(self) -> None:
         from app.features.chat.service import embed_original_question
         mock_emb = MagicMock()
         mock_emb.aembed_query = AsyncMock(return_value=[0.1] * 1024)
@@ -140,12 +156,12 @@ class TestChatServiceMultiQuery:
         mock_emb.aembed_query.assert_awaited_once_with("test", user_id=77)
         assert len(result) == 1024
 
-    def test_embed_original_question_empty(self):
+    def test_embed_original_question_empty(self) -> None:
         from app.features.chat.service import embed_original_question
         result = asyncio.run(embed_original_question({"question": ""}))
         assert result == []
 
-    def test_retrieve_docs_with_rewrite(self):
+    def test_retrieve_docs_with_rewrite(self) -> None:
         from app.features.chat.service import retrieve_docs_with_rewrite
         from app.features.chat.query_rewrite import RewriteKeywordDimensions
         dims = RewriteKeywordDimensions(
@@ -162,44 +178,44 @@ class TestChatServiceMultiQuery:
 
 
 class TestChatServiceFormat:
-    def _make_doc(self, content, metadata):
+    def _make_doc(self, content: str, metadata: dict[str, Any]) -> Document:
         """构建用于格式化和融合的真实 SDK 文档."""
         return Document(page_content=content, metadata=metadata)
 
-    def test_format_docs(self):
+    def test_format_docs(self) -> None:
         from app.features.chat.service import format_docs
         doc = self._make_doc("content", {"name": "file.txt", "id": 1, "mime_type": "text/plain"})
         result = format_docs([doc])
         assert "file.txt" in result
 
-    def test_format_docs_image(self):
+    def test_format_docs_image(self) -> None:
         from app.features.chat.service import format_docs
         doc = self._make_doc("content", {"name": "img.jpg", "id": 1, "mime_type": "image/jpeg"})
         result = format_docs([doc])
         assert "![图片名]" in result
 
-    def test_format_history_list(self):
+    def test_format_history_list(self) -> None:
         from app.features.chat.service import format_history
         result = format_history([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}])
         assert "user: hi" in result
 
-    def test_format_history_string(self):
+    def test_format_history_string(self) -> None:
         from app.features.chat.service import format_history
         result = format_history("some history")
         assert "some history" in result
 
-    def test_format_history_empty(self):
+    def test_format_history_empty(self) -> None:
         from app.features.chat.service import format_history
         assert format_history(None) == ""
 
-    def test_fuse_docs_with_rrf(self):
-        from app.features.chat.service import _fuse_docs_with_rrf
+    def test_fuse_docs_with_rrf(self) -> None:
+        from app.features.chat.service import _fuse_docs_with_rrf  # pyright: ignore[reportPrivateUsage]
         doc1 = self._make_doc("c1", {"id": 1, "distance": 0.1})
         doc2 = self._make_doc("c2", {"id": 2, "distance": 0.2})
         result = _fuse_docs_with_rrf([[doc1], [doc2, doc1]], rrf_k=60, top_k=10)
         assert len(result) == 2
         assert result[0].metadata["id"] == 1
 
-    def test_fuse_docs_with_rrf_empty(self):
-        from app.features.chat.service import _fuse_docs_with_rrf
+    def test_fuse_docs_with_rrf_empty(self) -> None:
+        from app.features.chat.service import _fuse_docs_with_rrf  # pyright: ignore[reportPrivateUsage]
         assert _fuse_docs_with_rrf([], 60, 10) == []

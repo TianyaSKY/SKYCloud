@@ -139,7 +139,7 @@ finally:
 '''
 
 
-def test_concurrent_cached_embeddings_keep_user_usage_separate(tmp_path):
+def test_concurrent_cached_embeddings_keep_user_usage_separate(tmp_path: Path) -> None:
     environment = {
         key: value for key, value in os.environ.items()
         if key.lower() not in {'http_proxy', 'https_proxy', 'all_proxy'}

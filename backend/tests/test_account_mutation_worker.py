@@ -2,6 +2,7 @@
 import asyncio
 import threading
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
@@ -13,7 +14,7 @@ from app.features.auth import router, user_service
 from app.infra.extensions import get_session_factory
 
 
-@pytest.mark.parametrize('method,path,body,boundary', [
+CASES: list[tuple[str, str, dict[str, str] | None, str]] = [
     ('POST', '/users', {'username': 'new', 'password': 'password'}, 'authorize_account_mutation'),
     ('PUT', '/users/2', {'username': 'updated'}, 'authorize_account_mutation'),
     ('PUT', '/users/2/password', {'old_password': 'old', 'new_password': 'new'}, 'authorize_account_mutation'),
@@ -23,34 +24,54 @@ from app.infra.extensions import get_session_factory
     ('POST', '/auth/refresh', None, 'refresh'),
     ('GET', '/auth/mcp-token', None, 'get_mcp_token'),
     ('POST', '/auth/mcp-token/refresh', None, 'refresh_mcp_token'),
-])
-async def test_account_mutation_worker_owns_authorization_session(monkeypatch, method, path, body, boundary):
+]
+
+
+@pytest.mark.parametrize('method,path,body,boundary', CASES)
+async def test_account_mutation_worker_owns_authorization_session(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    path: str,
+    body: dict[str, str] | None,
+    boundary: str,
+) -> None:
     loop_thread = threading.get_ident()
     entered, release = threading.Event(), threading.Event()
-    opened, closed = [], []
+    opened: list[Any] = []
+    closed: list[Any] = []
 
     class Owned:
-        def __init__(self):
+        def __init__(self) -> None:
             self.thread = threading.get_ident()
             assert self.thread != loop_thread
             opened.append(self)
 
-        def __enter__(self):
+        def __enter__(self) -> "Owned":
             return self
 
-        def __exit__(self, *args):
+        def __exit__(self, *args: object) -> None:
             assert threading.get_ident() == self.thread
             closed.append(self)
 
-    def denied(session, *args, **kwargs):
+    def denied(session: Any, *args: object, **kwargs: object) -> Any:
         assert threading.get_ident() == session.thread
         entered.set()
         assert release.wait(5)
         raise PermissionDeniedError('Permission denied')
 
-    owner = user_service if boundary == 'authorize_account_mutation' else router.refresh_sessions if boundary == 'refresh' else router.auth_service
+    owner: object = (
+        user_service
+        if boundary == 'authorize_account_mutation'
+        else router.refresh_sessions
+        if boundary == 'refresh'
+        else router.auth_service
+    )
     monkeypatch.setattr(owner, boundary, denied)
-    monkeypatch.setattr(router.refresh_sessions, 'check_origin', lambda *args, **kwargs: None)
+
+    def _mock_check_origin(*args: object, **kwargs: object) -> None:
+        pass
+
+    monkeypatch.setattr(router.refresh_sessions, 'check_origin', _mock_check_origin)
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(router.router)

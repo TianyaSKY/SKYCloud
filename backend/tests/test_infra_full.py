@@ -1,8 +1,9 @@
+# pyright: reportPrivateUsage=false
 """infra 层单元测试：cache / remote_embed / task_queue / llm client / app init。"""
 import asyncio
-import builtins
 import json
 import os
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,8 +11,9 @@ import pytest
 from app.infra.cache import CacheableParams
 from app.infra.llm.usage import TokenUsage
 
+
 @pytest.fixture
-def no_proxy_env(monkeypatch):
+def no_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
         "http_proxy", "https_proxy", "all_proxy",
@@ -19,34 +21,34 @@ def no_proxy_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-
 class TestCacheDecorators:
-    def test_build_cache_key_no_args(self):
+    def test_build_cache_key_no_args(self) -> None:
         from app.infra.cache import _build_cache_key
         assert _build_cache_key("prefix", (), {}, None) == "prefix"
 
-    def test_build_cache_key_with_args(self):
+    def test_build_cache_key_with_args(self) -> None:
         from app.infra.cache import _build_cache_key
         assert _build_cache_key("prefix", (1, 2), {}, None) == "prefix:1:2"
 
-    def test_build_cache_key_with_kwargs(self):
+    def test_build_cache_key_with_kwargs(self) -> None:
         from app.infra.cache import _build_cache_key
         result = _build_cache_key("prefix", (), {"b": 2, "a": 1}, None)
         assert "a=1" in result and "b=2" in result
 
-    def test_build_cache_key_custom_key(self):
+    def test_build_cache_key_custom_key(self) -> None:
         from app.infra.cache import _build_cache_key
-        key_fn = lambda *a, **kw: "custom"
+        def key_fn(*a: object, **kw: object) -> str:
+            return "custom"
         result = _build_cache_key("prefix", (1,), {}, key_fn)
         assert result == "prefix:custom"
 
-    def test_cacheable_hit(self):
+    def test_cacheable_hit(self) -> None:
         from app.infra.cache import cacheable
         mock_redis = MagicMock()
         mock_redis.get.return_value = json.dumps({"v": 1})
 
         @cacheable(CacheableParams(prefix="test", expire=60))
-        def func(x):
+        def func(x: int) -> dict[str, int]:
             return {"v": x}
 
         with patch("app.infra.cache.redis_client", mock_redis):
@@ -54,13 +56,13 @@ class TestCacheDecorators:
         assert result == {"v": 1}
         mock_redis.get.assert_called_once()
 
-    def test_cacheable_miss(self):
+    def test_cacheable_miss(self) -> None:
         from app.infra.cache import cacheable
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
 
         @cacheable(CacheableParams(prefix="test", expire=60))
-        def func(x):
+        def func(x: int) -> dict[str, int]:
             return {"v": x}
 
         with patch("app.infra.cache.redis_client", mock_redis):
@@ -68,13 +70,13 @@ class TestCacheDecorators:
         assert result == {"v": 2}
         mock_redis.setex.assert_called_once()
 
-    def test_cacheable_none_not_cached(self):
+    def test_cacheable_none_not_cached(self) -> None:
         from app.infra.cache import cacheable
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
 
         @cacheable(CacheableParams(prefix="test", expire=60, cache_none=False))
-        def func(x):
+        def func(x: int) -> None:
             return None
 
         with patch("app.infra.cache.redis_client", mock_redis):
@@ -82,13 +84,13 @@ class TestCacheDecorators:
         assert result is None
         mock_redis.setex.assert_not_called()
 
-    def test_cacheable_none_cached(self):
+    def test_cacheable_none_cached(self) -> None:
         from app.infra.cache import cacheable
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
 
         @cacheable(CacheableParams(prefix="test", expire=60, cache_none=True))
-        def func(x):
+        def func(x: int) -> None:
             return None
 
         with patch("app.infra.cache.redis_client", mock_redis):
@@ -96,60 +98,60 @@ class TestCacheDecorators:
         assert result is None
         mock_redis.setex.assert_called_once()
 
-    def test_cacheable_read_error(self):
+    def test_cacheable_read_error(self) -> None:
         from app.infra.cache import cacheable
         mock_redis = MagicMock()
         mock_redis.get.side_effect = Exception("Redis down")
 
         @cacheable(CacheableParams(prefix="test", expire=60))
-        def func(x):
+        def func(x: int) -> str:
             return "value"
 
         with patch("app.infra.cache.redis_client", mock_redis):
             result = func(5)
         assert result == "value"
 
-    def test_cacheable_write_error(self):
+    def test_cacheable_write_error(self) -> None:
         from app.infra.cache import cacheable
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
         mock_redis.setex.side_effect = Exception("Write fail")
 
         @cacheable(CacheableParams(prefix="test", expire=60))
-        def func(x):
+        def func(x: int) -> str:
             return "value"
 
         with patch("app.infra.cache.redis_client", mock_redis):
             result = func(6)
         assert result == "value"
 
-    def test_cacheable_async(self):
+    def test_cacheable_async(self) -> None:
         from app.infra.cache import cacheable
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
 
         @cacheable(CacheableParams(prefix="test", expire=60))
-        async def func(x):
+        async def func(x: int) -> dict[str, int]:
             return {"v": x}
 
         with patch("app.infra.cache.redis_client", mock_redis):
             result = asyncio.run(func(7))
         assert result == {"v": 7}
 
-    def test_cacheable_async_hit(self):
+    def test_cacheable_async_hit(self) -> None:
         from app.infra.cache import cacheable
         mock_redis = MagicMock()
         mock_redis.get.return_value = json.dumps({"v": 8})
 
         @cacheable(CacheableParams(prefix="test", expire=60))
-        async def func(x):
+        async def func(x: int) -> dict[str, int]:
             return {"v": x}
 
         with patch("app.infra.cache.redis_client", mock_redis):
             result = asyncio.run(func(8))
         assert result == {"v": 8}
 
-    def test_evict_cache_pattern(self):
+    def test_evict_cache_pattern(self) -> None:
         from app.infra.cache import evict_cache_pattern
         mock_redis = MagicMock()
         mock_redis.scan_iter.return_value = iter(["p:1", "p:2"])
@@ -157,7 +159,7 @@ class TestCacheDecorators:
             count = evict_cache_pattern("p")
         assert count == 2
 
-    def test_evict_cache_pattern_empty(self):
+    def test_evict_cache_pattern_empty(self) -> None:
         from app.infra.cache import evict_cache_pattern
         mock_redis = MagicMock()
         mock_redis.scan_iter.return_value = iter([])
@@ -166,15 +168,14 @@ class TestCacheDecorators:
         assert count == 0
 
 
-
 class TestTaskQueue:
-    def test_connection_parameters_with_url(self):
+    def test_connection_parameters_with_url(self) -> None:
         import app.infra.task_queue as tq
         with patch.dict(os.environ, {"RABBITMQ_URL": "amqp://user:explicit-test-queue-password@host:5672/vhost"}):
             params = tq._connection_parameters()
             assert params is not None
 
-    def test_connection_parameters_without_url(self):
+    def test_connection_parameters_without_url(self) -> None:
         import app.infra.task_queue as tq
         env = {
             "RABBITMQ_HOST": "localhost",
@@ -191,41 +192,41 @@ class TestTaskQueue:
             params = tq._connection_parameters()
             assert params is not None
 
-    def test_rabbitmq_port(self):
+    def test_rabbitmq_port(self) -> None:
         import app.infra.task_queue as tq
         with patch.dict(os.environ, {"RABBITMQ_PORT": "1234"}):
             assert tq._rabbitmq_port() == 1234
 
-    def test_open_connection(self):
+    def test_open_connection(self) -> None:
         import app.infra.task_queue as tq
         mock_conn = MagicMock()
         with patch.object(tq.pika, "BlockingConnection", return_value=mock_conn):
             conn = tq.open_connection()
         assert conn is mock_conn
 
-    def test_declare_task_queues(self):
+    def test_declare_task_queues(self) -> None:
         import app.infra.task_queue as tq
         channel = MagicMock()
         tq.declare_task_queues(channel)
         assert channel.queue_declare.call_count == len(tq.TASK_QUEUES) + 1
         channel.queue_declare.assert_any_call(queue=tq.FAILED_TASK_QUEUE, durable=True)
 
-    def test_publish_messages(self, mock_task_queue):
+    def test_publish_messages(self, mock_task_queue: dict[str, Any]) -> None:
         import app.infra.task_queue as tq
         tq.publish_messages("queue", ["msg1", "msg2"])
         mock_task_queue["publish_messages"].assert_called_once()
 
-    def test_publish_file_tasks(self, mock_task_queue):
+    def test_publish_file_tasks(self, mock_task_queue: dict[str, Any]) -> None:
         import app.infra.task_queue as tq
         tq.publish_file_tasks([1, 2, 3])
         mock_task_queue["publish_file_tasks"].assert_called_once()
 
-    def test_publish_organize_task(self, mock_task_queue):
+    def test_publish_organize_task(self, mock_task_queue: dict[str, Any]) -> None:
         import app.infra.task_queue as tq
         tq.publish_organize_task(1, 2, "token")
         mock_task_queue["publish_organize_task"].assert_called_once()
 
-    def test_consumer_connect(self):
+    def test_consumer_connect(self) -> None:
         import app.infra.task_queue as tq
         consumer = tq.RabbitMQTaskConsumer()
         mock_conn = MagicMock()
@@ -236,7 +237,7 @@ class TestTaskQueue:
         assert consumer._connection is mock_conn
         assert consumer._channel is mock_channel
 
-    def test_consumer_close(self):
+    def test_consumer_close(self) -> None:
         import app.infra.task_queue as tq
         consumer = tq.RabbitMQTaskConsumer()
         mock_conn = MagicMock()
@@ -246,7 +247,7 @@ class TestTaskQueue:
         mock_conn.close.assert_called_once()
         assert consumer._connection is None
 
-    def test_consumer_close_already_closed(self):
+    def test_consumer_close_already_closed(self) -> None:
         import app.infra.task_queue as tq
         consumer = tq.RabbitMQTaskConsumer()
         mock_conn = MagicMock()
@@ -255,7 +256,7 @@ class TestTaskQueue:
         consumer.close()
         mock_conn.close.assert_not_called()
 
-    def test_consumer_ensure_channel(self):
+    def test_consumer_ensure_channel(self) -> None:
         import app.infra.task_queue as tq
         consumer = tq.RabbitMQTaskConsumer()
         consumer._connection = None
@@ -267,7 +268,7 @@ class TestTaskQueue:
             ch = consumer._ensure_channel()
         assert ch is mock_channel
 
-    def test_consumer_ensure_channel_available(self):
+    def test_consumer_ensure_channel_available(self) -> None:
         import app.infra.task_queue as tq
         consumer = tq.RabbitMQTaskConsumer()
         mock_conn = MagicMock()
@@ -279,17 +280,17 @@ class TestTaskQueue:
         ch = consumer._ensure_channel()
         assert ch is mock_channel
 
-    def test_decode_body_bytes(self):
+    def test_decode_body_bytes(self) -> None:
         import app.infra.task_queue as tq
         consumer = tq.RabbitMQTaskConsumer()
         assert consumer._decode_body(b"hello") == "hello"
 
-    def test_decode_body_str(self):
+    def test_decode_body_str(self) -> None:
         import app.infra.task_queue as tq
         consumer = tq.RabbitMQTaskConsumer()
         assert consumer._decode_body("hello") == "hello"
 
-    def test_get_message_empty(self):
+    def test_get_message_empty(self) -> None:
         import app.infra.task_queue as tq
         consumer = tq.RabbitMQTaskConsumer()
         mock_channel = MagicMock()
@@ -298,11 +299,10 @@ class TestTaskQueue:
         consumer._channel = mock_channel
         consumer._connection = MagicMock()
         consumer._connection.is_closed = False
-        # _ensure_channel 不会重连因为 channel 不是 None 且 is_closed=False
         result = consumer.get_message("queue")
         assert result is None
 
-    def test_get_message_with_data(self):
+    def test_get_message_with_data(self) -> None:
         import app.infra.task_queue as tq
         consumer = tq.RabbitMQTaskConsumer()
         mock_channel = MagicMock()
@@ -316,7 +316,7 @@ class TestTaskQueue:
         assert result is not None
         assert result.body == "body"
 
-    def test_drain_messages(self):
+    def test_drain_messages(self) -> None:
         import app.infra.task_queue as tq
         consumer = tq.RabbitMQTaskConsumer()
         mock_channel = MagicMock()
@@ -333,7 +333,7 @@ class TestTaskQueue:
 
 
 class TestLLMClient:
-    def test_get_client_caches(self, no_proxy_env):
+    def test_get_client_caches(self, no_proxy_env: None) -> None:
         from app.infra.llm import client
         client._client_cache.clear()
         c1 = client._get_client("http://api", "key")
@@ -341,19 +341,17 @@ class TestLLMClient:
         assert c1 is c2
         client._client_cache.clear()
 
-    def test_get_client_different_keys(self, no_proxy_env):
+    def test_get_client_different_keys(self, no_proxy_env: None) -> None:
         from app.infra.llm import client
         client._client_cache.clear()
-        # 相同键应返回相同的缓存客户端
         c1 = client._get_client("http://api", "key1")
         c1_again = client._get_client("http://api", "key1")
         assert c1 is c1_again
-        # 不同键应创建新条目
-        c2 = client._get_client("http://api", "key2")
+        _ = client._get_client("http://api", "key2")
         assert len(client._client_cache) == 2
         client._client_cache.clear()
 
-    def test_chat_completion(self):
+    def test_chat_completion(self) -> None:
         from app.infra.llm import client
         mock_client = MagicMock()
         mock_resp = MagicMock()
@@ -373,7 +371,7 @@ class TestLLMClient:
         assert resp is mock_resp
         m_rec.assert_called_once()
 
-    def test_chat_completion_no_usage(self):
+    def test_chat_completion_no_usage(self) -> None:
         from app.infra.llm import client
         mock_client = MagicMock()
         mock_resp = MagicMock()
@@ -388,7 +386,7 @@ class TestLLMClient:
         assert resp is mock_resp
         m_rec.assert_not_called()
 
-    def test_embed_texts_single_str(self):
+    def test_embed_texts_single_str(self) -> None:
         from app.infra.llm import client
         mock_client = MagicMock()
         mock_resp = MagicMock()
@@ -409,7 +407,7 @@ class TestLLMClient:
         assert len(vectors) == 1
         assert len(vectors[0]) == 1024  # truncated
 
-    def test_embed_texts_list(self):
+    def test_embed_texts_list(self) -> None:
         from app.infra.llm import client
         mock_client = MagicMock()
         mock_resp = MagicMock()
@@ -427,12 +425,12 @@ class TestLLMClient:
         assert len(vectors) == 2
         assert vectors[0][0] == 0.1  # sorted by index
 
-    def test_embed_texts_empty(self):
+    def test_embed_texts_empty(self) -> None:
         from app.infra.llm import client
         vectors = asyncio.run(client.embed_texts(texts=[], config={"api": "x", "key": "y"}))
         assert vectors == []
 
-    def test_embed_texts_with_usage(self):
+    def test_embed_texts_with_usage(self) -> None:
         from app.infra.llm import client
         mock_client = MagicMock()
         mock_resp = MagicMock()
@@ -449,21 +447,22 @@ class TestLLMClient:
                 config={"api": "x", "key": "y", "model": "z"},
                 user_id=1,
             ))
+        assert len(vectors) == 1
         m_rec.assert_called_once()
 
-    def test_record_llm_usage_zero_skip(self):
+    def test_record_llm_usage_zero_skip(self) -> None:
         from app.infra.llm import client
         with patch.object(client, "_safe_record") as m_rec:
             client.record_llm_usage(usage=TokenUsage(user_id=1, action="test", total_tokens=0, prompt_tokens=0))
         m_rec.assert_not_called()
 
-    def test_record_llm_usage_positive(self):
+    def test_record_llm_usage_positive(self) -> None:
         from app.infra.llm import client
         with patch.object(client, "_safe_record") as m_rec:
             client.record_llm_usage(usage=TokenUsage(user_id=1, action="test", total_tokens=10, prompt_tokens=5))
         m_rec.assert_called_once()
 
-    def test_safe_record_exception(self):
+    def test_safe_record_exception(self) -> None:
         from app.infra.llm import client
         # record_usage 不存在或抛异常时不应阻断
         with patch("app.features.token_usage.service.record_usage",
@@ -473,7 +472,7 @@ class TestLLMClient:
                 prompt_tokens=1, completion_tokens=1, total_tokens=2,
             ))
 
-    def test_tracking_embeddings_embed_documents(self):
+    def test_tracking_embeddings_embed_documents(self) -> None:
         """TrackingOpenAIEmbeddings.embed_documents 调用 embed_texts。"""
         from app.infra.llm import client
         # 直接测试方法逻辑，不创建实例（基类被 mock）
@@ -489,14 +488,14 @@ class TestLLMClient:
         m_et.assert_called_once()
         assert result == [[0.1, 0.2]]
 
-    def test_tracking_embeddings_embed_documents_empty(self):
+    def test_tracking_embeddings_embed_documents_empty(self) -> None:
         """空列表不调用 embed_texts。"""
         from app.infra.llm import client
         # 直接验证 embed_texts 对空列表的处理
         result = asyncio.run(client.embed_texts(texts=[], config={"api": "x", "key": "y"}))
         assert result == []
 
-    def test_tracking_embeddings_embed_query(self):
+    def test_tracking_embeddings_embed_query(self) -> None:
         """embed_query 返回单个向量。"""
         from app.infra.llm import client
         with patch.object(client, "embed_texts", new_callable=AsyncMock,
@@ -509,7 +508,7 @@ class TestLLMClient:
             ))
         assert result[0] == [0.1, 0.2]
 
-    def test_tracking_embeddings_embed_query_empty_result(self):
+    def test_tracking_embeddings_embed_query_empty_result(self) -> None:
         """embed_texts 返回空时 embed_query 返回空列表。"""
         from app.infra.llm import client
         with patch.object(client, "embed_texts", new_callable=AsyncMock, return_value=[]):
@@ -520,16 +519,16 @@ class TestLLMClient:
         # embed_query 逻辑：result[0] if result else []
         assert result == []
 
-class TestAppInit:
 
-    def test_initialize_application_stops_on_schema_error(self):
+class TestAppInit:
+    def test_initialize_application_stops_on_schema_error(self) -> None:
         from app import initialize_application
         with patch("app.check_schema", side_effect=RuntimeError("Schema mismatch")), patch("app.Path.mkdir") as mkdir:
             with pytest.raises(RuntimeError, match="Schema mismatch"):
                 initialize_application()
         mkdir.assert_not_called()
 
-    def test_initialize_application_stops_on_upload_directory_error(self):
+    def test_initialize_application_stops_on_upload_directory_error(self) -> None:
         from app import initialize_application
         with patch("app.check_schema"), patch("app.check_legacy_admin"), patch("app.Path.mkdir", side_effect=PermissionError("Permission denied")):
             with pytest.raises(PermissionError):

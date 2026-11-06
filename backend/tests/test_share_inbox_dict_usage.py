@@ -1,7 +1,8 @@
+# pyright: reportPrivateUsage=false
 """分享 / 站内信 / 系统字典 / Token 用量测试。"""
 
-from datetime import datetime, timedelta
-from unittest.mock import patch, MagicMock
+from datetime import timedelta
+from typing import Any
 
 import pytest
 
@@ -9,21 +10,17 @@ from app.exceptions import BusinessRuleError, ResourceNotFoundError
 from app.features.share.service import CreateShareLinkParams
 from app.features.token_usage.service import AdminUsageLogsParams, GetUsageLogsParams
 from app.infra.datetime_utils import beijing_now
-from app.models.user import User
 from app.models.file import File
-from app.models.folder import Folder
 from app.models.share import Share
-from app.models.inbox import Inbox
 from app.models.sys_dict import SysDict
 from app.models.token_usage_log import TokenUsageLog
-from app.models.workspace import Workspace
 
 
 # 分享服务
 
 
 class TestShareService:
-    def _create_file(self, session, test_workspace, test_user):
+    def _create_file(self, session: Any, test_workspace: Any, test_user: Any) -> File:
         f = File(
             name="test.pdf",
             file_path="test.pdf",
@@ -36,7 +33,7 @@ class TestShareService:
         session.flush()
         return f
 
-    def test_create_share_link(self, session, test_workspace, test_user):
+    def test_create_share_link(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         from app.features.share.service import create_share_link
 
         f = self._create_file(session, test_workspace, test_user)
@@ -45,13 +42,13 @@ class TestShareService:
         assert share.token is not None
         assert share.file_id == f.id
 
-    def test_create_share_link_file_not_found(self, session, test_user):
+    def test_create_share_link_file_not_found(self, session: Any, test_user: Any) -> None:
         from app.features.share.service import create_share_link
 
         with pytest.raises(ValueError):
             create_share_link(session, CreateShareLinkParams(user_id=test_user.id, file_id=99999))
 
-    def test_get_share_by_token_valid(self, session, test_workspace, test_user):
+    def test_get_share_by_token_valid(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         from app.features.share.service import create_share_link, get_share_by_token
 
         f = self._create_file(session, test_workspace, test_user)
@@ -60,7 +57,7 @@ class TestShareService:
         assert found is not None
         assert found.id == share.id
 
-    def test_get_share_by_token_expired(self, session, test_workspace, test_user):
+    def test_get_share_by_token_expired(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         from app.features.share.service import get_share_by_token
 
         f = self._create_file(session, test_workspace, test_user)
@@ -75,12 +72,12 @@ class TestShareService:
         result = get_share_by_token(session, share.token)
         assert result is None
 
-    def test_get_share_by_token_not_found(self, session):
+    def test_get_share_by_token_not_found(self, session: Any) -> None:
         from app.features.share.service import get_share_by_token
 
         assert get_share_by_token(session, "nonexistent") is None
 
-    def test_get_my_shares(self, session, test_workspace, test_user):
+    def test_get_my_shares(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         from app.features.share.service import create_share_link, get_my_shares
 
         f = self._create_file(session, test_workspace, test_user)
@@ -88,7 +85,7 @@ class TestShareService:
         shares = get_my_shares(session, test_user.id)
         assert len(shares) >= 1
 
-    def test_cancel_share(self, session, test_workspace, test_user):
+    def test_cancel_share(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         from app.features.share.service import create_share_link, cancel_share
 
         f = self._create_file(session, test_workspace, test_user)
@@ -96,7 +93,7 @@ class TestShareService:
         assert cancel_share(session, share.id, test_user.id) is True
         assert cancel_share(session, share.id, test_user.id) is False
 
-    def test_create_share_with_expiry(self, session, test_workspace, test_user):
+    def test_create_share_with_expiry(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         from app.features.share.service import create_share
 
         f = self._create_file(session, test_workspace, test_user)
@@ -104,14 +101,14 @@ class TestShareService:
         share = create_share(session, test_user.id, f.id, future)
         assert share.expires_at is not None
 
-    def test_create_share_invalid_date(self, session, test_workspace, test_user):
+    def test_create_share_invalid_date(self, session: Any, test_workspace: Any, test_user: Any) -> None:
         from app.features.share.service import create_share
 
         f = self._create_file(session, test_workspace, test_user)
         with pytest.raises(BusinessRuleError):
             create_share(session, test_user.id, f.id, "not-a-date")
 
-    def test_cancel_share_for_user_not_found(self, session, test_user):
+    def test_cancel_share_for_user_not_found(self, session: Any, test_user: Any) -> None:
         from app.features.share.service import cancel_share_for_user
 
         with pytest.raises(ResourceNotFoundError):
@@ -122,7 +119,7 @@ class TestShareService:
 
 
 class TestInboxService:
-    def test_create_message(self, session, test_user):
+    def test_create_message(self, session: Any, test_user: Any) -> None:
         from app.features.inbox.service import create_inbox_message
 
         msg = create_inbox_message(session, {
@@ -134,7 +131,7 @@ class TestInboxService:
         assert msg.id is not None
         assert msg.is_read is False
 
-    def test_get_user_inbox(self, session, test_user):
+    def test_get_user_inbox(self, session: Any, test_user: Any) -> None:
         from app.features.inbox.service import create_inbox_message, get_user_inbox
 
         create_inbox_message(session, {
@@ -148,7 +145,7 @@ class TestInboxService:
         assert len(result["items"]) == 2
         assert result["pages"] == 1
 
-    def test_get_user_inbox_pagination(self, session, test_user):
+    def test_get_user_inbox_pagination(self, session: Any, test_user: Any) -> None:
         from app.features.inbox.service import create_inbox_message, get_user_inbox
 
         for i in range(5):
@@ -160,7 +157,7 @@ class TestInboxService:
         assert len(result["items"]) == 2
         assert result["pages"] == 3
 
-    def test_get_inbox_message(self, session, test_user):
+    def test_get_inbox_message(self, session: Any, test_user: Any) -> None:
         from app.features.inbox.service import create_inbox_message, get_inbox_message
 
         msg = create_inbox_message(session, {
@@ -169,13 +166,13 @@ class TestInboxService:
         found = get_inbox_message(session, msg.id)
         assert found.id == msg.id
 
-    def test_get_inbox_message_not_found(self, session):
+    def test_get_inbox_message_not_found(self, session: Any) -> None:
         from app.features.inbox.service import get_inbox_message
 
         with pytest.raises(ResourceNotFoundError):
             get_inbox_message(session, 99999)
 
-    def test_mark_as_read(self, session, test_user):
+    def test_mark_as_read(self, session: Any, test_user: Any) -> None:
         from app.features.inbox.service import create_inbox_message, mark_as_read
 
         msg = create_inbox_message(session, {
@@ -184,7 +181,7 @@ class TestInboxService:
         updated = mark_as_read(session, msg.id, test_user.id)
         assert updated.is_read is True
 
-    def test_mark_as_read_wrong_user(self, session, test_user):
+    def test_mark_as_read_wrong_user(self, session: Any, test_user: Any) -> None:
         from app.features.inbox.service import create_inbox_message, mark_as_read
 
         msg = create_inbox_message(session, {
@@ -193,7 +190,7 @@ class TestInboxService:
         with pytest.raises(ResourceNotFoundError):
             mark_as_read(session, msg.id, 99999)
 
-    def test_delete_inbox_message(self, session, test_user):
+    def test_delete_inbox_message(self, session: Any, test_user: Any) -> None:
         from app.features.inbox.service import create_inbox_message, delete_inbox_message, get_user_inbox
 
         msg = create_inbox_message(session, {
@@ -203,7 +200,7 @@ class TestInboxService:
         result = get_user_inbox(session, test_user.id)
         assert result["total"] == 0
 
-    def test_mark_all_as_read(self, session, test_user):
+    def test_mark_all_as_read(self, session: Any, test_user: Any) -> None:
         from app.features.inbox.service import create_inbox_message, mark_all_as_read, get_user_inbox
 
         for i in range(3):
@@ -220,7 +217,7 @@ class TestInboxService:
 
 
 class TestSysDictService:
-    def test_create_sys_dict(self, session):
+    def test_create_sys_dict(self, session: Any) -> None:
         from app.features.sys_dict import service as sys_dict_svc
 
         result = sys_dict_svc.create_sys_dict(session, {
@@ -231,7 +228,7 @@ class TestSysDictService:
         })
         assert result.key == "test_key"
 
-    def test_create_model_config_key_rejected(self, session):
+    def test_create_model_config_key_rejected(self, session: Any) -> None:
         from app.features.sys_dict import service as sys_dict_svc
 
         with pytest.raises(BusinessRuleError):
@@ -242,7 +239,7 @@ class TestSysDictService:
                 "enable": True,
             })
 
-    def test_update_sys_dict(self, session):
+    def test_update_sys_dict(self, session: Any) -> None:
         from app.features.sys_dict import service as sys_dict_svc
 
         sd = SysDict(key="upd_key", value="old", des="d", enable=True)
@@ -252,13 +249,13 @@ class TestSysDictService:
         updated = sys_dict_svc.update_sys_dict(session, sd.id, {"value": "new"})
         assert updated.value == "new"
 
-    def test_update_nonexistent(self, session):
+    def test_update_nonexistent(self, session: Any) -> None:
         from app.features.sys_dict import service as sys_dict_svc
 
         with pytest.raises(ResourceNotFoundError):
             sys_dict_svc.update_sys_dict(session, 99999, {"value": "x"})
 
-    def test_delete_sys_dict(self, session):
+    def test_delete_sys_dict(self, session: Any) -> None:
         from app.features.sys_dict import service as sys_dict_svc
 
         sd = SysDict(key="del_key", value="v", des="", enable=True)
@@ -268,13 +265,13 @@ class TestSysDictService:
         sys_dict_svc.delete_sys_dict(session, sd.id)
         assert session.get(SysDict, sd.id) is None
 
-    def test_delete_nonexistent(self, session):
+    def test_delete_nonexistent(self, session: Any) -> None:
         from app.features.sys_dict import service as sys_dict_svc
 
         with pytest.raises(ResourceNotFoundError):
             sys_dict_svc.delete_sys_dict(session, 99999)
 
-    def test_get_sys_dict_sync_by_id(self, session):
+    def test_get_sys_dict_sync_by_id(self, session: Any) -> None:
         from app.features.sys_dict import service as sys_dict_svc
 
         sd = SysDict(key="sync_key", value="sv", des="", enable=True)
@@ -290,7 +287,7 @@ class TestSysDictService:
 
 
 class TestTokenUsageService:
-    def test_get_user_token_stats(self, session, test_user):
+    def test_get_user_token_stats(self, session: Any, test_user: Any) -> None:
         from app.features.token_usage.service import get_user_token_stats
 
         test_user.total_prompt_tokens = 100
@@ -303,14 +300,14 @@ class TestTokenUsageService:
         assert stats["total_prompt_tokens"] == 100
         assert stats["total_tokens"] == 150
 
-    def test_get_user_token_stats_nonexistent(self, session):
+    def test_get_user_token_stats_nonexistent(self, session: Any) -> None:
         from app.features.token_usage.service import get_user_token_stats
 
         from app.exceptions import ResourceNotFoundError
         with pytest.raises(ResourceNotFoundError):
             get_user_token_stats(session, 99999)
 
-    def test_get_usage_logs(self, session, test_user):
+    def test_get_usage_logs(self, session: Any, test_user: Any) -> None:
         from app.features.token_usage.service import get_usage_logs
 
         log = TokenUsageLog(
@@ -327,7 +324,7 @@ class TestTokenUsageService:
         assert result["total"] == 1
         assert result["items"][0]["action"] == "chat"
 
-    def test_get_usage_logs_filter_action(self, session, test_user):
+    def test_get_usage_logs_filter_action(self, session: Any, test_user: Any) -> None:
         from app.features.token_usage.service import get_usage_logs
 
         session.add(TokenUsageLog(user_id=test_user.id, action="chat", total_tokens=10))
@@ -337,7 +334,7 @@ class TestTokenUsageService:
         result = get_usage_logs(session, GetUsageLogsParams(user_id=test_user.id, action="chat"))
         assert result["total"] == 1
 
-    def test_get_daily_stats(self, session, test_user):
+    def test_get_daily_stats(self, session: Any, test_user: Any) -> None:
         from app.features.token_usage.service import get_daily_stats
 
         log = TokenUsageLog(
@@ -355,7 +352,7 @@ class TestTokenUsageService:
         assert len(stats) >= 1
         assert stats[0]["total_tokens"] == 15
 
-    def test_get_all_users_token_stats(self, session, test_user, admin_user):
+    def test_get_all_users_token_stats(self, session: Any, test_user: Any, admin_user: Any) -> None:
         from app.features.token_usage.service import get_all_users_token_stats
 
         test_user.total_tokens = 100
@@ -367,7 +364,7 @@ class TestTokenUsageService:
         # 按 total_tokens 降序
         assert stats[0]["total_tokens"] >= stats[1]["total_tokens"]
 
-    def test_get_all_users_usage_logs(self, session, test_user):
+    def test_get_all_users_usage_logs(self, session: Any, test_user: Any) -> None:
         from app.features.token_usage.service import get_all_users_usage_logs
 
         session.add(TokenUsageLog(user_id=test_user.id, action="chat", total_tokens=10))
@@ -377,7 +374,7 @@ class TestTokenUsageService:
         assert result["total"] >= 1
         assert "username" in result["items"][0]
 
-    def test_get_all_users_daily_stats(self, session, test_user):
+    def test_get_all_users_daily_stats(self, session: Any, test_user: Any) -> None:
         from app.features.token_usage.service import get_all_users_daily_stats
 
         session.add(TokenUsageLog(
@@ -390,7 +387,7 @@ class TestTokenUsageService:
         stats = get_all_users_daily_stats(session, days=30)
         assert len(stats) >= 1
 
-    def test_get_per_user_daily_stats(self, session, test_user):
+    def test_get_per_user_daily_stats(self, session: Any, test_user: Any) -> None:
         from app.features.token_usage.service import get_per_user_daily_stats
 
         session.add(TokenUsageLog(

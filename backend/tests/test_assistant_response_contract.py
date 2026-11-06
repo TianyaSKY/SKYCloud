@@ -1,162 +1,193 @@
 """使用真实 SQL 与显式流式引擎接缝的助手 HTTP 契约测试."""
+from collections.abc import AsyncIterator
+from datetime import timedelta
 from types import SimpleNamespace
-import pytest
+from typing import Any, cast
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from app.api.dependencies import get_current_user,get_current_workspace
+import pytest
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.api.dependencies import get_current_user, get_current_workspace
+from app.api.factory import create_fastapi_app
 from app.exceptions import register_exception_handlers
-from app.infra.extensions import get_db, get_session_factory
-from sqlalchemy.orm import sessionmaker
 from app.features.assistant import router as assistant
-from app.models.assistant import AssistantMessage, AssistantPermission, AssistantRun
+from app.features.assistant.event_protocol import AssistantEvent
+from app.infra.datetime_utils import beijing_now
+from app.infra.extensions import SessionFactory, get_db, get_session_factory
+from app.models import AssistantMessage, AssistantPermission, User, Workspace
+
 
 @pytest.fixture
-def contract(session,test_user,test_workspace):
-    app=FastAPI();register_exception_handlers(app)
+def contract(session: Session, test_user: User, test_workspace: Workspace) -> tuple[TestClient, Session, User, Workspace]:
+    app = FastAPI(); register_exception_handlers(app)
     app.include_router(assistant.router)
-    app.dependency_overrides[get_db]=lambda:session
-    app.dependency_overrides[get_session_factory]=lambda:sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
-    app.dependency_overrides[get_current_user]=lambda:test_user
-    app.dependency_overrides[get_current_workspace]=lambda:test_workspace
-    return TestClient(app,raise_server_exceptions=False),session,test_user,test_workspace
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: cast(SessionFactory, sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint"))
+    app.dependency_overrides[get_current_user] = lambda: test_user
+    app.dependency_overrides[get_current_workspace] = lambda: test_workspace
+    return TestClient(app, raise_server_exceptions=False), session, test_user, test_workspace
 
-def data(response,status=200):
-    assert response.status_code==status,response.text
-    body=response.json();assert set(body)=={'success','data'} and body['success'] is True
+
+def data(response: Any, status: int = 200) -> Any:
+    assert response.status_code == status, response.text
+    body: dict[str, Any] = response.json(); assert set(body) == {'success', 'data'} and body['success'] is True
     return body['data']
 
-def create(client,mode='fast'):
-    return data(client.post('/assistant/conversations',json={'mode':mode,'title':'Contract'}),201)
 
-def test_conversation_crud_and_empty_run(contract):
-    client,db,user,workspace=contract
-    row=create(client);cid=row['id']
-    assert data(client.get('/assistant/conversations'))['conversations']==[row]
-    assert data(client.get(f'/assistant/conversations/{cid}/messages'))=={'conversation':row,'messages':[]}
+def create(client: TestClient, mode: str = 'fast') -> dict[str, Any]:
+    return cast(dict[str, Any], data(client.post('/assistant/conversations', json={'mode': mode, 'title': 'Contract'}), 201))
+
+
+def test_conversation_crud_and_empty_run(contract: tuple[TestClient, Session, User, Workspace]) -> None:
+    client, _db, _user, _workspace = contract
+    row = create(client); cid = row['id']
+    assert data(client.get('/assistant/conversations'))['conversations'] == [row]
+    assert data(client.get(f'/assistant/conversations/{cid}/messages')) == {'conversation': row, 'messages': []}
     assert data(client.get(f'/assistant/conversations/{cid}/active-run')) is None
     assert data(client.get('/assistant/runs/active')) is None
-    updated=data(client.patch(f'/assistant/conversations/{cid}',json={'title':'Archived','status':'archived'}))
-    assert updated['title']=='Archived' and updated['status']=='archived'
-    assert data(client.get('/assistant/conversations'))['conversations']==[]
-    deleted=client.delete(f'/assistant/conversations/{cid}')
-    assert deleted.status_code==204 and deleted.content==b''
+    updated = data(client.patch(f'/assistant/conversations/{cid}', json={'title': 'Archived', 'status': 'archived'}))
+    assert updated['title'] == 'Archived' and updated['status'] == 'archived'
+    assert data(client.get('/assistant/conversations'))['conversations'] == []
+    deleted = client.delete(f'/assistant/conversations/{cid}')
+    assert deleted.status_code == 204 and deleted.content == b''
 
-def test_run_messages_cancel_handoff(contract,monkeypatch):
-    client,db,user,workspace=contract
-    cid=create(client)['id']
-    _,run,_=assistant.service.prepare_run(db,assistant.service.PrepareRunParams(
-        workspace=workspace,user_id=user.id,conversation_id=cid,query='Question'))
-    payload=data(client.get(f'/assistant/runs/{run.id}'))
-    assert payload['status']=='running' and payload['pending_permission'] is None
-    assert data(client.get(f'/assistant/conversations/{cid}/active-run'))['id']==run.id
-    messages=data(client.get(f'/assistant/conversations/{cid}/messages'))['messages']
-    assert [m['role'] for m in messages]==['user','assistant']
-    assert messages[0]['content']=='Question' and messages[0]['metadata']=={}
-    notified=[]
-    async def cancel(run_id):notified.append(run_id)
-    monkeypatch.setattr(assistant.service.run_registry,'request_cancel',cancel)
+
+def test_run_messages_cancel_handoff(contract: tuple[TestClient, Session, User, Workspace], monkeypatch: pytest.MonkeyPatch) -> None:
+    client, db, user, workspace = contract
+    cid = create(client)['id']
+    _, run, _ = assistant.service.prepare_run(db, assistant.service.PrepareRunParams(
+        workspace=workspace, user_id=user.id, conversation_id=cid, query='Question'))
+    payload = data(client.get(f'/assistant/runs/{run.id}'))
+    assert payload['status'] == 'running' and payload['pending_permission'] is None
+    assert data(client.get(f'/assistant/conversations/{cid}/active-run'))['id'] == run.id
+    messages: list[dict[str, Any]] = data(client.get(f'/assistant/conversations/{cid}/messages'))['messages']
+    assert [m['role'] for m in messages] == ['user', 'assistant']
+    assert messages[0]['content'] == 'Question' and messages[0]['metadata'] == {}
+    notified: list[int] = []
+    async def cancel(run_id: int) -> None:
+        notified.append(run_id)
+    monkeypatch.setattr(assistant.service.run_registry, 'request_cancel', cancel)
     assert data(client.post(f'/assistant/runs/{run.id}/cancel'))['cancel_requested'] is True
-    assert notified==[run.id]
-    handed=data(client.post(f'/assistant/conversations/{cid}/handoff',json={}),201)
-    assert handed['mode']=='expert' and handed['source_conversation_id']==cid
+    assert notified == [run.id]
+    handed = data(client.post(f'/assistant/conversations/{cid}/handoff', json={}), 201)
+    assert handed['mode'] == 'expert' and handed['source_conversation_id'] == cid
 
-def test_permission_once_response(contract):
-    client,db,user,workspace=contract
-    cid=create(client,'expert')['id']
-    _,run,_=assistant.service.prepare_run(db,assistant.service.PrepareRunParams(
-        workspace=workspace,user_id=user.id,conversation_id=cid,query='Operate'))
+
+def test_permission_once_response(contract: tuple[TestClient, Session, User, Workspace]) -> None:
+    client, db, user, workspace = contract
+    cid = create(client, 'expert')['id']
+    _, run, _ = assistant.service.prepare_run(db, assistant.service.PrepareRunParams(
+        workspace=workspace, user_id=user.id, conversation_id=cid, query='Operate'))
     assistant.repository.register_permission(
         db,
         run,
         {"permission_id": "p1", "title": "Read file"},
     )
     db.commit()
-    waiting=data(client.get(f'/assistant/runs/{run.id}'))
-    assert waiting['pending_permission']=={'permission_id':'p1','title':'Read file','tool':None}
-    assert data(client.get('/assistant/runs/active'))['id']==run.id
-    replied=data(client.post(f'/assistant/runs/{run.id}/permissions/p1',json={'response':'once'}))
+    waiting = data(client.get(f'/assistant/runs/{run.id}'))
+    assert waiting['pending_permission'] == {'permission_id': 'p1', 'title': 'Read file', 'tool': None}
+    assert data(client.get('/assistant/runs/active'))['id'] == run.id
+    replied = data(client.post(f'/assistant/runs/{run.id}/permissions/p1', json={'response': 'once'}))
     assert replied['pending_permission'] is None
-    assert replied['pending_permission_id']=='p1'
+    assert replied['pending_permission_id'] == 'p1'
     db.expire_all()
-    permission=db.get(AssistantPermission,(run.id,'p1'))
-    assert permission.state=='answered' and permission.response=='once'
-    assert client.post(f'/assistant/runs/{run.id}/permissions/p1',json={'response':'once'}).status_code==409
+    permission = db.get(AssistantPermission, (run.id, 'p1'))
+    assert permission is not None
+    assert permission.state == 'answered' and permission.response == 'once'
+    assert client.post(f'/assistant/runs/{run.id}/permissions/p1', json={'response': 'once'}).status_code == 409
+
 
 @pytest.mark.parametrize("mode", ["fast", "expert"])
-def test_active_run_reads_do_not_recover_stale_runs(contract, mode):
-    from datetime import timedelta
-    from app.infra.datetime_utils import beijing_now
-    client,db,user,workspace=contract
-    cid=create(client,mode)['id']
-    _,run,_=assistant.service.prepare_run(db,assistant.service.PrepareRunParams(
-        workspace=workspace,user_id=user.id,conversation_id=cid,query='Question'))
-    run.started_at=beijing_now()-timedelta(hours=1)
-    run.metadata_dict={}
+def test_active_run_reads_do_not_recover_stale_runs(contract: tuple[TestClient, Session, User, Workspace], mode: str) -> None:
+    client, db, user, workspace = contract
+    cid = create(client, mode)['id']
+    _, run, _ = assistant.service.prepare_run(db, assistant.service.PrepareRunParams(
+        workspace=workspace, user_id=user.id, conversation_id=cid, query='Question'))
+    run.started_at = beijing_now() - timedelta(hours=1)
+    run.metadata_dict = {}
     db.commit()
-    path=f'/assistant/conversations/{cid}/active-run' if mode=='fast' else '/assistant/runs/active'
-    assert data(client.get(path))['id']==run.id
+    path = f'/assistant/conversations/{cid}/active-run' if mode == 'fast' else '/assistant/runs/active'
+    assert data(client.get(path))['id'] == run.id
     db.refresh(run)
-    assert run.status=='running' and run.error_code is None
-    assert db.get(AssistantMessage,run.assistant_message_id).status=='streaming'
+    assert run.status == 'running' and run.error_code is None
+    msg = db.get(AssistantMessage, run.assistant_message_id)
+    assert msg is not None
+    assert msg.status == 'streaming'
 
 
-def test_private_field_filter_and_invalid_output(contract,monkeypatch):
-    client,db,user,workspace=contract
-    expected=create(client)
-    monkeypatch.setattr(assistant.service,'create_conversation',lambda *a:SimpleNamespace(to_dict=lambda:{**expected,'credential':'private-secret'}))
-    assert data(client.post('/assistant/conversations',json={}),201)==expected
-    monkeypatch.setattr(assistant.service,'create_conversation',lambda *a:SimpleNamespace(to_dict=lambda:{'id':'private-secret'}))
-    response=client.post('/assistant/conversations',json={})
-    assert response.status_code==500 and response.json()['error']['code']=='INTERNAL_ERROR'
+def test_private_field_filter_and_invalid_output(contract: tuple[TestClient, Session, User, Workspace], monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _db, _user, _workspace = contract
+    expected = create(client)
+    def mock_conv_with_cred(*a: Any) -> SimpleNamespace:
+        return SimpleNamespace(to_dict=lambda: {**expected, 'credential': 'private-secret'})
+    monkeypatch.setattr(assistant.service, 'create_conversation', mock_conv_with_cred)
+    assert data(client.post('/assistant/conversations', json={}), 201) == expected
+    def mock_conv_with_invalid(*a: Any) -> SimpleNamespace:
+        return SimpleNamespace(to_dict=lambda: {'id': 'private-secret'})
+    monkeypatch.setattr(assistant.service, 'create_conversation', mock_conv_with_invalid)
+    response = client.post('/assistant/conversations', json={})
+    assert response.status_code == 500 and response.json()['error']['code'] == 'INTERNAL_ERROR'
     assert 'private-secret' not in response.text
 
-def test_sse_preserves_events_and_headers(contract,monkeypatch):
-    from app.features.assistant.event_protocol import AssistantEvent
-    client,db,user,workspace=contract
-    cid=create(client)['id']
-    async def events(*args, **kwargs):
-        yield AssistantEvent(type='text_delta',payload={'delta':'hello'})
-        yield AssistantEvent(type='done',payload={})
-    monkeypatch.setattr(assistant.service,'stream_run',events)
-    response=client.post(f'/assistant/conversations/{cid}/messages/stream',json={'query':'Question'})
-    assert response.status_code==200 and response.headers['content-type'].startswith('text/event-stream')
-    assert 'data: ' in response.text and 'hello' in response.text and '"success"' not in response.text
-    assert int(response.headers['x-assistant-run-id'])>0 and response.headers['x-accel-buffering']=='no'
 
-def test_openapi_json_stream_and_no_body(contract):
-    client,*_=contract
-    schema=client.get('/openapi.json').json()
-    for path,ops in schema['paths'].items():
-        for op in ops.values():
-            responses=op['responses']
-            if '204' in responses:assert 'content' not in responses['204']
-            elif path.endswith('/stream'):assert set(responses['200']['content'])=={'text/event-stream'}
+def test_sse_preserves_events_and_headers(contract: tuple[TestClient, Session, User, Workspace], monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _db, _user, _workspace = contract
+    cid = create(client)['id']
+    async def events(*args: Any, **kwargs: Any) -> AsyncIterator[AssistantEvent]:
+        yield AssistantEvent(type='text_delta', payload={'delta': 'hello'})
+        yield AssistantEvent(type='done', payload={})
+    monkeypatch.setattr(assistant.service, 'stream_run', events)
+    response = client.post(f'/assistant/conversations/{cid}/messages/stream', json={'query': 'Question'})
+    assert response.status_code == 200 and response.headers['content-type'].startswith('text/event-stream')
+    assert 'data: ' in response.text and 'hello' in response.text and '"success"' not in response.text
+    assert int(response.headers['x-assistant-run-id']) > 0 and response.headers['x-accel-buffering'] == 'no'
+
+
+def test_openapi_json_stream_and_no_body(contract: tuple[TestClient, Session, User, Workspace]) -> None:
+    client, *_ = contract
+    schema: dict[str, Any] = client.get('/openapi.json').json()
+    paths: dict[str, Any] = schema['paths']
+    for path, ops in paths.items():
+        operations: dict[str, Any] = ops
+        for op in operations.values():
+            responses: dict[str, Any] = op['responses']
+            if '204' in responses:
+                assert 'content' not in responses['204']
+            elif path.endswith('/stream'):
+                assert set(responses['200']['content']) == {'text/event-stream'}
             else:
-                code='201' if '201' in responses else '200'
-                ref=responses[code]['content']['application/json']['schema']['$ref']
+                code = '201' if '201' in responses else '200'
+                ref: str = responses[code]['content']['application/json']['schema']['$ref']
                 assert schema['components']['schemas'][ref.split('/')[-1]]['properties']['success']['const'] is True
 
 
-def test_main_api_openapi_requires_typed_json_success_for_every_public_route():
-    from app.api.factory import create_fastapi_app
-    schema=create_fastapi_app().openapi()
-    audited=0
-    for path,ops in schema['paths'].items():
-        if not path.startswith('/api/'):continue
-        for op in ops.values():
-            for code,response in op['responses'].items():
-                if not code.startswith('2'):continue
-                if code=='204':
-                    assert 'content' not in response,(path,code)
+def test_main_api_openapi_requires_typed_json_success_for_every_public_route() -> None:
+    schema = create_fastapi_app().openapi()
+    audited = 0
+    paths: dict[str, Any] = schema['paths']
+    for path, ops in paths.items():
+        if not path.startswith('/api/'):
+            continue
+        operations: dict[str, Any] = ops
+        for op in operations.values():
+            responses: dict[str, Any] = op['responses']
+            for code, response in responses.items():
+                if not code.startswith('2'):
                     continue
-                content=response.get('content',{})
+                if code == '204':
+                    assert 'content' not in response, (path, code)
+                    continue
+                content: dict[str, Any] = response.get('content', {})
                 if 'application/json' not in content:
-                    assert path in {'/api/share/{token}','/api/files/{id}/download'} or path.endswith('/messages/stream'),path
+                    assert path in {'/api/share/{token}', '/api/files/{id}/download'} or path.endswith('/messages/stream'), path
                     continue
-                ref=content['application/json']['schema']['$ref']
-                model=schema['components']['schemas'][ref.split('/')[-1]]
-                assert model['properties']['success']['const'] is True,path
-                assert 'data' in model['required'],path
-                audited+=1
-    assert audited>=60
+                ref: str = content['application/json']['schema']['$ref']
+                model: dict[str, Any] = schema['components']['schemas'][ref.split('/')[-1]]
+                assert model['properties']['success']['const'] is True, path
+                assert 'data' in model['required'], path
+                audited += 1
+    assert audited >= 60
+
 

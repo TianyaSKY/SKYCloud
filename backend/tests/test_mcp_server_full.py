@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """MCP server.py 单元测试。
 
 所有工具已通过 _FakeFastMCP passthrough，可直接调用。
@@ -5,13 +6,16 @@
 """
 import asyncio
 import json
+from collections.abc import Generator
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 
 @pytest.fixture
-def mcp_user_ctx():
+def mcp_user_ctx() -> Generator[int, None, None]:
     """设置 MCP 上下文 user_id。"""
     from app.mcp.context import current_user_id
     token = current_user_id.set(1)
@@ -20,11 +24,11 @@ def mcp_user_ctx():
 
 
 class TestMCPHelpers:
-    def test_get_authenticated_user_id_success(self, mcp_user_ctx):
+    def test_get_authenticated_user_id_success(self, mcp_user_ctx: int) -> None:
         from app.mcp.authorization import get_authenticated_user_id
         assert get_authenticated_user_id() == 1
 
-    def test_get_authenticated_user_id_no_user(self):
+    def test_get_authenticated_user_id_no_user(self) -> None:
         from app.mcp.authorization import get_authenticated_user_id
         from app.mcp.context import current_user_id
         token = current_user_id.set(None)
@@ -32,58 +36,58 @@ class TestMCPHelpers:
             get_authenticated_user_id()
         current_user_id.reset(token)
 
-    def test_error_json(self):
+    def test_error_json(self) -> None:
         from app.mcp.server import _error_json
         result = json.loads(_error_json("test error"))
         assert result["error"] == "test error"
 
-    def test_service_error_json_domain_error(self):
+    def test_service_error_json_domain_error(self) -> None:
         from app.mcp.server import _service_error_json
         from app.exceptions import BusinessRuleError
         result = json.loads(_service_error_json(BusinessRuleError("domain error")))
         assert result["error"] == "domain error"
 
-    def test_service_error_json_http_exception(self):
+    def test_service_error_json_http_exception(self) -> None:
         from app.mcp.server import _service_error_json
         from fastapi import HTTPException
         result = json.loads(_service_error_json(HTTPException(status_code=404, detail="not found")))
         assert result["error"] == "not found"
 
-    def test_service_error_json_http_exception_dict_detail(self):
+    def test_service_error_json_http_exception_dict_detail(self) -> None:
         from app.mcp.server import _service_error_json
         from fastapi import HTTPException
         result = json.loads(_service_error_json(HTTPException(status_code=400, detail={"code": 1})))
         assert "error" in result
 
-    def test_service_error_json_generic(self):
+    def test_service_error_json_generic(self) -> None:
         from app.mcp.server import _service_error_json
         result = json.loads(_service_error_json(ValueError("generic")))
         assert result["error"] == "Service temporarily unavailable"
 
-    def test_is_text_file_mime_text(self):
+    def test_is_text_file_mime_text(self) -> None:
         from app.mcp.server import _is_text_file
         assert _is_text_file("text/plain", None) is True
 
-    def test_is_text_file_mime_json(self):
+    def test_is_text_file_mime_json(self) -> None:
         from app.mcp.server import _is_text_file
         assert _is_text_file("application/json", None) is True
 
-    def test_is_text_file_extension(self):
+    def test_is_text_file_extension(self) -> None:
         from app.mcp.server import _is_text_file
         assert _is_text_file(None, "code.py") is True
 
-    def test_is_text_file_not_text(self):
+    def test_is_text_file_not_text(self) -> None:
         from app.mcp.server import _is_text_file
         assert _is_text_file("image/jpeg", "photo.jpg") is False
 
-    def test_is_text_file_no_info(self):
+    def test_is_text_file_no_info(self) -> None:
         from app.mcp.server import _is_text_file
         assert _is_text_file(None, None) is False
 
-    def test_run_sync(self, session):
+    def test_run_sync(self, session: Any) -> None:
         from app.mcp.server import _run_sync
 
-        def fn(s, x):
+        def fn(s: Any, x: int) -> int:
             return x * 2
 
         with patch("app.mcp.server.SessionLocal", return_value=session):
@@ -92,26 +96,26 @@ class TestMCPHelpers:
 
 
 class TestJWTAuthMiddleware:
-    def test_middleware_no_auth_header(self):
+    def test_middleware_no_auth_header(self) -> None:
         from app.mcp.context import current_user_id
         from app.mcp.server import JWTAuthMiddleware
         app_mock = AsyncMock()
         mw = JWTAuthMiddleware(app_mock)
-        scope = {"type": "http", "headers": []}
+        scope: dict[str, Any] = {"type": "http", "headers": []}
         asyncio.run(mw(scope, MagicMock(), MagicMock()))
         app_mock.assert_called_once()
         assert current_user_id.get() is None
 
-    def test_middleware_valid_bearer(self, session, test_user):
+    def test_middleware_valid_bearer(self, session: Any, test_user: Any) -> None:
         from app.mcp.context import current_user_id
         from app.mcp.server import JWTAuthMiddleware
         from app.features.auth.service import generate_token
         token = generate_token(test_user.id)
-        captured = {}
-        async def _capture_app(scope, receive, send):
+        captured: dict[str, Any] = {}
+        async def _capture_app(scope: Any, receive: Any, send: Any) -> None:
             captured["user_id"] = current_user_id.get()
         mw = JWTAuthMiddleware(_capture_app)
-        scope = {
+        scope: dict[str, Any] = {
             "type": "http",
             "headers": [(b"authorization", f"Bearer {token}".encode())],
         }
@@ -119,12 +123,12 @@ class TestJWTAuthMiddleware:
             asyncio.run(mw(scope, MagicMock(), MagicMock()))
         assert captured["user_id"] == test_user.id
 
-    def test_middleware_invalid_bearer(self, session):
+    def test_middleware_invalid_bearer(self, session: Any) -> None:
         from app.mcp.context import current_user_id
         from app.mcp.server import JWTAuthMiddleware
         app_mock = AsyncMock()
         mw = JWTAuthMiddleware(app_mock)
-        scope = {
+        scope: dict[str, Any] = {
             "type": "http",
             "headers": [(b"authorization", b"Bearer invalid.token")],
         }
@@ -133,46 +137,46 @@ class TestJWTAuthMiddleware:
         app_mock.assert_called_once()
         assert current_user_id.get() is None
 
-    def test_middleware_non_http(self):
+    def test_middleware_non_http(self) -> None:
         from app.mcp.server import JWTAuthMiddleware
         app_mock = AsyncMock()
         mw = JWTAuthMiddleware(app_mock)
-        scope = {"type": "lifespan"}
+        scope: dict[str, Any] = {"type": "lifespan"}
         asyncio.run(mw(scope, MagicMock(), MagicMock()))
         app_mock.assert_called_once()
 
-    def test_middleware_empty_token(self):
+    def test_middleware_empty_token(self) -> None:
         from app.mcp.context import current_user_id
         from app.mcp.server import JWTAuthMiddleware
         app_mock = AsyncMock()
         mw = JWTAuthMiddleware(app_mock)
-        scope = {
+        scope: dict[str, Any] = {
             "type": "http",
             "headers": [(b"authorization", b"Bearer ")],
         }
         asyncio.run(mw(scope, MagicMock(), MagicMock()))
         assert current_user_id.get() is None
 
-    def test_middleware_no_bearer_prefix(self):
+    def test_middleware_no_bearer_prefix(self) -> None:
         from app.mcp.context import current_user_id
         from app.mcp.server import JWTAuthMiddleware
         app_mock = AsyncMock()
         mw = JWTAuthMiddleware(app_mock)
-        scope = {
+        scope: dict[str, Any] = {
             "type": "http",
             "headers": [(b"authorization", b"Basic abc123")],
         }
         asyncio.run(mw(scope, MagicMock(), MagicMock()))
         assert current_user_id.get() is None
 
-    def test_get_mcp_app(self):
+    def test_get_mcp_app(self) -> None:
         from app.mcp.server import get_mcp_app, mcp
         result = get_mcp_app(mcp)
         assert result is not None
 
 
 class TestMCPTools:
-    def test_get_current_user_tool(self, session, test_user, mcp_user_ctx):
+    def test_get_current_user_tool(self, session: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import get_current_user
         with patch("app.mcp.server.SessionLocal", return_value=session):
             result = asyncio.run(get_current_user())
@@ -180,25 +184,25 @@ class TestMCPTools:
         assert data["username"] == "testuser"
         assert "password_hash" not in data
 
-    def test_get_current_user_tool_not_found(self, session, mcp_user_ctx):
+    def test_get_current_user_tool_not_found(self, session: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import get_current_user
         with patch("app.mcp.server.SessionLocal", return_value=session):
             result = asyncio.run(get_current_user())
         data = json.loads(result)
         assert "error" in data
 
-    def test_get_current_user_no_auth(self):
+    def test_get_current_user_no_auth(self) -> None:
         from app.mcp.server import get_current_user
         with pytest.raises(PermissionError):
             asyncio.run(get_current_user())
 
 
-    def test_search_files_no_auth(self):
+    def test_search_files_no_auth(self) -> None:
         from app.mcp.server import search_files
         with pytest.raises(PermissionError):
             asyncio.run(search_files("test"))
 
-    def test_list_files_tool(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_list_files_tool(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import list_files
         from app.models.folder import Folder
         # 创建用户根文件夹
@@ -213,12 +217,12 @@ class TestMCPTools:
         data = json.loads(result)
         assert "files" in data
 
-    def test_list_files_no_auth(self):
+    def test_list_files_no_auth(self) -> None:
         from app.mcp.server import list_files
         with pytest.raises(PermissionError):
             asyncio.run(list_files())
 
-    def test_get_file_info_tool(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_get_file_info_tool(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import get_file_info
         from app.models.file import File
         f = File(name="info.txt", file_path="info.txt", file_size=10,
@@ -232,7 +236,7 @@ class TestMCPTools:
         data = json.loads(result)
         assert data["name"] == "info.txt"
 
-    def test_get_file_info_permission_denied(self, session, test_workspace, mcp_user_ctx):
+    def test_get_file_info_permission_denied(self, session: Any, test_workspace: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import get_file_info
         # 用 mock 避免外键约束：直接返回一个 uploader_id=999 的 mock file
         mock_file = MagicMock()
@@ -246,14 +250,14 @@ class TestMCPTools:
         assert "error" in data
         assert "Permission" in data["error"]
 
-    def test_create_folder_tool(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_create_folder_tool(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import create_folder
         from app.models.folder import Folder
         root = Folder(name="/root2", workspace_id=test_workspace.id, parent_id=None)
         session.add(root)
         session.flush()
         mock_folder = MagicMock()
-        mock_folder.to_dict.return_value = {"id": 1, "name": "new"}
+        mock_folder.to_dict.return_value = {"id": 5, "name": "new"}
         with patch("app.mcp.server.SessionLocal", return_value=session), \
              patch("app.mcp.server.folder_service.get_root_folder_id", return_value=root.id), \
              patch("app.mcp.server.folder_service.create_folder", return_value=mock_folder):
@@ -261,7 +265,7 @@ class TestMCPTools:
         data = json.loads(result)
         assert data["name"] == "new"
 
-    def test_move_file_tool(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_move_file_tool(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import move_file
         from app.models.file import File
         f = File(name="mv.txt", file_path="mv.txt", file_size=10,
@@ -278,7 +282,7 @@ class TestMCPTools:
         data = json.loads(result)
         assert data["name"] == "renamed.txt"
 
-    def test_move_file_no_changes(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_move_file_no_changes(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import move_file
         from app.models.file import File
         f = File(name="mv2.txt", file_path="mv2.txt", file_size=10,
@@ -292,7 +296,7 @@ class TestMCPTools:
         data = json.loads(result)
         assert "error" in data
 
-    def test_delete_file_tool(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_delete_file_tool(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import delete_file
         from app.models.file import File
         f = File(name="del.txt", file_path="del.txt", file_size=10,
@@ -307,7 +311,7 @@ class TestMCPTools:
         data = json.loads(result)
         assert data["success"] is True
 
-    def test_get_file_download_url_tool(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_get_file_download_url_tool(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import get_file_download_url
         from app.models.file import File
         f = File(name="dl.txt", file_path="dl.txt", file_size=10,
@@ -324,7 +328,7 @@ class TestMCPTools:
         data = json.loads(result)
         assert "download_url" in data
 
-    def test_read_file_content_text(self, session, test_workspace, test_user, tmp_path, mcp_user_ctx):
+    def test_read_file_content_text(self, session: Any, test_workspace: Any, test_user: Any, tmp_path: Path, mcp_user_ctx: int) -> None:
         from app.mcp.server import read_file_content
         from app.models.file import File
         test_file = tmp_path / "read.txt"
@@ -341,7 +345,7 @@ class TestMCPTools:
         data = json.loads(result)
         assert data["content"] == "Hello, World!"
 
-    def test_read_file_content_not_text(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_read_file_content_not_text(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import read_file_content
         from app.models.file import File
         f = File(name="image.jpg", file_path="img.jpg", file_size=100,
@@ -356,7 +360,7 @@ class TestMCPTools:
         assert "error" in data
         assert "Not a text file" in data["error"]
 
-    def test_read_file_content_file_not_on_disk(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_read_file_content_file_not_on_disk(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import read_file_content
         from app.models.file import File
         f = File(name="missing.txt", file_path="missing.txt", file_size=10,
@@ -371,7 +375,7 @@ class TestMCPTools:
         data = json.loads(result)
         assert "error" in data
 
-    def test_move_folder_tool(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_move_folder_tool(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import move_folder
         mock_folder = MagicMock()
         mock_folder.user_id = 1
@@ -385,7 +389,7 @@ class TestMCPTools:
         data = json.loads(result)
         assert data["name"] == "renamed"
 
-    def test_delete_folder_tool(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_delete_folder_tool(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import delete_folder
         mock_folder = MagicMock()
         mock_folder.user_id = 1
@@ -397,7 +401,7 @@ class TestMCPTools:
         data = json.loads(result)
         assert data["success"] is True
 
-    def test_get_storage_overview(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_get_storage_overview(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from sqlalchemy.orm import Session
         from app.mcp.server import get_storage_overview
         from app.models.file import File
@@ -413,7 +417,7 @@ class TestMCPTools:
         assert data["status_breakdown"]["success"] == 1
 
 
-    def test_batch_delete(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_batch_delete(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import batch_delete, BatchDeleteItem
         from app.models.file import File
         f = File(name="bd.txt", file_path="bd.txt", file_size=10,
@@ -438,7 +442,7 @@ class TestMCPTools:
         data = json.loads(result)
         assert data["deleted_count"] == 2
 
-    def test_batch_delete_sanitizes_server_errors(self, mcp_user_ctx):
+    def test_batch_delete_sanitizes_server_errors(self, mcp_user_ctx: int) -> None:
         from fastapi import HTTPException
         from app.mcp.server import batch_delete, BatchDeleteItem
         private = "private-storage-password"
@@ -451,7 +455,7 @@ class TestMCPTools:
         assert data["errors"] == [{"id": 1, "error": "Service temporarily unavailable"}]
         assert private not in result
 
-    def test_get_folder_tree_tool(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_get_folder_tree_tool(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from sqlalchemy.orm import Session
         from app.mcp.server import get_folder_tree
         from app.models.folder import Folder
@@ -468,7 +472,7 @@ class TestMCPTools:
             "id": first.id, "name": "t1", "children": [{"id": second.id, "name": "t2"}]}
 
 
-    def test_get_upload_url(self, mcp_user_ctx):
+    def test_get_upload_url(self, mcp_user_ctx: int) -> None:
         from app.mcp.server import get_upload_url
         with patch("app.mcp.server.Path.exists", return_value=False):
             result = asyncio.run(get_upload_url())
@@ -476,7 +480,7 @@ class TestMCPTools:
         assert "upload_url" in data
         assert "curl_example" in data
 
-    def test_get_upload_url_docker(self, mcp_user_ctx):
+    def test_get_upload_url_docker(self, mcp_user_ctx: int) -> None:
         from app.mcp.server import get_upload_url
         with patch("app.mcp.server.Path.exists", return_value=True):  # /.dockerenv exists
             result = asyncio.run(get_upload_url(parent_id=5))
@@ -484,7 +488,7 @@ class TestMCPTools:
         assert "skycloud-backend-api" in data["upload_url"]
         assert "parent_id=5" in data["curl_example"]
 
-    def test_inline_upload_adapter_supports_text_and_base64(self, tmp_path):
+    def test_inline_upload_adapter_supports_text_and_base64(self, tmp_path: Path) -> None:
         from app.mcp.server import _inline_upload_adapter
 
         text_adapter = _inline_upload_adapter("note.md", "你好", "utf-8", None)
@@ -499,7 +503,7 @@ class TestMCPTools:
 
 
 class TestMCPResources:
-    def test_get_user_folders_resource(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_get_user_folders_resource(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import get_user_folders
         with patch("app.mcp.server._run_sync", new_callable=AsyncMock,
                    return_value=[{"id": 1, "name": "folder1"}]):
@@ -507,7 +511,7 @@ class TestMCPResources:
         data = json.loads(result)
         assert isinstance(data, list)
 
-    def test_get_user_file_resource(self, session, test_workspace, test_user, mcp_user_ctx):
+    def test_get_user_file_resource(self, session: Any, test_workspace: Any, test_user: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import get_user_file
         from app.models.file import File
         f = File(name="res.txt", file_path="res.txt", file_size=10,
@@ -521,7 +525,7 @@ class TestMCPResources:
         data = json.loads(result)
         assert data["name"] == "res.txt"
 
-    def test_get_user_file_permission_denied(self, session, test_workspace, mcp_user_ctx):
+    def test_get_user_file_permission_denied(self, session: Any, test_workspace: Any, mcp_user_ctx: int) -> None:
         from app.mcp.server import get_user_file
         # 用 mock 避免外键约束：直接返回一个 uploader_id=999 的 mock file
         mock_file = MagicMock()
@@ -536,25 +540,25 @@ class TestMCPResources:
 
 
 class TestMCPPrompts:
-    def test_find_file_prompt(self):
+    def test_find_file_prompt(self) -> None:
         from app.mcp.server import find_file
         result = asyncio.run(find_file("a document about Python"))
         assert "Python" in result
         assert "search_files" in result
 
-    def test_organize_workspace_prompt(self):
+    def test_organize_workspace_prompt(self) -> None:
         from app.mcp.server import organize_workspace
         result = asyncio.run(organize_workspace())
         assert "list_files" in result
         assert "create_folder" in result
 
-    def test_summarize_file_prompt(self):
+    def test_summarize_file_prompt(self) -> None:
         from app.mcp.server import summarize_file
         result = asyncio.run(summarize_file(42))
         assert "42" in result
         assert "get_file_info" in result
 
-    def test_batch_download_prompt(self):
+    def test_batch_download_prompt(self) -> None:
         from app.mcp.server import batch_download
         result = asyncio.run(batch_download("report"))
         assert "report" in result

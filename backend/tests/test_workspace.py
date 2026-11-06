@@ -1,88 +1,90 @@
 """工作空间测试：permissions / service。"""
 
 import pytest
+from sqlalchemy.orm import Session
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError, ResourceNotFoundError
-from app.models.user import User
-from app.models.workspace import Workspace, WorkspaceMember
-from app.models.folder import Folder
-from app.models.inbox import Inbox
 from app.features.workspace.permissions import (
-    WorkspaceRole,
     ROLE_LEVEL,
-    get_member_role,
-    assert_member,
+    WorkspaceRole,
+    assert_admin,
     assert_can_read,
     assert_can_write,
-    assert_admin,
+    assert_member,
     check_role_level,
+    get_member_role,
 )
+from app.models.folder import Folder
+from app.models.inbox import Inbox
+from app.models.user import User
+from app.models.workspace import Workspace, WorkspaceMember
 
 
 # permissions
 
 
 class TestWorkspaceRole:
-    def test_enum_values(self):
+    def test_enum_values(self) -> None:
         assert WorkspaceRole.admin == "admin"
         assert WorkspaceRole.editor == "editor"
         assert WorkspaceRole.viewer == "viewer"
 
-    def test_role_level_mapping(self):
+    def test_role_level_mapping(self) -> None:
         assert ROLE_LEVEL["viewer"] == 1
         assert ROLE_LEVEL["editor"] == 2
         assert ROLE_LEVEL["admin"] == 3
 
 
 class TestCheckRoleLevel:
-    def test_admin_passes_all(self):
+    def test_admin_passes_all(self) -> None:
         assert check_role_level("admin", "viewer") is True
         assert check_role_level("admin", "editor") is True
         assert check_role_level("admin", "admin") is True
 
-    def test_editor_passes_editor_and_viewer(self):
+    def test_editor_passes_editor_and_viewer(self) -> None:
         assert check_role_level("editor", "viewer") is True
         assert check_role_level("editor", "editor") is True
         assert check_role_level("editor", "admin") is False
 
-    def test_viewer_only_passes_viewer(self):
+    def test_viewer_only_passes_viewer(self) -> None:
         assert check_role_level("viewer", "viewer") is True
         assert check_role_level("viewer", "editor") is False
         assert check_role_level("viewer", "admin") is False
 
-    def test_enum_input(self):
+    def test_enum_input(self) -> None:
         assert check_role_level(WorkspaceRole.admin, "editor") is True
 
-    def test_unknown_role(self):
+    def test_unknown_role(self) -> None:
         assert check_role_level("unknown", "viewer") is False
 
 
 class TestGetMemberRole:
-    def test_member_exists(self, session, test_workspace, test_user):
+    def test_member_exists(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         role = get_member_role(session, test_workspace.id, test_user.id)
         assert role == WorkspaceRole.admin
 
-    def test_non_member(self, session, test_workspace):
+    def test_non_member(self, session: Session, test_workspace: Workspace) -> None:
         role = get_member_role(session, test_workspace.id, 99999)
         assert role is None
 
 
 class TestAssertMember:
-    def test_member_passes(self, session, test_workspace, test_user):
+    def test_member_passes(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         role = assert_member(session, test_workspace.id, test_user.id)
         assert role == WorkspaceRole.admin
 
-    def test_non_member_raises(self, session, test_workspace):
+    def test_non_member_raises(self, session: Session, test_workspace: Workspace) -> None:
         with pytest.raises(PermissionDeniedError):
             assert_member(session, test_workspace.id, 99999)
 
 
 class TestAssertCanRead:
-    def test_viewer_can_read(self, session, test_workspace, test_user):
+    def test_viewer_can_read(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         # 将角色改为 viewer
         member = session.query(WorkspaceMember).filter_by(
             workspace_id=test_workspace.id, user_id=test_user.id
         ).first()
+        assert member is not None
         member.role = "viewer"
         session.flush()
 
@@ -91,19 +93,21 @@ class TestAssertCanRead:
 
 
 class TestAssertCanWrite:
-    def test_editor_can_write(self, session, test_workspace, test_user):
+    def test_editor_can_write(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         member = session.query(WorkspaceMember).filter_by(
             workspace_id=test_workspace.id, user_id=test_user.id
         ).first()
+        assert member is not None
         member.role = "editor"
         session.flush()
 
         assert_can_write(session, test_workspace.id, test_user.id)  # 不抛异常
 
-    def test_viewer_cannot_write(self, session, test_workspace, test_user):
+    def test_viewer_cannot_write(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         member = session.query(WorkspaceMember).filter_by(
             workspace_id=test_workspace.id, user_id=test_user.id
         ).first()
+        assert member is not None
         member.role = "viewer"
         session.flush()
 
@@ -112,13 +116,14 @@ class TestAssertCanWrite:
 
 
 class TestAssertAdmin:
-    def test_admin_passes(self, session, test_workspace, test_user):
+    def test_admin_passes(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         assert_admin(session, test_workspace.id, test_user.id)
 
-    def test_editor_fails(self, session, test_workspace, test_user):
+    def test_editor_fails(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         member = session.query(WorkspaceMember).filter_by(
             workspace_id=test_workspace.id, user_id=test_user.id
         ).first()
+        assert member is not None
         member.role = "editor"
         session.flush()
 
@@ -130,7 +135,7 @@ class TestAssertAdmin:
 
 
 class TestCreateWorkspace:
-    def test_create_workspace(self, session, test_user):
+    def test_create_workspace(self, session: Session, test_user: User) -> None:
         from app.features.workspace.service import create_workspace
 
         ws = create_workspace(session, test_user.id, "新空间", "描述")
@@ -142,6 +147,7 @@ class TestCreateWorkspace:
         member = session.query(WorkspaceMember).filter_by(
             workspace_id=ws.id, user_id=test_user.id
         ).first()
+        assert member is not None
         assert member.role == "admin"
 
         # 验证根文件夹
@@ -150,7 +156,7 @@ class TestCreateWorkspace:
 
 
 class TestGetUserWorkspaces:
-    def test_list_workspaces(self, session, test_workspace, test_user):
+    def test_list_workspaces(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import get_user_workspaces
 
         result = get_user_workspaces(session, test_user.id)
@@ -160,13 +166,13 @@ class TestGetUserWorkspaces:
 
 
 class TestGetWorkspace:
-    def test_existing(self, session, test_workspace):
+    def test_existing(self, session: Session, test_workspace: Workspace) -> None:
         from app.features.workspace.service import get_workspace
 
         ws = get_workspace(session, test_workspace.id)
         assert ws.id == test_workspace.id
 
-    def test_nonexistent(self, session):
+    def test_nonexistent(self, session: Session) -> None:
         from app.features.workspace.service import get_workspace
 
         with pytest.raises(ResourceNotFoundError):
@@ -174,7 +180,7 @@ class TestGetWorkspace:
 
 
 class TestGetWorkspaceDetail:
-    def test_detail_includes_members(self, session, test_workspace, test_user):
+    def test_detail_includes_members(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import get_workspace_detail
 
         detail = get_workspace_detail(session, test_workspace.id, test_user.id)
@@ -184,14 +190,14 @@ class TestGetWorkspaceDetail:
 
 
 class TestUpdateWorkspace:
-    def test_admin_updates(self, session, test_workspace, test_user):
+    def test_admin_updates(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import update_workspace
 
         ws = update_workspace(session, test_workspace.id, test_user.id, "新名称", "新描述")
         assert ws.name == "新名称"
         assert ws.description == "新描述"
 
-    def test_non_admin_denied(self, session, test_workspace, test_user):
+    def test_non_admin_denied(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import update_workspace
 
         # 创建另一个用户（非成员）
@@ -205,7 +211,7 @@ class TestUpdateWorkspace:
 
 
 class TestDeleteWorkspace:
-    def test_owner_deletes(self, session, test_workspace, test_user):
+    def test_owner_deletes(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import delete_workspace
 
         ws_id = test_workspace.id
@@ -217,7 +223,7 @@ class TestDeleteWorkspace:
         delete_workspace(session, ws_id, test_user.id)
         assert session.get(Workspace, ws_id) is None
 
-    def test_non_owner_denied(self, session, test_workspace, test_user):
+    def test_non_owner_denied(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import delete_workspace
 
         other = User(username="other2", role="common")
@@ -230,7 +236,7 @@ class TestDeleteWorkspace:
 
 
 class TestInviteMember:
-    def test_invite_success(self, session, test_workspace, test_user):
+    def test_invite_success(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import invite_member
 
         # 创建被邀请用户
@@ -248,15 +254,15 @@ class TestInviteMember:
         # 验证通知
         notification = session.query(Inbox).filter_by(user_id=invitee.id).first()
         assert notification is not None
-        assert "邀请" in notification.title
+        assert notification.title is not None and "邀请" in notification.title
 
-    def test_invite_nonexistent_user(self, session, test_workspace, test_user):
+    def test_invite_nonexistent_user(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import invite_member
 
         with pytest.raises(ResourceNotFoundError):
             invite_member(session, test_workspace.id, test_user.id, "ghost", "viewer")
 
-    def test_invite_existing_member(self, session, test_workspace, test_user):
+    def test_invite_existing_member(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import invite_member
 
         with pytest.raises(BusinessRuleError):
@@ -264,7 +270,7 @@ class TestInviteMember:
 
 
 class TestRemoveMember:
-    def test_remove_success(self, session, test_workspace, test_user):
+    def test_remove_success(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import remove_member
 
         # 添加一个成员
@@ -283,7 +289,7 @@ class TestRemoveMember:
         ).first()
         assert remaining is None
 
-    def test_cannot_remove_owner(self, session, test_workspace, test_user):
+    def test_cannot_remove_owner(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import remove_member
 
         with pytest.raises(BusinessRuleError):
@@ -291,7 +297,7 @@ class TestRemoveMember:
 
 
 class TestUpdateMemberRole:
-    def test_update_role(self, session, test_workspace, test_user):
+    def test_update_role(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import update_member_role
 
         member_user = User(username="rolechange", role="common")
@@ -308,7 +314,7 @@ class TestUpdateMemberRole:
         )
         assert updated.role == "editor"
 
-    def test_cannot_change_owner_role(self, session, test_workspace, test_user):
+    def test_cannot_change_owner_role(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import update_member_role
 
         with pytest.raises(BusinessRuleError):
@@ -318,7 +324,7 @@ class TestUpdateMemberRole:
 
 
 class TestListMembers:
-    def test_list(self, session, test_workspace, test_user):
+    def test_list(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         from app.features.workspace.service import list_members
 
         members = list_members(session, test_workspace.id)
@@ -326,11 +332,17 @@ class TestListMembers:
         assert members[0]["username"] == "testuser"
 
 
-def test_role_check_ignores_cached_member_after_bulk_demotion(session,test_workspace,test_user):
+def test_role_check_ignores_cached_member_after_bulk_demotion(
+    session: Session, test_workspace: Workspace, test_user: User
+) -> None:
     from sqlalchemy import update
-    cached=session.query(WorkspaceMember).filter_by(workspace_id=test_workspace.id,user_id=test_user.id).one()
-    session.execute(update(WorkspaceMember).where(WorkspaceMember.id==cached.id).values(role='viewer'),execution_options={'synchronize_session':False})
+    cached = session.query(WorkspaceMember).filter_by(workspace_id=test_workspace.id, user_id=test_user.id).one()
+    session.execute(
+        update(WorkspaceMember).where(WorkspaceMember.id == cached.id).values(role='viewer'),
+        execution_options={'synchronize_session': False},
+    )
     assert cached.role == 'admin'
-    assert get_member_role(session,test_workspace.id,test_user.id) == WorkspaceRole.viewer
-    with pytest.raises(PermissionDeniedError): assert_can_write(session,test_workspace.id,test_user.id)
+    assert get_member_role(session, test_workspace.id, test_user.id) == WorkspaceRole.viewer
+    with pytest.raises(PermissionDeniedError):
+        assert_can_write(session, test_workspace.id, test_user.id)
     session.rollback()

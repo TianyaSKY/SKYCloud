@@ -1,14 +1,18 @@
 """控制器认证、固定 Docker 策略、身份与中继回归测试."""
 
 import asyncio
-import json
+from collections.abc import AsyncGenerator, MutableMapping
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock, patch
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
+from runtime_common.json_types import JsonObject
 from runtime_controller.app import MAX_BODY, create_app
 from runtime_controller.client import ControllerClient, ControllerError, auth_headers, runtime_url
 from runtime_controller.engine import Engine, MissingRuntime, PolicyViolation
@@ -18,12 +22,12 @@ TEST_IMAGE = 'test/runtime@sha256:' + 'a' * 64
 
 
 @pytest.fixture
-def settings(tmp_path):
+def settings(tmp_path: Path) -> Settings:
     return Settings("T" * 48, "S" * 48, TEST_IMAGE, "isolated-runtime-net", "1g", 100000, "skycloud", str(tmp_path / "controller-state"))
 
 
 @pytest.fixture
-def managed_container(settings):
+def managed_container(settings: Settings) -> Mock:
     options = settings.container_options(2, 3, 4)
     container = Mock()
     container.id = "a" * 64
@@ -37,7 +41,7 @@ def managed_container(settings):
     return container
 
 
-def test_fixed_policy_excludes_host_mounts_and_secrets(settings):
+def test_fixed_policy_excludes_host_mounts_and_secrets(settings: Settings) -> None:
     options = settings.container_options(2, 3, 4)
     assert options["image"] == TEST_IMAGE
     assert options["network"] == settings.network
@@ -56,7 +60,7 @@ def test_fixed_policy_excludes_host_mounts_and_secrets(settings):
     assert "CHAT_API_KEY" not in str(options)
 
 
-def test_controller_cannot_inspect_other_containers(settings, managed_container):
+def test_controller_cannot_inspect_other_containers(settings: Settings, managed_container: Mock) -> None:
     client = Mock()
     client.containers.get.return_value = managed_container
     engine = Engine(settings, client)
@@ -70,7 +74,7 @@ def test_controller_cannot_inspect_other_containers(settings, managed_container)
 
 
 @pytest.mark.parametrize("tamper", ["name", "owner", "image", "root", "mount", "network", "policy"])
-def test_managed_labels_do_not_override_container_policy(settings, managed_container, tamper):
+def test_managed_labels_do_not_override_container_policy(settings: Settings, managed_container: Mock, tamper: str) -> None:
     if tamper == "name":
         managed_container.name = "redis"
     elif tamper == "owner":
@@ -92,7 +96,7 @@ def test_managed_labels_do_not_override_container_policy(settings, managed_conta
     managed_container.start.assert_not_called()
 
 
-def test_inspection_never_returns_environment(settings, managed_container):
+def test_inspection_never_returns_environment(settings: Settings, managed_container: Mock) -> None:
     managed_container.attrs["Config"]["Labels"]["secret-label"] = "private"
     client = Mock()
     client.containers.get.return_value = managed_container
@@ -102,7 +106,7 @@ def test_inspection_never_returns_environment(settings, managed_container):
     assert result["labels"]["skycloud.runtime_policy"] == POLICY_VERSION
 
 
-def test_request_auth_and_no_arbitrary_docker_api(settings):
+def test_request_auth_and_no_arbitrary_docker_api(settings: Settings) -> None:
     engine = Mock()
     with TestClient(create_app(settings, engine), raise_server_exceptions=False) as client:
         assert client.get("/containers/" + "a" * 64).status_code == 401
@@ -114,7 +118,7 @@ def test_request_auth_and_no_arbitrary_docker_api(settings):
         engine.write_config.assert_not_called()
 
 
-def test_removed_create_route_is_method_not_allowed(settings):
+def test_removed_create_route_is_method_not_allowed(settings: Settings) -> None:
     engine = Mock()
     with TestClient(create_app(settings, engine), raise_server_exceptions=False) as client:
         headers = {"X-Runtime-Controller-Token": settings.token}
@@ -122,7 +126,7 @@ def test_removed_create_route_is_method_not_allowed(settings):
         assert client.post("/containers/create", json={}).status_code == 401
 
 
-def test_missing_container_hides_controller_error_text(settings):
+def test_missing_container_hides_controller_error_text(settings: Settings) -> None:
     engine = Mock()
     engine.inspect.side_effect = MissingRuntime("private-docker-sentinel")
     with TestClient(create_app(settings, engine), raise_server_exceptions=False) as client:
@@ -135,13 +139,13 @@ def test_missing_container_hides_controller_error_text(settings):
         assert "private-docker-sentinel" not in response.text
 
 
-def test_config_writer_never_executes_caller_commands(settings, managed_container):
+def test_config_writer_never_executes_caller_commands(settings: Settings, managed_container: Mock) -> None:
     from runtime_controller.policy import RUNTIME_USER
 
     client = Mock()
     client.containers.get.return_value = managed_container
     managed_container.exec_run.return_value = SimpleNamespace(exit_code=0)
-    payload = {"prompt": "$(cat /etc/shadow); `touch /host`"}
+    payload: JsonObject = {"prompt": "$(cat /etc/shadow); `touch /host`"}
     Engine(settings, client).write_config("a" * 64, payload)
     args, kwargs = managed_container.exec_run.call_args
     assert "$(cat" not in args[0][2] and "touch /host" not in args[0][2]
@@ -149,18 +153,21 @@ def test_config_writer_never_executes_caller_commands(settings, managed_containe
     assert "umask 077" in args[0][2]
 
 
-def test_http_relay_strips_control_and_caller_credentials(settings):
+def test_http_relay_strips_control_and_caller_credentials(settings: Settings) -> None:
     engine = Mock()
     engine.target.return_value = ("http://172.20.0.2:3000", ("skycloud", "runtime-password"))
-    requests = []
+    requests: list[httpx.Request] = []
     real_client = httpx.AsyncClient
 
-    def transport(request):
+    def transport(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(200, json={"healthy": True})
 
+    def mock_async_client(**kwargs: Any) -> httpx.AsyncClient:
+        return real_client(transport=httpx.MockTransport(transport), **kwargs)
+
     with TestClient(create_app(settings, engine), raise_server_exceptions=False) as client, patch(
-        "runtime_controller.app.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(transport), **kwargs)
+        "runtime_controller.app.httpx.AsyncClient", side_effect=mock_async_client
     ):
         headers = {"X-Runtime-Controller-Token": settings.token, "Authorization": "Bearer not-a-runtime-password"}
         response = client.get("/runtimes/" + "a" * 64 + "/http/global/health", headers=headers)
@@ -172,20 +179,24 @@ def test_http_relay_strips_control_and_caller_credentials(settings):
         assert client.get("/runtimes/" + "a" * 64 + "/http/http://db", headers=headers).status_code == 403
 
 
-def test_http_relay_streams_and_closes_upstream(settings):
+def test_http_relay_streams_and_closes_upstream(settings: Settings) -> None:
     engine = Mock()
     engine.target.return_value = ("http://172.20.0.2:3000", ("skycloud", "runtime-password"))
     real_client = httpx.AsyncClient
     response = httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=b"data: {\"type\":\"connected\"}\n\n")
+
+    def mock_async_client(**kwargs: Any) -> httpx.AsyncClient:
+        return real_client(transport=httpx.MockTransport(lambda _: response), **kwargs)
+
     with TestClient(create_app(settings, engine), raise_server_exceptions=False) as client, patch(
-        "runtime_controller.app.httpx.AsyncClient", side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(lambda _: response), **kwargs)
+        "runtime_controller.app.httpx.AsyncClient", side_effect=mock_async_client
     ):
         result = client.get("/runtimes/" + "a" * 64 + "/http/event", headers={"X-Runtime-Controller-Token": settings.token})
     assert "data:" in result.text
     assert response.is_closed
 
 
-def test_control_token_is_sent_only_to_controller_url(monkeypatch):
+def test_control_token_is_sent_only_to_controller_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RUNTIME_CONTROLLER_TOKEN", "private-controller-credential")
     monkeypatch.setenv("RUNTIME_CONTROLLER_URL", "http://controller:5003")
     assert auth_headers("http://external.example:3000") == {}
@@ -193,14 +204,17 @@ def test_control_token_is_sent_only_to_controller_url(monkeypatch):
     assert auth_headers(runtime_url("a" * 64))["X-Runtime-Controller-Token"] == "private-controller-credential"
 
 
-def test_user_snapshot_is_one_filtered_docker_request(settings):
+def test_user_snapshot_is_one_filtered_docker_request(settings: Settings) -> None:
     from copy import deepcopy
     labels = settings.container_options(2, 3, 4)['labels']
-    good = dict(Id='a' * 64, Names=['/skycloud-opencode-w2-u3'], State='running',
-                Labels=labels, Env=['PRIVATE'], Ports=[{'PublicPort': 1}])
-    foreign = deepcopy(good); foreign['Labels']['skycloud.user_id'] = '9'
-    invalid = deepcopy(good); invalid['Names'] = ['/database']
-    client = Mock(); client.api.containers.return_value = [good, foreign, invalid]
+    good: dict[str, Any] = dict(Id='a' * 64, Names=['/skycloud-opencode-w2-u3'], State='running',
+                                Labels=labels, Env=['PRIVATE'], Ports=[{'PublicPort': 1}])
+    foreign: dict[str, Any] = deepcopy(good)
+    foreign['Labels']['skycloud.user_id'] = '9'
+    invalid: dict[str, Any] = deepcopy(good)
+    invalid['Names'] = ['/database']
+    client = Mock()
+    client.api.containers.return_value = [good, foreign, invalid]
     result = Engine(settings, client).user_snapshot(3)
     assert result == [dict(id='a' * 64, workspace_id=2, user_id=3, runtime_id=4, status='running')]
     client.api.containers.assert_called_once_with(all=True, filters={'label': [
@@ -209,7 +223,7 @@ def test_user_snapshot_is_one_filtered_docker_request(settings):
     assert 'PRIVATE' not in str(result) and 'PublicPort' not in str(result)
 
 
-def test_user_snapshot_endpoint_requires_auth_and_positive_identity(settings):
+def test_user_snapshot_endpoint_requires_auth_and_positive_identity(settings: Settings) -> None:
     engine = Mock(); engine.user_snapshot.return_value = []
     with TestClient(create_app(settings, engine)) as client:
         assert client.get('/users/3/containers').status_code == 401
@@ -219,15 +233,18 @@ def test_user_snapshot_endpoint_requires_auth_and_positive_identity(settings):
     engine.user_snapshot.assert_called_once_with(3)
 
 
-async def test_reconciliation_scheduler_retries_failed_scan_and_drains_shutdown(settings,monkeypatch):
+async def test_reconciliation_scheduler_retries_failed_scan_and_drains_shutdown(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import threading
     from runtime_controller import app as controller_app
 
-    second_started,leave,exiting=asyncio.Event(),asyncio.Event(),asyncio.Event()
-    release=threading.Event()
-    outcomes=[]
-    loop=asyncio.get_running_loop()
-    def scan():
+    second_started, leave, exiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    release = threading.Event()
+    outcomes: list[str] = []
+    loop = asyncio.get_running_loop()
+
+    def scan() -> None:
         if not outcomes:
             outcomes.append('failed')
             raise RuntimeError('private scan failure')
@@ -235,69 +252,82 @@ async def test_reconciliation_scheduler_retries_failed_scan_and_drains_shutdown(
         if not release.wait(5):
             raise AssertionError('scan was not released')
         outcomes.append('completed')
-    engine=Mock()
-    engine.reconcile_retired.side_effect=scan
-    monkeypatch.setattr(controller_app,'RECONCILE_INTERVAL_SECONDS',0.001)
-    app=create_app(settings,engine)
-    async def lifecycle():
+
+    engine = Mock()
+    engine.reconcile_retired.side_effect = scan
+    monkeypatch.setattr(controller_app, 'RECONCILE_INTERVAL_SECONDS', 0.001)
+    app = create_app(settings, engine)
+
+    async def lifecycle() -> None:
         async with app.router.lifespan_context(app):
             await leave.wait()
             exiting.set()
-    pending=asyncio.create_task(lifecycle())
+
+    pending = asyncio.create_task(lifecycle())
     try:
-        await asyncio.wait_for(second_started.wait(),1)
+        await asyncio.wait_for(second_started.wait(), 1)
         leave.set()
-        await asyncio.wait_for(exiting.wait(),1)
+        await asyncio.wait_for(exiting.wait(), 1)
         assert not pending.done()
-        assert outcomes==['failed']
+        assert outcomes == ['failed']
     finally:
         leave.set()
         release.set()
-        await asyncio.wait_for(pending,1)
-    assert outcomes==['failed','completed']
+        await asyncio.wait_for(pending, 1)
+    assert outcomes == ['failed', 'completed']
 
 
-def test_controller_terminal_failure_closes_1011_and_releases_slot(settings,monkeypatch):
+def test_controller_terminal_failure_closes_1011_and_releases_slot(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from runtime_controller import app as controller_app
-    from tests.test_runtime_ui_socket import EchoSocket,TrackingSlots
-    from starlette.websockets import WebSocketDisconnect
+    from tests.test_runtime_ui_socket import EchoSocket, TrackingSlots
 
-    engine=Mock()
-    engine.target.return_value=('http://172.20.0.2:3000',('runtime-user','server-secret'))
-    slots=TrackingSlots(total=1,per_owner=1)
-    monkeypatch.setattr(controller_app,'SocketSlots',lambda:slots)
-    peer=EchoSocket()
-    path='/runtimes/'+'a'*64+'/ws/pty/pty_42/connect'
-    headers={'X-Runtime-Controller-Token':settings.token}
-    with TestClient(create_app(settings,engine)) as client, patch(
+    engine = Mock()
+    engine.target.return_value = ('http://172.20.0.2:3000', ('runtime-user', 'server-secret'))
+    slots = TrackingSlots(total=1, per_owner=1)
+    monkeypatch.setattr(controller_app, 'SocketSlots', lambda: slots)
+    peer = EchoSocket()
+    path = '/runtimes/' + 'a' * 64 + '/ws/pty/pty_42/connect'
+    headers = {'X-Runtime-Controller-Token': settings.token}
+    with TestClient(create_app(settings, engine)) as client, patch(
         'runtime_controller.app.direct_connect',
-        side_effect=[RuntimeError('private connection failure'),peer],
+        side_effect=[RuntimeError('private connection failure'), peer],
     ):
         with pytest.raises(WebSocketDisconnect) as error:
-            with client.websocket_connect(path,headers=headers):
+            with client.websocket_connect(path, headers=headers):
                 pass
-        assert error.value.code==1011
+        assert error.value.code == 1011
         assert 'private' not in str(error.value)
         assert slots.released.wait(1)
-        with client.websocket_connect(path,headers=headers) as socket:
+        with client.websocket_connect(path, headers=headers) as socket:
             socket.send_text('slot reused')
-            assert socket.receive_text()=='slot reused'
+            assert socket.receive_text() == 'slot reused'
 
 
-async def test_controller_unexpected_pump_failure_closes_1011_and_drains_tasks(settings,monkeypatch):
+async def test_controller_unexpected_pump_failure_closes_1011_and_drains_tasks(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from runtime_controller import app as controller_app
 
-    reading,closing,release,closed=(
-        asyncio.Event(),asyncio.Event(),asyncio.Event(),asyncio.Event()
+    reading, closing, release, closed = (
+        asyncio.Event(), asyncio.Event(), asyncio.Event(), asyncio.Event()
     )
-    cleanup,messages=[],[]
+    cleanup: list[str] = []
+    messages: list[dict[str, Any]] = []
+
     class Peer:
-        async def __aenter__(self):return self
-        async def __aexit__(self,*args):cleanup.append('connection')
-        async def send(self,message):
+        async def __aenter__(self) -> "Peer":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            cleanup.append('connection')
+
+        async def send(self, message: Any) -> None:
             await reading.wait()
             raise RuntimeError('private pump failure')
-        async def __aiter__(self):
+
+        async def __aiter__(self) -> AsyncGenerator[str, None]:
             reading.set()
             try:
                 await asyncio.Event().wait()
@@ -306,80 +336,102 @@ async def test_controller_unexpected_pump_failure_closes_1011_and_drains_tasks(s
                 closing.set()
                 await release.wait()
                 cleanup.append('reader')
-    engine=Mock()
-    engine.target.return_value=('http://172.20.0.2:3000',('runtime-user','server-secret'))
-    monkeypatch.setattr(controller_app,'direct_connect',lambda *args:Peer())
-    app=create_app(settings,engine)
-    incoming=asyncio.Queue()
-    incoming.put_nowait({'type':'websocket.connect'})
-    incoming.put_nowait({'type':'websocket.receive','text':'trigger failure'})
-    async def send(message):
-        messages.append(message)
-        if message['type']=='websocket.close':closed.set()
-    scope={
-        'type':'websocket','scheme':'ws','path':'/runtimes/'+'a'*64+'/ws/pty/pty_42/connect',
-        'query_string':b'','root_path':'','subprotocols':[],
-        'headers':[(b'x-runtime-controller-token',settings.token.encode())],
-        'server':('controller',80),'client':('testclient',123),
+
+    engine = Mock()
+    engine.target.return_value = ('http://172.20.0.2:3000', ('runtime-user', 'server-secret'))
+
+    def mock_direct_connect(*args: object) -> Peer:
+        return Peer()
+
+    monkeypatch.setattr(controller_app, 'direct_connect', mock_direct_connect)
+    app = create_app(settings, engine)
+    incoming: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    incoming.put_nowait({'type': 'websocket.connect'})
+    incoming.put_nowait({'type': 'websocket.receive', 'text': 'trigger failure'})
+
+    async def send(message: MutableMapping[str, Any]) -> None:
+        messages.append(dict(message))
+        if message['type'] == 'websocket.close':
+            closed.set()
+
+    scope: dict[str, Any] = {
+        'type': 'websocket', 'scheme': 'ws', 'path': '/runtimes/' + 'a' * 64 + '/ws/pty/pty_42/connect',
+        'query_string': b'', 'root_path': '', 'subprotocols': [],
+        'headers': [(b'x-runtime-controller-token', settings.token.encode())],
+        'server': ('controller', 80), 'client': ('testclient', 123),
     }
-    existing_tasks=asyncio.all_tasks()
-    pending=asyncio.create_task(app(scope,incoming.get,send))
+    existing_tasks = asyncio.all_tasks()
+    pending = asyncio.create_task(app(scope, incoming.get, send))
     try:
-        await asyncio.wait_for(closed.wait(),1)
-        await asyncio.wait_for(closing.wait(),1)
+        await asyncio.wait_for(closed.wait(), 1)
+        await asyncio.wait_for(closing.wait(), 1)
         assert not pending.done()
-        assert cleanup==[]
+        assert cleanup == []
     finally:
         release.set()
-        await asyncio.wait_for(pending,1)
-    assert messages==[
-        {'type':'websocket.accept','subprotocol':None,'headers':[]},
-        {'type':'websocket.close','code':1011,'reason':''},
+        await asyncio.wait_for(pending, 1)
+    assert messages == [
+        {'type': 'websocket.accept', 'subprotocol': None, 'headers': []},
+        {'type': 'websocket.close', 'code': 1011, 'reason': ''},
     ]
-    assert cleanup==['reader','connection']
-    assert asyncio.all_tasks()<=existing_tasks
+    assert cleanup == ['reader', 'connection']
+    assert asyncio.all_tasks() <= existing_tasks
 
 
-def test_controller_socket_auth_and_fixed_target(settings):
+def test_controller_socket_auth_and_fixed_target(settings: Settings) -> None:
     from tests.test_runtime_ui_socket import EchoSocket
     engine = Mock(); engine.target.return_value = ('http://172.20.0.2:3000', ('runtime-user', 'server-secret'))
-    requests = []; peers = []
-    def connect(url, headers):
-        requests.append((url, headers)); peer = EchoSocket(); peers.append(peer); return peer
+    requests: list[tuple[str, dict[str, str]]] = []
+    peers: list[EchoSocket] = []
+
+    def connect(url: str, headers: dict[str, str]) -> EchoSocket:
+        requests.append((url, headers))
+        peer = EchoSocket()
+        peers.append(peer)
+        return peer
+
     path = '/runtimes/' + 'a' * 64 + '/ws/pty/pty_42/connect'
     with TestClient(create_app(settings, engine)) as client, patch('runtime_controller.app.direct_connect', side_effect=connect):
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(WebSocketDisconnect) as exc:
             with client.websocket_connect(path):
                 pass
         assert exc.value.code == 1008
         engine.target.assert_not_called()
         headers = {'X-Runtime-Controller-Token': settings.token, 'Authorization': 'Bearer caller', 'Cookie': 'parent=session'}
         with client.websocket_connect(path + '?cursor=0', headers=headers) as socket:
-            socket.send_text('terminal text'); assert socket.receive_text() == 'terminal text'
+            socket.send_text('terminal text')
+            assert socket.receive_text() == 'terminal text'
         assert requests[0][0] == 'ws://172.20.0.2:3000/pty/pty_42/connect?cursor=0'
         assert set(requests[0][1]) == {'Authorization'}
         import base64
         assert requests[0][1]['Authorization'] == 'Basic ' + base64.b64encode(b'runtime-user:server-secret').decode()
-        with pytest.raises(Exception) as exc:
+        with pytest.raises(WebSocketDisconnect) as exc:
             with client.websocket_connect(path + '?auth_token=caller', headers=headers):
                 pass
         assert exc.value.code == 1008
 
 
-async def test_websocket_redirect_never_reaches_another_host():
+async def test_websocket_redirect_never_reaches_another_host() -> None:
     from runtime_common.socket_relay import direct_connect
     from websockets.exceptions import InvalidStatus
-    hits = []
-    async def attacker(reader, writer):
+    hits: list[bytes] = []
+
+    async def attacker(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         hits.append(await reader.readuntil(b'\r\n\r\n'))
-        writer.close(); await writer.wait_closed()
+        writer.close()
+        await writer.wait_closed()
+
     async with await asyncio.start_server(attacker, '127.0.0.1', 0) as target:
         port = target.sockets[0].getsockname()[1]
-        async def redirect(reader, writer):
+
+        async def redirect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             await reader.readuntil(b'\r\n\r\n')
             response = f'HTTP/1.1 307 Temporary Redirect\r\nLocation: ws://127.0.0.1:{port}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
-            writer.write(response.encode()); await writer.drain()
-            writer.close(); await writer.wait_closed()
+            writer.write(response.encode())
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
         async with await asyncio.start_server(redirect, '127.0.0.1', 0) as server:
             origin_port = server.sockets[0].getsockname()[1]
             with pytest.raises(InvalidStatus):
@@ -388,367 +440,475 @@ async def test_websocket_redirect_never_reaches_another_host():
     assert hits == []
 
 
-@pytest.mark.parametrize('name',['skycloud-workspace-2','skycloud-opencode-w2-u3'])
-def test_legacy_cleanup_exact_identity_is_authenticated_and_removal_only(settings,managed_container,name):
+@pytest.mark.parametrize('name', ['skycloud-workspace-2', 'skycloud-opencode-w2-u3'])
+def test_legacy_cleanup_exact_identity_is_authenticated_and_removal_only(
+    settings: Settings, managed_container: Mock, name: str
+) -> None:
     managed_container.name = name
     managed_container.attrs['Config']['Labels']['skycloud.runtime_id'] = ''
     managed_container.attrs['Config']['Labels'].pop('skycloud.runtime_policy')
     client = Mock()
     client.containers.get.return_value = managed_container
-    engine = Engine(settings,client)
-    http = TestClient(create_app(settings,engine))
-    path = '/retired-containers/'+managed_container.id+'/remove'
+    engine = Engine(settings, client)
+    http = TestClient(create_app(settings, engine))
+    path = '/retired-containers/' + managed_container.id + '/remove'
     assert http.post(path).status_code == 401
     managed_container.remove.assert_not_called()
-    assert http.post(path,headers={'X-Runtime-Controller-Token':settings.token}).json() == {'success':True}
-    managed_container.remove.assert_called_once_with(force=True,v=True)
-    for action in ('start','stop','restart'):
-        with pytest.raises(PolicyViolation): engine.action(managed_container.id,action)
-    with pytest.raises(PolicyViolation): engine.target(managed_container.id)
-    with pytest.raises(PolicyViolation): engine.read_config(managed_container.id)
+    assert http.post(path, headers={'X-Runtime-Controller-Token': settings.token}).json() == {'success': True}
+    managed_container.remove.assert_called_once_with(force=True, v=True)
+    for action in ('start', 'stop', 'restart'):
+        with pytest.raises(PolicyViolation):
+            engine.action(managed_container.id, action)
+    with pytest.raises(PolicyViolation):
+        engine.target(managed_container.id)
+    with pytest.raises(PolicyViolation):
+        engine.read_config(managed_container.id)
 
 
-@pytest.mark.parametrize('tamper',['short','alias','id','name','component','workspace','user','missing_user','missing_runtime','modern_runtime'])
-def test_legacy_cleanup_rejects_ambiguous_or_unmanaged_identity(settings,managed_container,tamper):
+@pytest.mark.parametrize('tamper', ['short', 'alias', 'id', 'name', 'component', 'workspace', 'user', 'missing_user', 'missing_runtime', 'modern_runtime'])
+def test_legacy_cleanup_rejects_ambiguous_or_unmanaged_identity(
+    settings: Settings, managed_container: Mock, tamper: str
+) -> None:
     managed_container.name = 'skycloud-workspace-2'
     labels = managed_container.attrs['Config']['Labels']
     labels['skycloud.runtime_id'] = ''
     ref = managed_container.id
-    if tamper == 'short': ref = ref[:12]
-    elif tamper == 'alias': ref = managed_container.name
-    elif tamper == 'id': managed_container.id = 'b'*64
-    elif tamper == 'name': managed_container.name = 'redis'
-    elif tamper == 'component': labels['skycloud.component'] = 'database'
-    elif tamper == 'workspace': labels['skycloud.workspace_id'] = '0'
-    elif tamper == 'user': labels['skycloud.user_id'] = '0'
-    elif tamper == 'missing_user': del labels['skycloud.user_id']
-    elif tamper == 'missing_runtime': del labels['skycloud.runtime_id']
-    elif tamper == 'modern_runtime': labels['skycloud.runtime_id'] = '4'
+    if tamper == 'short':
+        ref = ref[:12]
+    elif tamper == 'alias':
+        ref = managed_container.name
+    elif tamper == 'id':
+        managed_container.id = 'b' * 64
+    elif tamper == 'name':
+        managed_container.name = 'redis'
+    elif tamper == 'component':
+        labels['skycloud.component'] = 'database'
+    elif tamper == 'workspace':
+        labels['skycloud.workspace_id'] = '0'
+    elif tamper == 'user':
+        labels['skycloud.user_id'] = '0'
+    elif tamper == 'missing_user':
+        del labels['skycloud.user_id']
+    elif tamper == 'missing_runtime':
+        del labels['skycloud.runtime_id']
+    elif tamper == 'modern_runtime':
+        labels['skycloud.runtime_id'] = '4'
     client = Mock()
     client.containers.get.return_value = managed_container
-    with pytest.raises(PolicyViolation): Engine(settings,client).remove_legacy(ref)
+    with pytest.raises(PolicyViolation):
+        Engine(settings, client).remove_legacy(ref)
     managed_container.remove.assert_not_called()
 
 
-def test_unsupported_legacy_cleanup_route_404_is_not_confirmed_absence(monkeypatch):
+def test_unsupported_legacy_cleanup_route_404_is_not_confirmed_absence(monkeypatch: pytest.MonkeyPatch) -> None:
     from runtime_controller.client import ControllerNotFound
-    monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN','T'*48)
-    monkeypatch.setattr(httpx,'request',lambda *args,**kwargs:httpx.Response(404,json={'detail':'Not Found'}))
+    monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN', 'T' * 48)
+
+    def mock_404(*args: object, **kwargs: object) -> httpx.Response:
+        return httpx.Response(404, json={'detail': 'Not Found'})
+
+    monkeypatch.setattr(httpx, 'request', mock_404)
     with pytest.raises(ControllerError) as failure:
-        ControllerClient().remove_legacy('a'*64)
-    assert not isinstance(failure.value,ControllerNotFound)
+        ControllerClient().remove_legacy('a' * 64)
+    assert not isinstance(failure.value, ControllerNotFound)
 
 
-def test_prepare_schema_requires_generation_and_forbids_docker_options(settings):
+def test_prepare_schema_requires_generation_and_forbids_docker_options(settings: Settings) -> None:
     engine = Mock()
-    engine.prepare.return_value = {'id':'a'*64}
-    http = TestClient(create_app(settings,engine))
-    headers = {'X-Runtime-Controller-Token':settings.token}
-    body = {'workspace_id':2,'user_id':3,'runtime_id':4,'generation':'a'*32}
-    assert http.post('/containers/prepare',json=body).status_code == 401
-    for extra in ({'generation':'../bad'},{'generation':'a'*33},{'volumes':['/']},{'runtime_id':0}):
-        assert http.post('/containers/prepare',json={**body,**extra},headers=headers).status_code == 422
+    engine.prepare.return_value = {'id': 'a' * 64}
+    http = TestClient(create_app(settings, engine))
+    headers = {'X-Runtime-Controller-Token': settings.token}
+    body = {'workspace_id': 2, 'user_id': 3, 'runtime_id': 4, 'generation': 'a' * 32}
+    assert http.post('/containers/prepare', json=body).status_code == 401
+    for extra in ({'generation': '../bad'}, {'generation': 'a' * 33}, {'volumes': ['/']}, {'runtime_id': 0}):
+        assert http.post('/containers/prepare', json={**body, **extra}, headers=headers).status_code == 422
     engine.prepare.assert_not_called()
-    assert http.post('/containers/prepare',json=body,headers=headers).status_code == 200
+    assert http.post('/containers/prepare', json=body, headers=headers).status_code == 200
     engine.prepare.assert_called_once_with(**body)
 
 
-@pytest.mark.parametrize('tamper',['missing_generation','wrong_generation','wrong_name','bad_generation'])
-def test_generated_name_must_match_generation_label(settings,managed_container,tamper):
+@pytest.mark.parametrize('tamper', ['missing_generation', 'wrong_generation', 'wrong_name', 'bad_generation'])
+def test_generated_name_must_match_generation_label(settings: Settings, managed_container: Mock, tamper: str) -> None:
     from runtime_controller.policy import generation_name
-    managed_container.name = generation_name(2,3,'a'*32)
+    managed_container.name = generation_name(2, 3, 'a' * 32)
     labels = managed_container.attrs['Config']['Labels']
-    labels['skycloud.generation'] = 'a'*32
-    if tamper == 'missing_generation': del labels['skycloud.generation']
-    elif tamper == 'wrong_generation': labels['skycloud.generation'] = 'b'*32
-    elif tamper == 'wrong_name': managed_container.name = container_name(2,3)
-    elif tamper == 'bad_generation': labels['skycloud.generation'] = '../bad'
+    labels['skycloud.generation'] = 'a' * 32
+    if tamper == 'missing_generation':
+        del labels['skycloud.generation']
+    elif tamper == 'wrong_generation':
+        labels['skycloud.generation'] = 'b' * 32
+    elif tamper == 'wrong_name':
+        managed_container.name = container_name(2, 3)
+    elif tamper == 'bad_generation':
+        labels['skycloud.generation'] = '../bad'
     client = Mock()
     client.containers.get.return_value = managed_container
-    with pytest.raises(PolicyViolation): Engine(settings,client).inspect('a'*64)
+    with pytest.raises(PolicyViolation):
+        Engine(settings, client).inspect('a' * 64)
 
 
-def test_prepare_replay_requires_same_runtime_and_current_sandbox(settings,managed_container):
+def test_prepare_replay_requires_same_runtime_and_current_sandbox(settings: Settings, managed_container: Mock) -> None:
     from runtime_controller.policy import generation_name
-    managed_container.name = generation_name(2,3,'a'*32)
-    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
+    managed_container.name = generation_name(2, 3, 'a' * 32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a' * 32
     client = Mock()
-    client.networks.get.return_value.attrs = {'Internal':True}
+    client.networks.get.return_value.attrs = {'Internal': True}
     client.containers.get.return_value = managed_container
-    engine = Engine(settings,client)
-    assert engine.prepare(2,3,4,'a'*32)['id'] == managed_container.id
-    with pytest.raises(PolicyViolation): engine.prepare(2,3,5,'a'*32)
+    engine = Engine(settings, client)
+    assert engine.prepare(2, 3, 4, 'a' * 32)['id'] == managed_container.id
+    with pytest.raises(PolicyViolation):
+        engine.prepare(2, 3, 5, 'a' * 32)
     managed_container.attrs['HostConfig']['Privileged'] = True
-    with pytest.raises(PolicyViolation): engine.prepare(2,3,4,'a'*32)
+    with pytest.raises(PolicyViolation):
+        engine.prepare(2, 3, 4, 'a' * 32)
     managed_container.remove.assert_not_called()
     managed_container.start.assert_not_called()
     client.containers.create.assert_not_called()
 
 
-def test_prepare_rejects_implicit_image_volume_and_cleans_only_new_container(settings,managed_container):
+def test_prepare_rejects_implicit_image_volume_and_cleans_only_new_container(
+    settings: Settings, managed_container: Mock
+) -> None:
     from runtime_controller.policy import generation_name
-    managed_container.name = generation_name(2,3,'a'*32)
-    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
-    managed_container.attrs['Mounts'] = [{'Type':'volume','Destination':'/data'}]
+    managed_container.name = generation_name(2, 3, 'a' * 32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a' * 32
+    managed_container.attrs['Mounts'] = [{'Type': 'volume', 'Destination': '/data'}]
     client = Mock()
-    client.networks.get.return_value.attrs = {'Internal':True}
-    client.containers.get.side_effect = [MissingRuntime('absent'),managed_container]
+    client.networks.get.return_value.attrs = {'Internal': True}
+    client.containers.get.side_effect = [MissingRuntime('absent'), managed_container]
     client.containers.create.return_value = managed_container
-    with pytest.raises(PolicyViolation): Engine(settings,client).prepare(2,3,4,'a'*32)
-    managed_container.remove.assert_called_once_with(force=True,v=True)
+    with pytest.raises(PolicyViolation):
+        Engine(settings, client).prepare(2, 3, 4, 'a' * 32)
+    managed_container.remove.assert_called_once_with(force=True, v=True)
     managed_container.start.assert_not_called()
     client.containers.run.assert_not_called()
 
 
-def test_prepare_unknown_endpoint_404_never_requests_destructive_create(monkeypatch):
+def test_prepare_unknown_endpoint_404_never_requests_destructive_create(monkeypatch: pytest.MonkeyPatch) -> None:
     from runtime_controller.client import ControllerNotFound
-    monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN','T'*48)
-    requests = []
-    def unavailable(method,url,**kwargs):
+    monkeypatch.setenv('RUNTIME_CONTROLLER_TOKEN', 'T' * 48)
+    requests: list[str] = []
+
+    def unavailable(method: str, url: str, **kwargs: object) -> httpx.Response:
         requests.append(url)
-        return httpx.Response(404,json={'detail':'Not Found'})
-    monkeypatch.setattr(httpx,'request',unavailable)
-    with pytest.raises(ControllerError) as failure: ControllerClient().prepare(2,3,4,'a'*32)
-    assert not isinstance(failure.value,ControllerNotFound)
+        return httpx.Response(404, json={'detail': 'Not Found'})
+
+    monkeypatch.setattr(httpx, 'request', unavailable)
+    with pytest.raises(ControllerError) as failure:
+        ControllerClient().prepare(2, 3, 4, 'a' * 32)
+    assert not isinstance(failure.value, ControllerNotFound)
     assert len(requests) == 1 and requests[0].endswith('/containers/prepare')
 
 
-def test_retire_before_prepare_persists_across_engine_recreation(settings):
+def test_retire_before_prepare_persists_across_engine_recreation(settings: Settings) -> None:
     client = Mock()
     client.containers.get.side_effect = MissingRuntime('absent')
-    first = Engine(settings,client)
-    first.retire_generation(2,3,4,'a'*32)
-    second = Engine(settings,client)
-    with pytest.raises(PolicyViolation,match='retired'): second.prepare(2,3,4,'a'*32)
-    with pytest.raises(PolicyViolation,match='another identity'): second.prepare(2,3,5,'a'*32)
+    first = Engine(settings, client)
+    first.retire_generation(2, 3, 4, 'a' * 32)
+    second = Engine(settings, client)
+    with pytest.raises(PolicyViolation, match='retired'):
+        second.prepare(2, 3, 4, 'a' * 32)
+    with pytest.raises(PolicyViolation, match='another identity'):
+        second.prepare(2, 3, 5, 'a' * 32)
     client.containers.create.assert_not_called()
     client.containers.run.assert_not_called()
 
 
-def test_generation_remove_fences_replay_and_preserves_stable_containers(settings,managed_container):
+def test_generation_remove_fences_replay_and_preserves_stable_containers(
+    settings: Settings, managed_container: Mock
+) -> None:
     from runtime_controller.policy import generation_name
-    managed_container.name = generation_name(2,3,'a'*32)
-    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
+    managed_container.name = generation_name(2, 3, 'a' * 32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a' * 32
     client = Mock()
-    client.networks.get.return_value.attrs = {'Internal':True}
+    client.networks.get.return_value.attrs = {'Internal': True}
     client.containers.get.return_value = managed_container
-    engine = Engine(settings,client)
-    assert engine.prepare(2,3,4,'a'*32)['id'] == managed_container.id
-    engine.action(managed_container.id,'remove')
-    with pytest.raises(PolicyViolation,match='retired'): Engine(settings,client).prepare(2,3,4,'a'*32)
-    managed_container.remove.assert_called_once_with(force=True,v=True)
+    engine = Engine(settings, client)
+    assert engine.prepare(2, 3, 4, 'a' * 32)['id'] == managed_container.id
+    engine.action(managed_container.id, 'remove')
+    with pytest.raises(PolicyViolation, match='retired'):
+        Engine(settings, client).prepare(2, 3, 4, 'a' * 32)
+    managed_container.remove.assert_called_once_with(force=True, v=True)
     client.containers.create.assert_not_called()
 
 
-def test_journal_failure_prevents_any_docker_creation(settings,tmp_path):
+def test_journal_failure_prevents_any_docker_creation(settings: Settings, tmp_path: Path) -> None:
     from dataclasses import replace
-    state = tmp_path/'unwritable-parent'
+    state = tmp_path / 'unwritable-parent'
     state.write_text('not a directory')
     client = Mock()
-    with pytest.raises(OSError): Engine(replace(settings,state_path=str(state)),client).prepare(2,3,4,'a'*32)
+    with pytest.raises(OSError):
+        Engine(replace(settings, state_path=str(state)), client).prepare(2, 3, 4, 'a' * 32)
     client.containers.create.assert_not_called()
     client.networks.get.assert_not_called()
 
 
-def test_controller_journal_committed_intent_survives_process_exit(tmp_path):
-    import subprocess,sys
-    from pathlib import Path
+def test_controller_journal_committed_intent_survives_process_exit(tmp_path: Path) -> None:
+    import subprocess
+    import sys
     from runtime_controller.generation_journal import GenerationJournal
-    directory = str(tmp_path/'journal')
+    directory = str(tmp_path / 'journal')
     code = "from runtime_controller.generation_journal import GenerationJournal; import os,sys\nwith GenerationJournal(sys.argv[1]).locked('a'*32,(2,3,4)) as record:\n os._exit(17)\n"
     assert subprocess.run(
         [sys.executable, '-c', code, directory],
         cwd=Path(__file__).resolve().parents[1],
         check=False,
     ).returncode == 17
-    with GenerationJournal(directory).locked('a'*32,(2,3,4)) as record:
+    with GenerationJournal(directory).locked('a' * 32, (2, 3, 4)) as record:
         assert record.read()['state'] == 'preparing'
         record.retire()
-    with GenerationJournal(directory).locked('a'*32,(2,3,4)) as record:
+    with GenerationJournal(directory).locked('a' * 32, (2, 3, 4)) as record:
         assert record.read()['state'] == 'retired'
-    assert (tmp_path/'journal'/'generations.sqlite').stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / 'journal' / 'generations.sqlite').stat().st_mode & 0o777 == 0o600
 
 
-def test_failed_generation_remove_keeps_retirement_fence_and_can_retry(settings,managed_container):
+def test_failed_generation_remove_keeps_retirement_fence_and_can_retry(
+    settings: Settings, managed_container: Mock
+) -> None:
     from runtime_controller.policy import generation_name
-    managed_container.name = generation_name(2,3,'a'*32)
-    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
-    managed_container.remove.side_effect = [RuntimeError('injected removal failure'),None]
+    managed_container.name = generation_name(2, 3, 'a' * 32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a' * 32
+    managed_container.remove.side_effect = [RuntimeError('injected removal failure'), None]
     client = Mock()
     client.containers.get.return_value = managed_container
-    with pytest.raises(RuntimeError): Engine(settings,client).retire_generation(2,3,4,'a'*32)
-    with pytest.raises(PolicyViolation,match='retired'): Engine(settings,client).prepare(2,3,4,'a'*32)
-    Engine(settings,client).retire_generation(2,3,4,'a'*32)
+    with pytest.raises(RuntimeError):
+        Engine(settings, client).retire_generation(2, 3, 4, 'a' * 32)
+    with pytest.raises(PolicyViolation, match='retired'):
+        Engine(settings, client).prepare(2, 3, 4, 'a' * 32)
+    Engine(settings, client).retire_generation(2, 3, 4, 'a' * 32)
     assert managed_container.remove.call_count == 2
     client.containers.create.assert_not_called()
 
 
-def test_retired_scan_collects_late_generation_and_advances_persistent_cursor(settings,managed_container):
+def test_retired_scan_collects_late_generation_and_advances_persistent_cursor(
+    settings: Settings, managed_container: Mock
+) -> None:
     from runtime_controller.generation_journal import GenerationJournal
     from runtime_controller.policy import generation_name
     journal = GenerationJournal(settings.state_path)
-    with journal.locked('a'*32,(2,3,4)) as record:
-        record.ready('a'*64)
+    with journal.locked('a' * 32, (2, 3, 4)) as record:
+        record.ready('a' * 64)
         record.retire()
-    managed_container.id = 'b'*64
-    managed_container.name = generation_name(2,3,'a'*32)
-    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
+    managed_container.id = 'b' * 64
+    managed_container.name = generation_name(2, 3, 'a' * 32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a' * 32
     client = Mock()
-    def get(ref):
-        if ref == 'a'*64: raise MissingRuntime('old candidate gone')
+
+    def get(ref: str) -> Any:
+        if ref == 'a' * 64:
+            raise MissingRuntime('old candidate gone')
         return managed_container
+
     client.containers.get.side_effect = get
-    client.api.containers.return_value = [{'Id':'b'*64,'Labels':{'skycloud.generation':'a'*32}}]
-    assert Engine(settings,client).reconcile_retired() == 1
-    managed_container.remove.assert_called_once_with(force=True,v=True)
-    rows = [{'Id':f'{i:064x}','Labels':{'skycloud.generation':'a'*32}} for i in range(1,4)]
-    for i in range(1,5):
-        assert GenerationJournal(settings.state_path).retired_candidates(rows,limit=1) == [(2,3,4,'a'*32)]
+    client.api.containers.return_value = [{'Id': 'b' * 64, 'Labels': {'skycloud.generation': 'a' * 32}}]
+    assert Engine(settings, client).reconcile_retired() == 1
+    managed_container.remove.assert_called_once_with(force=True, v=True)
+    rows = [{'Id': f'{i:064x}', 'Labels': {'skycloud.generation': 'a' * 32}} for i in range(1, 4)]
+    for i in range(1, 5):
+        assert GenerationJournal(settings.state_path).retired_candidates(rows, limit=1) == [(2, 3, 4, 'a' * 32)]
         import sqlite3
-        with sqlite3.connect(journal.directory/'generations.sqlite') as db:
-            assert db.execute('SELECT container_id FROM reconciliation_cursor').fetchone()[0] == f'{(i-1)%3+1:064x}'
+        with sqlite3.connect(journal.directory / 'generations.sqlite') as db:
+            assert db.execute('SELECT container_id FROM reconciliation_cursor').fetchone()[0] == f'{(i - 1) % 3 + 1:064x}'
 
 
-def test_retired_scan_preserves_identity_mismatch_and_active_generation(settings,managed_container):
+def test_retired_scan_preserves_identity_mismatch_and_active_generation(
+    settings: Settings, managed_container: Mock
+) -> None:
     from runtime_controller.generation_journal import GenerationJournal
     from runtime_controller.policy import generation_name
-    with GenerationJournal(settings.state_path).locked('a'*32,(2,3,4)) as record: record.retire()
-    managed_container.name = generation_name(2,3,'a'*32)
-    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a'*32
+    with GenerationJournal(settings.state_path).locked('a' * 32, (2, 3, 4)) as record:
+        record.retire()
+    managed_container.name = generation_name(2, 3, 'a' * 32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a' * 32
     managed_container.attrs['Config']['Labels']['skycloud.runtime_id'] = '5'
-    client = Mock(); client.containers.get.return_value = managed_container
-    client.api.containers.return_value = [{'Id':'a'*64,'Labels':{'skycloud.generation':'a'*32}},
-                                         {'Id':'b'*64,'Labels':{'skycloud.generation':'b'*32}}]
-    assert Engine(settings,client).reconcile_retired() == 0
+    client = Mock()
+    client.containers.get.return_value = managed_container
+    client.api.containers.return_value = [
+        {'Id': 'a' * 64, 'Labels': {'skycloud.generation': 'a' * 32}},
+        {'Id': 'b' * 64, 'Labels': {'skycloud.generation': 'b' * 32}},
+    ]
+    assert Engine(settings, client).reconcile_retired() == 0
     managed_container.remove.assert_not_called()
 
 
-def test_retired_scan_continues_after_failed_candidate_in_same_scan(settings,managed_container):
+def test_retired_scan_continues_after_failed_candidate_in_same_scan(
+    settings: Settings, managed_container: Mock
+) -> None:
     from copy import deepcopy
     from runtime_controller.generation_journal import GenerationJournal
     from runtime_controller.policy import generation_name
 
-    first=managed_container
-    first.name=generation_name(2,3,'a'*32)
-    first.attrs['Config']['Labels']['skycloud.generation']='a'*32
-    second=Mock()
-    second.id='b'*64
-    second.name=generation_name(2,3,'b'*32)
-    second.status='running'
-    second.attrs=deepcopy(first.attrs)
-    second.attrs['Config']['Labels']['skycloud.generation']='b'*32
-    journal=GenerationJournal(settings.state_path)
-    for generation,container in [('a'*32,first),('b'*32,second)]:
-        with journal.locked(generation,(2,3,4)) as record:
+    first = managed_container
+    first.name = generation_name(2, 3, 'a' * 32)
+    first.attrs['Config']['Labels']['skycloud.generation'] = 'a' * 32
+    second = Mock()
+    second.id = 'b' * 64
+    second.name = generation_name(2, 3, 'b' * 32)
+    second.status = 'running'
+    second.attrs = deepcopy(first.attrs)
+    second.attrs['Config']['Labels']['skycloud.generation'] = 'b' * 32
+    journal = GenerationJournal(settings.state_path)
+    for generation, container in [('a' * 32, first), ('b' * 32, second)]:
+        with journal.locked(generation, (2, 3, 4)) as record:
             record.ready(container.id)
             record.retire()
-    removals=[]
-    def fail_first(**kwargs):
+    removals: list[str] = []
+
+    def fail_first(**kwargs: object) -> None:
         removals.append('failed')
         raise RuntimeError('private removal failure')
-    first.remove.side_effect=fail_first
-    second.remove.side_effect=lambda **kwargs:removals.append('removed')
-    client=Mock()
-    client.containers.get.side_effect={first.id:first,second.id:second}.__getitem__
-    client.api.containers.return_value=[
-        {'Id':first.id,'Labels':{'skycloud.generation':'a'*32}},
-        {'Id':second.id,'Labels':{'skycloud.generation':'b'*32}},
+
+    def succeed_second(**kwargs: object) -> None:
+        removals.append('removed')
+
+    first.remove.side_effect = fail_first
+    second.remove.side_effect = succeed_second
+    client = Mock()
+    client.containers.get.side_effect = {first.id: first, second.id: second}.__getitem__
+    client.api.containers.return_value = [
+        {'Id': first.id, 'Labels': {'skycloud.generation': 'a' * 32}},
+        {'Id': second.id, 'Labels': {'skycloud.generation': 'b' * 32}},
     ]
-    assert Engine(settings,client).reconcile_retired()==1
-    assert removals==['failed','removed']
-    second.remove.assert_called_once_with(force=True,v=True)
+    assert Engine(settings, client).reconcile_retired() == 1
+    assert removals == ['failed', 'removed']
+    second.remove.assert_called_once_with(force=True, v=True)
 
 
 @pytest.mark.parametrize('payload', [
-    {'code':'generation_candidate_missing','generation':'b'*32,'container_id':'a'*64},
-    {'code':'generation_candidate_missing','generation':'a'*32,'container_id':'short'},
-    {'code':'unknown','generation':'a'*32,'container_id':'a'*64},
+    {'code': 'generation_candidate_missing', 'generation': 'b' * 32, 'container_id': 'a' * 64},
+    {'code': 'generation_candidate_missing', 'generation': 'a' * 32, 'container_id': 'short'},
+    {'code': 'unknown', 'generation': 'a' * 32, 'container_id': 'a' * 64},
 ])
-def test_missing_candidate_rpc_rejects_unconfirmed_payload(monkeypatch,payload):
-    import httpx
-    from runtime_controller.client import ControllerClient,ControllerError,ControllerGenerationMissing
-    monkeypatch.setattr(httpx,'request',lambda *args,**kwargs:httpx.Response(409,json=payload))
-    with pytest.raises(ControllerError) as error: ControllerClient().prepare(2,3,4,'a'*32)
-    assert not isinstance(error.value,ControllerGenerationMissing)
+def test_missing_candidate_rpc_rejects_unconfirmed_payload(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, str]
+) -> None:
+    from runtime_controller.client import ControllerClient, ControllerError, ControllerGenerationMissing
+
+    def mock_rpc(*args: object, **kwargs: object) -> httpx.Response:
+        return httpx.Response(409, json=payload)
+
+    monkeypatch.setattr(httpx, 'request', mock_rpc)
+    with pytest.raises(ControllerError) as error:
+        ControllerClient().prepare(2, 3, 4, 'a' * 32)
+    assert not isinstance(error.value, ControllerGenerationMissing)
 
 
-def test_missing_recorded_candidate_is_typed_without_recreating(settings):
+def test_missing_recorded_candidate_is_typed_without_recreating(settings: Settings) -> None:
     from runtime_controller.generation_journal import GenerationJournal
     from runtime_controller.engine import MissingGenerationCandidate
-    with GenerationJournal(settings.state_path).locked('a'*32,(2,3,4)) as record: record.ready('a'*64)
-    client=Mock(); client.containers.get.side_effect=MissingRuntime('gone')
-    engine=Engine(settings,client)
-    with pytest.raises(MissingGenerationCandidate): engine.prepare(2,3,4,'a'*32)
+    with GenerationJournal(settings.state_path).locked('a' * 32, (2, 3, 4)) as record:
+        record.ready('a' * 64)
+    client = Mock()
+    client.containers.get.side_effect = MissingRuntime('gone')
+    engine = Engine(settings, client)
+    with pytest.raises(MissingGenerationCandidate):
+        engine.prepare(2, 3, 4, 'a' * 32)
     client.containers.create.assert_not_called()
-    from runtime_controller.app import create_app
-    from fastapi.testclient import TestClient
-    response=TestClient(create_app(settings,engine)).post('/containers/prepare',headers={'X-Runtime-Controller-Token':settings.token},
-        json={'workspace_id':2,'user_id':3,'runtime_id':4,'generation':'a'*32})
-    assert response.status_code==409 and response.json()['container_id']=='a'*64
+    response = TestClient(create_app(settings, engine)).post(
+        '/containers/prepare',
+        headers={'X-Runtime-Controller-Token': settings.token},
+        json={'workspace_id': 2, 'user_id': 3, 'runtime_id': 4, 'generation': 'a' * 32},
+    )
+    assert response.status_code == 409 and response.json()['container_id'] == 'a' * 64
 
 
-@pytest.mark.parametrize('action',['start','restart'])
-def test_retired_but_not_removed_generation_cannot_be_started(settings,managed_container,action):
+@pytest.mark.parametrize('action', ['start', 'restart'])
+def test_retired_but_not_removed_generation_cannot_be_started(
+    settings: Settings, managed_container: Mock, action: str
+) -> None:
     from runtime_controller.generation_journal import GenerationJournal
     from runtime_controller.policy import generation_name
-    managed_container.name=generation_name(2,3,'a'*32)
-    managed_container.attrs['Config']['Labels']['skycloud.generation']='a'*32
-    with GenerationJournal(settings.state_path).locked('a'*32,(2,3,4)) as record:
+    managed_container.name = generation_name(2, 3, 'a' * 32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a' * 32
+    with GenerationJournal(settings.state_path).locked('a' * 32, (2, 3, 4)) as record:
         record.ready(managed_container.id)
         record.retire()
-    client=Mock(); client.containers.get.return_value=managed_container
-    with pytest.raises(PolicyViolation): Engine(settings,client).action(managed_container.id,action)
+    client = Mock()
+    client.containers.get.return_value = managed_container
+    with pytest.raises(PolicyViolation):
+        Engine(settings, client).action(managed_container.id, action)
     managed_container.start.assert_not_called()
     managed_container.restart.assert_not_called()
 
 
-def test_retired_scan_skips_busy_shard_then_retries_without_losing_fence(settings,managed_container):
+def test_retired_scan_skips_busy_shard_then_retries_without_losing_fence(
+    settings: Settings, managed_container: Mock
+) -> None:
     from runtime_controller.generation_journal import GenerationJournal
     from runtime_controller.policy import generation_name
-    managed_container.name=generation_name(2,3,'a'*32)
-    managed_container.attrs['Config']['Labels']['skycloud.generation']='a'*32
-    client=Mock(); client.containers.get.return_value=managed_container
-    client.api.containers.return_value=[{'Id':managed_container.id,'Labels':{'skycloud.generation':'a'*32}}]
-    journal=GenerationJournal(settings.state_path)
-    with journal.locked('a'*32,(2,3,4)) as record:
+    managed_container.name = generation_name(2, 3, 'a' * 32)
+    managed_container.attrs['Config']['Labels']['skycloud.generation'] = 'a' * 32
+    client = Mock()
+    client.containers.get.return_value = managed_container
+    client.api.containers.return_value = [{'Id': managed_container.id, 'Labels': {'skycloud.generation': 'a' * 32}}]
+    journal = GenerationJournal(settings.state_path)
+    with journal.locked('a' * 32, (2, 3, 4)) as record:
         record.retire()
-        assert Engine(settings,client).reconcile_retired()==0
+        assert Engine(settings, client).reconcile_retired() == 0
         managed_container.remove.assert_not_called()
-    assert Engine(settings,client).reconcile_retired()==1
-    managed_container.remove.assert_called_once_with(force=True,v=True)
+    assert Engine(settings, client).reconcile_retired() == 1
+    managed_container.remove.assert_called_once_with(force=True, v=True)
 
 
-@pytest.mark.parametrize('path,event',[('http/global/health',False),('http/event',True),('ui/event',True)])
-@pytest.mark.parametrize('mode',['valid','oversize','truncated','unsupported'])
-def test_controller_bounded_compression_and_release(settings,monkeypatch,path,event,mode):
+@pytest.mark.parametrize('path,event', [('http/global/health', False), ('http/event', True), ('ui/event', True)])
+@pytest.mark.parametrize('mode', ['valid', 'oversize', 'truncated', 'unsupported'])
+def test_controller_bounded_compression_and_release(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, path: str, event: bool, mode: str
+) -> None:
     import gzip
     from runtime_controller import app as controller_app
-    engine=Mock();engine.target.return_value=('http://runtime.test',('server','secret'))
-    monkeypatch.setattr(controller_app,'MAX_RESPONSE',1024)
-    real_client=httpx.AsyncClient
-    clients,responses=[],[]
-    expected=b'data: valid\n\n' if event else b'{"healthy":true}'
+    engine = Mock()
+    engine.target.return_value = ('http://runtime.test', ('server', 'secret'))
+    monkeypatch.setattr(controller_app, 'MAX_RESPONSE', 1024)
+    real_client = httpx.AsyncClient
+    expected = b'data: valid\n\n' if event else b'{"healthy":true}'
+
     class Stream(httpx.AsyncByteStream):
-        closed=False
-        async def __aiter__(self):
-            if mode=='unsupported':raise AssertionError('unnegotiated content must not be read')
-            yield gzip.compress(expected if mode=='valid' else b'x'*4096)[:-1] if mode=='truncated' else gzip.compress(expected if mode=='valid' else b'x'*4096)
-        async def aclose(self):self.closed=True
-    def provider(request):
-        assert request.headers['accept-encoding']=='gzip, deflate, identity'
-        stream=Stream()
-        response=httpx.Response(200,headers={'content-encoding':'br' if mode=='unsupported' else 'gzip',
-                                            'content-type':'text/event-stream' if event else 'application/json'},stream=stream)
-        responses.append((response,stream));return response
-    def client(**kwargs):
-        opened=real_client(transport=httpx.MockTransport(provider),**kwargs)
-        clients.append(opened);return opened
-    monkeypatch.setattr(controller_app.httpx,'AsyncClient',client)
-    response=TestClient(create_app(settings,engine)).get('/runtimes/'+'a'*64+'/'+path,
-                              headers={'X-Runtime-Controller-Token':settings.token})
-    assert response.status_code==(502 if mode=='unsupported' or (not event and mode!='valid') else 200)
-    if mode=='valid':assert response.content==expected
-    if event and mode=='oversize':assert response.content==b''
-    if mode=='unsupported':assert response.json()=={'detail':'Runtime unavailable'}
+        closed: bool = False
+
+        async def __aiter__(self) -> AsyncGenerator[bytes, None]:
+            if mode == 'unsupported':
+                raise AssertionError('unnegotiated content must not be read')
+            payload_bytes = expected if mode == 'valid' else b'x' * 4096
+            compressed = gzip.compress(payload_bytes)
+            yield compressed[:-1] if mode == 'truncated' else compressed
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    clients: list[httpx.AsyncClient] = []
+    responses: list[tuple[httpx.Response, Stream]] = []
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        assert request.headers['accept-encoding'] == 'gzip, deflate, identity'
+        stream = Stream()
+        response = httpx.Response(
+            200,
+            headers={
+                'content-encoding': 'br' if mode == 'unsupported' else 'gzip',
+                'content-type': 'text/event-stream' if event else 'application/json',
+            },
+            stream=stream,
+        )
+        responses.append((response, stream))
+        return response
+
+    def client(**kwargs: Any) -> httpx.AsyncClient:
+        opened = real_client(transport=httpx.MockTransport(provider), **kwargs)
+        clients.append(opened)
+        return opened
+
+    monkeypatch.setattr(controller_app.httpx, 'AsyncClient', client)
+    response = TestClient(create_app(settings, engine)).get(
+        '/runtimes/' + 'a' * 64 + '/' + path,
+        headers={'X-Runtime-Controller-Token': settings.token},
+    )
+    assert response.status_code == (502 if mode == 'unsupported' or (not event and mode != 'valid') else 200)
+    if mode == 'valid':
+        assert response.content == expected
+    if event and mode == 'oversize':
+        assert response.content == b''
+    if mode == 'unsupported':
+        assert response.json() == {'detail': 'Runtime unavailable'}
     assert all(c.is_closed for c in clients)
-    assert all(r.is_closed and s.closed for r,s in responses)
+    assert all(r.is_closed and s.closed for r, s in responses)

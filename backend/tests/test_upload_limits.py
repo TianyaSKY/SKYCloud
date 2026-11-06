@@ -1,226 +1,404 @@
 import asyncio
 import base64
+from collections.abc import AsyncGenerator, Iterator
+from io import BytesIO
 from pathlib import Path
 import tempfile
-
-import httpx
-from io import BytesIO
+from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from fastapi import FastAPI, File, UploadFile
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+from starlette.types import Message, Receive, Scope, Send
 from werkzeug.datastructures import FileStorage
 
 from app.exceptions import PayloadTooLargeError
-from app.infra.upload_adapter import Base64UploadAdapter, FastAPIUploadAdapter, save_bounded
+from app.infra.upload_adapter import (
+    Base64UploadAdapter,
+    FastAPIUploadAdapter,
+    save_bounded,
+)
 from app.infra.upload_limits import UploadBodyLimitMiddleware, positive_limit
+from app.models.user import User
+from app.models.workspace import Workspace
+from tests.conftest import InMemoryStorageClient
 
 
-@pytest.mark.parametrize('kind', ['http', 'base64', 'werkzeug'])
-def test_bounded_adapter_accepts_exact_limit_and_removes_oversized_file(tmp_path, kind):
-    def adapter(data):
-        if kind == 'http':
-            return FastAPIUploadAdapter(UploadFile(filename='x', file=BytesIO(data)))
-        if kind == 'base64':
-            return Base64UploadAdapter(base64.b64encode(data).decode(), 'x')
-        return FileStorage(stream=BytesIO(data), filename='x')
-    path = str(tmp_path / 'x')
-    save_bounded(adapter(b'12345'), path, 5)
-    assert (tmp_path / 'x').read_bytes() == b'12345'
-    (tmp_path / 'x').unlink()
+@pytest.mark.parametrize("kind", ["http", "base64", "werkzeug"])
+def test_bounded_adapter_accepts_exact_limit_and_removes_oversized_file(
+    tmp_path: Path, kind: str
+) -> None:
+    def adapter(
+        data: bytes,
+    ) -> FastAPIUploadAdapter | Base64UploadAdapter | FileStorage:
+        if kind == "http":
+            return FastAPIUploadAdapter(
+                UploadFile(filename="x", file=BytesIO(data))
+            )
+        if kind == "base64":
+            return Base64UploadAdapter(base64.b64encode(data).decode(), "x")
+        return FileStorage(stream=BytesIO(data), filename="x")
+
+    path = str(tmp_path / "x")
+    save_bounded(adapter(b"12345"), path, 5)
+    assert (tmp_path / "x").read_bytes() == b"12345"
+    (tmp_path / "x").unlink()
     with pytest.raises(PayloadTooLargeError):
-        save_bounded(adapter(b'123456'), path, 5)
-    assert not (tmp_path / 'x').exists()
+        save_bounded(adapter(b"123456"), path, 5)
+    assert not (tmp_path / "x").exists()
 
 
-def test_stream_stops_at_one_extra_byte(tmp_path):
-    source = BytesIO(b'x' * 100000)
+def test_stream_stops_at_one_extra_byte(tmp_path: Path) -> None:
+    source = BytesIO(b"x" * 100000)
     with pytest.raises(PayloadTooLargeError):
-        FastAPIUploadAdapter(UploadFile(filename='x', file=source)).save(str(tmp_path / 'x'), 10)
+        FastAPIUploadAdapter(UploadFile(filename="x", file=source)).save(
+            str(tmp_path / "x"), 10
+        )
     assert source.tell() == 11
-    assert not (tmp_path / 'x').exists()
+    assert not (tmp_path / "x").exists()
 
 
-@pytest.mark.parametrize('length_header', [True, False])
-def test_request_limit_checks_actual_body_before_route(length_header):
+@pytest.mark.parametrize("length_header", [True, False])
+def test_request_limit_checks_actual_body_before_route(
+    length_header: bool,
+) -> None:
     app = FastAPI()
     app.add_middleware(UploadBodyLimitMiddleware, max_bytes=150)
-    calls = []
+    calls: list[bool] = []
 
-    @app.post('/api/files')
-    def upload(file: UploadFile = File(...)):
+    @app.post("/api/files")
+    def upload(file: UploadFile = File(...)) -> dict[str, bool]:
         calls.append(True)
-        return {'ok': True}
+        return {"ok": True}
 
-    boundary = 'upload-test'
-    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="x"\r\n\r\n'.encode()
-            + b'x' * 1000 + f'\r\n--{boundary}--\r\n'.encode())
-    headers = {'content-type': f'multipart/form-data; boundary={boundary}'}
+    boundary = "upload-test"
+    body = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="x"\r\n\r\n'.encode()
+        + b"x" * 1000
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    headers = {"content-type": f"multipart/form-data; boundary={boundary}"}
     content = body if length_header else iter([body[:100], body[100:]])
-    response = TestClient(app).post('/api/files', content=content, headers=headers)
+    response = TestClient(app).post(
+        "/api/files", content=content, headers=headers
+    )
     assert response.status_code == 413
     assert calls == []
 
 
-def test_single_file_excess_is_413_without_storage_or_temporary_file(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage):
+def test_single_file_excess_is_413_without_storage_or_temporary_file(
+    session: Session,
+    test_workspace: Workspace,
+    test_user: User,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_object_storage: InMemoryStorageClient,
+) -> None:
     from app.features.file import upload_config
     from app.features.file.upload_service import get_upload_service
-    monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(tmp_path))
-    monkeypatch.setattr(upload_config, 'MAX_UPLOAD_SIZE', 5)
-    upload = FastAPIUploadAdapter(UploadFile(filename='x', file=BytesIO(b'123456')))
+
+    monkeypatch.setattr(upload_config, "UPLOAD_FOLDER", str(tmp_path))
+    monkeypatch.setattr(upload_config, "MAX_UPLOAD_SIZE", 5)
+    upload = FastAPIUploadAdapter(
+        UploadFile(filename="x", file=BytesIO(b"123456"))
+    )
     with pytest.raises(PayloadTooLargeError):
-        get_upload_service().create_uploaded_file(session, test_workspace.id, test_user.id, upload)
+        get_upload_service().create_uploaded_file(
+            session, int(test_workspace.id), int(test_user.id), upload
+        )
     assert mock_object_storage.objects == {}
     assert list(tmp_path.iterdir()) == []
 
 
-def test_oversized_part_preserves_existing_part_and_cleans_temp(session, test_workspace, test_user, tmp_path, monkeypatch):
-    from app.infra import multipart_storage
+def test_oversized_part_preserves_existing_part_and_cleans_temp(
+    session: Session,
+    test_workspace: Workspace,
+    test_user: User,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.features.file import upload_config
-    from app.features.file.multipart_service import SaveMultipartChunkParams, get_multipart_service
-    monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
+    from app.features.file.multipart_service import (
+        SaveMultipartChunkParams,
+        get_multipart_service,
+    )
+    from app.infra import multipart_storage
+
+    monkeypatch.setattr(
+        upload_config, "UPLOAD_FOLDER", str(tmp_path / "uploads")
+    )
     service = get_multipart_service()
-    # 使用服务的路径契约, 而非假设目录命名.
-    result = service.init_multipart_upload(session, test_workspace.id, test_user.id,
-        {'filename': 'x', 'total_size': 5, 'chunk_size': 5, 'upload_id': 'abcdefgh'})
-    chunks = Path(multipart_storage.chunks_directory(service.directory(test_workspace.id, result['upload_id'])))
-    (chunks / '0.part').write_bytes(b'12345')
-    adapter = FastAPIUploadAdapter(UploadFile(filename='x', file=BytesIO(b'123456')))
+    result = service.init_multipart_upload(
+        session,
+        int(test_workspace.id),
+        int(test_user.id),
+        {
+            "filename": "x",
+            "total_size": 5,
+            "chunk_size": 5,
+            "upload_id": "abcdefgh",
+        },
+    )
+    chunks = Path(
+        multipart_storage.chunks_directory(
+            service.directory(int(test_workspace.id), str(result["upload_id"]))
+        )
+    )
+    (chunks / "0.part").write_bytes(b"12345")
+    adapter = FastAPIUploadAdapter(
+        UploadFile(filename="x", file=BytesIO(b"123456"))
+    )
     with pytest.raises(PayloadTooLargeError):
-        service.save_multipart_chunk(session, SaveMultipartChunkParams(uploader_id=test_user.id, workspace_id=test_workspace.id, upload_id='abcdefgh', chunk_index=0, chunk=adapter))
-    assert (chunks / '0.part').read_bytes() == b'12345'
-    assert list(chunks.glob('*.tmp')) == []
+        service.save_multipart_chunk(
+            session,
+            SaveMultipartChunkParams(
+                uploader_id=int(test_user.id),
+                workspace_id=int(test_workspace.id),
+                upload_id="abcdefgh",
+                chunk_index=0,
+                chunk=adapter,
+            ),
+        )
+    assert (chunks / "0.part").read_bytes() == b"12345"
+    assert list(chunks.glob("*.tmp")) == []
 
 
-@pytest.mark.parametrize('value', ['0', '-1', 'invalid'])
-def test_upload_limit_cannot_disable_protection(monkeypatch, value):
-    monkeypatch.setenv('TEST_UPLOAD_LIMIT', value)
+@pytest.mark.parametrize("value", ["0", "-1", "invalid"])
+def test_upload_limit_cannot_disable_protection(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("TEST_UPLOAD_LIMIT", value)
     with pytest.raises(RuntimeError):
-        positive_limit('TEST_UPLOAD_LIMIT', 100)
+        positive_limit("TEST_UPLOAD_LIMIT", 100)
 
 
-def test_chunked_request_closes_already_open_multipart_spools(monkeypatch):
+def test_chunked_request_closes_already_open_multipart_spools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = FastAPI()
     app.add_middleware(UploadBodyLimitMiddleware, max_bytes=300)
-    opened = []
-    def spool(*args, **kwargs):
-        file = tempfile.SpooledTemporaryFile(*args, **kwargs)
+    opened: list[tempfile.SpooledTemporaryFile[bytes]] = []
+
+    def spool(
+        *args: Any, **kwargs: Any
+    ) -> tempfile.SpooledTemporaryFile[bytes]:
+        file: tempfile.SpooledTemporaryFile[bytes] = (
+            tempfile.SpooledTemporaryFile(*args, **kwargs)
+        )
         opened.append(file)
         return file
-    monkeypatch.setattr('starlette.formparsers.SpooledTemporaryFile', spool)
 
-    @app.post('/api/files')
-    def upload(file: UploadFile = File(...)):
-        pytest.fail('Oversized request reached upload route')
+    monkeypatch.setattr("starlette.formparsers.SpooledTemporaryFile", spool)
 
-    async def body():
+    @app.post("/api/files")
+    def upload(file: UploadFile = File(...)) -> None:
+        pytest.fail("Oversized request reached upload route")
+
+    async def body() -> AsyncGenerator[bytes, None]:
         yield b'--abc\r\nContent-Disposition: form-data; name="file"; filename="x"\r\n\r\n'
-        yield b'x' * 100
-        yield b'x' * 1000
-        pytest.fail('Server continued consuming oversized request')
+        yield b"x" * 100
+        yield b"x" * 1000
+        pytest.fail("Server continued consuming oversized request")
 
-    async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
-            return await client.post('/api/files', content=body(), headers={'content-type': 'multipart/form-data; boundary=abc'})
+    async def run() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            return await client.post(
+                "/api/files",
+                content=body(),
+                headers={"content-type": "multipart/form-data; boundary=abc"},
+            )
+
     response = asyncio.run(run())
     assert response.status_code == 413
     assert len(opened) == 1
     assert opened[0].closed
 
 
-def test_tampered_stored_chunk_cannot_overrun_assembly(session, test_workspace, test_user, tmp_path, monkeypatch, mock_object_storage):
-    from app.infra import multipart_storage
+def test_tampered_stored_chunk_cannot_overrun_assembly(
+    session: Session,
+    test_workspace: Workspace,
+    test_user: User,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_object_storage: InMemoryStorageClient,
+) -> None:
     from app.features.file import upload_config
     from app.features.file.multipart_service import get_multipart_service
-    upload_root = tmp_path / 'uploads'
-    monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(upload_root))
+    from app.infra import multipart_storage
+
+    upload_root = tmp_path / "uploads"
+    monkeypatch.setattr(upload_config, "UPLOAD_FOLDER", str(upload_root))
     service = get_multipart_service()
-    result = service.init_multipart_upload(session, test_workspace.id, test_user.id, {'filename': 'x', 'total_size': 5, 'chunk_size': 5})
-    upload_id = result['upload_id']
-    chunks = Path(multipart_storage.chunks_directory(service.directory(test_workspace.id, upload_id)))
-    (chunks / '0.part').write_bytes(b'x' * 100000)
+    result = service.init_multipart_upload(
+        session,
+        int(test_workspace.id),
+        int(test_user.id),
+        {"filename": "x", "total_size": 5, "chunk_size": 5},
+    )
+    upload_id = str(result["upload_id"])
+    chunks = Path(
+        multipart_storage.chunks_directory(
+            service.directory(int(test_workspace.id), upload_id)
+        )
+    )
+    (chunks / "0.part").write_bytes(b"x" * 100000)
     with pytest.raises(PayloadTooLargeError):
-        service.complete_multipart_upload(session, test_workspace.id, test_user.id, upload_id)
+        service.complete_multipart_upload(
+            session, int(test_workspace.id), int(test_user.id), upload_id
+        )
     assert mock_object_storage.objects == {}
-    assert not (upload_root / '.staging').exists()
+    assert not (upload_root / ".staging").exists()
 
 
-def test_upload_request_concurrency_is_bounded_and_released(monkeypatch):
+def test_upload_request_concurrency_is_bounded_and_released(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.infra import upload_limits
-    monkeypatch.setattr(upload_limits, 'REQUEST_CONCURRENCY', 1)
-    async def run():
+
+    monkeypatch.setattr(upload_limits, "REQUEST_CONCURRENCY", 1)
+
+    async def run() -> None:
         entered = asyncio.Event()
         finish = asyncio.Event()
-        async def app(scope, receive, send):
+
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
             entered.set()
             await finish.wait()
+
         middleware = UploadBodyLimitMiddleware(app)
-        scope = {'type': 'http', 'method': 'POST', 'path': '/api/files', 'headers': []}
-        responses = []
-        async def receive():
-            return {'type': 'http.request', 'body': b'', 'more_body': False}
-        async def send(message):
+        scope: Scope = {  # pyright: ignore[reportAssignmentType]
+            "type": "http",
+            "method": "POST",
+            "path": "/api/files",
+            "headers": [],
+        }
+        responses: list[Message] = []
+
+        async def receive() -> Message:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: Message) -> None:
             responses.append(message)
+
         first = asyncio.create_task(middleware(scope, receive, send))
         await entered.wait()
         await middleware(scope, receive, send)
-        assert responses[0]['status'] == 429
+        assert responses[0]["status"] == 429
         finish.set()
         await first
         assert middleware.active_requests == 0
         await middleware(scope, receive, send)
         assert middleware.active_requests == 0
+
     asyncio.run(run())
 
 
-def test_json_rpc_body_is_bounded_before_application_decodes_it():
+def test_json_rpc_body_is_bounded_before_application_decodes_it() -> None:
     from app.infra.upload_limits import BufferedJsonBodyLimitMiddleware
-    calls = []
-    async def application(scope, receive, send):
+
+    calls: list[bool] = []
+
+    async def application(scope: Scope, receive: Receive, send: Send) -> None:
         calls.append(True)
-    async def run():
+
+    async def run() -> None:
         middleware = BufferedJsonBodyLimitMiddleware(application, max_bytes=5)
-        messages = iter([{'type': 'http.request', 'body': b'123', 'more_body': True},
-                         {'type': 'http.request', 'body': b'456', 'more_body': True}])
-        async def receive():
+        messages: Iterator[Message] = iter(
+            [
+                {
+                    "type": "http.request",
+                    "body": b"123",
+                    "more_body": True,
+                },
+                {
+                    "type": "http.request",
+                    "body": b"456",
+                    "more_body": True,
+                },
+            ]
+        )
+
+        async def receive() -> Message:
             return next(messages)
-        responses = []
-        async def send(message):
+
+        responses: list[Message] = []
+
+        async def send(message: Message) -> None:
             responses.append(message)
-        await middleware({'type': 'http', 'method': 'POST', 'headers': []}, receive, send)
-        assert responses[0]['status'] == 413
+
+        await middleware(
+            {"type": "http", "method": "POST", "headers": []},  # pyright: ignore[reportArgumentType]
+            receive,
+            send,
+        )
+        assert responses[0]["status"] == 413
         assert middleware.active_requests == 0
+
     asyncio.run(run())
     assert calls == []
 
 
-def test_inline_mcp_upload_rejects_encoded_excess_before_decoding(monkeypatch):
-    from app.mcp import server
-    monkeypatch.setattr(server, 'MCP_INLINE_UPLOAD_MAX_BYTES', 3)
-    decoder = MagicMock(side_effect=AssertionError('Oversized input was decoded'))
-    from app.mcp import inline_upload
-    monkeypatch.setattr(inline_upload.base64, 'b64decode', decoder)
-    with pytest.raises(ValueError, match='exceeds'):
-        server._inline_upload_adapter('x', 'eHh4eHh4', 'base64', None)
+def test_inline_mcp_upload_rejects_encoded_excess_before_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp import inline_upload, server
+
+    monkeypatch.setattr(server, "MCP_INLINE_UPLOAD_MAX_BYTES", 3)
+    decoder = MagicMock(
+        side_effect=AssertionError("Oversized input was decoded")
+    )
+    monkeypatch.setattr(inline_upload.base64, "b64decode", decoder)
+    with pytest.raises(ValueError, match="exceeds"):
+        server._inline_upload_adapter("x", "eHh4eHh4", "base64", None)  # pyright: ignore[reportPrivateUsage]
     decoder.assert_not_called()
-    with pytest.raises(ValueError, match='exceeds'):
-        server._inline_upload_adapter('x', '你好', 'utf-8', None)
+    with pytest.raises(ValueError, match="exceeds"):
+        server._inline_upload_adapter("x", "你好", "utf-8", None)  # pyright: ignore[reportPrivateUsage]
 
 
-def test_bounded_json_rpc_replays_exact_bytes_at_limit():
+def test_bounded_json_rpc_replays_exact_bytes_at_limit() -> None:
     from app.infra.upload_limits import BufferedJsonBodyLimitMiddleware
-    async def run():
-        async def application(scope, receive, send):
+
+    async def run() -> None:
+        async def application(scope: Scope, receive: Receive, send: Send) -> None:
             message = await receive()
-            assert message == {'type': 'http.request', 'body': b'12345', 'more_body': False}
+            assert message == {
+                "type": "http.request",
+                "body": b"12345",
+                "more_body": False,
+            }
+
         middleware = BufferedJsonBodyLimitMiddleware(application, max_bytes=5)
-        messages = iter([{'type': 'http.request', 'body': b'12', 'more_body': True},
-                         {'type': 'http.request', 'body': b'345', 'more_body': False}])
-        async def receive():
+        messages: Iterator[Message] = iter(
+            [
+                {
+                    "type": "http.request",
+                    "body": b"12",
+                    "more_body": True,
+                },
+                {
+                    "type": "http.request",
+                    "body": b"345",
+                    "more_body": False,
+                },
+            ]
+        )
+
+        async def receive() -> Message:
             return next(messages)
-        async def send(message):
-            pytest.fail('Accepted request was rejected')
-        await middleware({'type': 'http', 'method': 'POST', 'headers': []}, receive, send)
+
+        async def send(message: Message) -> None:
+            pytest.fail("Accepted request was rejected")
+
+        await middleware(
+            {"type": "http", "method": "POST", "headers": []},  # pyright: ignore[reportArgumentType]
+            receive,
+            send,
+        )
         assert middleware.active_requests == 0
+
     asyncio.run(run())

@@ -1,60 +1,80 @@
+# pyright: reportPrivateUsage=false
 """基础设施测试：task_queue 消费者 + llm/client + indexing handler。"""
 
 import json
+from pathlib import Path
+from typing import Any, cast
+from unittest.mock import patch, MagicMock, AsyncMock
+
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock, call
+from sqlalchemy.orm import Session
 
 from app.infra.task_queue import (
     QueueMessage,
-    _rabbitmq_port,
-    _connection_parameters,
+    _rabbitmq_port,  # pyright: ignore[reportPrivateUsage]
+    _connection_parameters,  # pyright: ignore[reportPrivateUsage]
     publish_messages,
     publish_file_tasks,
     publish_organize_task,
     RabbitMQTaskConsumer,
     FILE_PROCESS_QUEUE,
     ORGANIZE_FILE_QUEUE,
-    TASK_QUEUES,
 )
+from app.infra.llm.client import (
+    _get_client,  # pyright: ignore[reportPrivateUsage]
+    _safe_record,  # pyright: ignore[reportPrivateUsage]
+    chat_completion,
+    embed_texts,
+    record_llm_usage,
+)
+from app.infra.llm.usage import TokenUsage
+from app.infra.indexing.handler import (
+    handle_file_indexing,
+    _mark_file_failed,  # pyright: ignore[reportPrivateUsage]
+)
+from app.models.file import File
+from app.models.file_chunk import FileChunk
+from app.models.user import User
+from app.models.workspace import Workspace
 
 
 # task_queue 基础函数
 
 
 class TestQueueMessage:
-    def test_dataclass(self):
+    def test_dataclass(self) -> None:
         msg = QueueMessage(queue_name="q", body="hello")
         assert msg.queue_name == "q"
         assert msg.body == "hello"
 
 
 class TestRabbitmqPort:
-    def test_default(self, monkeypatch):
+    def test_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("RABBITMQ_PORT", raising=False)
-        assert _rabbitmq_port() == 5672
+        assert _rabbitmq_port() == 5672  # pyright: ignore[reportPrivateUsage]
 
-    def test_custom(self, monkeypatch):
+    def test_custom(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RABBITMQ_PORT", "5673")
-        assert _rabbitmq_port() == 5673
+        assert _rabbitmq_port() == 5673  # pyright: ignore[reportPrivateUsage]
 
 
 class TestConnectionParameters:
-    def test_url_based(self, monkeypatch):
+    def test_url_based(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RABBITMQ_URL", "amqp://user:explicit-test-queue-password@host:5672/vh")
-        params = _connection_parameters()
+        params = _connection_parameters()  # pyright: ignore[reportPrivateUsage]
         assert params is not None
 
-    def test_host_based(self, monkeypatch):
+    def test_host_based(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("RABBITMQ_URL", raising=False)
         monkeypatch.setenv("RABBITMQ_HOST", "myhost")
         monkeypatch.setenv("RABBITMQ_USER", "admin")
         monkeypatch.setenv("RABBITMQ_PASSWORD", "explicit-test-queue-password")
-        params = _connection_parameters()
+        params = _connection_parameters()  # pyright: ignore[reportPrivateUsage]
         assert params is not None
 
 
 class TestPublishMessages:
-    def test_publish(self):
+    def test_publish(self) -> None:
         mock_conn = MagicMock()
         mock_channel = MagicMock()
         mock_conn.channel.return_value = mock_channel
@@ -68,19 +88,19 @@ class TestPublishMessages:
 
 
 class TestPublishFileTasks:
-    def test_delegates(self):
+    def test_delegates(self) -> None:
         with patch("app.infra.task_queue.publish_messages") as m:
             publish_file_tasks([1, 2])
             m.assert_called_once_with(FILE_PROCESS_QUEUE, [1, 2])
 
 
 class TestPublishOrganizeTask:
-    def test_delegates(self):
+    def test_delegates(self) -> None:
         with patch("app.infra.task_queue.publish_messages") as m:
             publish_organize_task(1, 2, "token123")
             args = m.call_args
             assert args[0][0] == ORGANIZE_FILE_QUEUE
-            payload = json.loads(args[0][1][0])
+            payload = cast(dict[str, Any], json.loads(args[0][1][0]))
             assert payload["workspace_id"] == 1
             assert payload["lock_token"] == "token123"
 
@@ -89,12 +109,12 @@ class TestPublishOrganizeTask:
 
 
 class TestRabbitMQTaskConsumer:
-    def test_init(self):
+    def test_init(self) -> None:
         consumer = RabbitMQTaskConsumer(poll_interval_seconds=1.0)
         assert consumer.poll_interval_seconds == 1.0
-        assert consumer._connection is None
+        assert consumer._connection is None  # pyright: ignore[reportPrivateUsage]
 
-    def test_connect(self):
+    def test_connect(self) -> None:
         mock_conn = MagicMock()
         mock_channel = MagicMock()
         mock_conn.channel.return_value = mock_channel
@@ -106,7 +126,7 @@ class TestRabbitMQTaskConsumer:
         assert consumer._connection == mock_conn
         assert consumer._channel == mock_channel
 
-    def test_close(self):
+    def test_close(self) -> None:
         consumer = RabbitMQTaskConsumer()
         mock_conn = MagicMock()
         mock_conn.is_open = True
@@ -114,9 +134,9 @@ class TestRabbitMQTaskConsumer:
         consumer._channel = MagicMock()
         consumer.close()
         mock_conn.close.assert_called_once()
-        assert consumer._connection is None
+        assert consumer._connection is None  # pyright: ignore[reportPrivateUsage]
 
-    def test_close_already_closed(self):
+    def test_close_already_closed(self) -> None:
         consumer = RabbitMQTaskConsumer()
         mock_conn = MagicMock()
         mock_conn.is_open = False
@@ -124,15 +144,15 @@ class TestRabbitMQTaskConsumer:
         consumer.close()
         mock_conn.close.assert_not_called()
 
-    def test_decode_body_bytes(self):
+    def test_decode_body_bytes(self) -> None:
         consumer = RabbitMQTaskConsumer()
-        assert consumer._decode_body(b"hello") == "hello"
+        assert consumer._decode_body(b"hello") == "hello"  # pyright: ignore[reportPrivateUsage]
 
-    def test_decode_body_str(self):
+    def test_decode_body_str(self) -> None:
         consumer = RabbitMQTaskConsumer()
-        assert consumer._decode_body("hello") == "hello"
+        assert consumer._decode_body("hello") == "hello"  # pyright: ignore[reportPrivateUsage]
 
-    def test_get_message_found(self):
+    def test_get_message_found(self) -> None:
         consumer = RabbitMQTaskConsumer()
         mock_channel = MagicMock()
         mock_channel.basic_get.return_value = (MagicMock(), None, b"42")
@@ -146,7 +166,7 @@ class TestRabbitMQTaskConsumer:
         assert msg.body == "42"
         assert msg.queue_name == "test_q"
 
-    def test_get_message_empty(self):
+    def test_get_message_empty(self) -> None:
         consumer = RabbitMQTaskConsumer()
         mock_channel = MagicMock()
         mock_channel.basic_get.return_value = (None, None, None)
@@ -158,7 +178,7 @@ class TestRabbitMQTaskConsumer:
         msg = consumer.get_message("test_q")
         assert msg is None
 
-    def test_drain_messages(self):
+    def test_drain_messages(self) -> None:
         consumer = RabbitMQTaskConsumer()
         mock_channel = MagicMock()
         # 返回 2 条消息后返回空
@@ -175,65 +195,56 @@ class TestRabbitMQTaskConsumer:
         messages = consumer.drain_messages("q", 10)
         assert len(messages) == 2
 
-    def test_ensure_channel_reconnects(self):
+    def test_ensure_channel_reconnects(self) -> None:
         consumer = RabbitMQTaskConsumer()
         consumer._connection = None
         consumer._channel = None
 
         with patch.object(consumer, "connect") as mock_connect:
             mock_connect.side_effect = lambda: setattr(consumer, "_channel", MagicMock())
-            channel = consumer._ensure_channel()
+            _ = consumer._ensure_channel()  # pyright: ignore[reportPrivateUsage]
             mock_connect.assert_called_once()
 
 
 # llm/client
 
-from app.infra.llm.client import (
-    _get_client,
-    _safe_record,
-    chat_completion,
-    embed_texts,
-    record_llm_usage,
-)
-from app.infra.llm.usage import TokenUsage
-
 
 class TestGetClient:
-    def test_caching(self):
+    def test_caching(self) -> None:
         from app.infra.llm import client
-        with patch.dict(client._client_cache, {}, clear=True), patch("app.infra.llm.client.AsyncOpenAI") as MockOpenAI:
+        with patch.dict(client._client_cache, {}, clear=True), patch("app.infra.llm.client.AsyncOpenAI") as MockOpenAI:  # pyright: ignore[reportPrivateUsage]
             MockOpenAI.return_value = MagicMock()
-            c1 = _get_client("http://api", "key1")
-            c2 = _get_client("http://api", "key1")
+            c1 = _get_client("http://api", "key1")  # pyright: ignore[reportPrivateUsage]
+            c2 = _get_client("http://api", "key1")  # pyright: ignore[reportPrivateUsage]
             assert c1 is c2
             assert MockOpenAI.call_count == 1
 
 
 class TestSafeRecord:
-    def test_success(self):
+    def test_success(self) -> None:
         with patch("app.features.token_usage.service.record_usage") as m:
-            _safe_record(TokenUsage(user_id=1, action="chat", model_name="model", prompt_tokens=10, completion_tokens=20, total_tokens=30))
+            _safe_record(TokenUsage(user_id=1, action="chat", model_name="model", prompt_tokens=10, completion_tokens=20, total_tokens=30))  # pyright: ignore[reportPrivateUsage]
             m.assert_called_once()
 
-    def test_exception_swallowed(self):
+    def test_exception_swallowed(self) -> None:
         with patch("app.features.token_usage.service.record_usage", side_effect=Exception("err")):
-            _safe_record(TokenUsage(user_id=1, action="chat", model_name="model", prompt_tokens=10, completion_tokens=20, total_tokens=30))  # 不应抛异常
+            _safe_record(TokenUsage(user_id=1, action="chat", model_name="model", prompt_tokens=10, completion_tokens=20, total_tokens=30))  # pyright: ignore[reportPrivateUsage]
 
 
 class TestRecordLlmUsage:
-    def test_zero_tokens_skipped(self):
+    def test_zero_tokens_skipped(self) -> None:
         with patch("app.infra.llm.client._safe_record") as m:
             record_llm_usage(usage=TokenUsage(user_id=1, action="chat", total_tokens=0, prompt_tokens=0))
             m.assert_not_called()
 
-    def test_nonzero_recorded(self):
+    def test_nonzero_recorded(self) -> None:
         with patch("app.infra.llm.client._safe_record") as m:
             record_llm_usage(usage=TokenUsage(user_id=1, action="chat", total_tokens=100, prompt_tokens=50))
             m.assert_called_once()
 
 
 class TestChatCompletion:
-    async def test_success(self):
+    async def test_success(self) -> None:
         mock_client = MagicMock()
         mock_resp = MagicMock()
         mock_resp.usage.prompt_tokens = 10
@@ -251,7 +262,7 @@ class TestChatCompletion:
         assert result == mock_resp
         mock_record.assert_called_once()
 
-    async def test_no_usage(self):
+    async def test_no_usage(self) -> None:
         mock_client = MagicMock()
         mock_resp = MagicMock()
         mock_resp.usage = None
@@ -259,19 +270,18 @@ class TestChatCompletion:
 
         with patch("app.infra.llm.client._get_client", return_value=mock_client), \
              patch("app.infra.llm.client._safe_record") as mock_record:
-            result = await chat_completion(
+            assert await chat_completion(
                 messages=[{"role": "user", "content": "hi"}],
                 config={"api": "http://api", "key": "k", "model": "m"},
-            )
+            ) == mock_resp
         mock_record.assert_not_called()
 
 
 class TestEmbedTexts:
-    async def test_empty_texts(self):
-        result = await embed_texts(texts=[], config={"api": "http://a", "key": "k", "model": "m"})
-        assert result == []
+    async def test_empty_texts(self) -> None:
+        assert await embed_texts(texts=[], config={"api": "http://a", "key": "k", "model": "m"}) == []
 
-    async def test_string_input(self):
+    async def test_string_input(self) -> None:
         mock_client = MagicMock()
         mock_resp = MagicMock()
         mock_item = MagicMock()
@@ -288,10 +298,10 @@ class TestEmbedTexts:
         assert len(result) == 1
         assert len(result[0]) == 1024
 
-    async def test_multiple_texts(self):
+    async def test_multiple_texts(self) -> None:
         mock_client = MagicMock()
         mock_resp = MagicMock()
-        items = []
+        items: list[Any] = []
         for i in range(3):
             item = MagicMock()
             item.index = i
@@ -308,14 +318,9 @@ class TestEmbedTexts:
 
 # 索引处理器
 
-from app.infra.indexing.handler import (
-    handle_file_indexing,
-    _mark_file_failed,
-)
-
 
 class TestHandleFileIndexing:
-    def test_file_not_found(self):
+    def test_file_not_found(self) -> None:
         mock_session = MagicMock()
         from app.exceptions import ResourceNotFoundError
         with patch("app.infra.indexing.handler.SessionLocal", return_value=mock_session), \
@@ -323,11 +328,7 @@ class TestHandleFileIndexing:
             handle_file_indexing(999)
         mock_session.close.assert_called_once()
 
-    def test_success_flow(self, session, test_workspace, test_user, tmp_path):
-        from sqlalchemy.orm import Session
-        from app.models.file import File
-        from app.models.file_chunk import FileChunk
-
+    def test_success_flow(self, session: Session, test_workspace: Workspace, test_user: User, tmp_path: Path) -> None:
         source = tmp_path / "test.txt"
         source.write_text("Indexable text about file indexing.")
         file = File(name="test.txt", file_path="objects/test.txt",
@@ -336,24 +337,28 @@ class TestHandleFileIndexing:
         session.add(file)
         session.commit()
         file_id = file.id
+        def fake_embed_texts(texts: list[str], *args: object, **kwargs: object) -> list[list[float]]:
+            return [[0.2] * 1024 for _ in texts]
+
         # 独立 Session 与 worker 的有界事务相匹配.
         with patch("app.infra.indexing.handler.SessionLocal", side_effect=lambda: Session(session.get_bind())), \
              patch("app.infra.indexing.handler._download_file", return_value=str(source)), \
              patch("app.infra.indexing.handler.generate_file_description", return_value="desc"), \
              patch("app.infra.indexing.handler._embed_text", return_value=[0.1] * 1024), \
-             patch("app.infra.indexing.handler._embed_texts", side_effect=lambda texts, *args, **kwargs: [[0.2] * 1024 for _ in texts]):
+             patch("app.infra.indexing.handler._embed_texts", side_effect=fake_embed_texts):
             handle_file_indexing(file_id)
         session.expire_all()
         saved = session.get(File, file_id)
+        assert saved is not None
         assert saved.status == "success"
         assert saved.description == "desc"
-        assert len(saved.vector_info) == 1024
+        assert saved.vector_info is not None and len(saved.vector_info) == 1024
         chunks = session.query(FileChunk).filter_by(file_id=file_id).all()
         assert len(chunks) == 1
         assert "Indexable text" in chunks[0].content
-        assert len(chunks[0].vector_info) == 1024
+        assert chunks[0].vector_info is not None and len(chunks[0].vector_info) == 1024
 
-    def test_exception_marks_fail(self):
+    def test_exception_marks_fail(self) -> None:
         mock_session = MagicMock()
         mock_file = MagicMock()
         mock_file.id = 1
@@ -361,8 +366,6 @@ class TestHandleFileIndexing:
         mock_file.uploader_id = 1
         mock_file.file_path = "test.txt"
         mock_file.workspace_id = 1
-        mock_storage = MagicMock()
-        mock_storage.download_to_temp.return_value = "/tmp/test.txt"
 
         mock_session_get = MagicMock()
         mock_session_get.uploader_id = 1
@@ -381,20 +384,18 @@ class TestHandleFileIndexing:
 
 
 class TestMarkFileFailed:
-    def test_success(self):
+    def test_success(self) -> None:
         mock_session = MagicMock()
         mock_file = MagicMock()
         mock_file.uploader_id = 1
         mock_session.get.return_value = mock_file
 
         with patch("app.infra.indexing.handler.inbox_service.create_inbox_message"):
-            _mark_file_failed(mock_session, 1, Exception("err"))
+            _mark_file_failed(mock_session, 1, Exception("err"))  # pyright: ignore[reportPrivateUsage]
         assert mock_file.status == "fail"
 
-    def test_file_not_found(self):
+    def test_file_not_found(self) -> None:
         mock_session = MagicMock()
         mock_session.get.return_value = None
-        _mark_file_failed(mock_session, 999, Exception("err"))
+        _mark_file_failed(mock_session, 999, Exception("err"))  # pyright: ignore[reportPrivateUsage]
         mock_session.commit.assert_not_called()
-
-

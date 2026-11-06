@@ -1,5 +1,7 @@
+# pyright: reportPrivateUsage=false
 """个人与管理员记账端点的 HTTP 契约测试."""
 from datetime import timedelta
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -12,74 +14,85 @@ from sqlalchemy.orm import sessionmaker
 from app.infra.datetime_utils import BEIJING_TZ, utc_now
 from app.models.token_usage_log import TokenUsageLog
 
-@pytest.fixture
-def contract(session,test_user,admin_user):
-    test_user.total_prompt_tokens=2;test_user.total_completion_tokens=3;test_user.total_tokens=5
-    log=TokenUsageLog(user_id=test_user.id,action='chat',prompt_tokens=2,completion_tokens=3,total_tokens=5,created_at=utc_now())
-    session.add(log);session.commit()
-    app=FastAPI();register_exception_handlers(app);app.include_router(usage.router)
-    app.dependency_overrides[get_db]=lambda:session
-    app.dependency_overrides[get_session_factory]=lambda:sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
-    app.dependency_overrides[get_current_user]=lambda:test_user
-    return TestClient(app,raise_server_exceptions=False),app,test_user,admin_user,log
 
-def data(response):
-    assert response.status_code==200,response.text
-    payload=response.json();assert set(payload)=={'success','data'} and payload['success'] is True
+@pytest.fixture
+def contract(session: Any, test_user: Any, admin_user: Any) -> tuple[TestClient, FastAPI, Any, Any, TokenUsageLog]:
+    test_user.total_prompt_tokens = 2
+    test_user.total_completion_tokens = 3
+    test_user.total_tokens = 5
+    log = TokenUsageLog(user_id=test_user.id, action='chat', prompt_tokens=2, completion_tokens=3, total_tokens=5, created_at=utc_now())
+    session.add(log)
+    session.commit()
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(usage.router)
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_session_factory] = lambda: sessionmaker(bind=session.get_bind(), join_transaction_mode="create_savepoint")
+    app.dependency_overrides[get_current_user] = lambda: test_user
+    return TestClient(app, raise_server_exceptions=False), app, test_user, admin_user, log
+
+
+def data(response: Any) -> Any:
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert set(payload) == {'success', 'data'} and payload['success'] is True
     return payload['data']
 
-def test_personal_stats_logs_daily_and_self_routes_use_actual_sql(contract):
-    client,app,user,admin,log=contract
-    stats=data(client.get('/token-usage/stats'))
-    assert stats['total_tokens']==5
-    assert data(client.get(f'/token-usage/stats/{user.id}'))==stats
-    page=data(client.get('/token-usage/logs',params={'action':'chat','page_size':1}))
-    assert page['total']==1 and page['items'][0]['id']==log.id
-    assert data(client.get(f'/token-usage/logs/{user.id}'))['items'][0]['user_id']==user.id
-    day=data(client.get('/token-usage/daily'))[0]
-    assert day['total_tokens']==5 and day['request_count']==1
-    assert data(client.get(f'/token-usage/daily/{user.id}'))==[day]
+
+def test_personal_stats_logs_daily_and_self_routes_use_actual_sql(contract: tuple[TestClient, FastAPI, Any, Any, TokenUsageLog]) -> None:
+    client, _app, user, _admin, log = contract
+    stats = data(client.get('/token-usage/stats'))
+    assert stats['total_tokens'] == 5
+    assert data(client.get(f'/token-usage/stats/{user.id}')) == stats
+    page = data(client.get('/token-usage/logs', params={'action': 'chat', 'page_size': 1}))
+    assert page['total'] == 1 and page['items'][0]['id'] == log.id
+    assert data(client.get(f'/token-usage/logs/{user.id}'))['items'][0]['user_id'] == user.id
+    day = data(client.get('/token-usage/daily'))[0]
+    assert day['total_tokens'] == 5 and day['request_count'] == 1
+    assert data(client.get(f'/token-usage/daily/{user.id}')) == [day]
 
 
-def test_admin_all_variants_and_access_control(contract):
-    client,app,user,admin,log=contract
-    assert client.get('/admin/token-usage/users').status_code==403
-    for route in ('stats','logs','daily'):
-        assert client.get(f'/token-usage/{route}/{admin.id}').status_code==403
-    app.dependency_overrides[get_current_user]=lambda:admin
-    users=data(client.get('/admin/token-usage/users'))
-    assert next(row for row in users if row['user_id']==user.id)['username']==user.username
-    logs=data(client.get('/admin/token-usage/logs',params={'user_id':user.id}))
-    assert logs['items'][0]['username']==user.username
-    assert data(client.get('/admin/token-usage/daily'))[0]['total_tokens']==5
-    split=data(client.get('/admin/token-usage/daily/per-user'))
-    assert split[0]['user_id']==user.id and split[0]['total_tokens']==5
-    response=client.get('/token-usage/stats/99999')
-    assert response.status_code==404 and response.json()['error']['code']=='RESOURCE_NOT_FOUND'
+def test_admin_all_variants_and_access_control(contract: tuple[TestClient, FastAPI, Any, Any, TokenUsageLog]) -> None:
+    client, app, user, admin, _log = contract
+    assert client.get('/admin/token-usage/users').status_code == 403
+    for route in ('stats', 'logs', 'daily'):
+        assert client.get(f'/token-usage/{route}/{admin.id}').status_code == 403
+    app.dependency_overrides[get_current_user] = lambda: admin
+    users = data(client.get('/admin/token-usage/users'))
+    assert next(row for row in users if row['user_id'] == user.id)['username'] == user.username
+    logs = data(client.get('/admin/token-usage/logs', params={'user_id': user.id}))
+    assert logs['items'][0]['username'] == user.username
+    assert data(client.get('/admin/token-usage/daily'))[0]['total_tokens'] == 5
+    split = data(client.get('/admin/token-usage/daily/per-user'))
+    assert split[0]['user_id'] == user.id and split[0]['total_tokens'] == 5
+    response = client.get('/token-usage/stats/99999')
+    assert response.status_code == 404 and response.json()['error']['code'] == 'RESOURCE_NOT_FOUND'
 
-@pytest.mark.parametrize('route',['/token-usage/logs','/admin/token-usage/logs'])
-@pytest.mark.parametrize('params',[{'start_date':'private-invalid-date'},{'end_date':'bad'}, {'start_date':'2030-01-01','end_date':'2020-01-01'}])
-def test_date_filters_fail_explicitly_instead_of_widening_results(contract,route,params):
-    client,app,user,admin,log=contract
-    app.dependency_overrides[get_current_user]=lambda:admin
-    response=client.get(route,params=params)
-    assert response.status_code==400 and response.json()['success'] is False
+
+@pytest.mark.parametrize('route', ['/token-usage/logs', '/admin/token-usage/logs'])
+@pytest.mark.parametrize('params', [{'start_date': 'private-invalid-date'}, {'end_date': 'bad'}, {'start_date': '2030-01-01', 'end_date': '2020-01-01'}])
+def test_date_filters_fail_explicitly_instead_of_widening_results(contract: tuple[TestClient, FastAPI, Any, Any, TokenUsageLog], route: str, params: dict[str, str]) -> None:
+    client, app, _user, admin, _log = contract
+    app.dependency_overrides[get_current_user] = lambda: admin
+    response = client.get(route, params=params)
+    assert response.status_code == 400 and response.json()['success'] is False
     assert 'private-invalid-date' not in response.text
 
 
-def test_log_filters_pagination_and_openapi(contract):
-    client,app,user,admin,log=contract
-    assert data(client.get('/token-usage/logs',params={'start_date':'2099-01-01'}))['total']==0
-    assert data(client.get('/token-usage/logs',params={'action':'embedding'}))['total']==0
-    assert client.get('/token-usage/logs',params={'page_size':101}).status_code==422
-    schema=client.get('/openapi.json').json()
+def test_log_filters_pagination_and_openapi(contract: tuple[TestClient, FastAPI, Any, Any, TokenUsageLog]) -> None:
+    client, _app, _user, _admin, _log = contract
+    assert data(client.get('/token-usage/logs', params={'start_date': '2099-01-01'}))['total'] == 0
+    assert data(client.get('/token-usage/logs', params={'action': 'embedding'}))['total'] == 0
+    assert client.get('/token-usage/logs', params={'page_size': 101}).status_code == 422
+    schema = client.get('/openapi.json').json()
     for ops in schema['paths'].values():
         for op in ops.values():
-            ref=op['responses']['200']['content']['application/json']['schema']['$ref']
+            ref = op['responses']['200']['content']['application/json']['schema']['$ref']
             assert schema['components']['schemas'][ref.split('/')[-1]]['properties']['success']['const'] is True
 
-def test_maximum_calendar_end_date_is_a_valid_bounded_filter(contract):
-    client, app, user, admin, log = contract
+
+def test_maximum_calendar_end_date_is_a_valid_bounded_filter(contract: tuple[TestClient, FastAPI, Any, Any, TokenUsageLog]) -> None:
+    client, app, user, admin, _log = contract
     page = data(client.get(
         "/token-usage/logs",
         params={"start_date": "9999-12-31", "end_date": "9999-12-31"},
@@ -98,10 +111,11 @@ def test_maximum_calendar_end_date_is_a_valid_bounded_filter(contract):
 
 
 def test_date_only_end_includes_only_the_selected_day_for_user_and_admin(
-    contract,
-    session,
-):
+    contract: tuple[TestClient, FastAPI, Any, Any, TokenUsageLog],
+    session: Any,
+) -> None:
     client, app, user, admin, log = contract
+    assert log.created_at is not None
     selected_day = log.created_at.astimezone(BEIJING_TZ).date().isoformat()
     next_day_log = TokenUsageLog(
         user_id=user.id,
@@ -133,18 +147,25 @@ def test_date_only_end_includes_only_the_selected_day_for_user_and_admin(
     assert all_users["items"][0]["id"] == log.id
 
 
-def test_stats_output_private_field_filtered_and_invalid_output_safe(contract,monkeypatch):
-    client,app,user,admin,log=contract
-    stats=data(client.get('/token-usage/stats'))
-    monkeypatch.setattr(usage.token_usage_service,'get_user_token_stats',lambda *a:{**stats,'credential':'private-secret'})
-    assert data(client.get('/token-usage/stats'))==stats
-    monkeypatch.setattr(usage.token_usage_service,'get_user_token_stats',lambda *a:{'user_id':'private-secret'})
-    response=client.get('/token-usage/stats')
-    assert response.status_code==500 and response.json()['error']['code']=='INTERNAL_ERROR'
+def test_stats_output_private_field_filtered_and_invalid_output_safe(contract: tuple[TestClient, FastAPI, Any, Any, TokenUsageLog], monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _app, _user, _admin, _log = contract
+    stats = data(client.get('/token-usage/stats'))
+
+    def fake_stats(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {**stats, 'credential': 'private-secret'}
+
+    def fake_invalid_stats(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {'user_id': 'private-secret'}
+
+    monkeypatch.setattr(usage.token_usage_service, 'get_user_token_stats', fake_stats)
+    assert data(client.get('/token-usage/stats')) == stats
+    monkeypatch.setattr(usage.token_usage_service, 'get_user_token_stats', fake_invalid_stats)
+    response = client.get('/token-usage/stats')
+    assert response.status_code == 500 and response.json()['error']['code'] == 'INTERNAL_ERROR'
     assert 'private-secret' not in response.text
 
 
-def test_usage_log_model_cascades_account_deletion(session, test_user, admin_user):
+def test_usage_log_model_cascades_account_deletion(session: Any, test_user: Any, admin_user: Any) -> None:
     from sqlalchemy import delete, select
     from app.models.user import User
     session.add_all([
@@ -165,8 +186,8 @@ def test_usage_log_model_cascades_account_deletion(session, test_user, admin_use
         "/admin/token-usage/logs",
     ],
 )
-def test_grouped_usage_query_preserves_flat_parameters_and_defaults(contract, route):
-    client, app, user, admin, log = contract
+def test_grouped_usage_query_preserves_flat_parameters_and_defaults(contract: tuple[TestClient, FastAPI, Any, Any, TokenUsageLog], route: str) -> None:
+    client, app, user, admin, _log = contract
     app.dependency_overrides[get_current_user] = lambda: admin
     path = route.format(user_id=user.id)
 

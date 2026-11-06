@@ -1,30 +1,33 @@
 """模型层测试：to_dict / from_cache / 密码哈希 / 属性方法。"""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import cast
+
+from sqlalchemy.orm import Session
 
 from app.infra.datetime_utils import beijing_now
-from app.models.user import User
 from app.models.file import File
-from app.models.folder import Folder
-from app.models.workspace import Workspace, WorkspaceMember
-from app.models.share import Share
-from app.models.inbox import Inbox
-from app.models.sys_dict import SysDict
+from app.models.folder import Folder, FolderDict
+from app.models.inbox import Inbox, InboxDict
 from app.models.mcp_token import McpToken
+from app.models.share import Share, ShareDict
+from app.models.sys_dict import SysDict, SysDictDict
 from app.models.token_usage_log import TokenUsageLog
+from app.models.user import User
+from app.models.workspace import Workspace, WorkspaceMember
 
 
 # User 模型
 
 
 class TestUserModel:
-    def test_set_and_check_password(self):
+    def test_set_and_check_password(self) -> None:
         user = User(username="alice", role="common")
         user.set_password("secret123")
         assert user.check_password("secret123")
         assert not user.check_password("wrong")
 
-    def test_to_dict(self):
+    def test_to_dict(self) -> None:
         user = User(
             id=1,
             username="bob",
@@ -44,10 +47,10 @@ class TestUserModel:
         assert d["total_prompt_tokens"] == 100
         assert d["total_completion_tokens"] == 50
         assert d["total_tokens"] == 150
-        assert "2025-01-01" in d["created_at"]
-        assert "2025-06-01" in d["last_active_at"]
+        assert "2025-01-01" in str(d["created_at"])
+        assert "2025-06-01" in str(d["last_active_at"])
 
-    def test_to_dict_none_tokens_defaults_zero(self):
+    def test_to_dict_none_tokens_defaults_zero(self) -> None:
         user = User(id=2, username="x", role="common")
         user.password_hash = "hash"
         d = user.to_dict()
@@ -56,7 +59,7 @@ class TestUserModel:
         assert d["total_tokens"] == 0
         assert d["last_active_at"] is None
 
-    def test_from_cache_roundtrip(self):
+    def test_from_cache_roundtrip(self) -> None:
         user = User(
             id=5,
             username="cache_user",
@@ -74,11 +77,12 @@ class TestUserModel:
         assert restored.username == "cache_user"
         assert restored.role == "common"
         assert restored.total_tokens == 300
-        from datetime import timezone
-        assert restored.created_at == datetime(2025, 3, 15, 2, 30, 0, tzinfo=timezone.utc)
+        assert restored.created_at == datetime(
+            2025, 3, 15, 2, 30, 0, tzinfo=timezone.utc
+        )
         assert restored.last_active_at is None
 
-    def test_repr(self):
+    def test_repr(self) -> None:
         user = User(username="repr_test")
         assert "repr_test" in repr(user)
 
@@ -87,7 +91,7 @@ class TestUserModel:
 
 
 class TestFileModel:
-    def test_to_dict(self):
+    def test_to_dict(self) -> None:
         f = File(
             id=10,
             name="report.pdf",
@@ -113,7 +117,7 @@ class TestFileModel:
         assert d["uploader_id"] == 2
         assert d["parent_id"] == 3
 
-    def test_from_cache_roundtrip(self):
+    def test_from_cache_roundtrip(self) -> None:
         f = File(
             id=11,
             name="data.csv",
@@ -131,7 +135,7 @@ class TestFileModel:
         assert restored.status == "pending"
         assert restored.parent_id is None
 
-    def test_get_abs_path(self):
+    def test_get_abs_path(self) -> None:
         f = File(file_path="subdir/file.txt")
         path = f.get_abs_path()
         assert "subdir" in path
@@ -142,7 +146,7 @@ class TestFileModel:
 
 
 class TestFolderModel:
-    def test_to_dict_root_folder(self):
+    def test_to_dict_root_folder(self) -> None:
         folder = Folder(id=1, name="/", workspace_id=1, parent_id=None)
         d = folder.to_dict()
         assert d["id"] == 1
@@ -150,11 +154,20 @@ class TestFolderModel:
         assert d["parent_id"] is None
         assert d["path"] == "/"
 
-    def test_to_dict_child_folder(self, session, test_workspace):
-        root = session.query(Folder).filter_by(
-            workspace_id=test_workspace.id, parent_id=None
-        ).first()
-        child = Folder(name="子目录", workspace_id=test_workspace.id, parent_id=root.id)
+    def test_to_dict_child_folder(
+        self, session: Session, test_workspace: Workspace
+    ) -> None:
+        root = (
+            session.query(Folder)
+            .filter_by(workspace_id=int(test_workspace.id), parent_id=None)
+            .first()
+        )
+        assert root is not None
+        child = Folder(
+            name="子目录",
+            workspace_id=int(test_workspace.id),
+            parent_id=int(root.id),
+        )
         session.add(child)
         session.flush()
         # 加载 parent 关系
@@ -163,7 +176,7 @@ class TestFolderModel:
         assert d["name"] == "子目录"
         assert d["parent_id"] == root.id
 
-    def test_from_cache(self):
+    def test_from_cache(self) -> None:
         d = {
             "id": 99,
             "name": "缓存目录",
@@ -171,7 +184,7 @@ class TestFolderModel:
             "parent_id": None,
             "created_at": "2025-01-01T00:00:00",
         }
-        folder = Folder.from_cache(d)
+        folder = Folder.from_cache(cast(FolderDict, d))
         assert folder.id == 99
         assert folder.name == "缓存目录"
 
@@ -180,7 +193,7 @@ class TestFolderModel:
 
 
 class TestWorkspaceModel:
-    def test_workspace_to_dict(self):
+    def test_workspace_to_dict(self) -> None:
         ws = Workspace(
             id=1,
             name="团队空间",
@@ -195,7 +208,7 @@ class TestWorkspaceModel:
         assert d["description"] == "协作"
         assert d["owner_id"] == 10
 
-    def test_member_to_dict(self):
+    def test_member_to_dict(self) -> None:
         m = WorkspaceMember(
             id=1,
             workspace_id=1,
@@ -210,7 +223,7 @@ class TestWorkspaceModel:
         assert d["user_id"] == 2
         assert d["invited_by"] == 3
 
-    def test_workspace_repr(self):
+    def test_workspace_repr(self) -> None:
         ws = Workspace(id=5, name="repr_ws", owner_id=1)
         assert "repr_ws" in repr(ws)
 
@@ -219,7 +232,7 @@ class TestWorkspaceModel:
 
 
 class TestShareModel:
-    def test_to_dict(self):
+    def test_to_dict(self) -> None:
         share = Share(
             id=1,
             token="abc-token",
@@ -234,7 +247,7 @@ class TestShareModel:
         assert d["link"] == "/api/share/abc-token"
         assert d["expires_at"] == "2025-05-31T16:00:00+00:00"
 
-    def test_from_cache(self):
+    def test_from_cache(self) -> None:
         d = {
             "id": 2,
             "token": "xyz",
@@ -242,7 +255,7 @@ class TestShareModel:
             "created_at": "2025-01-01T00:00:00",
             "expires_at": None,
         }
-        share = Share.from_cache(d)
+        share = Share.from_cache(cast(ShareDict, d))
         assert share.id == 2
         assert share.token == "xyz"
         assert share.expires_at is None
@@ -252,7 +265,7 @@ class TestShareModel:
 
 
 class TestInboxModel:
-    def test_to_dict(self):
+    def test_to_dict(self) -> None:
         msg = Inbox(
             id=1,
             user_id=5,
@@ -268,7 +281,7 @@ class TestInboxModel:
         assert d["is_read"] is False
         assert d["type"] == "system"
 
-    def test_from_cache(self):
+    def test_from_cache(self) -> None:
         d = {
             "id": 3,
             "user_id": 1,
@@ -278,7 +291,7 @@ class TestInboxModel:
             "type": "workspace",
             "created_at": "2025-02-01T10:00:00",
         }
-        msg = Inbox.from_cache(d)
+        msg = Inbox.from_cache(cast(InboxDict, d))
         assert msg.id == 3
         assert msg.is_read is True
 
@@ -287,9 +300,13 @@ class TestInboxModel:
 
 
 class TestSysDictModel:
-    def test_to_dict(self):
+    def test_to_dict(self) -> None:
         sd = SysDict(
-            id=1, key="theme", value="dark", des="主题", enable=True,
+            id=1,
+            key="theme",
+            value="dark",
+            des="主题",
+            enable=True,
             created_at=datetime(2025, 1, 1),
         )
         d = sd.to_dict()
@@ -297,9 +314,16 @@ class TestSysDictModel:
         assert d["value"] == "dark"
         assert d["enable"] is True
 
-    def test_from_cache(self):
-        d = {"id": 2, "key": "lang", "value": "zh", "enable": True, "des": None, "created_at": None}
-        sd = SysDict.from_cache(d)
+    def test_from_cache(self) -> None:
+        d = {
+            "id": 2,
+            "key": "lang",
+            "value": "zh",
+            "enable": True,
+            "des": None,
+            "created_at": None,
+        }
+        sd = SysDict.from_cache(cast(SysDictDict, d))
         assert sd.key == "lang"
         assert sd.created_at is None
 
@@ -308,40 +332,43 @@ class TestSysDictModel:
 
 
 class TestMcpTokenModel:
-    def test_hash_token(self):
+    def test_hash_token(self) -> None:
         h = McpToken.hash_token("my-secret-token")
         assert len(h) == 64  # SHA-256 hex
         assert h == McpToken.hash_token("my-secret-token")  # 确定性
 
-    def test_preview_token_long(self):
+    def test_preview_token_long(self) -> None:
         token = "a" * 50
         preview = McpToken.preview_token(token)
         assert preview == "sha256:" + McpToken.hash_token(token)[:12]
 
-    def test_preview_token_short(self):
+    def test_preview_token_short(self) -> None:
         token = "short"
-        assert McpToken.preview_token(token) == "sha256:" + McpToken.hash_token(token)[:12]
+        assert (
+            McpToken.preview_token(token)
+            == "sha256:" + McpToken.hash_token(token)[:12]
+        )
 
-    def test_is_revoked(self):
+    def test_is_revoked(self) -> None:
         t = McpToken(revoked_at=None)
         assert not t.is_revoked
         t.revoked_at = beijing_now()
         assert t.is_revoked
 
-    def test_is_expired(self):
+    def test_is_expired(self) -> None:
         t = McpToken(expires_at=beijing_now() - timedelta(days=1))
         assert t.is_expired
         t2 = McpToken(expires_at=beijing_now() + timedelta(days=1))
         assert not t2.is_expired
 
-    def test_is_active(self):
+    def test_is_active(self) -> None:
         t = McpToken(
             expires_at=beijing_now() + timedelta(days=30),
             revoked_at=None,
         )
         assert t.is_active
 
-    def test_to_dict(self):
+    def test_to_dict(self) -> None:
         t = McpToken(
             id=1,
             user_id=1,
@@ -364,7 +391,7 @@ class TestMcpTokenModel:
 
 
 class TestTokenUsageLogModel:
-    def test_to_dict(self):
+    def test_to_dict(self) -> None:
         log = TokenUsageLog(
             id=1,
             user_id=1,

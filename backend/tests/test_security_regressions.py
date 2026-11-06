@@ -1,5 +1,8 @@
+# pyright: reportPrivateUsage=false
 """通过实际 HTTP 依赖项解析执行安全边界测试."""
 
+from collections.abc import Generator
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,11 +15,12 @@ from app.features.auth.service import generate_token
 from app.features.auth.user_service import update_user
 from app.features.file.router import router as file_router
 from app.infra.extensions import get_db, get_session_factory
+from app.models.user import User
 from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture
-def client(session):
+def client(session: Any) -> Generator[TestClient, None, None]:
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(auth_router, prefix="/api")
@@ -27,11 +31,11 @@ def client(session):
         yield client
 
 
-def headers(user):
+def headers(user: Any) -> dict[str, str]:
     return {"Authorization": f"Bearer {generate_token(user.id, user.auth_version)}"}
 
 
-def test_password_change_revokes_old_session_and_new_login_works(client, session, test_user):
+def test_password_change_revokes_old_session_and_new_login_works(client: TestClient, session: Any, test_user: Any) -> None:
     before = headers(test_user)
     assert client.get(f"/api/users/{test_user.id}", headers=before).status_code == 200
     changed = client.put(f"/api/users/{test_user.id}/password", headers=before,
@@ -44,7 +48,7 @@ def test_password_change_revokes_old_session_and_new_login_works(client, session
     assert client.get(f"/api/users/{test_user.id}", headers=after).status_code == 200
 
 
-def test_admin_password_reset_revokes_only_target_sessions(client, test_user, admin_user):
+def test_admin_password_reset_revokes_only_target_sessions(client: TestClient, test_user: Any, admin_user: Any) -> None:
     victim = headers(test_user)
     administrator = headers(admin_user)
     changed = client.put(f"/api/users/{test_user.id}/password", headers=administrator,
@@ -54,7 +58,7 @@ def test_admin_password_reset_revokes_only_target_sessions(client, test_user, ad
     assert client.get(f"/api/users/{admin_user.id}", headers=administrator).status_code == 200
 
 
-def test_failed_password_change_preserves_session(client, test_user):
+def test_failed_password_change_preserves_session(client: TestClient, test_user: Any) -> None:
     before = headers(test_user)
     changed = client.put(f"/api/users/{test_user.id}/password", headers=before,
                          json={"old_password": "wrong", "new_password": "new-long-password"})
@@ -62,14 +66,14 @@ def test_failed_password_change_preserves_session(client, test_user):
     assert client.get(f"/api/users/{test_user.id}", headers=before).status_code == 200
 
 
-def test_unversioned_session_is_rejected(client, test_user):
+def test_unversioned_session_is_rejected(client: TestClient, test_user: Any) -> None:
     import jwt
     from app.infra.extensions import SECRET_KEY
     legacy = jwt.encode({"sub": str(test_user.id)}, SECRET_KEY, algorithm="HS256")
     assert client.get(f"/api/users/{test_user.id}", headers={"Authorization": "Bearer " + legacy}).status_code == 401
 
 
-def test_mcp_token_is_revealed_only_by_explicit_issuance(client, session, test_user):
+def test_mcp_token_is_revealed_only_by_explicit_issuance(client: TestClient, session: Any, test_user: Any) -> None:
     from app.models.mcp_token import McpToken
     before = client.get("/api/auth/mcp-token", headers=headers(test_user))
     assert before.status_code == 200
@@ -90,7 +94,7 @@ def test_mcp_token_is_revealed_only_by_explicit_issuance(client, session, test_u
     assert session.query(McpToken).count() == 1
 
 
-def test_login_does_not_rotate_or_issue_external_mcp_credentials(client, session, test_user):
+def test_login_does_not_rotate_or_issue_external_mcp_credentials(client: TestClient, session: Any, test_user: Any) -> None:
     from app.models.mcp_token import McpToken
     login = client.post("/api/auth/login", json={"username": test_user.username, "password": "password123"})
     assert login.status_code == 200
@@ -98,25 +102,25 @@ def test_login_does_not_rotate_or_issue_external_mcp_credentials(client, session
 
 
 @pytest.mark.parametrize("version", [None, True, -1, "0", 1])
-def test_invalid_or_wrong_session_version_is_rejected(client, test_user, version):
+def test_invalid_or_wrong_session_version_is_rejected(client: TestClient, test_user: Any, version: Any) -> None:
     import jwt
     from app.infra.extensions import SECRET_KEY
     token = jwt.encode({"sub": str(test_user.id), "ver": version}, SECRET_KEY, algorithm="HS256")
     assert client.get(f"/api/users/{test_user.id}", headers={"Authorization": "Bearer " + token}).status_code == 401
 
 
-def test_cached_profile_cannot_restore_revoked_session(client, session, test_user):
+def test_cached_profile_cannot_restore_revoked_session(client: TestClient, session: Any, test_user: Any) -> None:
     from sqlalchemy import update
     from app.features.auth.service import decode_token
     before = headers(test_user)
-    session.execute(update(type(test_user)).where(type(test_user).id == test_user.id).values(auth_version=1))
+    session.execute(update(User).where(User.id == test_user.id).values(auth_version=1))
     session.commit()
     with patch("app.features.auth.user_service.get_user_data", return_value=test_user.to_dict()):
         assert client.get(f"/api/users/{test_user.id}", headers=before).status_code == 401
         assert "revoked" in decode_token(session, before["Authorization"].split(" ", 1)[1]).lower()
 
 
-def test_profile_update_cannot_change_password(client, session, test_user):
+def test_profile_update_cannot_change_password(client: TestClient, session: Any, test_user: Any) -> None:
     response = client.put(
         f"/api/users/{test_user.id}",
         headers=headers(test_user),
@@ -128,13 +132,13 @@ def test_profile_update_cannot_change_password(client, session, test_user):
     assert test_user.check_password("password123")
 
 
-def test_service_rejects_credential_fields(session, test_user):
+def test_service_rejects_credential_fields(session: Any, test_user: Any) -> None:
     with pytest.raises(BusinessRuleError):
-        update_user(session, test_user.id, {"password_hash": "attacker-hash"})
+        update_user(session, test_user.id, cast(Any, {"password_hash": "attacker-hash"}))
     assert test_user.check_password("password123")
 
 
-def test_management_user_creation_requires_admin(client, test_user, admin_user):
+def test_management_user_creation_requires_admin(client: TestClient, test_user: Any, admin_user: Any) -> None:
     body = {"username": "managed", "password": "secret"}
     assert client.post("/api/users", json=body).status_code == 401
     assert client.post("/api/users", headers=headers(test_user), json=body).status_code == 403
@@ -143,7 +147,7 @@ def test_management_user_creation_requires_admin(client, test_user, admin_user):
     assert response.json()['data']["role"] == "common"
 
 
-def test_password_endpoint_still_requires_old_password(client, session, test_user):
+def test_password_endpoint_still_requires_old_password(client: TestClient, session: Any, test_user: Any) -> None:
     url = f"/api/users/{test_user.id}/password"
     response = client.put(url, headers=headers(test_user), json={"old_password": "wrong", "new_password": "new"})
     assert response.status_code == 400
@@ -155,19 +159,19 @@ def test_password_endpoint_still_requires_old_password(client, session, test_use
     assert test_user.check_password("new")
 
 
-def test_upload_error_hides_internal_details(client, test_user, test_workspace):
+def test_upload_error_hides_internal_details(client: TestClient, test_user: Any, test_workspace: Any) -> None:
     auth_headers = {**headers(test_user), "X-Workspace-Id": str(test_workspace.id)}
     secret = "/private/storage/internal-path database-password"
-    service = MagicMock()
-    service.create_uploaded_file.side_effect = RuntimeError(secret)
-    with patch("app.features.file.router.get_upload_service", return_value=service):
+    upload_svc = MagicMock()
+    upload_svc.create_uploaded_file.side_effect = RuntimeError(secret)
+    with patch("app.features.file.router.get_upload_service", return_value=upload_svc):
         response = client.post("/api/files", headers=auth_headers, files={"file": ("test.txt", b"test")})
     assert response.status_code == 500
     assert secret not in response.text
     assert "Internal server error" in response.text
 
 
-def test_workspace_list_uses_one_query(session, test_user, admin_user, test_workspace):
+def test_workspace_list_uses_one_query(session: Any, test_user: Any, admin_user: Any, test_workspace: Any) -> None:
     from sqlalchemy import event
     from app.features.workspace.service import create_workspace, get_user_workspaces
     from app.models.workspace import WorkspaceMember
@@ -176,10 +180,10 @@ def test_workspace_list_uses_one_query(session, test_user, admin_user, test_work
     session.add(WorkspaceMember(workspace_id=second.id, user_id=admin_user.id, role="viewer"))
     session.commit()
     user_id, first_id, second_id = test_user.id, test_workspace.id, second.id
-    queries = []
+    queries: list[str] = []
     engine = session.get_bind()
 
-    def record_query(conn, cursor, statement, parameters, context, executemany):
+    def record_query(conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool) -> None:
         queries.append(statement)
 
     event.listen(engine, "before_cursor_execute", record_query)
@@ -196,7 +200,7 @@ def test_workspace_list_uses_one_query(session, test_user, admin_user, test_work
 
 
 @pytest.mark.parametrize("kind", ["domain", "http"])
-def test_server_errors_are_sanitized(kind):
+def test_server_errors_are_sanitized(kind: str) -> None:
     from fastapi import HTTPException
     from app.exceptions import ServiceOperationError
 
@@ -204,7 +208,7 @@ def test_server_errors_are_sanitized(kind):
     register_exception_handlers(app)
 
     @app.get("/error")
-    def error():
+    def error() -> None:
         if kind == "domain":
             raise ServiceOperationError("private-storage-password")
         raise HTTPException(status_code=503, detail="private-storage-password")
@@ -215,7 +219,7 @@ def test_server_errors_are_sanitized(kind):
     assert response.json() == {"success": False, "error": {"code": "INTERNAL_ERROR" if kind == "domain" else "SERVICE_UNAVAILABLE", "message": "Internal server error"}}
 
 
-def test_registration_failure_hides_internal_error(client):
+def test_registration_failure_hides_internal_error(client: TestClient) -> None:
     with patch("app.features.auth.user_service.create_user", side_effect=RuntimeError("database-private-path-password")):
         response = client.post("/api/auth/register", json={"username": "register-error", "password": "secret"})
     assert response.status_code == 500
@@ -224,7 +228,7 @@ def test_registration_failure_hides_internal_error(client):
 
 
 @pytest.mark.parametrize("kind", ["unexpected", "domain", "http"])
-def test_mcp_server_errors_do_not_reveal_internal_details(kind):
+def test_mcp_server_errors_do_not_reveal_internal_details(kind: str) -> None:
     import json
     from fastapi import HTTPException
     from app.exceptions import ServiceOperationError
@@ -241,7 +245,7 @@ def test_mcp_server_errors_do_not_reveal_internal_details(kind):
     assert private not in str(result)
 
 
-async def test_vector_search_failure_is_sanitized(session, test_workspace):
+async def test_vector_search_failure_is_sanitized(session: Any, test_workspace: Any) -> None:
     from app.features.file.search_service import SearchFilesParams, search_files
     with patch("app.features.file.search_service.get_embedding_model_config", side_effect=RuntimeError("private-provider-key")):
         result = await search_files(session, test_workspace.id, SearchFilesParams(query="query", search_type="vector"))
@@ -249,8 +253,9 @@ async def test_vector_search_failure_is_sanitized(session, test_workspace):
     assert "private-provider-key" not in str(result)
 
 
-def test_url_jwt_and_generic_cookies_never_authenticate(client, test_user, test_workspace):
+def test_url_jwt_and_generic_cookies_never_authenticate(client: TestClient, test_user: Any, test_workspace: Any) -> None:
     token = generate_token(test_user.id, test_user.auth_version)
+    assert token is not None
     assert client.get(f'/api/users/{test_user.id}', params={'token': token}).status_code == 401
     assert client.get('/api/files/1/download', params={'token': token},
                       headers={'X-Workspace-Id': str(test_workspace.id)}).status_code == 401

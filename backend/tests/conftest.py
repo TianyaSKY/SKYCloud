@@ -6,7 +6,9 @@
 import io
 import os
 import sys
+from collections.abc import Callable, Generator
 from tempfile import TemporaryDirectory
+from typing import Any
 
 # 1. 环境变量（必须在 app 包导入前设置）
 os.environ["SECRET_KEY"] = "test-secret-key-for-unit-tests-only-32"
@@ -43,58 +45,73 @@ if _backend_dir not in sys.path:
 # 1.5 Mock 重量级第三方库（langchain / openai / docker）避免版本冲突和不必要连接
 from unittest.mock import MagicMock
 
-import langchain.agents
-import langchain.tools
+import langchain.agents as _langchain_agents  # noqa: F401
+import langchain.tools as _langchain_tools  # noqa: F401
+
+_unused_tools: tuple[object, ...] = (_langchain_agents, _langchain_tools)
 
 
 class _FakeToolWrapper:
     """模拟 langchain @tool 装饰器：保留原函数并添加 .invoke() 方法。"""
 
-    def __init__(self, func):
-        self._func = func
-        self.__name__ = getattr(func, "__name__", "unknown")
-        self.__doc__ = getattr(func, "__doc__", None)
-        self.__wrapped__ = func
+    def __init__(self, func: Callable[..., Any]) -> None:
+        self._func: Callable[..., Any] = func
+        self.__name__: str = str(getattr(func, "__name__", "unknown"))
+        self.__doc__: str | None = getattr(func, "__doc__", None)
+        self.__wrapped__: Callable[..., Any] = func
 
-    def invoke(self, args_dict):
+    def invoke(self, args_dict: dict[str, Any]) -> Any:
         return self._func(**args_dict)
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(*args, **kwargs)
 
 
-def _fake_langchain_tool(func=None, **kwargs):
+def _fake_langchain_tool(
+    func: Callable[..., Any] | None = None,
+    **kwargs: Any,
+) -> _FakeToolWrapper | Callable[[Callable[..., Any]], _FakeToolWrapper]:
     """替代 langchain.tools.tool 的 passthrough 装饰器。"""
     if func is not None:
         return _FakeToolWrapper(func)
-    # 带参数调用 @tool(...)
-    def decorator(f):
+
+    def decorator(f: Callable[..., Any]) -> _FakeToolWrapper:
         return _FakeToolWrapper(f)
+
     return decorator
 
 
 class _FakeFastMCP:
     """模拟 mcp.server.fastmcp.FastMCP：tool()/resource()/prompt() 返回 passthrough 装饰器。"""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         pass
 
-    def tool(self, *args, **kwargs):
-        def decorator(f):
+    def tool(
+        self, *args: Any, **kwargs: Any
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
             return f
+
         return decorator
 
-    def resource(self, *args, **kwargs):
-        def decorator(f):
+    def resource(
+        self, *args: Any, **kwargs: Any
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
             return f
+
         return decorator
 
-    def prompt(self, *args, **kwargs):
-        def decorator(f):
+    def prompt(
+        self, *args: Any, **kwargs: Any
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
             return f
+
         return decorator
 
-    def streamable_http_app(self):
+    def streamable_http_app(self) -> MagicMock:
         return MagicMock()
 
 
@@ -114,11 +131,11 @@ for _mod in _MOCK_MODULES:
         sys.modules[_mod] = MagicMock()
 
 # 配置 langchain.tools.tool 为 passthrough 装饰器
-sys.modules["langchain.tools"].tool = _fake_langchain_tool
-sys.modules["langchain"].tools = sys.modules["langchain.tools"]
+setattr(sys.modules["langchain.tools"], "tool", _fake_langchain_tool)
+setattr(sys.modules["langchain"], "tools", sys.modules["langchain.tools"])
 
 # 配置 mcp.server.fastmcp.FastMCP 为 fake 类
-sys.modules["mcp.server.fastmcp"].FastMCP = _FakeFastMCP
+setattr(sys.modules["mcp.server.fastmcp"], "FastMCP", _FakeFastMCP)
 
 # 2. pgvector 兼容：让 Vector 类型在 SQLite 下可编译
 from sqlalchemy.ext.compiler import compiles
@@ -126,8 +143,8 @@ from sqlalchemy.ext.compiler import compiles
 try:
     from pgvector.sqlalchemy import VECTOR
 
-    @compiles(VECTOR, "sqlite")
-    def _compile_vector_sqlite(type_, compiler, **kw):
+    @compiles(VECTOR, "sqlite")  # pyright: ignore[reportUntypedFunctionDecorator]
+    def _compile_vector_sqlite(type_: Any, compiler: Any, **kw: Any) -> str:
         return "TEXT"
 
 except ImportError:
@@ -138,7 +155,7 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.infra.extensions import Base
@@ -162,6 +179,18 @@ from app.models import (  # noqa: F401
 # 确保 task_queue 模块已导入（供 patch 使用）
 import app.infra.task_queue  # noqa: F401
 
+_unused_models: tuple[object, ...] = (
+    File,
+    SysDict,
+    Share,
+    Inbox,
+    McpToken,
+    FileChangeEvent,
+    OrganizeCheckpoint,
+    TokenUsageLog,
+    app.infra.task_queue,
+)
+
 # 4. SQLite 测试引擎
 _test_engine = create_engine(
     "sqlite://",
@@ -170,10 +199,10 @@ _test_engine = create_engine(
 )
 
 
-@event.listens_for(_test_engine, "connect")
-def _enable_sqlite_fk(dbapi_conn, connection_record):
+@event.listens_for(_test_engine, "connect")  # pyright: ignore[reportUntypedFunctionDecorator]
+def _enable_sqlite_fk(dbapi_conn: Any, connection_record: Any) -> None:
     """SQLite 默认不启用外键约束，测试中开启以模拟 PostgreSQL 行为。"""
-    cursor = dbapi_conn.cursor()
+    cursor: Any = dbapi_conn.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.close()
 
@@ -181,13 +210,15 @@ def _enable_sqlite_fk(dbapi_conn, connection_record):
 # 建表（跳过 PostgreSQL 专用索引）
 Base.metadata.create_all(bind=_test_engine)
 
-_TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_test_engine)
+_TestSessionLocal: sessionmaker[Session] = sessionmaker(
+    autocommit=False, autoflush=False, bind=_test_engine
+)
 
 
 class InMemoryStorageClient:
     """测试用对象存储，隔离 MinIO 网络依赖。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
 
     def upload_file(self, local_path: str, object_name: str) -> None:
@@ -198,10 +229,10 @@ class InMemoryStorageClient:
         with open(local_path, "wb") as target:
             target.write(self.objects[object_name])
 
-    def get_file_stream(self, object_name: str):
+    def get_file_stream(self, object_name: str) -> io.BytesIO:
         return io.BytesIO(self.objects.get(object_name, b""))
 
-    def close_file_stream(self, stream) -> None:
+    def close_file_stream(self, stream: io.IOBase | Any) -> None:
         stream.close()
 
     def delete_file(self, object_name: str) -> None:
@@ -226,14 +257,14 @@ class InMemoryStorageClient:
 
 
 @pytest.fixture()
-def session():
+def session() -> Generator[Session, None, None]:
     """每个测试独立的数据库会话，测试结束回滚并清表。"""
     connection = _test_engine.connect()
     transaction = connection.begin()
     # SQLite legacy 模式在 DML 前不发送 BEGIN. 真实外部事务
     # 结合保存点 (savepoint) 可隔离服务层的 commit/rollback.
     connection.exec_driver_sql("BEGIN")
-    sess = _TestSessionLocal(bind=connection, join_transaction_mode="create_savepoint")
+    sess: Session = _TestSessionLocal(bind=connection, join_transaction_mode="create_savepoint")
     yield sess
     sess.close()
     transaction.rollback()
@@ -241,31 +272,40 @@ def session():
 
 
 @pytest.fixture(autouse=True)
-def mock_redis():
+def mock_redis() -> Generator[MagicMock, None, None]:
     """全局替换 redis_client 为 MagicMock，避免真实 Redis 连接。"""
     mock = MagicMock()
     mock.get.return_value = None
     # scan_iter 返回空迭代器
     mock.scan_iter.return_value = iter([])
     import fakeredis
+
     refresh_store = fakeredis.FakeRedis(decode_responses=True)
-    with patch("app.features.auth.refresh_sessions.redis_client", refresh_store), \
-         patch("app.infra.extensions.redis_client", mock), \
-         patch("app.infra.cache.redis_client", mock):
+    with (
+        patch("app.features.auth.refresh_sessions.redis_client", refresh_store),
+        patch("app.infra.extensions.redis_client", mock),
+        patch("app.infra.cache.redis_client", mock),
+    ):
         yield mock
 
 
 @pytest.fixture(autouse=True)
-def mock_task_queue():
+def mock_task_queue() -> Generator[dict[str, MagicMock], None, None]:
     """全局 Mock RabbitMQ 发布函数，避免真实连接。"""
-    with patch("app.infra.task_queue.publish_messages") as m_pub, \
-         patch("app.infra.task_queue.publish_organize_task") as m_org, \
-         patch("app.infra.task_queue.publish_file_tasks") as m_file:
-        yield {"publish_messages": m_pub, "publish_organize_task": m_org, "publish_file_tasks": m_file}
+    with (
+        patch("app.infra.task_queue.publish_messages") as m_pub,
+        patch("app.infra.task_queue.publish_organize_task") as m_org,
+        patch("app.infra.task_queue.publish_file_tasks") as m_file,
+    ):
+        yield {
+            "publish_messages": m_pub,
+            "publish_organize_task": m_org,
+            "publish_file_tasks": m_file,
+        }
 
 
 @pytest.fixture(autouse=True)
-def mock_object_storage():
+def mock_object_storage() -> Generator[InMemoryStorageClient, None, None]:
     """所有单元测试使用内存对象存储，避免访问真实 MinIO。"""
     storage = InMemoryStorageClient()
     with patch("app.infra.storage._holder.client", storage):
@@ -273,7 +313,7 @@ def mock_object_storage():
 
 
 @pytest.fixture()
-def test_user(session):
+def test_user(session: Session) -> User:
     """创建标准测试用户。"""
     user = User(username="testuser", role="common")
     user.set_password("password123")
@@ -283,7 +323,7 @@ def test_user(session):
 
 
 @pytest.fixture()
-def admin_user(session):
+def admin_user(session: Session) -> User:
     """创建管理员测试用户。"""
     user = User(username="adminuser", role="admin")
     user.set_password("admin123")
@@ -293,26 +333,35 @@ def admin_user(session):
 
 
 @pytest.fixture()
-def test_workspace(session, test_user):
+def test_workspace(session: Session, test_user: User) -> Workspace:
     """创建测试工作空间并将 test_user 设为 admin 成员。"""
-    ws = Workspace(name="测试空间", owner_id=test_user.id)
+    ws = Workspace(name="测试空间", owner_id=int(test_user.id))
     session.add(ws)
     session.flush()
 
-    member = WorkspaceMember(workspace_id=ws.id, user_id=test_user.id, role="admin")
+    member = WorkspaceMember(
+        workspace_id=int(ws.id), user_id=int(test_user.id), role="admin"
+    )
     session.add(member)
 
-    root_folder = Folder(name="/", workspace_id=ws.id, parent_id=None)
+    root_folder = Folder(name="/", workspace_id=int(ws.id), parent_id=None)
     session.add(root_folder)
     session.flush()
     return ws
 
 
 @pytest.fixture()
-def test_folder(session, test_workspace):
+def test_folder(session: Session, test_workspace: Workspace) -> Folder:
     """在工作空间根目录下创建子文件夹。"""
-    root = session.query(Folder).filter_by(workspace_id=test_workspace.id, parent_id=None).first()
-    folder = Folder(name="文档", workspace_id=test_workspace.id, parent_id=root.id)
+    root = (
+        session.query(Folder)
+        .filter_by(workspace_id=int(test_workspace.id), parent_id=None)
+        .first()
+    )
+    assert root is not None
+    folder = Folder(
+        name="文档", workspace_id=int(test_workspace.id), parent_id=int(root.id)
+    )
     session.add(folder)
     session.flush()
     return folder

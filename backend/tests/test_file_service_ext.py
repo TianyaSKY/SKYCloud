@@ -1,33 +1,40 @@
 """文件服务扩展测试：embedding/重建索引/清理/头像/批量删除等。"""
 
 import asyncio
+from collections.abc import Generator
 import os
+from pathlib import Path
 import time
-import pytest
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
 from app.exceptions import PermissionDeniedError, ServiceOperationError
-from app.models.file import File
-from app.models.folder import Folder
-from app.infra import multipart_storage
 from app.features.file import upload_config
 from app.features.file.avatar_service import upload_avatar_for_user
 from app.features.file.search_service import embedding_desc
 from app.features.file.service import (
-    retry_embedding,
-    rebuild_failed_indexes,
+    BatchDeleteItemData,
+    batch_delete_items,
     cleanup_expired_uploads,
     get_root_file_id,
-    batch_delete_items,
+    rebuild_failed_indexes,
+    retry_embedding,
 )
 from app.features.file.upload_service import get_upload_service
+from app.features.file.upload_types import UploadSource
+from app.infra import multipart_storage
+from app.models import File, Folder, SqlCacheRevision, User, Workspace
 
 
 # Embedding 相关
 
 
 class TestEmbeddingDesc:
-    def test_exception_returns_empty(self):
+    def test_exception_returns_empty(self) -> None:
         with patch("app.features.file.search_service.embed_texts", new_callable=AsyncMock,
                    side_effect=Exception("api err")):
             result = asyncio.run(embedding_desc("hello", {"api": "a", "key": "k", "model": "m"}))
@@ -38,10 +45,10 @@ class TestEmbeddingDesc:
 
 
 class TestRetryEmbedding:
-    def test_file_not_found(self, session):
+    def test_file_not_found(self, session: Session) -> None:
         retry_embedding(session, 99999)  # 不应报错
 
-    def test_file_found(self, session, test_workspace, test_user):
+    def test_file_found(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         f = File(name="r.txt", file_path="r.txt", file_size=10,
                  workspace_id=test_workspace.id, uploader_id=test_user.id, status="fail")
         session.add(f)
@@ -53,11 +60,11 @@ class TestRetryEmbedding:
 
 
 class TestRebuildFailedIndexes:
-    def test_no_failed_files(self, session, test_workspace):
+    def test_no_failed_files(self, session: Session, test_workspace: Workspace) -> None:
         count = rebuild_failed_indexes(session, test_workspace.id)
         assert count == 0
 
-    def test_with_failed_files(self, session, test_workspace, test_user):
+    def test_with_failed_files(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         session.add(File(name="f1.txt", file_path="f1.txt", file_size=10,
                          workspace_id=test_workspace.id, status="fail"))
         session.add(File(name="f2.txt", file_path="f2.txt", file_size=10,
@@ -68,7 +75,7 @@ class TestRebuildFailedIndexes:
             count = rebuild_failed_indexes(session, test_workspace.id)
         assert count == 2
 
-    def test_stage_error_rolls_back(self, session, test_workspace, test_user):
+    def test_stage_error_rolls_back(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         session.add(File(name="f3.txt", file_path="f3.txt", file_size=10,
                          workspace_id=test_workspace.id, status="fail"))
         session.flush()
@@ -83,7 +90,7 @@ class TestRebuildFailedIndexes:
 
 class TestCleanupExpiredUploads:
     @pytest.mark.skipif(os.name != 'posix', reason='Descriptor-anchored POSIX cleanup')
-    def test_workspace_replacement_cannot_redirect_recursive_removal(self, tmp_path, monkeypatch):
+    def test_workspace_replacement_cannot_redirect_recursive_removal(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         import shutil
         upload_root = tmp_path / 'uploads'
         multipart = upload_root / '.multipart'
@@ -100,10 +107,10 @@ class TestCleanupExpiredUploads:
         protected.write_bytes(b'outside-tree')
         retired = tmp_path / 'retired'
         remove = shutil.rmtree
-        def replace_workspace(path, *args, **kwargs):
+        def replace_workspace(path: Any, *args: Any, **kwargs: Any) -> None:
             workspace.rename(retired)
             workspace.symlink_to(outside, target_is_directory=True)
-            return remove(path, *args, **kwargs)
+            remove(path, *args, **kwargs)
         monkeypatch.setattr(shutil, 'rmtree', replace_workspace)
         monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(upload_root))
         assert cleanup_expired_uploads(max_age_hours=1) == 1
@@ -112,7 +119,7 @@ class TestCleanupExpiredUploads:
 
     @pytest.mark.skipif(os.name == 'nt' or not hasattr(os, 'geteuid') or os.geteuid() == 0,
                         reason='Requires POSIX permission enforcement for a non-root process')
-    def test_permission_denial_is_not_counted_and_can_be_retried(self, tmp_path, monkeypatch):
+    def test_permission_denial_is_not_counted_and_can_be_retried(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         upload_root = tmp_path / 'uploads'
         upload = upload_root / '.multipart' / '1' / 'expired-upload'
         upload.mkdir(parents=True)
@@ -132,7 +139,7 @@ class TestCleanupExpiredUploads:
 
     @pytest.mark.skipif(os.name == 'nt', reason='POSIX symlink containment regression')
     @pytest.mark.parametrize('link_level', ['root', 'workspace'])
-    def test_cleanup_never_follows_directory_symlinks(self, tmp_path, monkeypatch, link_level):
+    def test_cleanup_never_follows_directory_symlinks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, link_level: str) -> None:
         outside = tmp_path / 'outside'
         upload = outside / '1' / 'expired-upload'
         upload.mkdir(parents=True)
@@ -152,11 +159,11 @@ class TestCleanupExpiredUploads:
         assert cleanup_expired_uploads(max_age_hours=1) == 0
         assert payload.read_bytes() == b'outside-upload-tree'
 
-    def test_no_multipart_root(self, tmp_path, monkeypatch):
+    def test_no_multipart_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(upload_config, 'UPLOAD_FOLDER', str(tmp_path / 'uploads'))
         assert cleanup_expired_uploads() == 0
 
-    def test_cleanup_old_dirs(self, tmp_path, monkeypatch):
+    def test_cleanup_old_dirs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # 创建过期的上传目录
         upload_root = tmp_path / 'uploads'
         upload_dir = upload_root / '.multipart' / '1' / 'upload123'
@@ -170,7 +177,7 @@ class TestCleanupExpiredUploads:
         assert count == 1
         assert not upload_dir.exists()
 
-    def test_keep_recent_dirs(self, tmp_path, monkeypatch):
+    def test_keep_recent_dirs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         upload_root = tmp_path / 'uploads'
         upload_dir = upload_root / '.multipart' / '1' / 'upload456'
         upload_dir.mkdir(parents=True)
@@ -185,13 +192,9 @@ class TestCleanupExpiredUploads:
 
 
 @pytest.fixture
-def root_cache_session():
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
-    from app.models.cache_revision import SqlCacheRevision
+def root_cache_session() -> Generator[Session, None, None]:
     engine = create_engine('sqlite://')
-    File.__table__.create(engine)
-    SqlCacheRevision.__table__.create(engine)
+    File.metadata.create_all(engine, tables=[cast(Any, File.__table__), cast(Any, SqlCacheRevision.__table__)])
     try:
         with Session(engine) as session:
             yield session
@@ -200,7 +203,7 @@ def root_cache_session():
 
 
 class TestGetRootFileId:
-    def test_redis_outage_falls_back_to_database(self, root_cache_session, test_workspace):
+    def test_redis_outage_falls_back_to_database(self, root_cache_session: Session, test_workspace: Workspace) -> None:
         session = root_cache_session
         redis = MagicMock()
         redis.get.side_effect = ConnectionError("Redis unavailable")
@@ -213,7 +216,7 @@ class TestGetRootFileId:
         redis.get.assert_called_once()
         redis.setex.assert_called_once()
 
-    def test_cached(self, root_cache_session, test_workspace):
+    def test_cached(self, root_cache_session: Session, test_workspace: Workspace) -> None:
         session = root_cache_session
         mock_redis = MagicMock()
         mock_redis.get.return_value = "42"
@@ -221,7 +224,7 @@ class TestGetRootFileId:
             result = get_root_file_id(session, test_workspace.id)
         assert result == 42
 
-    def test_from_db(self, root_cache_session, test_workspace):
+    def test_from_db(self, root_cache_session: Session, test_workspace: Workspace) -> None:
         session = root_cache_session
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
@@ -235,7 +238,7 @@ class TestGetRootFileId:
         assert result == f.id
         mock_redis.setex.assert_called_once()
 
-    def test_not_found(self, root_cache_session, test_workspace):
+    def test_not_found(self, root_cache_session: Session, test_workspace: Workspace) -> None:
         session = root_cache_session
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
@@ -251,7 +254,7 @@ class TestGetRootFileId:
 
 
 class TestBatchDeleteItems:
-    def test_delete_file(self, session, test_workspace, test_user):
+    def test_delete_file(self, session: Session, test_workspace: Workspace, test_user: User) -> None:
         f = File(name="bd.txt", file_path="bd.txt", file_size=10,
                  workspace_id=test_workspace.id, uploader_id=test_user.id)
         session.add(f)
@@ -260,15 +263,15 @@ class TestBatchDeleteItems:
 
         with patch("app.features.file.service.change_log_service"), \
              patch("app.features.file.service.clear_search_cache"):
-            batch_delete_items(session, test_workspace.id, test_user.id, [{"id": file_id, "is_folder": False}])
+            batch_delete_items(session, test_workspace.id, test_user.id, [cast(BatchDeleteItemData, {"id": file_id, "is_folder": False})])
         assert session.get(File, file_id) is None
 
-    def test_delete_folder(self, session, test_workspace, test_user, test_folder):
+    def test_delete_folder(self, session: Session, test_workspace: Workspace, test_user: User, test_folder: Folder) -> None:
         folder_id = test_folder.id
 
         with patch("app.features.file.service.change_log_service"), \
              patch("app.features.file.service.clear_search_cache"):
-            batch_delete_items(session, test_workspace.id, test_user.id, [{"id": folder_id, "is_folder": True}])
+            batch_delete_items(session, test_workspace.id, test_user.id, [cast(BatchDeleteItemData, {"id": folder_id, "is_folder": True})])
         assert session.get(Folder, folder_id) is None
 
 
@@ -276,9 +279,9 @@ class TestBatchDeleteItems:
 
 
 class TestUploadAvatarForUser:
-    def test_permission_denied(self, session):
+    def test_permission_denied(self, session: Session) -> None:
         with pytest.raises(PermissionDeniedError):
-            upload_avatar_for_user(session, actor_id=1, actor_role="user", user_id=2, upload=MagicMock())
+            upload_avatar_for_user(session, actor_id=1, actor_role="user", user_id=2, upload=cast(UploadSource, MagicMock()))
 
 
 
@@ -287,19 +290,19 @@ class TestUploadAvatarForUser:
 
 class TestPublicHelpers:
 
-    def test_reusable_source_file_not_found(self, session, test_workspace):
+    def test_reusable_source_file_not_found(self, session: Session, test_workspace: Workspace) -> None:
         result = get_upload_service().reusable_source(session, "a" * 64, 100, test_workspace.id)
         assert result is None
 
 
-    def test_multipart_paths(self):
+    def test_multipart_paths(self) -> None:
         directory = multipart_storage.upload_directory("/base", 1, "abc12345")
         assert "1" in directory
         assert "abc12345" in directory
         assert multipart_storage.chunks_directory(directory).endswith("chunks")
         assert multipart_storage.metadata_path(directory).endswith("meta.json")
 
-    def test_write_and_load_meta(self, tmp_path, test_workspace):
+    def test_write_and_load_meta(self, tmp_path: Path, test_workspace: Workspace) -> None:
         meta = {"workspace_id": test_workspace.id, "filename": "test.bin", "total_size": 100}
         directory = multipart_storage.upload_directory(str(tmp_path), test_workspace.id, "abc12345")
         path = multipart_storage.metadata_path(directory)
@@ -307,3 +310,4 @@ class TestPublicHelpers:
 
         loaded = multipart_storage.read_metadata(path)
         assert loaded["filename"] == "test.bin"
+

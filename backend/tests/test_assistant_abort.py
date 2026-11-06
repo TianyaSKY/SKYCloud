@@ -1,23 +1,40 @@
+from collections.abc import Callable, Generator
 from datetime import timedelta
-from types import SimpleNamespace
 import time
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from app.infra.extensions import Base
-from app.infra.datetime_utils import utc_now
-from app.infra import assistant_abort as worker
-from app.models.assistant_runtime_abort import AssistantRuntimeAbort
-from app.models.assistant import AssistantRun
-from app.models.user import User
-from app.models.workspace import Workspace, WorkspaceMember
-from app.models.opencode_runtime import OpenCodeRuntime
-from app.features.assistant import repository, service, abort_repository
+from sqlalchemy.orm import Session, sessionmaker
+
 from app.exceptions import ConflictError
+from app.features.assistant import abort_repository, repository, service
+from app.features.assistant.engines.expert_engine import ExpertEngine
+from app.features.assistant.stream_persistence import (
+    FinalOutcome,
+    LeasePoll,
+    StreamPersistence,
+    StreamProgress,
+)
+from app.infra import assistant_abort as worker
+from app.infra.datetime_utils import utc_now
+from app.infra.extensions import Base
+from app.models import (
+    AssistantConversation,
+    AssistantMessage,
+    AssistantRun,
+    AssistantRuntimeAbort,
+    OpenCodeRuntime,
+    User,
+    Workspace,
+    WorkspaceMember,
+)
 from runtime_controller.client import ControllerNotFound
 
+
 @pytest.fixture
-def seeded():
+def seeded() -> Generator[tuple[sessionmaker[Session], tuple[int, int, int, int, int]], None, None]:
     engine = create_engine('sqlite://')
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine)
@@ -61,11 +78,12 @@ def seeded():
         run.started_at = utc_now() - timedelta(seconds=60)
         run.metadata_dict = {'worker_heartbeat_unix': time.time()-60}
         db.commit()
-        identity = user.id, workspace.id, runtime.id, conversation.id, run.id
+        identity = (user.id, workspace.id, runtime.id, conversation.id, run.id)
     yield factory, identity
     engine.dispose()
 
-def controller(identity, *, change=None):
+
+def controller(identity: tuple[int, int, int, int, int], *, change: str | None = None) -> Callable[[], Any]:
     user, workspace, runtime, _, _ = identity
     labels = {'skycloud.workspace_id': str(workspace), 'skycloud.user_id': str(user), 'skycloud.runtime_id': str(runtime)}
     if change == 'identity':
@@ -76,7 +94,7 @@ def controller(identity, *, change=None):
         attrs={'Config': {'Labels': labels}},
     )
 
-    def inspect(ref):
+    def inspect(ref: str) -> dict[str, Any]:
         assert ref == 'a'*64
         if change == 'gone':
             raise ControllerNotFound('Absent')
@@ -88,29 +106,38 @@ def controller(identity, *, change=None):
 
     return lambda: SimpleNamespace(inspect=inspect)
 
-def test_recovery_intent_is_atomic_and_retry_blocks_new_admission(seeded):
+
+def test_recovery_intent_is_atomic_and_retry_blocks_new_admission(seeded: tuple[sessionmaker[Session], tuple[int, int, int, int, int]]) -> None:
     factory, identity = seeded
     user, workspace, runtime, conversation, run_id = identity
     with factory() as db:
-        assert service.recover_abandoned_run(db, db.get(AssistantRun, run_id), commit=False)
+        run_obj = db.get(AssistantRun, run_id)
+        assert run_obj is not None
+        assert service.recover_abandoned_run(db, run_obj, commit=False)
         assert abort_repository.pending_for_member(db, workspace, user)
         db.rollback()
     with factory() as db:
         assert db.get(AssistantRuntimeAbort, run_id) is None
-        assert db.get(AssistantRun, run_id).status == 'running'
-        assert service.recover_abandoned_run(db, db.get(AssistantRun, run_id))
-    def unavailable(target):
+        r_after = db.get(AssistantRun, run_id)
+        assert r_after is not None
+        assert r_after.status == 'running'
+        assert service.recover_abandoned_run(db, r_after)
+    def unavailable(target: Any) -> None:
         raise ConnectionError('private-controller-url')
     assert worker.abort_pending_sessions(session_factory=factory, controller_factory=controller(identity), abort_function=unavailable) == 0
     with factory() as db:
         intent = db.get(AssistantRuntimeAbort, run_id)
+        assert intent is not None
         assert intent.attempts == 1 and intent.last_error_type == 'ConnectionError' and intent.completed_at is None
+        assert intent.next_attempt_at is not None
         assert intent.next_attempt_at > utc_now()
+        ws_obj = db.get(Workspace, workspace)
+        assert ws_obj is not None
         with pytest.raises(ConflictError, match='cleanup'):
             service.prepare_run(
                 db,
                 service.PrepareRunParams(
-                    workspace=db.get(Workspace, workspace),
+                    workspace=ws_obj,
                     user_id=user,
                     conversation_id=conversation,
                     query='new work',
@@ -118,65 +145,87 @@ def test_recovery_intent_is_atomic_and_retry_blocks_new_admission(seeded):
             )
         db.rollback()
         intent.next_attempt_at = utc_now()-timedelta(seconds=1)
-        db.get(OpenCodeRuntime, runtime).container_id = 'b'*64
+        rt_obj = db.get(OpenCodeRuntime, runtime)
+        assert rt_obj is not None
+        rt_obj.container_id = 'b'*64
         db.commit()
-    targets = []
+    targets: list[Any] = []
     assert worker.abort_pending_sessions(session_factory=factory, controller_factory=controller(identity), abort_function=targets.append) == 1
     assert len(targets) == 1 and targets[0].container_id == 'a'*64 and targets[0].session_id == 'captured-session'
     assert worker.abort_pending_sessions(session_factory=factory, controller_factory=controller(identity), abort_function=targets.append) == 0
     with factory() as db:
         assert not abort_repository.pending_for_member(db, workspace, user)
-        assert db.get(AssistantRuntimeAbort, run_id).completed_at is not None
+        i_done = db.get(AssistantRuntimeAbort, run_id)
+        assert i_done is not None
+        assert i_done.completed_at is not None
+
 
 @pytest.mark.parametrize('change', ['identity', 'gone', 'stopped'])
-def test_cleanup_validates_captured_identity_or_proves_container_not_running(seeded, change):
+def test_cleanup_validates_captured_identity_or_proves_container_not_running(seeded: tuple[sessionmaker[Session], tuple[int, int, int, int, int]], change: str) -> None:
     factory, identity = seeded
     with factory() as db:
-        assert service.recover_abandoned_run(db, db.get(AssistantRun, identity[-1]))
-    calls = []
+        r_obj = db.get(AssistantRun, identity[-1])
+        assert r_obj is not None
+        assert service.recover_abandoned_run(db, r_obj)
+    calls: list[Any] = []
     completed = worker.abort_pending_sessions(session_factory=factory, controller_factory=controller(identity, change=change), abort_function=calls.append)
     assert not calls
     assert completed == (0 if change == 'identity' else 1)
     with factory() as db:
-        assert (db.get(AssistantRuntimeAbort, identity[-1]).completed_at is None) == (change == 'identity')
+        i_obj = db.get(AssistantRuntimeAbort, identity[-1])
+        assert i_obj is not None
+        assert (i_obj.completed_at is None) == (change == 'identity')
 
-def test_scheduler_sweep_recovers_abandoned_run_without_browser_poll(seeded):
+
+def test_scheduler_sweep_recovers_abandoned_run_without_browser_poll(seeded: tuple[sessionmaker[Session], tuple[int, int, int, int, int]]) -> None:
     factory, identity = seeded
     assert worker.recover_abandoned_runs(session_factory=factory) == 1
     with factory() as db:
-        assert db.get(AssistantRun, identity[-1]).status == 'failed'
+        r_obj = db.get(AssistantRun, identity[-1])
+        assert r_obj is not None
+        assert r_obj.status == 'failed'
         assert db.get(AssistantRuntimeAbort, identity[-1]) is not None
     assert worker.recover_abandoned_runs(session_factory=factory) == 0
 
 
-def test_recovery_uses_original_dispatch_container_after_sql_pointer_changes(seeded):
+def test_recovery_uses_original_dispatch_container_after_sql_pointer_changes(seeded: tuple[sessionmaker[Session], tuple[int, int, int, int, int]]) -> None:
     factory, identity = seeded
     with factory() as db:
-        db.get(OpenCodeRuntime, identity[2]).container_id = 'b'*64
+        rt_obj = db.get(OpenCodeRuntime, identity[2])
+        assert rt_obj is not None
+        rt_obj.container_id = 'b'*64
         db.commit()
-        assert service.recover_abandoned_run(db, db.get(AssistantRun, identity[-1]))
-        assert db.get(AssistantRuntimeAbort, identity[-1]).container_id == 'a'*64
+        r_obj = db.get(AssistantRun, identity[-1])
+        assert r_obj is not None
+        assert service.recover_abandoned_run(db, r_obj)
+        i_obj = db.get(AssistantRuntimeAbort, identity[-1])
+        assert i_obj is not None
+        assert i_obj.container_id == 'a'*64
 
 
-def test_lease_without_dispatched_provider_session_still_has_cleanup_intent(seeded):
+def test_lease_without_dispatched_provider_session_still_has_cleanup_intent(seeded: tuple[sessionmaker[Session], tuple[int, int, int, int, int]]) -> None:
     factory, identity = seeded
     with factory() as db:
         run = db.get(AssistantRun, identity[-1])
+        assert run is not None
         run.opencode_session_id = None
         run.runtime_lease_token = 'c'*32
         db.commit()
         assert 'runtime_lease_token' not in run.to_dict()
         assert service.recover_abandoned_run(db, run)
         intent = db.get(AssistantRuntimeAbort, run.id)
+        assert intent is not None
         assert intent.session_id is None and intent.lease_token == 'c'*32
 
 
-def test_sweep_does_not_starve_dead_run_behind_older_live_run(seeded):
+def test_sweep_does_not_starve_dead_run_behind_older_live_run(seeded: tuple[sessionmaker[Session], tuple[int, int, int, int, int]]) -> None:
     factory, identity = seeded
     with factory() as db:
         old = db.get(AssistantRun, identity[-1])
+        assert old is not None
         old.metadata_dict = {'worker_heartbeat_unix': time.time()}
-        conversation = db.get(type(old.conversation), identity[3])
+        conversation = db.get(AssistantConversation, identity[3])
+        assert conversation is not None
         request = repository.create_message(
             db,
             conversation,
@@ -215,42 +264,51 @@ def test_sweep_does_not_starve_dead_run_behind_older_live_run(seeded):
         newer_id = new.id
     assert worker.recover_abandoned_runs(session_factory=factory, limit=1) == 1
     with factory() as db:
-        assert db.get(AssistantRun, identity[-1]).status == 'running'
-        assert db.get(AssistantRun, newer_id).status == 'failed'
+        r_old = db.get(AssistantRun, identity[-1])
+        assert r_old is not None
+        assert r_old.status == 'running'
+        r_new = db.get(AssistantRun, newer_id)
+        assert r_new is not None
+        assert r_new.status == 'failed'
 
 
 @pytest.mark.parametrize('state', ['failed', 'cancel-requested'])
-def test_expert_lease_checkpoint_refuses_ended_or_cancelled_run(seeded, state):
-    from app.features.assistant.engines.expert_engine import ExpertEngine
-    from app.models.assistant import AssistantConversation
+def test_expert_lease_checkpoint_refuses_ended_or_cancelled_run(seeded: tuple[sessionmaker[Session], tuple[int, int, int, int, int]], state: str) -> None:
     factory, identity = seeded
     with factory() as db:
         run = db.get(AssistantRun, identity[-1])
+        assert run is not None
         if state == 'failed':
             run.status = 'failed'
         else:
             run.cancel_requested = True
         db.commit()
-        engine = ExpertEngine(session=db, conversation=db.get(AssistantConversation, identity[3]), run=run)
+        conv_obj = db.get(AssistantConversation, identity[3])
+        assert conv_obj is not None
+        engine = ExpertEngine(session=db, conversation=conv_obj, run=run)
     with pytest.raises(ConflictError):
-        engine._save_runtime_lease(identity[1], identity[0], 'c'*32, identity[2], 'a'*64)
+        engine._save_runtime_lease(identity[1], identity[0], 'c'*32, identity[2], 'a'*64)  # pyright: ignore[reportPrivateUsage]
     with factory() as db:
-        assert db.get(AssistantRun, identity[-1]).runtime_lease_token is None
+        r_check = db.get(AssistantRun, identity[-1])
+        assert r_check is not None
+        assert r_check.runtime_lease_token is None
 
 
 @pytest.mark.parametrize('state', ['completed', 'failed', 'cancelled', 'cancel-requested'])
 @pytest.mark.parametrize('operation', ['load-context', 'save-session'])
-def test_paused_expert_cannot_resume_provider_work_after_run_ends(seeded, state, operation):
-    from app.features.assistant.engines.expert_engine import ExpertEngine
-    from app.models.assistant import AssistantConversation
+def test_paused_expert_cannot_resume_provider_work_after_run_ends(seeded: tuple[sessionmaker[Session], tuple[int, int, int, int, int]], state: str, operation: str) -> None:
     factory, identity = seeded
     with factory() as db:
-        engine = ExpertEngine(session=db, conversation=db.get(AssistantConversation, identity[3]),
-                              run=db.get(AssistantRun, identity[-1]))
+        conv_obj = db.get(AssistantConversation, identity[3])
+        assert conv_obj is not None
+        run_obj = db.get(AssistantRun, identity[-1])
+        assert run_obj is not None
+        engine = ExpertEngine(session=db, conversation=conv_obj, run=run_obj)
     # 引擎早于已提交的状态变更; 其下一次 SQL 操作
     # 必须校验当前行状态, 而不是信任构造时的状态.
     with factory() as db:
         run = db.get(AssistantRun, identity[-1])
+        assert run is not None
         if state == 'cancel-requested':
             run.cancel_requested = True
         else:
@@ -258,30 +316,39 @@ def test_paused_expert_cannot_resume_provider_work_after_run_ends(seeded, state,
         db.commit()
     with pytest.raises(ConflictError):
         if operation == 'load-context':
-            engine._load_context(identity[1], identity[0])
+            engine._load_context(identity[1], identity[0])  # pyright: ignore[reportPrivateUsage]
         else:
-            engine._save_provider_session(identity[1], identity[0], identity[2], 'late-session')
+            engine._save_provider_session(identity[1], identity[0], identity[2], 'late-session')  # pyright: ignore[reportPrivateUsage]
     with factory() as db:
         conversation = db.get(AssistantConversation, identity[3])
+        assert conversation is not None
         assert conversation.opencode_session_id is None
-        assert db.get(AssistantRun, identity[-1]).opencode_session_id == 'captured-session'
+        r_final = db.get(AssistantRun, identity[-1])
+        assert r_final is not None
+        assert r_final.opencode_session_id == 'captured-session'
 
 
-def test_explicit_cancel_atomically_stages_remote_cleanup_and_blocks_new_run(seeded):
+def test_explicit_cancel_atomically_stages_remote_cleanup_and_blocks_new_run(seeded: tuple[sessionmaker[Session], tuple[int, int, int, int, int]]) -> None:
     factory, identity = seeded
     with factory() as db:
-        service.request_cancel(db, db.get(Workspace, identity[1]), identity[0], identity[-1])
+        ws_obj = db.get(Workspace, identity[1])
+        assert ws_obj is not None
+        service.request_cancel(db, ws_obj, identity[0], identity[-1])
     with factory() as db:
-        assert db.get(AssistantRun, identity[-1]).cancel_requested
+        r_obj = db.get(AssistantRun, identity[-1])
+        assert r_obj is not None
+        assert r_obj.cancel_requested
         intent = db.get(AssistantRuntimeAbort, identity[-1])
         assert intent is not None and intent.session_id == 'captured-session'
-        db.get(AssistantRun, identity[-1]).status = 'cancelled'
+        r_obj.status = 'cancelled'
         db.commit()
+        ws_re = db.get(Workspace, identity[1])
+        assert ws_re is not None
         with pytest.raises(ConflictError, match='cleanup'):
             service.prepare_run(
                 db,
                 service.PrepareRunParams(
-                    workspace=db.get(Workspace, identity[1]),
+                    workspace=ws_re,
                     user_id=identity[0],
                     conversation_id=identity[3],
                     query='new work',
@@ -290,16 +357,16 @@ def test_explicit_cancel_atomically_stages_remote_cleanup_and_blocks_new_run(see
 
 
 @pytest.mark.parametrize('status', ['cancelled', 'failed'])
-def test_interrupted_stream_finish_atomically_stages_remote_cleanup(seeded, status):
-    from app.features.assistant.stream_persistence import (
-        FinalOutcome,
-        StreamPersistence,
-    )
-    from app.models.assistant import AssistantConversation
+def test_interrupted_stream_finish_atomically_stages_remote_cleanup(seeded: tuple[sessionmaker[Session], tuple[int, int, int, int, int]], status: str) -> None:
     factory, identity = seeded
     with factory() as db:
-        persistence = StreamPersistence(db, db.get(Workspace, identity[1]), identity[0],
-            db.get(AssistantConversation, identity[3]), db.get(AssistantRun, identity[-1]))
+        ws_obj = db.get(Workspace, identity[1])
+        assert ws_obj is not None
+        conv_obj = db.get(AssistantConversation, identity[3])
+        assert conv_obj is not None
+        run_obj = db.get(AssistantRun, identity[-1])
+        assert run_obj is not None
+        persistence = StreamPersistence(db, ws_obj, identity[0], conv_obj, run_obj)
         assert persistence.finish(FinalOutcome(
             status=status,
             content='',
@@ -309,24 +376,24 @@ def test_interrupted_stream_finish_atomically_stages_remote_cleanup(seeded, stat
             error_code=None,
         )) == status
     with factory() as db:
-        assert db.get(AssistantRun, identity[-1]).status == status
+        r_obj = db.get(AssistantRun, identity[-1])
+        assert r_obj is not None
+        assert r_obj.status == status
         intent = db.get(AssistantRuntimeAbort, identity[-1])
         assert intent is not None and intent.session_id == 'captured-session'
 
 
-def test_idle_stream_commits_partial_checkpoint_before_quiet_provider_wait(seeded):
-    from app.features.assistant.stream_persistence import (
-        LeasePoll,
-        StreamPersistence,
-        StreamProgress,
-    )
-    from app.models.assistant import AssistantConversation, AssistantMessage
+def test_idle_stream_commits_partial_checkpoint_before_quiet_provider_wait(seeded: tuple[sessionmaker[Session], tuple[int, int, int, int, int]]) -> None:
     factory, identity = seeded
     with factory() as db:
         run = db.get(AssistantRun, identity[-1])
+        assert run is not None
         message_id = run.assistant_message_id
-        persistence = StreamPersistence(db, db.get(Workspace, identity[1]), identity[0],
-            db.get(AssistantConversation, identity[3]), run)
+        ws_obj = db.get(Workspace, identity[1])
+        assert ws_obj is not None
+        conv_obj = db.get(AssistantConversation, identity[3])
+        assert conv_obj is not None
+        persistence = StreamPersistence(db, ws_obj, identity[0], conv_obj, run)
         assert persistence.checkpoint(
             StreamProgress(
                 answer_parts=['partial answer'],
@@ -341,4 +408,7 @@ def test_idle_stream_commits_partial_checkpoint_before_quiet_provider_wait(seede
             idle=True,
         )) == (False, False)
         db.rollback()
-        assert db.get(AssistantMessage, message_id).content == 'partial answer'
+        msg_obj = db.get(AssistantMessage, message_id)
+        assert msg_obj is not None
+        assert msg_obj.content == 'partial answer'
+

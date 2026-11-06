@@ -1,6 +1,8 @@
 """分块写入不能通过被替换的父目录逃逸测试."""
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from werkzeug.datastructures import FileStorage
@@ -10,7 +12,7 @@ from app.infra import multipart_storage
 
 
 @pytest.mark.parametrize('operation', ['chunk', 'metadata'])
-def test_multipart_write_rejects_directory_link(tmp_path, operation):
+def test_multipart_write_rejects_directory_link(tmp_path: Path, operation: str) -> None:
     foreign = tmp_path / 'foreign'
     foreign.mkdir()
     (foreign / 'private.txt').write_bytes(b'previous')
@@ -25,9 +27,9 @@ def test_multipart_write_rejects_directory_link(tmp_path, operation):
     assert (foreign / 'private.txt').read_bytes() == b'previous'
 
 
-@pytest.mark.skipif(not multipart_storage._DESCRIPTORS, reason='POSIX anchored publication')
+@pytest.mark.skipif(not multipart_storage._DESCRIPTORS, reason='POSIX anchored publication')  # pyright: ignore[reportPrivateUsage]
 @pytest.mark.parametrize('adapter', ['http', 'legacy'])
-def test_parent_replacement_during_write_publishes_only_in_opened_directory(tmp_path, adapter):
+def test_parent_replacement_during_write_publishes_only_in_opened_directory(tmp_path: Path, adapter: str) -> None:
     root = tmp_path / 'parts'
     workspace = root / '1'
     chunks = workspace / 'upload-session' / 'chunks'
@@ -38,25 +40,26 @@ def test_parent_replacement_during_write_publishes_only_in_opened_directory(tmp_
     private.write_bytes(b'previous')
     retired = tmp_path / 'retired'
 
-    def replace_parent():
+    def replace_parent() -> None:
         workspace.rename(retired)
         workspace.symlink_to(foreign, target_is_directory=True)
 
     class ReplacingStream(BytesIO):
-        def read(self, *args):
+        def read(self, size: int | None = -1) -> bytes:
             if not retired.exists():
                 replace_parent()
-            return super().read(*args)
+            return super().read(size)
 
     if adapter == 'http':
-        upload = FileStorage(stream=ReplacingStream(b'abc'))
+        upload_obj: Any = FileStorage(stream=ReplacingStream(b'abc'))
     else:
-        def save(path):
+        def save(path: str) -> None:
             replace_parent()
             with open(path, 'wb') as target:
                 target.write(b'abc')
-        upload = SimpleNamespace(save=save)
-    multipart_storage.save_chunk(str(chunks), multipart_storage.SaveChunkParams(index=0, upload=upload, expected_size=3, max_size=3, root=str(root)))
+        upload_obj = SimpleNamespace(save=save)
+    multipart_storage.save_chunk(str(chunks), multipart_storage.SaveChunkParams(index=0, upload=upload_obj, expected_size=3, max_size=3, root=str(root)))
     assert (retired / 'upload-session' / 'chunks' / '0.part').read_bytes() == b'abc'
     assert private.read_bytes() == b'previous'
     assert [path.name for path in (retired / 'upload-session' / 'chunks').iterdir()] == ['0.part']
+

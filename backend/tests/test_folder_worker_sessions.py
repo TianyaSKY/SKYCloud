@@ -2,9 +2,11 @@
 import asyncio
 import threading
 from types import SimpleNamespace
+from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from app.api.dependencies import get_current_user
 from app.exceptions import PermissionDeniedError, register_exception_handlers
 from app.features.folder import router
@@ -20,36 +22,48 @@ from app.infra.extensions import get_session_factory
     ('GET', '/folder/all', None, 'assert_member'),
     ('GET', '/folder/2', None, 'assert_member'),
 ])
-async def test_folder_worker_authorization_and_cleanup(monkeypatch, method, path, body, check):
+async def test_folder_worker_authorization_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    path: str,
+    body: dict[str, Any] | None,
+    check: str,
+) -> None:
     loop_thread = threading.get_ident()
     entered, release = threading.Event(), threading.Event()
-    opened, closed = [], []
+    opened: list[Any] = []
+    closed: list[Any] = []
 
     class Owned:
-        def __init__(self):
+        def __init__(self) -> None:
             self.thread = threading.get_ident()
             assert self.thread != loop_thread
             opened.append(self)
-        def __enter__(self):
+        def __enter__(self) -> 'Owned':
             return self
-        def __exit__(self, *args):
+        def __exit__(self, *args: object) -> None:
             assert threading.get_ident() == self.thread
             closed.append(self)
 
-    def denied(session, workspace_id, user_id):
+    def denied(session: Any, workspace_id: int, user_id: int) -> None:
         assert threading.get_ident() == session.thread
         assert (workspace_id, user_id) == (1, 1)
-        entered.set(); assert release.wait(5)
+        entered.set()
+        assert release.wait(5)
         raise PermissionDeniedError('Permission denied')
 
     monkeypatch.setattr(router, check, denied)
-    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(router.router)
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[get_session_factory] = lambda: Owned
     for route in router.router.routes:
-        for dependency in route.dependant.dependencies:
-            if dependency.name == 'workspace':
-                app.dependency_overrides[dependency.call] = lambda: SimpleNamespace(id=1)
+        if isinstance(route, APIRoute):
+            for dependency in route.dependant.dependencies:
+                if dependency.name == 'workspace':
+                    assert dependency.call is not None
+                    app.dependency_overrides[dependency.call] = lambda: SimpleNamespace(id=1)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
         pending = asyncio.create_task(client.request(method, path, json=body))
         try:

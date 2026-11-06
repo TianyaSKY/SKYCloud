@@ -1,21 +1,22 @@
 """助手持久化、事件映射与安全回归测试."""
 
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import timedelta
-from unittest.mock import MagicMock, patch
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
-import jwt
 from fastapi.security import HTTPAuthorizationCredentials
+import jwt
 import pytest
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.exceptions import BusinessRuleError, ConflictError, ResourceNotFoundError
 from app.features.assistant import repository, service
 from app.features.assistant.clients.opencode_auth import server_password
 from app.features.assistant.clients.opencode_events import map_opencode_event
 from app.features.assistant.engines.base import EngineRequest
-from app.features.assistant.engines.fast_engine import FastEngine
-from app.features.assistant.engines.expert_engine import _text_from_messages
+from app.features.assistant.engines.expert_engine import _text_from_messages  # pyright: ignore[reportPrivateUsage]
 from app.features.assistant.event_protocol import AssistantEvent
 from app.features.assistant.router import (
     delete_assistant_conversation,
@@ -24,14 +25,12 @@ from app.features.assistant.router import (
     update_assistant_conversation,
 )
 from app.features.assistant.schemas import AssistantConversationUpdate
-from app.infra.extensions import SECRET_KEY
 from app.infra.datetime_utils import beijing_now
-from app.models.assistant import AssistantMessage
-from app.models.user import User
-from app.models.workspace import WorkspaceMember
+from app.infra.extensions import SECRET_KEY, SessionFactory
+from app.models import AssistantMessage, User, Workspace, WorkspaceMember
 
 
-def test_assistant_repository_persists_mode_specific_records(session, test_user, test_workspace):
+def test_assistant_repository_persists_mode_specific_records(session: Session, test_user: User, test_workspace: Workspace) -> None:
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -69,8 +68,8 @@ def test_assistant_repository_persists_mode_specific_records(session, test_user,
 
 
 def test_user_can_rename_archive_restore_and_delete_own_conversation(
-    session, test_user, test_workspace
-):
+    session: Session, test_user: User, test_workspace: Workspace
+) -> None:
     conversation = service.create_conversation(
         session, test_workspace, test_user.id, "fast", "初始标题"
     )
@@ -124,8 +123,8 @@ def test_user_can_rename_archive_restore_and_delete_own_conversation(
 
 
 def test_conversation_management_validates_state_and_blocks_active_run(
-    session, test_user, test_workspace
-):
+    session: Session, test_user: User, test_workspace: Workspace
+) -> None:
     conversation = service.create_conversation(
         session, test_workspace, test_user.id, "fast", "运行中的会话"
     )
@@ -188,8 +187,8 @@ def test_conversation_management_validates_state_and_blocks_active_run(
 
 
 def test_conversation_management_does_not_cross_user_boundary(
-    session, test_user, test_workspace
-):
+    session: Session, test_user: User, test_workspace: Workspace
+) -> None:
     other_user = User(username="assistant-owner-2", role="common")
     other_user.set_password("owner-password")
     session.add(other_user)
@@ -222,15 +221,15 @@ def test_conversation_management_does_not_cross_user_boundary(
 
 
 def test_conversation_management_handlers_cover_list_update_active_run_and_delete(
-    session, test_user, test_workspace
-):
+    session: Session, test_user: User, test_workspace: Workspace
+) -> None:
     conversation = service.create_conversation(
         session, test_workspace, test_user.id, "fast", "HTTP 会话"
     )
-    session_factory = sessionmaker(
+    session_factory = cast(SessionFactory, sessionmaker(
         bind=session.get_bind(),
         join_transaction_mode="create_savepoint",
-    )
+    ))
 
     updated = (
         update_assistant_conversation(
@@ -296,7 +295,7 @@ def test_conversation_management_handlers_cover_list_update_active_run_and_delet
     ) is None
 
 
-def test_permission_response_is_durable_and_single_use(session, test_user, test_workspace):
+def test_permission_response_is_durable_and_single_use(session: Session, test_user: User, test_workspace: Workspace) -> None:
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -337,10 +336,10 @@ def test_permission_response_is_durable_and_single_use(session, test_user, test_
 
 
 def test_permission_registration_is_idempotent_and_allows_one_open_request(
-    session,
-    test_user,
-    test_workspace,
-):
+    session: Session,
+    test_user: User,
+    test_workspace: Workspace,
+) -> None:
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -386,21 +385,21 @@ def test_permission_registration_is_idempotent_and_allows_one_open_request(
             run,
             {"permission_id": "p2", "title": "Second request"},
         )
-    first = repository.permission_for_run(session, run.id, "p1")
-    assert first is not None
-    repository.mark_permission_dispatched(session, run, first)
+    stored_first = repository.permission_for_run(session, run.id, "p1")
+    assert stored_first is not None
+    repository.mark_permission_dispatched(session, run, stored_first)
     next_permission = repository.register_permission(
         session,
         run,
         {"permission_id": "p2", "title": "Second request"},
     )
-    assert first.state == "dispatched" and first.response == "once"
+    assert stored_first.state == "dispatched" and stored_first.response == "once"
     assert next_permission.state == "pending"
     assert run.pending_permission_id == "p2"
 
 
 @pytest.mark.parametrize("engine_cancelled", [False, True])
-def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_workspace, engine_cancelled):
+def test_fast_run_persists_stream_and_terminal_state(session: Session, test_user: User, test_workspace: Workspace, engine_cancelled: bool) -> None:
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -427,7 +426,7 @@ def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_wo
     run_id = int(run.id)
 
     class FakeFastEngine:
-        async def stream(self, request):
+        async def stream(self, request: EngineRequest) -> AsyncIterator[AssistantEvent]:
             assert isinstance(request, EngineRequest)
             assert request.run_id == run_id
             assert request.user_id == user_id
@@ -439,12 +438,12 @@ def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_wo
             if engine_cancelled:
                 yield AssistantEvent("cancelled", {"status": "cancelled"})
 
-    async def collect():
+    async def collect() -> list[AssistantEvent]:
         params = service.StreamRunParams(
-            session_factory=sessionmaker(
+            session_factory=cast(SessionFactory, sessionmaker(
                 bind=session.get_bind(),
                 join_transaction_mode="create_savepoint",
-            ),
+            )),
             workspace_id=workspace_id,
             user_id=user_id,
             conversation_id=conversation_id,
@@ -469,7 +468,7 @@ def test_fast_run_persists_stream_and_terminal_state(session, test_user, test_wo
     assert message.content == "已找到"
 
 
-def test_prepare_run_recovers_abandoned_stream(session, test_user, test_workspace):
+def test_prepare_run_recovers_abandoned_stream(session: Session, test_user: User, test_workspace: Workspace) -> None:
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -514,8 +513,8 @@ def test_prepare_run_recovers_abandoned_stream(session, test_user, test_workspac
 
 
 def test_prepare_run_recovers_abandoned_expert_run_from_another_conversation(
-    session, test_user, test_workspace
-):
+    session: Session, test_user: User, test_workspace: Workspace
+) -> None:
     old_conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -576,7 +575,7 @@ def test_prepare_run_recovers_abandoned_expert_run_from_another_conversation(
     assert replacement_run.conversation_id == new_conversation.id
 
 
-def test_viewer_unfiltered_list_hides_expert_metadata(session, test_user, test_workspace):
+def test_viewer_unfiltered_list_hides_expert_metadata(session: Session, test_user: User, test_workspace: Workspace) -> None:
     viewer = User(username="assistant-viewer", role="common")
     viewer.set_password("viewer-password")
     session.add(viewer)
@@ -614,9 +613,10 @@ def test_viewer_unfiltered_list_hides_expert_metadata(session, test_user, test_w
 
 
 
-def test_opencode_event_mapping_filters_other_sessions():
+
+def test_opencode_event_mapping_filters_other_sessions() -> None:
     state: dict[str, str] = {}
-    event = {
+    event: dict[str, Any] = {
         "type": "message.part.updated",
         "properties": {
             "sessionID": "other",
@@ -626,7 +626,7 @@ def test_opencode_event_mapping_filters_other_sessions():
     assert map_opencode_event(event, "ses_current", state) == []
 
 
-def test_opencode_event_mapping_emits_token_tool_and_permission():
+def test_opencode_event_mapping_emits_token_tool_and_permission() -> None:
     state: dict[str, str] = {}
     token = map_opencode_event(
         {
@@ -666,7 +666,7 @@ def test_opencode_event_mapping_emits_token_tool_and_permission():
     assert permission[0].payload["tool"] == 'pytest: {"args":["tests"]}'
 
 
-def test_opencode_event_mapping_hides_user_prompt_and_reasoning():
+def test_opencode_event_mapping_hides_user_prompt_and_reasoning() -> None:
     state = {"__user_query": "安装前端 Skill"}
     map_opencode_event(
         {
@@ -738,7 +738,7 @@ def test_opencode_event_mapping_hides_user_prompt_and_reasoning():
     assert [event.payload["content"] for event in assistant if event.type == "token"] == ["回答内容"]
 
 
-def test_opencode_message_fallback_separates_title_from_answer():
+def test_opencode_message_fallback_separates_title_from_answer() -> None:
     text, provider_id, usage, title = _text_from_messages(
         [
             {
@@ -765,14 +765,14 @@ def test_opencode_message_fallback_separates_title_from_answer():
     assert title == "内部规划"
 
 
-def test_runtime_basic_auth_is_deterministic_and_scoped():
+def test_runtime_basic_auth_is_deterministic_and_scoped() -> None:
     first = server_password(1, 10, 20)
     assert first == server_password(1, 10, 20)
     assert first != server_password(2, 10, 20)
     assert first != server_password(1, 11, 20)
 
 
-async def test_runtime_token_cannot_call_rest_user_dependency(session, test_user):
+async def test_runtime_token_cannot_call_rest_user_dependency(session: Session, test_user: User) -> None:
     from app.api.dependencies import get_current_user
     from fastapi import HTTPException
 
@@ -789,7 +789,7 @@ async def test_runtime_token_cannot_call_rest_user_dependency(session, test_user
         raise AssertionError("runtime token was accepted by the ordinary REST dependency")
 
 
-def test_handoff_creates_separate_expert_conversation(session, test_user, test_workspace):
+def test_handoff_creates_separate_expert_conversation(session: Session, test_user: User, test_workspace: Workspace) -> None:
     fast = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -799,7 +799,7 @@ def test_handoff_creates_separate_expert_conversation(session, test_user, test_w
             title="查询",
         ),
     )
-    user_message = repository.create_message(
+    _user_message = repository.create_message(
         session,
         fast,
         repository.CreateMessageParams(role="user", content="继续分析"),
@@ -832,12 +832,10 @@ def test_handoff_creates_separate_expert_conversation(session, test_user, test_w
 
 
 def test_pending_permission_is_durable_bounded_and_response_gated(
-    session,
-    test_user,
-    test_workspace,
-):
-    from sqlalchemy.orm import Session
-
+    session: Session,
+    test_user: User,
+    test_workspace: Workspace,
+) -> None:
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -875,6 +873,7 @@ def test_pending_permission_is_durable_bounded_and_response_gated(
     session.commit()
     with Session(bind=session.get_bind()) as restored:
         recovered = restored.get(type(run), run.id)
+        assert recovered is not None
         assert recovered.to_dict()["pending_permission"] == {
             "permission_id": "p1",
             "title": "Patch a.txt",
@@ -908,11 +907,11 @@ def test_pending_permission_is_durable_bounded_and_response_gated(
     ["running", "completed", "failed", "cancelled", "cancel_requested", "answered"],
 )
 def test_pending_permission_is_not_recovered_outside_matching_wait(
-    session,
-    test_user,
-    test_workspace,
-    state,
-):
+    session: Session,
+    test_user: User,
+    test_workspace: Workspace,
+    state: str,
+) -> None:
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -957,7 +956,7 @@ def test_pending_permission_is_not_recovered_outside_matching_wait(
         assert run.pending_permission_id == "p1"
 
 
-def test_permission_wait_survives_heartbeat_and_status_events(session, test_user, test_workspace):
+def test_permission_wait_survives_heartbeat_and_status_events(session: Session, test_user: User, test_workspace: Workspace) -> None:
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -989,30 +988,31 @@ def test_permission_wait_survives_heartbeat_and_status_events(session, test_user
     run_id = int(run.id)
 
     class WaitingEngine:
-        async def stream(self, request):
+        async def stream(self, request: EngineRequest) -> AsyncIterator[AssistantEvent]:
             yield AssistantEvent('permission_required', {'permission_id': 'p1', 'title': 'Patch a.txt'})
             yield AssistantEvent('heartbeat', {})
             yield AssistantEvent('status', {'content': 'still waiting'})
 
-    async def collect():
+    async def collect() -> None:
         params = service.StreamRunParams(
-            session_factory=sessionmaker(
+            session_factory=cast(SessionFactory, sessionmaker(
                 bind=session.get_bind(),
                 join_transaction_mode="create_savepoint",
-            ),
+            )),
             workspace_id=workspace_id,
             user_id=user_id,
             conversation_id=conversation_id,
             run_id=run_id,
             history=history,
         )
-        events = []
+        events: list[AssistantEvent] = []
         async for event in service.stream_run(params):
             events.append(event)
             if event.type in {'permission_required', 'heartbeat', 'status'}:
                 session.refresh(run)
                 assert run.status == 'waiting_permission'
-                assert run.to_dict()['pending_permission']['permission_id'] == 'p1'
+                pending_perm = cast(dict[str, Any], run.to_dict()['pending_permission'])
+                assert pending_perm['permission_id'] == 'p1'
         assert [event.type for event in events] == [
             'run_started',
             'permission_required',
@@ -1032,7 +1032,7 @@ def test_permission_wait_survives_heartbeat_and_status_events(session, test_user
 
 
 @pytest.mark.parametrize('heartbeat', [None, False, 'now', float('nan'), 10**20])
-def test_invalid_heartbeat_does_not_pin_an_abandoned_run(session, test_user, test_workspace, heartbeat):
+def test_invalid_heartbeat_does_not_pin_an_abandoned_run(session: Session, test_user: User, test_workspace: Workspace, heartbeat: Any) -> None:
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -1065,7 +1065,7 @@ def test_invalid_heartbeat_does_not_pin_an_abandoned_run(session, test_user, tes
     assert run.status == 'failed'
 
 
-def test_cancel_return_closes_engine_producer_before_stream_returns(session, test_user, test_workspace):
+def test_cancel_return_closes_engine_producer_before_stream_returns(session: Session, test_user: User, test_workspace: Workspace) -> None:
     conversation = repository.create_conversation(
         session,
         repository.CreateConversationParams(
@@ -1092,20 +1092,21 @@ def test_cancel_return_closes_engine_producer_before_stream_returns(session, tes
     closed = asyncio.Event()
 
     class WaitingEngine:
-        async def stream(self, request):
+        async def stream(self, request: EngineRequest) -> AsyncIterator[AssistantEvent]:
             try:
+                assert request.controller is not None
                 request.controller.cancel_event.set()
                 yield AssistantEvent('status', {'content': 'wait'})
                 await asyncio.Event().wait()
             finally:
                 closed.set()
 
-    async def collect():
+    async def collect() -> None:
         params = service.StreamRunParams(
-            session_factory=sessionmaker(
+            session_factory=cast(SessionFactory, sessionmaker(
                 bind=session.get_bind(),
                 join_transaction_mode="create_savepoint",
-            ),
+            )),
             workspace_id=workspace_id,
             user_id=user_id,
             conversation_id=conversation_id,
@@ -1124,8 +1125,8 @@ def test_cancel_return_closes_engine_producer_before_stream_returns(session, tes
         asyncio.run(collect())
 
 
-def test_current_permission_contract_displays_command_instead_of_tool_pointer():
-    properties = {'id': 'p1', 'sessionID': 's1', 'permission': 'bash', 'patterns': ["printf 'marker'"],
+def test_current_permission_contract_displays_command_instead_of_tool_pointer() -> None:
+    properties: dict[str, Any] = {'id': 'p1', 'sessionID': 's1', 'permission': 'bash', 'patterns': ["printf 'marker'"],
                   'metadata': {'command': "printf 'marker'", 'description': 'Print'},
                   'tool': {'messageID': 'message-pointer', 'callID': 'call-pointer'}}
     event = map_opencode_event({'type': 'permission.asked', 'properties': properties}, 's1', {})[0]
@@ -1137,18 +1138,17 @@ def test_current_permission_contract_displays_command_instead_of_tool_pointer():
     assert map_opencode_event({'type': 'permission.asked', 'properties': properties}, 's1', {}) == []
 
 
-def test_permission_display_marks_truncation_explicitly():
+def test_permission_display_marks_truncation_explicitly() -> None:
     event = map_opencode_event({'type': 'permission.asked', 'properties': {'id': 'p1', 'sessionID': 's1', 'permission': 'bash', 'metadata': {'command': 'a' * 5000}}}, 's1', {})[0]
     assert len(event.payload['tool']) == 4000
     assert event.payload['tool'].endswith('(内容已截断)')
 
 
-def test_opencode_permission_transport_is_strictly_one_shot():
-    from unittest.mock import AsyncMock
+def test_opencode_permission_transport_is_strictly_one_shot() -> None:
     from app.features.assistant.clients.opencode_client import OpenCodeClient
-    async def exercise():
+    async def exercise() -> None:
         async with OpenCodeClient('http://runtime', 'user', 'password') as client:
-            with patch.object(client, '_json', AsyncMock(return_value=True)) as request:
+            with patch.object(client, '_json', AsyncMock(return_value=True)) as request:  # pyright: ignore[reportPrivateUsage]
                 assert await client.respond_permission('s1', 'p1', 'once')
                 request.assert_awaited_once_with('POST', '/session/s1/permissions/p1', json={'response': 'once'})
                 for response, remember in [('always', False), ('once', True)]:
@@ -1157,3 +1157,4 @@ def test_opencode_permission_transport_is_strictly_one_shot():
                             's1', 'p1', response, remember=remember)
                 assert request.await_count == 1
     asyncio.run(exercise())
+

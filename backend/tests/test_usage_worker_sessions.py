@@ -1,7 +1,9 @@
+# pyright: reportPrivateUsage=false
 """Token 用量路由 SQL 与响应准备在所属 worker 上运行测试."""
 import asyncio
 import threading
 from types import SimpleNamespace
+from typing import Any, cast
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -23,37 +25,48 @@ from app.infra.extensions import get_session_factory
     ('/admin/token-usage/daily', 'get_all_users_daily_stats', None),
     ('/admin/token-usage/daily/per-user', 'get_per_user_daily_stats', None),
 ])
-async def test_usage_worker_owner_cleanup_and_current_role_gate(monkeypatch, path, boundary, target):
+async def test_usage_worker_owner_cleanup_and_current_role_gate(monkeypatch: pytest.MonkeyPatch, path: str, boundary: str, target: int | None) -> None:
     loop_thread = threading.get_ident()
     entered, release = threading.Event(), threading.Event()
-    opened, closed, authorized = [], [], []
+    opened: list[Any] = []
+    closed: list[Any] = []
+    authorized: list[Any] = []
+
     class Owned:
-        def __init__(self):
+        def __init__(self) -> None:
             self.thread = threading.get_ident()
             assert self.thread != loop_thread
             opened.append(self)
-        def __enter__(self):
+
+        def __enter__(self) -> 'Owned':
             return self
-        def __exit__(self, *args):
+
+        def __exit__(self, *args: Any) -> None:
             assert threading.get_ident() == self.thread
             closed.append(self)
-    def authorize(session, actor_id, user_id=None):
+
+    def authorize(session: Any, actor_id: int, user_id: int | None = None) -> str:
         assert threading.get_ident() == session.thread
         assert actor_id == 1 and user_id == target
         authorized.append(session)
         return 'admin'
-    def missing(session, *args, **kwargs):
+
+    def missing(session: Any, *args: Any, **kwargs: Any) -> None:
         assert threading.get_ident() == session.thread
         assert authorized == [session]
-        entered.set(); assert release.wait(5)
+        entered.set()
+        assert release.wait(5)
         raise ResourceNotFoundError('Not found')
+
     monkeypatch.setattr(router.token_usage_service, boundary, missing)
     monkeypatch.setattr(router.user_service, "authorize_account_mutation", authorize)
-    app = FastAPI(); register_exception_handlers(app); app.include_router(router.router)
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(router.router)
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=1)
     app.dependency_overrides[require_admin] = lambda: SimpleNamespace(id=1, role="admin")
-    app.dependency_overrides[get_session_factory] = lambda: Owned
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://test') as client:
+    app.dependency_overrides[get_session_factory] = lambda: cast(Any, Owned)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
         pending = asyncio.create_task(client.get(path))
         try:
             assert await asyncio.to_thread(entered.wait, 2)

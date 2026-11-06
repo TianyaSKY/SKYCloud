@@ -1,65 +1,97 @@
+# pyright: reportPrivateUsage=false
 """流清理保留结果并保持在所有者线程上测试."""
 import asyncio
 import threading
 from types import SimpleNamespace
+from typing import Any, cast
 import pytest
 from app.exceptions import ResourceNotFoundError
 from app.features.assistant import service
 from app.features.assistant.event_protocol import AssistantEvent
 
 
-@pytest.mark.parametrize('outcome', ['done','business-error','creation-error','cancel'])
+@pytest.mark.parametrize('outcome', ['done', 'business-error', 'creation-error', 'cancel'])
 @pytest.mark.parametrize('invalidation_fails', [False, True])
-async def test_cleanup_fault_preserves_stream_outcome_and_thread(monkeypatch, outcome, invalidation_fails):
-    calls, logged = [], []
+async def test_cleanup_fault_preserves_stream_outcome_and_thread(monkeypatch: pytest.MonkeyPatch, outcome: str, invalidation_fails: bool) -> None:
+    calls: list[str] = []
+    logged: list[str] = []
     loop_thread = threading.get_ident()
     entered = asyncio.Event()
     original = ResourceNotFoundError('original business failure')
+
     class Owned:
-        def __init__(self): self.owner = None
-        def check(self):
-            if self.owner is None: self.owner = threading.get_ident()
+        def __init__(self) -> None:
+            self.owner: int | None = None
+
+        def check(self) -> None:
+            if self.owner is None:
+                self.owner = threading.get_ident()
             assert self.owner != loop_thread and threading.get_ident() == self.owner
-        def get(self, *args): self.check(); return SimpleNamespace()
-        def close(self): self.fail('close')
-        def fail(self, phase):
-            self.check(); calls.append(phase)
+
+        def get(self, *args: Any) -> SimpleNamespace:
+            self.check()
+            return SimpleNamespace()
+
+        def close(self) -> None:
+            self.fail('close')
+
+        def fail(self, phase: str) -> None:
+            self.check()
+            calls.append(phase)
             raise RuntimeError('private-connection-url')
-        def invalidate(self):
-            self.check(); calls.append('invalidate')
-            if invalidation_fails: raise RuntimeError('private-invalidation-url')
+
+        def invalidate(self) -> None:
+            self.check()
+            calls.append('invalidate')
+            if invalidation_fails:
+                raise RuntimeError('private-invalidation-url')
+
     session = Owned()
-    def persistence(owned, *args):
+
+    def persistence(owned: Any, *args: Any) -> Any:
         assert owned is session
         owned.check()
-        if outcome == 'creation-error': raise original
+        if outcome == 'creation-error':
+            raise original
         return owned
-    async def events(worker, owned, history):
-        if outcome == 'business-error': raise original
+
+    async def events(worker: Any, owned: Any, history: Any) -> Any:
+        if outcome == 'business-error':
+            raise original
         if outcome == 'cancel':
             entered.set()
             await asyncio.Event().wait()
         yield AssistantEvent('done', {})
+
+    def log_error(message: str, *args: Any) -> None:
+        logged.append(message.format(*args))
+
     monkeypatch.setattr(service, 'StreamPersistence', persistence)
     monkeypatch.setattr(service, '_stream_persisted', events)
-    monkeypatch.setattr(service.logger, 'error', lambda message,*args: logged.append(message.format(*args)))
+    monkeypatch.setattr(service.logger, 'error', log_error)
     iterator = service.stream_run(service.StreamRunParams(
-        session_factory=lambda: session,
+        session_factory=cast(Any, lambda: session),
         workspace_id=1,
         user_id=1,
         conversation_id=1,
         run_id=1,
         history=[],
     ))
-    async def collect(): return [event.type async for event in iterator]
-    if outcome == 'done': assert await collect() == ['done']
+
+    async def collect() -> list[str]:
+        return [event.type async for event in iterator]
+
+    if outcome == 'done':
+        assert await collect() == ['done']
     elif outcome == 'cancel':
         task = asyncio.create_task(collect())
         await asyncio.wait_for(entered.wait(), 2)
         task.cancel()
-        with pytest.raises(asyncio.CancelledError): await task
+        with pytest.raises(asyncio.CancelledError):
+            await task
     else:
-        with pytest.raises(ResourceNotFoundError) as error: await collect()
+        with pytest.raises(ResourceNotFoundError) as error:
+            await collect()
         assert error.value is original
     assert calls == ['close', 'invalidate']
     assert logged and 'private-' not in str(logged)

@@ -1,6 +1,9 @@
 """存储的分块字节数据不能用文件系统别名替换测试."""
+from collections.abc import Generator
 import os
 from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -8,7 +11,7 @@ from app.exceptions import BusinessRuleError
 from app.infra import multipart_storage
 
 
-def test_chunk_link_is_not_reported_or_assembled(tmp_path):
+def test_chunk_link_is_not_reported_or_assembled(tmp_path: Path) -> None:
     chunks = tmp_path / 'chunks'
     chunks.mkdir()
     private = tmp_path / 'private.txt'
@@ -29,7 +32,7 @@ def test_chunk_link_is_not_reported_or_assembled(tmp_path):
 
 
 @pytest.mark.skipif(not hasattr(os, 'mkfifo'), reason='POSIX named pipe')
-def test_non_regular_chunk_does_not_count_or_block_assembly(tmp_path):
+def test_non_regular_chunk_does_not_count_or_block_assembly(tmp_path: Path) -> None:
     chunks = tmp_path / 'chunks'
     chunks.mkdir()
     os.mkfifo(chunks / '0.part')
@@ -44,8 +47,8 @@ def test_non_regular_chunk_does_not_count_or_block_assembly(tmp_path):
     assert not (tmp_path / 'assembled').exists()
 
 
-@pytest.mark.skipif(not multipart_storage._DESCRIPTORS, reason='POSIX anchored directory reads')
-def test_directory_replacement_keeps_assembly_on_opened_directory(tmp_path, monkeypatch):
+@pytest.mark.skipif(not multipart_storage._DESCRIPTORS, reason='POSIX anchored directory reads')  # pyright: ignore[reportPrivateUsage]
+def test_directory_replacement_keeps_assembly_on_opened_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / 'parts'
     chunks = root / '1' / 'upload-session' / 'chunks'
     chunks.mkdir(parents=True)
@@ -53,10 +56,10 @@ def test_directory_replacement_keeps_assembly_on_opened_directory(tmp_path, monk
     foreign = tmp_path / 'foreign'
     foreign.mkdir()
     (foreign / '0.part').write_bytes(b'secret')
-    original_source = multipart_storage._chunk_source
+    original_source = multipart_storage._chunk_source  # pyright: ignore[reportPrivateUsage]
 
     @contextmanager
-    def replace_directory(handle, name):
+    def replace_directory(handle: Any, name: str) -> Generator[Any, None, None]:
         chunks.rename(chunks.with_name('retired'))
         chunks.symlink_to(foreign, target_is_directory=True)
         with original_source(handle, name) as source:
@@ -72,3 +75,5 @@ def test_directory_replacement_keeps_assembly_on_opened_directory(tmp_path, monk
     )
     assert destination.read_bytes() == b'safe!!'
     assert (foreign / '0.part').read_bytes() == b'secret'
+
+

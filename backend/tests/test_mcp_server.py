@@ -1,6 +1,8 @@
+# pyright: reportPrivateUsage=false
 """MCP Server 测试：工具函数 + 中间件 + 工具处理。"""
 
 import json
+from typing import Any
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -13,42 +15,48 @@ from app.mcp.server import (
     _is_text_file,
     JWTAuthMiddleware,
     get_mcp_app,
-    _TEXT_EXTENSIONS,
-    _TEXT_MIME_EXACT,
-    _MAX_READ_BYTES,
 )
-from app.exceptions import DomainError, ResourceNotFoundError
+from app.exceptions import ResourceNotFoundError
 from fastapi import HTTPException
+
+
+async def _dummy_receive() -> dict[str, Any]:
+    return {"type": "http.request"}
+
+
+async def _dummy_send(_event: Any) -> None:
+    pass
+
 
 
 # 工具辅助函数
 
 
 class TestErrorJson:
-    def test_basic(self):
+    def test_basic(self) -> None:
         result = _error_json("something went wrong")
         parsed = json.loads(result)
         assert parsed["error"] == "something went wrong"
 
-    def test_chinese(self):
+    def test_chinese(self) -> None:
         result = _error_json("出错了")
         assert "出错了" in result
 
 
 class TestServiceErrorJson:
-    def test_domain_error(self):
+    def test_domain_error(self) -> None:
         exc = ResourceNotFoundError("File not found")
         result = _service_error_json(exc)
         parsed = json.loads(result)
         assert "File not found" in parsed["error"]
 
-    def test_http_exception(self):
+    def test_http_exception(self) -> None:
         exc = HTTPException(status_code=403, detail="Forbidden")
         result = _service_error_json(exc)
         parsed = json.loads(result)
         assert "Forbidden" in parsed["error"]
 
-    def test_generic_exception(self):
+    def test_generic_exception(self) -> None:
         exc = ValueError("bad value")
         result = _service_error_json(exc)
         parsed = json.loads(result)
@@ -57,14 +65,14 @@ class TestServiceErrorJson:
 
 
 class TestGetAuthenticatedUserId:
-    def test_authenticated(self):
+    def test_authenticated(self) -> None:
         token = current_user_id.set(42)
         try:
             assert get_authenticated_user_id() == 42
         finally:
             current_user_id.reset(token)
 
-    def test_not_authenticated(self):
+    def test_not_authenticated(self) -> None:
         token = current_user_id.set(None)
         try:
             with pytest.raises(PermissionError, match="Unauthorized"):
@@ -74,8 +82,8 @@ class TestGetAuthenticatedUserId:
 
 
 class TestRunSync:
-    async def test_success(self):
-        def fn(session, x, y):
+    async def test_success(self) -> None:
+        def fn(session: Any, x: int, y: int) -> int:
             return x + y
 
         mock_session = MagicMock()
@@ -84,8 +92,8 @@ class TestRunSync:
         assert result == 7
         mock_session.close.assert_called_once()
 
-    async def test_exception(self):
-        def fn(session):
+    async def test_exception(self) -> None:
+        def fn(session: Any) -> None:
             raise ValueError("oops")
 
         mock_session = MagicMock()
@@ -96,22 +104,22 @@ class TestRunSync:
 
 
 class TestIsTextFile:
-    def test_text_mime(self):
+    def test_text_mime(self) -> None:
         assert _is_text_file("text/plain", "file.txt") is True
         assert _is_text_file("text/html", "page.html") is True
 
-    def test_json_mime(self):
+    def test_json_mime(self) -> None:
         assert _is_text_file("application/json", "data.json") is True
 
-    def test_extension_fallback(self):
+    def test_extension_fallback(self) -> None:
         assert _is_text_file("application/octet-stream", "script.py") is True
         assert _is_text_file(None, "readme.md") is True
 
-    def test_binary(self):
+    def test_binary(self) -> None:
         assert _is_text_file("image/png", "photo.png") is False
         assert _is_text_file("application/pdf", "doc.pdf") is False
 
-    def test_none_both(self):
+    def test_none_both(self) -> None:
         assert _is_text_file(None, None) is False
 
 
@@ -119,52 +127,52 @@ class TestIsTextFile:
 
 
 class TestJWTAuthMiddleware:
-    async def test_non_http_passthrough(self):
+    async def test_non_http_passthrough(self) -> None:
         mock_app = AsyncMock()
         middleware = JWTAuthMiddleware(mock_app)
-        scope = {"type": "lifespan"}
-        await middleware(scope, None, None)
-        mock_app.assert_called_once_with(scope, None, None)
+        scope: dict[str, Any] = {"type": "lifespan"}
+        await middleware(scope, _dummy_receive, _dummy_send)
+        mock_app.assert_called_once_with(scope, _dummy_receive, _dummy_send)
 
-    async def test_no_auth_header(self):
+    async def test_no_auth_header(self) -> None:
         mock_app = AsyncMock()
         middleware = JWTAuthMiddleware(mock_app)
-        scope = {"type": "http", "headers": []}
-        await middleware(scope, None, None)
+        scope: dict[str, Any] = {"type": "http", "headers": []}
+        await middleware(scope, _dummy_receive, _dummy_send)
         mock_app.assert_called_once()
         # user_id 应当为 None
         assert current_user_id.get() is None
 
-    async def test_valid_token(self):
+    async def test_valid_token(self) -> None:
         mock_app = AsyncMock()
         middleware = JWTAuthMiddleware(mock_app)
-        scope = {"type": "http", "headers": [(b"authorization", b"Bearer valid_token")]}
+        scope: dict[str, Any] = {"type": "http", "headers": [(b"authorization", b"Bearer valid_token")]}
 
         with patch("app.mcp.authentication.SessionLocal") as mock_sl, \
              patch("app.mcp.authentication.decode_token", return_value="42"):
             mock_session = MagicMock()
             mock_sl.return_value = mock_session
-            await middleware(scope, None, None)
+            await middleware(scope, _dummy_receive, _dummy_send)
 
         mock_app.assert_called_once()
         mock_session.close.assert_called_once()
 
-    async def test_invalid_token(self):
+    async def test_invalid_token(self) -> None:
         mock_app = AsyncMock()
         middleware = JWTAuthMiddleware(mock_app)
-        scope = {"type": "http", "headers": [(b"authorization", b"Bearer bad_token")]}
+        scope: dict[str, Any] = {"type": "http", "headers": [(b"authorization", b"Bearer bad_token")]}
 
         with patch("app.mcp.authentication.SessionLocal") as mock_sl, \
              patch("app.mcp.authentication.decode_token", return_value="Invalid token"):
             mock_session = MagicMock()
             mock_sl.return_value = mock_session
-            await middleware(scope, None, None)
+            await middleware(scope, _dummy_receive, _dummy_send)
 
         mock_app.assert_called_once()
 
 
 class TestGetMcpApp:
-    def test_wraps_with_middleware(self):
+    def test_wraps_with_middleware(self) -> None:
         mock_mcp = MagicMock()
         mock_mcp.streamable_http_app.return_value = MagicMock()
         result = get_mcp_app(mock_mcp)
@@ -185,7 +193,7 @@ from app.mcp.server import (
 
 
 class TestMcpGetCurrentUser:
-    async def test_success(self):
+    async def test_success(self) -> None:
         mock_user = MagicMock()
         mock_user.to_dict.return_value = {"id": 1, "username": "test", "password_hash": "secret"}
 
@@ -202,7 +210,7 @@ class TestMcpGetCurrentUser:
         finally:
             current_user_id.reset(token)
 
-    async def test_user_not_found(self):
+    async def test_user_not_found(self) -> None:
         mock_session = MagicMock()
         mock_session.get.return_value = None
 
@@ -217,7 +225,7 @@ class TestMcpGetCurrentUser:
 
 
 class TestMcpSearchFiles:
-    async def test_success(self):
+    async def test_success(self) -> None:
         mock_session = MagicMock()
         token = current_user_id.set(1)
         try:
@@ -231,7 +239,7 @@ class TestMcpSearchFiles:
 
 
 class TestMcpListFiles:
-    async def test_success(self):
+    async def test_success(self) -> None:
         mock_session = MagicMock()
         token = current_user_id.set(1)
         try:
@@ -246,7 +254,7 @@ class TestMcpListFiles:
 
 
 class TestMcpGetFileInfo:
-    async def test_success(self):
+    async def test_success(self) -> None:
         mock_file = MagicMock()
         mock_file.uploader_id = 1
         mock_file.to_dict.return_value = {"id": 1, "name": "test.txt"}
@@ -262,7 +270,7 @@ class TestMcpGetFileInfo:
         finally:
             current_user_id.reset(token)
 
-    async def test_permission_denied(self):
+    async def test_permission_denied(self) -> None:
         mock_file = MagicMock()
         mock_file.uploader_id = 999  # 不同用户
 
@@ -279,7 +287,7 @@ class TestMcpGetFileInfo:
 
 
 class TestMcpCreateFolder:
-    async def test_success(self):
+    async def test_success(self) -> None:
         mock_folder = MagicMock()
         mock_folder.to_dict.return_value = {"id": 5, "name": "new_folder"}
 
@@ -297,7 +305,7 @@ class TestMcpCreateFolder:
 
 
 class TestMcpMoveFile:
-    async def test_no_update_data(self):
+    async def test_no_update_data(self) -> None:
         mock_file = MagicMock()
         mock_file.uploader_id = 1
 
@@ -312,7 +320,7 @@ class TestMcpMoveFile:
         finally:
             current_user_id.reset(token)
 
-    async def test_success(self):
+    async def test_success(self) -> None:
         mock_file = MagicMock()
         mock_file.uploader_id = 1
         mock_updated = MagicMock()
@@ -332,7 +340,7 @@ class TestMcpMoveFile:
 
 
 class TestMcpDeleteFile:
-    async def test_success(self):
+    async def test_success(self) -> None:
         mock_file = MagicMock()
         mock_file.uploader_id = 1
 
@@ -348,7 +356,8 @@ class TestMcpDeleteFile:
         finally:
             current_user_id.reset(token)
 
-    async def test_permission_denied(self):
+
+    async def test_permission_denied(self) -> None:
         mock_file = MagicMock()
         mock_file.uploader_id = 999
 

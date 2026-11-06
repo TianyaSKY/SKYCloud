@@ -1,10 +1,12 @@
 """流式取消在返回前必须关闭嵌套生成器测试."""
 import asyncio
+from collections.abc import AsyncGenerator
 import os
 from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from langchain_core.documents import Document
@@ -20,7 +22,7 @@ from app.features.chat.stream_events import stream_chat_events
 from app.features.chat import service as rag
 
 
-async def test_rag_stream_translates_provider_events_to_structured_payloads():
+async def test_rag_stream_translates_provider_events_to_structured_payloads() -> None:
     dimensions = RewriteKeywordDimensions(
         topic_terms=["contract"],
         entity_terms=[],
@@ -29,7 +31,7 @@ async def test_rag_stream_translates_provider_events_to_structured_payloads():
         action_terms=[],
         synonym_terms=[],
     )
-    provider_events = [
+    provider_events: list[dict[str, Any]] = [
         {
             "event": "on_chain_end",
             "name": "keyword_gen",
@@ -83,18 +85,21 @@ async def test_rag_stream_translates_provider_events_to_structured_payloads():
         },
     ]
 
-    async def source():
+    async def source() -> AsyncGenerator[dict[str, Any], None]:
         for event in provider_events:
             yield event
 
-    recorded = []
+    recorded: list[Any] = []
+    def fake_record(usage: Any) -> None:
+        recorded.append(usage)
+
     events = [
         event
         async for event in stream_chat_events(
-            source,
+            cast(Any, source),
             user_id=5,
             query="question",
-            record_usage=recorded.append,
+            record_usage=fake_record,
         )
     ]
 
@@ -132,14 +137,12 @@ async def test_rag_stream_translates_provider_events_to_structured_payloads():
     assert recorded[0].total_tokens == 6
 
 
-
-
 @pytest.mark.parametrize("cancel_waiting", [False, True])
-async def test_fast_engine_closes_structured_stream_before_returning(monkeypatch, cancel_waiting):
+async def test_fast_engine_closes_structured_stream_before_returning(monkeypatch: pytest.MonkeyPatch, cancel_waiting: bool) -> None:
     closed = asyncio.Event()
     waiting = asyncio.Event()
 
-    async def source(*args):
+    async def source(*args: Any) -> AsyncGenerator[AssistantEvent, None]:
         try:
             yield AssistantEvent("token", {"content": "answer"})
             waiting.set()
@@ -150,9 +153,11 @@ async def test_fast_engine_closes_structured_stream_before_returning(monkeypatch
 
     # 保留嵌套迭代器, 避免垃圾回收/终结化偶然满足断言.
     inner = source()
+    def fake_generate(*args: Any) -> AsyncGenerator[AssistantEvent, None]:
+        return inner
     monkeypatch.setattr(
         "app.features.assistant.engines.fast_engine.generate_chat_events",
-        lambda *args: inner,
+        fake_generate,
     )
     outer = FastEngine().stream(
         EngineRequest(
@@ -179,14 +184,13 @@ async def test_fast_engine_closes_structured_stream_before_returning(monkeypatch
         await inner.aclose()
 
 
-
 @pytest.mark.parametrize("cancel_waiting", [False, True])
-async def test_rag_close_awaits_model_cleanup_and_known_usage(monkeypatch, cancel_waiting):
+async def test_rag_close_awaits_model_cleanup_and_known_usage(monkeypatch: pytest.MonkeyPatch, cancel_waiting: bool) -> None:
     closed = asyncio.Event()
     waiting = asyncio.Event()
-    recorded = []
+    recorded: list[Any] = []
 
-    async def source():
+    async def source() -> AsyncGenerator[dict[str, Any], None]:
         try:
             yield {"event": "on_chat_model_end", "name": "model", "data": {
                 "output": AIMessage(content="", usage_metadata={"input_tokens": 2, "output_tokens": 3, "total_tokens": 5})},
@@ -202,23 +206,28 @@ async def test_rag_close_awaits_model_cleanup_and_known_usage(monkeypatch, cance
     inner = source()
 
     class Chain:
-        def __or__(self, other):
+        def __or__(self, other: Any) -> 'Chain':
             return self
-        def __ror__(self, other):
+        def __ror__(self, other: Any) -> 'Chain':
             return self
-        def with_config(self, *args, **kwargs):
+        def with_config(self, *args: Any, **kwargs: Any) -> 'Chain':
             return self
-        def with_structured_output(self, *args, **kwargs):
+        def with_structured_output(self, *args: Any, **kwargs: Any) -> 'Chain':
             return self
-        def astream_events(self, *args, **kwargs):
+        def astream_events(self, *args: Any, **kwargs: Any) -> AsyncGenerator[dict[str, Any], None]:
             return inner
 
     chain = Chain()
-    monkeypatch.setattr(rag, "get_chat_model", lambda: chain)
-    monkeypatch.setattr(rag, "ChatPromptTemplate", SimpleNamespace(from_template=lambda *args: chain))
-    monkeypatch.setattr(rag, "RunnableParallel", lambda *args: chain)
-    monkeypatch.setattr(rag, "RunnableLambda", lambda *args: chain)
-    monkeypatch.setattr("app.infra.llm.client.record_llm_usage", lambda **kwargs: recorded.append(kwargs))
+    def ret_chain(*args: object, **kwargs: object) -> Chain:
+        return chain
+    def record_kw(**kwargs: Any) -> None:
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(rag, "get_chat_model", ret_chain)
+    monkeypatch.setattr(rag, "ChatPromptTemplate", SimpleNamespace(from_template=ret_chain))
+    monkeypatch.setattr(rag, "RunnableParallel", ret_chain)
+    monkeypatch.setattr(rag, "RunnableLambda", ret_chain)
+    monkeypatch.setattr("app.infra.llm.client.record_llm_usage", record_kw)
     outer = rag.generate_chat_events(2, 3, "hello", [])
     try:
         event = await anext(outer)
@@ -240,11 +249,11 @@ async def test_rag_close_awaits_model_cleanup_and_known_usage(monkeypatch, cance
         await inner.aclose()
 
 
-async def test_slow_stream_has_backpressure_and_full_queue_cancel_finishes():
+async def test_slow_stream_has_backpressure_and_full_queue_cancel_finishes() -> None:
     pulled = 0
     closed = asyncio.Event()
 
-    async def source():
+    async def source() -> AsyncGenerator[AssistantEvent, None]:
         nonlocal pulled
         try:
             while True:
@@ -331,9 +340,9 @@ print('REAL_RAG_CHAIN_CLOSED')
 '''
 
 
-def test_real_langchain_task_closes_with_fast_engine():
+def test_real_langchain_task_closes_with_fast_engine() -> None:
     result = subprocess.run([sys.executable, '-c', REAL_CHAIN],
         cwd=Path(__file__).resolve().parents[1], env=os.environ.copy(),
         capture_output=True, text=True, timeout=20)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert 'REAL_RAG_CHAIN_CLOSED' in result.stdout
+    assert result.returncode == 0, str(result.stdout) + str(result.stderr)
+    assert 'REAL_RAG_CHAIN_CLOSED' in str(result.stdout)
