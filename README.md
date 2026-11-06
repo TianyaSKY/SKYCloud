@@ -57,17 +57,17 @@ SKYCloud 把云盘、检索问答和可自主执行的 AI 放在同一套系统�
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
-uv run --no-project python scripts/generate-env.py
-uv run --no-project python scripts/build-runtime-image.py --env-file .env
-uv run --no-project python scripts/build-minio-image.py --env-file .env
-# 编辑 .env，至少填写 Chat 和 Embedding 的 API_URL / API_KEY / MODEL（CHAT_* / EMB_*）
-docker compose up -d --build
+cp .env.example .env
+# 编辑 .env，仅需填写 Chat 和 Embedding 的 6 项模型配置（CHAT_* / EMB_*）
+uv run --no-project python scripts/start.py
 docker compose exec backend-api python -m entry.bootstrap_admin --username admin
 ```
 
 启动后访问 `http://app.skycloud.localhost`（默认端口 80）。管理员由上面的命令在终端交互式创建。
 
-Python 依赖由根目录 `pyproject.toml` 声明、`uv.lock` 锁定；部署脚本只依赖标准库，以 `uv run --no-project python` 运行。两个构建脚本会校验锁定产物、生成本机不可变镜像 ID 并写回 `.env`，换 Docker 主机后需重新执行。密钥、数据库升级、停机清理等部署细节见[部署与运维](docs/deployment.md)。
+统一启动脚本 `scripts/start.py` 会自动完成系统密钥初始化（持久化在 `.skycloud/generated.env`，私有权限 0600）、运行时与 MinIO 镜像构建与检查，并启动 Docker Compose。换 Docker 主机或需重建镜像时，可执行 `uv run --no-project python scripts/start.py --rebuild-images`。
+
+若需自定义外部端口、域名、HTTPS 或资源限额，可复制 `.env.advanced.example` 为 `.env.advanced` 进行覆盖。若从旧版（86 项环境变量）升级，运行 `uv run --no-project python scripts/migrate-env.py` 即可无损迁移已有密钥与配置。密钥、数据库升级、停机清理等部署细节见[部署与运维](docs/deployment.md)。
 
 ## 文档
 
@@ -100,12 +100,13 @@ SKYCloud/
 │   ├── runtime_image/          # 专家 Runtime 沙箱镜像
 │   └── tests/                  # 单元与集成测试
 ├── frontend/src/               # Vue 3 应用（api / components / views / stores / router）
-├── scripts/                    # 环境生成、镜像构建
+├── scripts/                    # 统一启动、环境生成、迁移与镜像构建
 ├── docs/                       # 详细文档
 ├── pyproject.toml              # Python 依赖、依赖组与工具配置
 ├── uv.lock                     # 唯一的 Python 锁文件
 ├── docker-compose.yml
-└── .env.example
+├── .env.example                # 基础模型配置模板（6项）
+└── .env.advanced.example       # 可选高级配置模板（端口、域名、限额等）
 ```
 
 ## License

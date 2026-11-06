@@ -63,21 +63,18 @@ Requires uv 0.13.0 (using Python 3.11), Docker and Docker Compose; runtime hosts
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
-uv run --no-project python scripts/generate-env.py
-uv run --no-project python scripts/build-runtime-image.py --env-file .env
-uv run --no-project python scripts/build-minio-image.py --env-file .env
-# Edit .env and at least configure API_URL / API_KEY / MODEL for the Chat and Embedding models (CHAT_* / EMB_*)
-docker compose up -d --build
+cp .env.example .env
+# Edit .env and configure the 6 model parameters for Chat and Embedding (CHAT_* / EMB_*)
+uv run --no-project python scripts/start.py
 docker compose exec backend-api python -m entry.bootstrap_admin --username admin
 ```
 
 Then open `http://app.skycloud.localhost` (default port 80). The administrator is created interactively by the command
 above.
 
-Python dependencies are declared in the root `pyproject.toml` and locked by `uv.lock`; the deployment scripts need only
-the standard library and run through `uv run --no-project python`. Both build scripts verify locked artifacts, produce
-host-local immutable image IDs and write them back to `.env`; rerun them when moving to another Docker host. See
-[deployment](docs/en/deployment.md) for secrets, database upgrades and shutdown.
+The unified startup script `scripts/start.py` automatically initializes system secrets (persisted in `.skycloud/generated.env` with private mode 0600 permissions), verifies or builds runtime and MinIO images, and starts Docker Compose. When moving Docker hosts or requiring a rebuild, run `uv run --no-project python scripts/start.py --rebuild-images`.
+
+To customize external ports, domain, HTTPS, or resource limits, copy `.env.advanced.example` to `.env.advanced`. If upgrading from a previous version with 86 environment variables, run `uv run --no-project python scripts/migrate-env.py` to seamlessly migrate existing credentials and configurations. See [deployment](docs/en/deployment.md) for secrets, database upgrades, and shutdown procedures.
 
 ## Documentation
 
@@ -110,12 +107,13 @@ SKYCloud/
 │   ├── runtime_image/          # Expert Runtime sandbox image
 │   └── tests/                  # Unit and integration tests
 ├── frontend/src/               # Vue 3 app (api / components / views / stores / router)
-├── scripts/                    # Env generation, image builds
+├── scripts/                    # Unified startup, env generation, migration, image builds
 ├── docs/                       # Chinese documentation (docs/en for English)
 ├── pyproject.toml              # Python dependencies, dependency groups and tool config
 ├── uv.lock                     # The single Python lockfile
 ├── docker-compose.yml
-└── .env.example
+├── .env.example                # Basic model configuration template (6 items)
+└── .env.advanced.example       # Optional advanced configuration template (ports, domain, quotas, etc.)
 ```
 
 ## License

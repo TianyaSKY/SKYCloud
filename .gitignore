@@ -5,6 +5,9 @@
 !.vscode/extensions.json
 .jbeval
 .env
+.env.advanced
+.env.bak
+.skycloud/
 nul
 AGENTS.md
 .agents

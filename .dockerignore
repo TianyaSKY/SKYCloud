@@ -13,6 +13,7 @@
 
 .env
 .env.*
+.skycloud
 .venv
 venv
 env

@@ -12,17 +12,28 @@ Python 依赖只在根目录维护一份：`pyproject.toml` 声明、`uv.lock` �
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
-uv run --no-project python scripts/generate-env.py
-uv run --no-project python scripts/build-runtime-image.py --env-file .env
-uv run --no-project python scripts/build-minio-image.py --env-file .env
-# 编辑 .env，至少填写 Chat 和 Embedding 的 API_URL / API_KEY / MODEL（CHAT_* / EMB_*）
-docker compose up -d --build
+cp .env.example .env
+# 编辑 .env，仅需填写 Chat 和 Embedding 的 6 项模型配置（CHAT_* / EMB_*）
+uv run --no-project python scripts/start.py
 docker compose exec backend-api python -m entry.bootstrap_admin --username admin
 ```
 
-运行时构建脚本校验锁定的官方 CLI 压缩包 SHA-256，使用固定 glibc 基础镜像和 Debian 软件包快照，并将本机不可变镜像 ID 写入 `.env`，保留其他配置与密钥。官方 Alpine 镜像的 PTY 原生库存在 glibc 兼容问题，因此部署必须先执行此构建步骤；换 Docker 主机时重新构建。沙箱普通 `/tmp` 保持 `noexec`，仅限额 64 MiB 的私有 `/tmp/.native` 允许加载 PTY 原生库。
+统一启动脚本 `scripts/start.py` 会自动完成：
+1. 系统密钥初始化（写入 `.skycloud/generated.env`，文件权限为私有 `0600`，绝不覆盖已有密钥）；
+2. 校验并构建 Runtime 沙箱与 MinIO 镜像，不可变镜像 ID 存放在 `.skycloud/generated.env`；
+3. 执行 `docker compose up -d --build`（可传入 `--dev` 启用开发端口映射，或 `--check-only` 仅校验环境）。
 
-MinIO 的原公共镜像地址已不可拉取，同样由构建脚本从 `backend/minio_image/lock.json` 锁定的官方源码构建：校验源码 SHA-256，固定 Go 工具链，并使用上游 `go.sum` 校验全部 Go 依赖，最后把本机不可变镜像 ID 写入 `.env`；换 Docker 主机时重新构建。
+换 Docker 主机或需要更新底层环境时，可运行 `uv run --no-project python scripts/start.py --rebuild-images`。
+
+若从旧版（86 项环境变量）升级，运行以下命令即可将既有数据库密码、Token 密钥和自定义部署项安全迁移到新结构：
+```bash
+uv run --no-project python scripts/migrate-env.py
+```
+迁移脚本会将旧 `.env` 备份为 `.env.bak`，保留当前有效密钥至 `.skycloud/generated.env`，仅提取 6 个模型变量放入新 `.env`，并将非默认部署配置输出至 `.env.advanced`。原有数据卷和数据库密码完全不受影响。
+
+运行时构建脚本校验锁定的官方 CLI 压缩包 SHA-256，使用固定 glibc 基础镜像和 Debian 软件包快照，并将本机不可变镜像 ID 写入 `.skycloud/generated.env`，保留其他配置与密钥。官方 Alpine 镜像的 PTY 原生库存在 glibc 兼容问题，因此部署必须先执行此构建步骤；换 Docker 主机时重新构建。沙箱普通 `/tmp` 保持 `noexec`，仅限额 64 MiB 的私有 `/tmp/.native` 允许加载 PTY 原生库。
+
+MinIO 的原公共镜像地址已不可拉取，同样由构建脚本从 `backend/minio_image/lock.json` 锁定的官方源码构建：校验源码 SHA-256，固定 Go 工具链，并使用上游 `go.sum` 校验全部 Go 依赖，最后把本机不可变镜像 ID 写入 `.skycloud/generated.env`；换 Docker 主机时重新构建。
 
 ## 首次启动与管理员
 
@@ -39,7 +50,12 @@ docker compose up -d
 
 ## 配置与密钥
 
-配置生成脚本独立生成各项密钥，以权限 0600 写入，并拒绝覆盖已有文件。应用启动会检查三个主密钥互不相同、基础设施密码至少 12 字符且不为默认值。已有 PostgreSQL/RabbitMQ 数据卷中的密码不会随 `.env` 自动改变：先通过基础设施的受信管理工具轮换实际密码，再同步配置。
+SKYCloud 采用分层配置架构：
+1. **用户模型配置（`.env`）**：仅需填写 6 个与大模型供应商相关的参数（Chat 与 Embedding 的 API_URL、API_KEY 与 MODEL），避免因繁杂配置项导致出错。
+2. **系统私有凭证（`.skycloud/generated.env`）**：在首次启动时由脚本自动生成（PostgreSQL、RabbitMQ、MinIO 密码，以及 JWT、OpenCode、Runtime Controller 密钥和镜像 ID）。以严格的私有权限 `0600` 写入，绝不提交至 Git，重启与再次构建均不会覆盖已有凭证。
+3. **可选高级配置（`.env.advanced`）**：如需自定义服务对外端口（如将前端暴露在 8080）、域名、HTTPS，或调整数据库连接池、上传配额等，可根据 `.env.advanced.example` 创建 `.env.advanced`。
+
+应用启动会检查三个主密钥互不相同、基础设施密码至少 12 字符且不为默认值。已有 PostgreSQL/RabbitMQ 数据卷中的密码不会随配置自动改变：先通过基础设施的受信管理工具轮换实际密码，再同步 `.skycloud/generated.env` 中的凭据。
 
 ## 数据库初始化与重建
 

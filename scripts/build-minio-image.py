@@ -75,14 +75,19 @@ def build():
 
 
 def save_reference(path, reference):
+    path = Path(path)
     if path.is_symlink():
         raise RuntimeError('Refusing to replace a symlink configuration')
-    content = path.read_text()
-    lines = [line for line in content.splitlines() if not line.startswith('MINIO_IMAGE=')]
+    lines = []
+    if path.is_file():
+        content = path.read_text(encoding='utf-8')
+        lines = [line for line in content.splitlines() if not line.startswith('MINIO_IMAGE=')]
     lines.append('MINIO_IMAGE=' + reference)
+    path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix='.minio-env-', dir=path.parent)
     try:
-        with os.fdopen(fd, 'w') as stream:
+        os.chmod(temporary, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
             stream.write('\n'.join(lines) + '\n')
         os.replace(temporary, path)
     finally:
@@ -92,11 +97,14 @@ def save_reference(path, reference):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--env-file', type=Path, help='Existing private configuration; other credentials are preserved')
+    parser.add_argument('--env-file', type=Path, default=None, help='Target configuration file to update (e.g. .skycloud/generated.env)')
     args = parser.parse_args()
-    if args.env_file and (args.env_file.is_symlink() or not args.env_file.is_file()):
-        parser.error('Configuration must be an existing regular file')
+    if args.env_file and (args.env_file.is_symlink() or (args.env_file.exists() and not args.env_file.is_file())):
+        parser.error('Configuration must be a regular file')
     image = build()
-    if args.env_file:
-        save_reference(args.env_file, image)
+    target_file = args.env_file
+    if target_file is None and (ROOT / '.skycloud/generated.env').is_file():
+        target_file = ROOT / '.skycloud/generated.env'
+    if target_file:
+        save_reference(target_file, image)
     print('MINIO_IMAGE=' + image)

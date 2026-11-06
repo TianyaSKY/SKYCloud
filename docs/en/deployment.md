@@ -10,17 +10,28 @@ Python dependencies live in one place: `pyproject.toml` declares them and `uv.lo
 
 ```bash
 git clone https://github.com/TianyaSKY/SKYCloud && cd SKYCloud
-uv run --no-project python scripts/generate-env.py
-uv run --no-project python scripts/build-runtime-image.py --env-file .env
-uv run --no-project python scripts/build-minio-image.py --env-file .env
-# Edit .env and at least configure API_URL / API_KEY / MODEL for the Chat and Embedding models (CHAT_* / EMB_*)
-docker compose up -d --build
+cp .env.example .env
+# Edit .env and configure the 6 model parameters for Chat and Embedding (CHAT_* / EMB_*)
+uv run --no-project python scripts/start.py
 docker compose exec backend-api python -m entry.bootstrap_admin --username admin
 ```
 
-The runtime builder verifies the locked official CLI archive checksum, uses an immutable glibc base image and Debian package snapshot, and saves its local immutable image ID into private `.env` while preserving credentials. The upstream Alpine image has a glibc incompatibility in its PTY library, so this build step is required before deployment; rebuild when moving Docker hosts. Ordinary `/tmp` remains `noexec`; the private 64 MiB `/tmp/.native` mount permits loading the PTY native library.
+The unified startup script `scripts/start.py` automatically performs:
+1. Secret initialization (persisted to `.skycloud/generated.env` with private `0600` permissions; existing secrets are never overwritten);
+2. Verifies and builds the Runtime sandbox and MinIO images, recording immutable image IDs into `.skycloud/generated.env`;
+3. Executes `docker compose up -d --build` (supports `--dev` to expose host ports, or `--check-only` for preflight checks).
 
-The upstream MinIO image is no longer pullable, so `build-minio-image.py` builds MinIO from the official source pinned in `backend/minio_image/lock.json`: it verifies the source SHA-256, fixes the Go toolchain and verifies every dependency against the upstream `go.sum`, then stores the local immutable image ID in `.env`; rebuild when moving Docker hosts.
+When moving Docker hosts or updating system images, run `uv run --no-project python scripts/start.py --rebuild-images`.
+
+If upgrading from an earlier version with 86 environment variables, run the migration script:
+```bash
+uv run --no-project python scripts/migrate-env.py
+```
+This backs up the legacy `.env` to `.env.bak`, migrates existing system secrets to `.skycloud/generated.env`, preserves the 6 model parameters in `.env`, and routes non-default overrides into `.env.advanced`. Database credentials and data volumes remain completely intact.
+
+The runtime builder verifies the locked official CLI archive checksum, uses an immutable glibc base image and Debian package snapshot, and saves its local immutable image ID into `.skycloud/generated.env` while preserving credentials. The upstream Alpine image has a glibc incompatibility in its PTY library, so this build step is required before deployment; rebuild when moving Docker hosts. Ordinary `/tmp` remains `noexec`; the private 64 MiB `/tmp/.native` mount permits loading the PTY native library.
+
+The upstream MinIO image is no longer pullable, so `build-minio-image.py` builds MinIO from the official source pinned in `backend/minio_image/lock.json`: it verifies the source SHA-256, fixes the Go toolchain and verifies every dependency against the upstream `go.sum`, then stores the local immutable image ID in `.skycloud/generated.env`; rebuild when moving Docker hosts.
 
 ## First Start and Administrator
 
@@ -37,7 +48,12 @@ This command resets an existing administrator without creating accounts or eleva
 
 ## Configuration and Secrets
 
-The generator creates independent secrets, writes with mode 0600 and refuses to overwrite existing configuration. Startup requires independent master secrets and explicit infrastructure passwords of at least 12 characters, without defaults. Changing `.env` does not rotate passwords stored in existing PostgreSQL/RabbitMQ volumes: use trusted infrastructure administration tools to rotate those passwords, then update configuration.
+SKYCloud uses a layered configuration architecture:
+1. **User Model Configuration (`.env`)**: Contains only the 6 model parameters for Chat and Embedding models (API_URL, API_KEY, and MODEL names).
+2. **System Private Credentials (`.skycloud/generated.env`)**: Automatically generated on first start (passwords for PostgreSQL, RabbitMQ, and MinIO, keys for JWT, OpenCode, and Runtime Controller, plus built image IDs). Persisted with private `0600` permissions and never tracked by Git or modified by service restarts.
+3. **Optional Advanced Settings (`.env.advanced`)**: Override host ports, domains, TLS/HTTPS, worker thread pools, or storage quotas by creating `.env.advanced` from `.env.advanced.example`.
+
+Startup requires independent master secrets and explicit infrastructure passwords of at least 12 characters, without defaults. Changing passwords does not automatically update existing PostgreSQL or RabbitMQ volumes: use trusted infrastructure management tools to rotate volume credentials before synchronizing `.skycloud/generated.env`.
 
 ## Database Initialization and Rebuild
 
