@@ -1,6 +1,6 @@
 """持久化缓存命名空间版本; 在所有者删除后保留以防重用."""
 
-from sqlalchemy import BigInteger, String
+from sqlalchemy import BigInteger, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infra.extensions import Base
@@ -16,5 +16,5 @@ class SqlCacheRevision(Base):
         BigInteger,
         nullable=False,
         default=0,
-        server_default="0",
+        server_default=text("0"),
     )

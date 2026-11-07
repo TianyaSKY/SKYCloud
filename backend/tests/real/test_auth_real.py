@@ -526,30 +526,6 @@ class TestMcpTokenService:
         """无 Token 时返回 None。"""
         assert get_active_record(session, test_user.id) is None
 
-    def test_get_active_record_multiple_keeps_latest(self, session: Any, test_user: Any) -> None:
-        """多条活跃记录只保留最新。"""
-        # 手动创建两条活跃记录
-        now = beijing_now()
-        exp = now + timedelta(days=365)
-        t1 = McpToken(
-            user_id=test_user.id, name="T1",
-            token_hash="hash1", token_preview="p1", expires_at=exp,
-        )
-        t2 = McpToken(
-            user_id=test_user.id, name="T2",
-            token_hash="hash2", token_preview="p2", expires_at=exp,
-        )
-        session.add_all([t1, t2])
-        session.commit()
-        # t2 更新（created_at 更晚）
-        active = get_active_record(session, test_user.id)
-        assert active is not None
-        # 只保留一条活跃
-        actives = session.query(McpToken).filter_by(
-            user_id=test_user.id
-        ).filter(McpToken.revoked_at.is_(None)).all()
-        assert len(actives) == 1
-
     def test_get_active_mcp_token_valid(self, session: Any, test_user: Any) -> None:
         """有效 Token 鉴权成功并更新 last_used_at。"""
         record, raw = ensure_user_mcp_token(session, test_user.id)

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
 
-from sqlalchemy import ForeignKey, Integer
+from sqlalchemy import ForeignKey, Integer, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.datetime_utils import local_isoformat, utc_now
@@ -30,13 +30,14 @@ class OrganizeCheckpoint(Base):
 
     workspace_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("workspaces.id"),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
         primary_key=True,
     )
     last_event_id: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         default=0,
+        server_default=text("0"),
     )
     last_full_scan_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
@@ -46,6 +47,7 @@ class OrganizeCheckpoint(Base):
         UTCDateTime(),
         default=utc_now,
         onupdate=utc_now,
+        server_default=func.now(),
     )
 
     workspace: Mapped["Workspace"] = relationship(

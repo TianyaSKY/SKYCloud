@@ -3,7 +3,16 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.datetime_utils import local_isoformat, utc_now
@@ -56,12 +65,14 @@ class OpenCodeRuntime(Base):
         String(20),
         nullable=False,
         default="stopped",
+        server_default="stopped",
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     config_version: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         default=0,
+        server_default=text("0"),
     )
     last_started_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
@@ -74,11 +85,13 @@ class OpenCodeRuntime(Base):
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
         onupdate=utc_now,
+        server_default=func.now(),
     )
 
     workspace: Mapped["Workspace"] = relationship(

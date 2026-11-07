@@ -255,29 +255,6 @@ class TestMcpTokenService:
         assert record is not None
         assert record.id == token.id
 
-    def test_get_active_record_deduplicates(self, session: Session, test_user: User) -> None:
-        from app.mcp.token_service import get_active_record
-
-        # 创建两条有效记录
-        for i in range(2):
-            t = McpToken(
-                user_id=test_user.id,
-                name=f"T{i}",
-                token_hash=f"hash{i}",
-                token_preview=f"p{i}",
-                expires_at=beijing_now() + timedelta(days=30),
-            )
-            session.add(t)
-        session.flush()
-
-        record = get_active_record(session, test_user.id)
-        assert record is not None
-        # 多余的应被撤销
-        active_count = session.query(McpToken).filter_by(
-            user_id=test_user.id, revoked_at=None
-        ).count()
-        assert active_count == 1
-
     def test_ensure_user_mcp_token_creates(self, session: Session, test_user: User) -> None:
         from app.mcp.token_service import ensure_user_mcp_token
 

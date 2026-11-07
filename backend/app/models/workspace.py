@@ -16,6 +16,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -64,22 +66,28 @@ class Workspace(Base):
         BigInteger,
         nullable=False,
         default=0,
-        server_default="0",
+        server_default=text("0"),
     )
     description: Mapped[str | None] = mapped_column(String(512))
     owner_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey(
+            "users.id",
+            name="fk_workspaces_owner_id_users",
+            ondelete="CASCADE",
+        ),
         nullable=False,
     )
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
         onupdate=utc_now,
+        server_default=func.now(),
     )
     # OpenCode 容器生命周期标识; 兼容存量历史工作区可为空。
     container_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -87,8 +95,11 @@ class Workspace(Base):
         String(20),
         nullable=False,
         default="stopped",
+        server_default="stopped",
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (Index("idx_workspaces_owner_id", "owner_id"),)
 
     owner: Mapped["User"] = relationship(
         "User",
@@ -149,14 +160,20 @@ class WorkspaceMember(Base):
         String(20),
         nullable=False,
         default="viewer",
+        server_default="viewer",
     )
     invited_by: Mapped[int | None] = mapped_column(
         Integer,
-        ForeignKey("users.id", ondelete="SET NULL"),
+        ForeignKey(
+            "users.id",
+            name="fk_workspace_members_invited_by_users",
+            ondelete="SET NULL",
+        ),
     )
     joined_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
     )
 
     workspace: Mapped["Workspace"] = relationship(
@@ -176,6 +193,7 @@ class WorkspaceMember(Base):
             name="uq_workspace_member",
         ),
         Index("idx_wm_user_id", "user_id"),
+        Index("idx_wm_workspace_id", "workspace_id"),
     )
 
     def __repr__(self) -> str:

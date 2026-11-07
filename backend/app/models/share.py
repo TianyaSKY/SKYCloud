@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.datetime_utils import (
@@ -51,12 +51,17 @@ class Share(Base):
     )
     user_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey(
+            "users.id",
+            name="fk_shares_user_id_users",
+            ondelete="CASCADE",
+        ),
         nullable=False,
     )
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
     )
     expires_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),

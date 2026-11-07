@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import ForeignKey, Index, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.datetime_utils import (
@@ -45,25 +45,29 @@ class McpToken(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey(
+            "users.id",
+            name="fk_mcp_tokens_user_id_users",
+            ondelete="CASCADE",
+        ),
         nullable=False,
-        index=True,
     )
     name: Mapped[str] = mapped_column(
         String(80),
         nullable=False,
         default="MCP Token",
+        server_default="MCP Token",
     )
     token_hash: Mapped[str] = mapped_column(
         String(64),
         unique=True,
         nullable=False,
-        index=True,
     )
     token_preview: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
     )
     expires_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
@@ -79,6 +83,18 @@ class McpToken(Base):
     )
 
     user: Mapped["User"] = relationship("User", backref="mcp_tokens")
+
+    __table_args__ = (
+        Index("idx_mcp_tokens_token_hash", "token_hash"),
+        Index("idx_mcp_tokens_user_id", "user_id"),
+        Index(
+            "uq_mcp_tokens_active_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+            sqlite_where=text("revoked_at IS NULL"),
+        ),
+    )
 
     @staticmethod
     def hash_token(token: str) -> str:

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Index, Integer, String
+from sqlalchemy import Index, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infra.datetime_utils import utc_now
@@ -15,7 +15,11 @@ class AssistantRuntimeAbort(Base):
 
     __tablename__ = "assistant_runtime_aborts"
 
-    run_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=False,
+    )
     workspace_id: Mapped[int] = mapped_column(Integer, nullable=False)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     runtime_id: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -27,14 +31,21 @@ class AssistantRuntimeAbort(Base):
         UTCDateTime(),
         nullable=False,
         default=utc_now,
+        server_default=func.now(),
     )
     next_attempt_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         nullable=False,
         default=utc_now,
+        server_default=func.now(),
     )
     completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     last_error_type: Mapped[str | None] = mapped_column(String(96))
 
     __table_args__ = (

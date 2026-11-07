@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TypedDict
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infra.datetime_utils import local_isoformat, utc_now
@@ -36,18 +36,28 @@ class TokenUsageLog(Base):
         Integer,
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     # 调用场景: chat / embedding / rewrite / vl_describe / organize 等。
     action: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
-        index=True,
     )
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    prompt_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
-    completion_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
-    total_tokens: Mapped[int | None] = mapped_column(Integer, default=0)
+    prompt_tokens: Mapped[int | None] = mapped_column(
+        Integer,
+        default=0,
+        server_default=text("0"),
+    )
+    completion_tokens: Mapped[int | None] = mapped_column(
+        Integer,
+        default=0,
+        server_default=text("0"),
+    )
+    total_tokens: Mapped[int | None] = mapped_column(
+        Integer,
+        default=0,
+        server_default=text("0"),
+    )
     # 仅供审计的可选截断后用户输入。
     query_summary: Mapped[str | None] = mapped_column(String(200), default=None)
     # 可选附加信息, 如召回文件数或重排结果等。
@@ -55,6 +65,13 @@ class TokenUsageLog(Base):
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index("idx_token_usage_logs_created_at", "user_id", "created_at"),
+        Index("idx_token_usage_logs_user_action", "user_id", "action"),
+        Index("idx_token_usage_logs_user_id", "user_id"),
     )
 
     def to_dict(self) -> TokenUsageLogDict:

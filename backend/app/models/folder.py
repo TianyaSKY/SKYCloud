@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.exceptions import BusinessRuleError, PermissionDeniedError
@@ -39,12 +39,11 @@ class Folder(Base):
     __tablename__ = "folder"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
     workspace_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("workspaces.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     parent_id: Mapped[int | None] = mapped_column(
         Integer,
@@ -53,6 +52,7 @@ class Folder(Base):
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
     )
 
     parent: Mapped["Folder | None"] = relationship(
@@ -70,6 +70,11 @@ class Folder(Base):
         "File",
         backref="folder",
         cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("idx_folder_workspace_id", "workspace_id"),
+        Index("idx_folder_ws_parent", "workspace_id", "parent_id"),
     )
 
     def to_dict(self) -> FolderDict:

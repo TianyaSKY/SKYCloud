@@ -5,11 +5,13 @@ from datetime import date, datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    CheckConstraint,
     Date,
     ForeignKey,
     Index,
     Integer,
     String,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -39,6 +41,7 @@ class UploadReservation(Base):
         String(20),
         nullable=False,
         default="active",
+        server_default="active",
     )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(naive_is_utc=True),
@@ -56,9 +59,11 @@ class UploadReservation(Base):
         JSON,
         nullable=False,
         default=dict,
+        server_default=text("'{}'"),
     )
 
     __table_args__ = (
+        CheckConstraint("size >= 0", name="upload_reservations_size_check"),
         Index("idx_upload_user_active", "user_id", "status", "expires_at"),
         Index(
             "idx_upload_workspace_active",
@@ -80,5 +85,20 @@ class UploadDailyUsage(Base):
         primary_key=True,
     )
     day: Mapped[date] = mapped_column(Date, primary_key=True)
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    bytes: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+
+    __table_args__ = (
+        CheckConstraint("attempts >= 0", name="upload_daily_usage_attempts_check"),
+        CheckConstraint("bytes >= 0", name="upload_daily_usage_bytes_check"),
+    )

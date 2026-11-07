@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, Integer, String
+from sqlalchemy import ForeignKey, Index, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infra.datetime_utils import utc_now
@@ -30,20 +30,28 @@ class OrganizeTask(Base):
         String(20),
         nullable=False,
         default="queued",
+        server_default="queued",
     )
     execution_token: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         nullable=False,
         default=utc_now,
+        server_default=func.now(),
     )
     next_attempt_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         nullable=False,
         default=utc_now,
+        server_default=func.now(),
     )
     delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     last_error_type: Mapped[str | None] = mapped_column(String(96))
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 

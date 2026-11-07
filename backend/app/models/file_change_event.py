@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.datetime_utils import local_isoformat, utc_now
@@ -38,9 +38,8 @@ class FileChangeEvent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     workspace_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("workspaces.id"),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     entity_type: Mapped[str] = mapped_column(String(20), nullable=False)
     entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -50,16 +49,20 @@ class FileChangeEvent(Base):
     old_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     new_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     payload: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
+    created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
-        nullable=False,
-        index=True,
+        server_default=func.now(),
     )
 
     workspace: Mapped["Workspace"] = relationship(
         "Workspace",
         backref="file_change_events",
+    )
+
+    __table_args__ = (
+        Index("idx_file_change_events_ws_created", "workspace_id", "created_at"),
+        Index("idx_file_change_events_ws_id", "workspace_id", "id"),
     )
 
     def to_dict(self) -> FileChangeEventDict:

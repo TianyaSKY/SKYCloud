@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TypedDict
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infra.datetime_utils import local_isoformat, utc_now
@@ -57,16 +57,23 @@ class McpAuditLog(Base):
         String(20),
         nullable=False,
         default="user",
+        server_default="user",
     )
     tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
     arguments_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    success: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
     error_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
     )
 
     __table_args__ = (

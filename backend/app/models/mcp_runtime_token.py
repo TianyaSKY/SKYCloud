@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
 
-from sqlalchemy import ForeignKey, Index, Integer, String
+from sqlalchemy import ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.datetime_utils import (
@@ -71,6 +71,7 @@ class McpRuntimeToken(Base):
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
     )
     expires_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),

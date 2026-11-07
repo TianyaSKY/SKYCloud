@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ForeignKey, Index, Integer, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, Integer, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infra.datetime_utils import utc_now
@@ -38,6 +38,7 @@ class FileChunk(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
         nullable=False,
     )
 

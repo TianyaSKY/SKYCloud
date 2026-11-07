@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, TypeAlias, TypedDict
 from numpy import float32
 from numpy.typing import NDArray
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, ForeignKey, Index, Integer, String
+from sqlalchemy import BigInteger, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infra.datetime_utils import (
@@ -58,7 +58,11 @@ class File(Base):
 
     # ---- AI 索引状态 ----
     # 状态包括待处理、处理中、成功或失败等状态。
-    status: Mapped[str | None] = mapped_column(String(20), default="pending")
+    status: Mapped[str | None] = mapped_column(
+        String(20),
+        default="pending",
+        server_default="pending",
+    )
     # 语义检索向量 (基于余弦距离索引)。
     vector_info: Mapped[VectorValue | None] = mapped_column(Vector(1024))
     description: Mapped[str | None] = mapped_column(String(4096))
@@ -67,11 +71,14 @@ class File(Base):
         Integer,
         ForeignKey("workspaces.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     uploader_id: Mapped[int | None] = mapped_column(
         Integer,
-        ForeignKey("users.id", ondelete="SET NULL"),
+        ForeignKey(
+            "users.id",
+            name="fk_files_uploader_id_users",
+            ondelete="SET NULL",
+        ),
     )
     parent_id: Mapped[int | None] = mapped_column(
         Integer,
@@ -81,6 +88,7 @@ class File(Base):
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
     )
 
     uploader: Mapped["User | None"] = relationship("User", backref="files")
@@ -106,6 +114,7 @@ class File(Base):
         ),
         Index("idx_files_ws_parent", "workspace_id", "parent_id"),
         Index("idx_files_ws_status", "workspace_id", "status"),
+        Index("idx_files_content_hash_size", "content_hash", "file_size"),
     )
 
     def get_abs_path(self) -> str:

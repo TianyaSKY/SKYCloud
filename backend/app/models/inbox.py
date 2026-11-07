@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, backref, mapped_column, relationship
 
 from app.infra.datetime_utils import (
@@ -43,13 +43,26 @@ class Inbox(Base):
     )
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    is_read: Mapped[bool | None] = mapped_column(Boolean, default=False)
-    type: Mapped[str | None] = mapped_column(String(50), default="system")
+    is_read: Mapped[bool | None] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=text("false"),
+    )
+    type: Mapped[str | None] = mapped_column(
+        String(50),
+        default="system",
+        server_default="system",
+    )
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
     )
-    is_deleted: Mapped[bool | None] = mapped_column(Boolean, default=False)
+    is_deleted: Mapped[bool | None] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=text("false"),
+    )
 
     user: Mapped["User"] = relationship(
         "User",

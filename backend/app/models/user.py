@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
 
-from sqlalchemy import BigInteger, Enum, Integer, String
+from sqlalchemy import BigInteger, Enum, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -48,7 +48,7 @@ class User(Base):
         Integer,
         nullable=False,
         default=0,
-        server_default="0",
+        server_default=text("0"),
     )
     role: Mapped[str | None] = mapped_column(
         Enum(
@@ -59,23 +59,31 @@ class User(Base):
             length=10,
         ),
         default="common",
+        server_default="common",
     )
     avatar: Mapped[str | None] = mapped_column(String(255), default=None)
     created_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
     )
 
     # ---- Token 使用量统计总计, 由 LLM 调用详情汇总写入 ----
     total_prompt_tokens: Mapped[int | None] = mapped_column(
         BigInteger,
         default=0,
+        server_default=text("0"),
     )
     total_completion_tokens: Mapped[int | None] = mapped_column(
         BigInteger,
         default=0,
+        server_default=text("0"),
     )
-    total_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    total_tokens: Mapped[int | None] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+    )
     last_active_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime(),
         default=None,

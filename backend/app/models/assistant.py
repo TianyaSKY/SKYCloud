@@ -22,6 +22,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     and_,
+    func,
     text,
 )
 from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
@@ -123,12 +124,18 @@ class AssistantConversation(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
-    mode: Mapped[str] = mapped_column(String(16), nullable=False, default="fast")
+    mode: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="fast",
+        server_default="fast",
+    )
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
         default="active",
+        server_default="active",
     )
     source_conversation_id: Mapped[int | None] = mapped_column(
         Integer,
@@ -147,12 +154,14 @@ class AssistantConversation(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
         nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         default=utc_now,
         onupdate=utc_now,
+        server_default=func.now(),
         nullable=False,
     )
     last_message_at: Mapped[datetime | None] = mapped_column(
@@ -237,11 +246,17 @@ class AssistantMessage(Base):
         nullable=False,
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    content: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        server_default="",
+    )
     status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
         default="completed",
+        server_default="completed",
     )
     provider_message_id: Mapped[str | None] = mapped_column(
         String(128),
@@ -253,12 +268,14 @@ class AssistantMessage(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
         nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         default=utc_now,
         onupdate=utc_now,
+        server_default=func.now(),
         nullable=False,
     )
 
@@ -349,6 +366,7 @@ class AssistantRun(Base):
         String(24),
         nullable=False,
         default="pending",
+        server_default="pending",
     )
     request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     opencode_session_id: Mapped[str | None] = mapped_column(
@@ -371,6 +389,7 @@ class AssistantRun(Base):
         Boolean,
         nullable=False,
         default=False,
+        server_default=text("false"),
     )
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -386,6 +405,7 @@ class AssistantRun(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
         nullable=False,
     )
 
@@ -501,6 +521,7 @@ class AssistantPermission(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(),
         default=utc_now,
+        server_default=func.now(),
         nullable=False,
     )
     answered_at: Mapped[datetime | None] = mapped_column(
@@ -524,6 +545,7 @@ class AssistantPermission(Base):
             "AND response IN ('once', 'reject')) OR "
             "(state = 'cancelled' AND "
             "(response IS NULL OR response IN ('once', 'reject')))",
+            name="ck_assistant_permission_response",
         ),
         Index(
             "uq_assistant_permission_open_run",
