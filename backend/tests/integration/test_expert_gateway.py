@@ -1069,7 +1069,10 @@ asyncio.run(run())
                     assert connected_dict['SKYCLOUD']['status'] == 'connected'
                     # 在热刷新后使用最新限定范围 Runtime 凭据
                     # 通过其协议调用实际 MCP 搜索工具.
-                    mcp_headers: Any = runtime_config['mcp']['SKYCLOUD']['headers']
+                    # 热刷新会轮换运行时令牌并撤销此前的凭据, 因此必须
+                    # 重新读取实时配置, 而非复用刷新前的快照.
+                    refreshed_config: Any = docker_service._client().read_config(str(runtime.container_id))
+                    mcp_headers: Any = refreshed_config['mcp']['SKYCLOUD']['headers']
                     # 父级单元 conftest 替换了 MCP 包. 像服务器一样
                     # 在独立进程中运行锁定 SDK.
                     client_code = """
@@ -1083,7 +1086,7 @@ async def main():
             async with ClientSession(reader, writer) as session:
                 await session.initialize()
                 result = await session.call_tool('search_files', {'query': 'no-matching-test-file', 'search_type': 'fuzzy'})
-                assert not result.isError
+                assert not result.isError, [getattr(item, 'text', None) for item in result.content]
                 print(json.dumps(json.loads(result.content[0].text)))
 asyncio.run(main())
 """

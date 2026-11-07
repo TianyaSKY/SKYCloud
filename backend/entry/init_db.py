@@ -4,6 +4,9 @@ import os
 import sys
 from pathlib import Path
 
+from app import models
+from app.infra.extensions import Base
+from app.infra.schema import EXPECTED_REVISION
 from dotenv import load_dotenv
 from sqlalchemy import (
     Column,
@@ -13,15 +16,11 @@ from sqlalchemy import (
     String,
     Table,
     create_engine,
-    inspect,
     insert,
+    inspect,
     text,
 )
 from sqlalchemy.engine import Engine
-
-from app import models
-from app.infra.extensions import Base
-from app.infra.schema import EXPECTED_REVISION
 
 # Keep the original marker so previously initialized databases remain usable
 # without an in-place migration or any changes to their contents.
