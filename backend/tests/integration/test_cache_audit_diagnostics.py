@@ -7,9 +7,9 @@ import pytest
 from loguru import logger
 from redis import Redis
 from sqlalchemy.orm import Session, sessionmaker
-from tests.integration.test_migrations import postgres
+from tests.integration.test_database_init import postgres
 from tests.integration.test_runtime_security import infrastructure
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 from app.infra import cache
 from app.mcp import audit
 from app.mcp.context import (McpRequestContext, set_mcp_context, reset_mcp_context,
@@ -66,7 +66,7 @@ async def test_actual_redis_acl_rejection_preserves_cache_fallback(infrastructur
 
 
 async def test_actual_postgres_audit_rejection_preserves_tool_and_recovers(postgres: Any, monkeypatch: Any, diagnostics: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     with factory() as seed:
         user = User(username='audit-owner', password_hash='isolated-test', role='common')
@@ -217,7 +217,7 @@ def test_actual_redis_generation_fences_late_search_write(infrastructure: Any, m
 def test_actual_sql_commit_invalidates_search_without_redis_cleanup(postgres: Any, infrastructure: Any, monkeypatch: Any, mode: Any) -> None:
     from app.features.file import search_service
     from app.models.file import File
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(cache, 'redis_client', infrastructure['redis'])
     with factory() as db:
@@ -259,7 +259,7 @@ def test_actual_sql_commit_invalidates_search_without_redis_cleanup(postgres: An
 def test_sql_search_revision_is_atomic_scoped_and_covers_direct_writes(postgres: Any) -> None:
     from app.models.file import File
     from sqlalchemy import select, text
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     with factory() as db:
         user = User(username='revision-trigger-owner', password_hash='unused', role='common')
@@ -294,7 +294,7 @@ def test_rolled_back_search_does_not_publish_uncommitted_cache(postgres: Any, in
     from app.models.file import File
     from app.features.file import search_service
     from sqlalchemy import text
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     admin = infrastructure['redis']
     monkeypatch.setattr(cache, 'redis_client', admin)
@@ -337,7 +337,7 @@ async def test_cached_read_cancel_drains_actual_blocked_sql(postgres: Any, infra
     import time
     from sqlalchemy import text
     from app.features.auth import user_service
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(cache, 'redis_client', infrastructure['redis'])
     with factory() as db:
@@ -392,7 +392,7 @@ def test_other_sql_caches_bypass_uncommitted_transactions(postgres: Any, infrast
     from app.features.auth import user_service
     from app.features.folder import service as folders
     from app.models.folder import Folder
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     admin = infrastructure['redis']
     monkeypatch.setattr(cache, 'redis_client', admin)
@@ -453,7 +453,7 @@ def test_root_file_id_cache_tracks_committed_tree_and_bypasses_writes(postgres: 
     from app.features.file import service as files
     from app.models.folder import Folder
     from app.models.file import File
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     admin = infrastructure['redis']
     monkeypatch.setattr(cache, 'redis_client', admin)
@@ -494,7 +494,7 @@ def test_generic_cache_revisions_are_scoped_atomic_and_survive_owner_deletion(po
     from sqlalchemy import text
     from app.models.folder import Folder
     from app.models.file import File
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     with factory() as db:
         user = User(username='revision-retention', password_hash='unused',role='common')

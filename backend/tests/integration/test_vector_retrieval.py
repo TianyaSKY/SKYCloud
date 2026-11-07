@@ -15,8 +15,8 @@ from app.models.file import File
 from app.models.file_chunk import FileChunk
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
-from entry.migrate import upgrade
-from tests.integration.test_migrations import postgres
+from entry.init_db import initialize_database
+from tests.integration.test_database_init import postgres
 
 __all__ = ["postgres"]
 
@@ -29,7 +29,7 @@ def vector(x: Any, y: Any=0):
 
 @pytest.fixture
 def indexed(postgres: Any):
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     with factory() as db:
         user = User(username='vector-user', password_hash='synthetic-unused-hash', role='common')

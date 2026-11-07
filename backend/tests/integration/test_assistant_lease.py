@@ -12,8 +12,8 @@ import time
 
 import pytest
 from sqlalchemy.orm import Session
-from entry.migrate import upgrade
-from tests.integration.test_migrations import postgres
+from entry.init_db import initialize_database
+from tests.integration.test_database_init import postgres
 from app.features.assistant import repository, service
 
 __all__ = ["postgres"]
@@ -22,7 +22,7 @@ from app.models.assistant import AssistantRun
 from app.models.user import User
 from app.models.workspace import Workspace
 
-pytestmark = pytest.mark.skipif(os.getenv('RUN_MIGRATION_TESTS') != '1', reason='Opt-in isolated PostgreSQL lease checks')
+pytestmark = pytest.mark.skipif(os.getenv('RUN_DATABASE_INIT_TESTS') != '1', reason='Opt-in isolated PostgreSQL lease checks')
 
 
 RAG_FAILURE = r'''
@@ -158,7 +158,7 @@ print('REAL_RAG_FAILURE_PERSISTED')
 
 @pytest.mark.parametrize('phase', ['rewrite', 'answer', 'retrieval', 'empty'])
 def test_rag_failures_persist_failed_runs_with_real_langchain(postgres: Any, phase: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     environment = {**os.environ, 'DATABASE_URL': postgres.url.render_as_string(hide_password=False),
                    'SKYCLOUD_RAG_FAILURE_PHASE': phase, 'PGOPTIONS': '-c statement_timeout=300'}
     with postgres.connect() as blocker:
@@ -173,7 +173,7 @@ def test_rag_failures_persist_failed_runs_with_real_langchain(postgres: Any, pha
 
 
 def create_run(engine: Any):
-    upgrade(engine)
+    initialize_database(engine)
     with Session(engine) as session:
         user = User(username='lease-user', password_hash='unused-test-hash', role='common')
         session.add(user); session.flush()

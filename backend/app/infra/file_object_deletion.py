@@ -20,7 +20,7 @@ def lock_object_path(session: Session, object_name: str) -> None:
     """在 PG 中使对象清理操作与秒传准入校验串行化.
 
     哈希冲突仅会使不相关的键串行化。SQLite 仅作为单写入者测试缝隙;
-    生产部署与迁移必须使用 PostgreSQL。
+    生产部署与数据库初始化必须使用 PostgreSQL。
     """
     if session.get_bind().dialect.name == "postgresql":
         digest = hashlib.sha256(object_name.encode()).digest()

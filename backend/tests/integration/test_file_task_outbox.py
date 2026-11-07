@@ -19,7 +19,7 @@ from app.infra.task_queue import RabbitMQTaskConsumer, FILE_PROCESS_QUEUE, publi
 from app.infra.upload_adapter import FastAPIUploadAdapter
 from app.models.file_task_outbox import FileTaskOutbox
 from app.models.file import File
-from tests.integration.test_migrations import postgres  # noqa: F401
+from tests.integration.test_database_init import postgres  # noqa: F401
 from tests.integration.test_worker_outcomes import file_database  # noqa: F401
 from tests.integration.test_task_queue import broker  # noqa: F401
 

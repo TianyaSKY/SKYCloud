@@ -11,12 +11,12 @@ from app.features.workspace import runtime_operation_repository as repository
 from app.features.workspace.runtime_port import RuntimeController
 from app.infra.runtime_operations import recover_runtime_operations
 from app.models.runtime_operation import RuntimeOperation
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 from runtime_common.contracts import ContainerPayload, UserSnapshotRow
 from runtime_common.json_types import JsonObject
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
-from tests.integration.test_migrations import (
+from tests.integration.test_database_init import (
     postgres,  # noqa: F401  (fixture re-export)
 )
 
@@ -34,7 +34,7 @@ NEW_CONTAINER = 'b' * 64
 
 @pytest.fixture
 def graph(postgres: Any):  # noqa: F811
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (:id,'lifecycle','x','common')"),
                    {'id': USER})

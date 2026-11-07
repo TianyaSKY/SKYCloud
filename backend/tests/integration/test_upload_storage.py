@@ -19,9 +19,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
-from tests.integration.test_migrations import postgres
+from tests.integration.test_database_init import postgres
 from tests.integration.test_runtime_security import docker
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 from app.api.factory import create_fastapi_app
 from app.features.auth.service import generate_token
 from app.features.file import service, upload_config, upload_quota
@@ -228,7 +228,7 @@ def minio_storage():
 def upload_api(postgres: Any, minio_storage: Any, monkeypatch: Any, tmp_path: Any) -> tuple[TestClient, dict[str, str], Any]:
     from app.features.folder import change_log
     from app.infra import storage
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as conn:
         conn.execute(text("INSERT INTO users (id,username,password_hash,role) VALUES (1,'owner','x','common'),(2,'editor','x','common')"))
         conn.execute(text("INSERT INTO workspaces (id,name,owner_id) VALUES (1,'upload-space',1)"))

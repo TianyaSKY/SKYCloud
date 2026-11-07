@@ -4,10 +4,10 @@ from typing import Any
 import os
 import pytest
 from sqlalchemy.orm import sessionmaker
-from tests.integration.test_migrations import postgres
+from tests.integration.test_database_init import postgres
 
 __all__ = ["postgres"]
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 from app.exceptions import PermissionDeniedError
 from app.features.share.service import CreateShareLinkParams, create_share_link
 from app.features.workspace.service import create_workspace
@@ -19,7 +19,7 @@ from app.models.workspace import WorkspaceMember
 pytestmark=pytest.mark.skipif(os.getenv('RUN_SHARE_ACCESS_TESTS')!='1',reason='Opt-in isolated PostgreSQL share access')
 
 def test_cached_member_cannot_publish_after_committed_removal(postgres: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     factory=sessionmaker(bind=postgres)
     with factory() as seed:
         user=User(username='share-owner',password_hash='isolated-test',role='common')

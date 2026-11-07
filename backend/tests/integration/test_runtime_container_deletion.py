@@ -12,9 +12,9 @@ from sqlalchemy.orm import sessionmaker
 
 from app.features.auth.user_service import delete_user
 from app.infra.runtime_container_deletion import delete_pending_containers
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 from runtime_controller.client import ControllerClient, ControllerNotFound
-from tests.integration.test_migrations import postgres
+from tests.integration.test_database_init import postgres
 from tests.integration.test_runtime_security import infrastructure, controller, docker
 
 __all__ = ["postgres", "infrastructure", "controller", "docker"]
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(os.getenv('RUN_CONTAINER_DELETION_TESTS') != '1'
 
 @pytest.fixture
 def graph(postgres: Any, infrastructure: Any, controller: Any) -> dict[str, Any]:
-    upgrade(postgres)
+    initialize_database(postgres)
     identity = int(uuid.uuid4().hex[:6],16) + 1000
     other = identity + 1
     rows = [(identity, identity, identity), (identity+2,identity,other),
@@ -202,7 +202,7 @@ def test_member_removal_revokes_now_and_cleans_only_members_runtime_after_commit
 
 @pytest.mark.parametrize('legacy_name',['workspace','per_user'])
 def test_account_retirement_cleans_known_legacy_format_through_authenticated_controller(postgres: Any,infrastructure: Any,controller: Any,legacy_name: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     identity = int(uuid.uuid4().hex[:6],16) + 1000
     name = f'skycloud-workspace-{identity}' if legacy_name == 'workspace' else f'skycloud-opencode-w{identity}-u{identity}'
     infrastructure['cleanup'].append(name)
@@ -226,7 +226,7 @@ def test_account_retirement_cleans_known_legacy_format_through_authenticated_con
 
 def test_cleanup_cannot_remove_unlabeled_infrastructure_even_with_full_id(postgres: Any,infrastructure: Any,controller: Any) -> None:
     import json
-    upgrade(postgres)
+    initialize_database(postgres)
     ref = json.loads(docker('inspect',infrastructure['target']).stdout)[0]['Id']
     with postgres.begin() as db:
         db.execute(text('INSERT INTO runtime_container_deletions(container_id) VALUES (:id)'),{'id':ref})

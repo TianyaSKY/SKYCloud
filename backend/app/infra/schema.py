@@ -1,8 +1,10 @@
-"""只读启动校验门禁. 数据库架构变更属于 entry.migrate."""
+"""只读启动校验门禁, 数据库由 entry.init_db 初始化."""
 
 from sqlalchemy import Connection, Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
+# Preserve the original version marker for databases initialized before the
+# SQLAlchemy cutover; checking it never changes an existing database.
 EXPECTED_REVISION = "0001_rebuild"
 
 
@@ -23,12 +25,12 @@ def check_schema(database_engine: Engine | Connection) -> None:
     except SQLAlchemyError as exc:
         message = (
             "Database schema is unavailable or unversioned; "
-            "run python -m entry.migrate"
+            "run python -m entry.init_db against an empty database"
         )
         raise RuntimeError(message) from exc
     if revisions != {EXPECTED_REVISION}:
         message = (
             "Database schema version differs from this application; "
-            "run python -m entry.migrate before startup"
+            "use a compatible database or initialize a new empty database"
         )
         raise RuntimeError(message)

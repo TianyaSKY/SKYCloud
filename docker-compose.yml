@@ -70,11 +70,11 @@ services:
     networks:
       - skycloud-network
 
-  migrate:
+  init-db:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    command: python -m entry.migrate
+    command: python -m entry.init_db
     restart: "no"
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-skycloud}:${POSTGRES_PASSWORD:?System secret not generated. Run python scripts/start.py}@db:5432/${POSTGRES_DB:-skycloud_db}
@@ -124,7 +124,7 @@ services:
       - RUNTIME_CONTROLLER_URL=http://runtime-controller-control:5003
       - OPENCODE_LLM_GATEWAY_URL=http://skycloud-llm-gateway:5002/v1
     depends_on:
-      migrate:
+      init-db:
         condition: service_completed_successfully
       runtime-controller:
         condition: service_healthy
@@ -176,7 +176,7 @@ services:
       - UPLOAD_FOLDER=/data/uploads
       - RUNTIME_CONTROLLER_URL=http://runtime-controller-control:5003
     depends_on:
-      migrate:
+      init-db:
         condition: service_completed_successfully
       runtime-controller:
         condition: service_healthy
@@ -228,7 +228,7 @@ services:
       - UPLOAD_FOLDER=/data/uploads
       - MCP_PORT=5001
     depends_on:
-      migrate:
+      init-db:
         condition: service_completed_successfully
       db:
         condition: service_healthy
@@ -300,7 +300,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
-      migrate:
+      init-db:
         condition: service_completed_successfully
       db:
         condition: service_healthy

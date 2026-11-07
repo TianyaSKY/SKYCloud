@@ -23,9 +23,9 @@ import uvicorn
 
 from tests.integration.fixture_paths import FIXTURE_DIR
 from tests.integration.test_runtime_security import infrastructure, controller, docker
-from tests.integration.test_migrations import postgres
+from tests.integration.test_database_init import postgres
 from tests.integration.test_upload_storage import minio_storage
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 from app.features.assistant import repository, service
 from app.features.runtime_llm import quota
 from app.features.workspace import docker_service
@@ -139,7 +139,7 @@ def test_actual_expert_through_controller_gateway_and_mcp(infrastructure: Any, c
                 if aclose_fn is not None:
                     await aclose_fn()
         monkeypatch.setattr(OpenCodeClient,'stream_events',disconnect_after_completion)
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     provider_key = 'synthetic-provider-secret-' + uuid.uuid4().hex
     model = 'skycloud-mock-model'
@@ -1143,7 +1143,7 @@ def test_mcp_upload_is_scoped_over_streamable_http(
     infrastructure: Any, postgres: Any, minio_storage: Any, tmp_path: Any,
 ) -> None:
     """通过真实 MCP 协议测试上传、回读与角色隔离."""
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     with factory.begin() as db:
         writer = User(

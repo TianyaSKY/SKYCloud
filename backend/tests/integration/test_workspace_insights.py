@@ -12,8 +12,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app.mcp import server
 from app.mcp.context import McpRequestContext, set_mcp_context, reset_mcp_context
-from entry.migrate import upgrade
-from tests.integration.test_migrations import postgres
+from entry.init_db import initialize_database
+from tests.integration.test_database_init import postgres
 from tests.integration.test_runtime_security import infrastructure
 
 __all__ = ["postgres", "infrastructure"]
@@ -43,7 +43,7 @@ async def test_disconnected_cancel_drains_native_sql_lock_and_signals_only_commi
     from app.features.assistant import router, service
     from app.infra.extensions import get_session_factory
     from app.models.workspace import Workspace
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'cancel-owner','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'cancel-space',1)"))
@@ -115,7 +115,7 @@ async def test_disconnected_cancel_drains_native_sql_lock_and_signals_only_commi
 
 @pytest.mark.parametrize("tool", [server.get_storage_overview, server.get_folder_tree])
 def test_scoped_read_then_independent_membership_removal(postgres: Any, monkeypatch: Any, tool: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common'),(2,'foreign','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1),(2,'two',2)"))
@@ -143,7 +143,7 @@ def test_scoped_read_then_independent_membership_removal(postgres: Any, monkeypa
 @pytest.mark.parametrize("operation", ["create_folder","move_file","delete_file","move_folder",
                                        "delete_folder","batch_delete","upload_file"])
 def test_write_tool_rejects_independent_role_downgrade(postgres: Any, monkeypatch: Any, operation: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'writer','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -177,7 +177,7 @@ def test_write_tool_rejects_independent_role_downgrade(postgres: Any, monkeypatc
 
 
 def test_batch_delete_revalidates_after_each_committed_item(postgres: Any, monkeypatch: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'writer','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -205,7 +205,7 @@ def test_batch_delete_revalidates_after_each_committed_item(postgres: Any, monke
 
 @pytest.mark.parametrize("operation", ["list_files","get_user_folders","get_current_user"])
 def test_remaining_reads_revalidate_before_warm_cache(postgres: Any,monkeypatch: Any,operation: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -245,7 +245,7 @@ async def test_search_scope_and_committed_revocation_before_cached_or_vector_rea
     from app.exceptions import PermissionDeniedError
     from app.features.file import search_service
     from app.infra import cache
-    upgrade(postgres)
+    initialize_database(postgres)
     near = [1.0] + [0.0]*1023
     far = [0.0, 1.0] + [0.0]*1022
     with postgres.begin() as db:
@@ -279,7 +279,7 @@ async def test_worker_cleanup_invalidation_preserves_commit_and_rolls_back_uncom
     from sqlalchemy.orm import Session
     from sqlalchemy.exc import StatementError
     from loguru import logger
-    upgrade(postgres)
+    initialize_database(postgres)
     private = 'private-cleanup-sql-sentinel'
     class CloseFaultSession(Session):
         def close(self):
@@ -325,7 +325,7 @@ async def test_http_worker_reads_revalidate_committed_removal(postgres: Any, inf
     from app.features.file import router, search_service
     from app.infra.extensions import get_session_factory
     from app.infra import cache
-    upgrade(postgres)
+    initialize_database(postgres)
     vector = [1.0] + [0.0]*1023
     with postgres.begin() as sql:
         sql.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
@@ -363,7 +363,7 @@ async def test_http_auth_fresh_role_overrides_cached_admin_and_revokes_version(p
     from app.infra.extensions import get_db,get_session_factory
     from app.features.auth.service import generate_token
     from app.infra import cache
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as sql:
         sql.execute(text("INSERT INTO users(id,username,password_hash,role,auth_version) VALUES (1,'admin-cache','x','admin',0)"))
     monkeypatch.setattr(cache,'redis_client',infrastructure['redis'])
@@ -400,7 +400,7 @@ async def test_profile_http_current_roles_and_cached_target_lifecycle(postgres: 
     from app.infra.extensions import get_session_factory
     from app.infra import cache
     from app.exceptions import register_exception_handlers
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as sql:
         sql.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin'),(2,'target','x','admin')"))
     monkeypatch.setattr(cache,'redis_client',infrastructure['redis'])
@@ -435,7 +435,7 @@ def test_account_and_folder_cache_revisions_follow_transaction_and_redis_failure
     from app.features.folder import service as folder_service
     from app.infra import cache
 
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text(
             "INSERT INTO users(id,username,password_hash,role) "
@@ -511,7 +511,7 @@ async def test_sys_dict_crud_reads_current_sql_without_revision_state(postgres: 
     from app.infra.extensions import get_session_factory
     from sqlalchemy.orm import sessionmaker
 
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("DELETE FROM sys_dict"))
         db.execute(text(
@@ -565,7 +565,7 @@ async def test_account_mutations_reject_stale_admin_snapshot(postgres: Any, monk
     from app.infra.extensions import get_session_factory
     from app.exceptions import register_exception_handlers
     from app.models.user import User
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     with factory() as db:
         actor = User(id=1, username='actor', role='admin')
@@ -608,7 +608,7 @@ def test_account_authorization_lock_orders_demotion_after_transaction(postgres: 
     from sqlalchemy.exc import DBAPIError
     from app.features.auth import user_service
     from app.exceptions import PermissionDeniedError
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin'),(2,'target','x','common')"))
     factory = sessionmaker(bind=postgres)
@@ -636,7 +636,7 @@ async def test_http_workspace_dependencies_detach_and_recheck_membership(postgre
     from app.api.dependencies import get_current_user, get_current_workspace, require_workspace_role
     from app.infra.extensions import get_session_factory
     from app.exceptions import register_exception_handlers
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -683,7 +683,7 @@ async def test_folder_http_rechecks_stale_workspace_snapshot(postgres: Any, infr
     from app.infra.extensions import get_session_factory
     from app.infra import cache
     from app.exceptions import register_exception_handlers
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -731,7 +731,7 @@ def test_folder_write_authorization_lock_blocks_role_change(postgres: Any) -> No
     from sqlalchemy.exc import DBAPIError
     from app.features.workspace.permissions import assert_can_write_locked
     from app.exceptions import PermissionDeniedError
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -763,7 +763,7 @@ async def test_file_http_rejects_stale_membership_before_io(postgres: Any, monke
     from app.api.dependencies import get_current_user
     from app.infra.extensions import get_session_factory
     from app.exceptions import register_exception_handlers
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -814,7 +814,7 @@ async def test_file_batch_delete_rechecks_after_committed_item(postgres: Any, mo
     from app.api.dependencies import get_current_user
     from app.infra.extensions import get_session_factory
     from app.exceptions import register_exception_handlers
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -849,7 +849,7 @@ async def test_mcp_write_authorization_holds_role_lock_at_dispatch(postgres: Any
     from sqlalchemy.exc import DBAPIError
     from app.exceptions import BusinessRuleError
     from app.features.file.upload_service import FileUploadService
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -913,7 +913,7 @@ async def test_share_publication_locks_membership_and_file_and_preserves_owner_c
     from app.api.dependencies import get_current_user
     from app.infra.extensions import get_session_factory
     from app.exceptions import register_exception_handlers
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -953,7 +953,7 @@ async def test_share_publication_locks_membership_and_file_and_preserves_owner_c
 
 
 async def test_mcp_share_publication_rejects_concurrent_workspace_change(postgres: Any, monkeypatch: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'selected',1),(2,'other',1)"))
@@ -987,7 +987,7 @@ async def test_settings_owned_routes_reject_stale_admin(postgres: Any, change: A
     from app.features.sys_dict import router
     from app.infra.extensions import get_session_factory
     from app.exceptions import register_exception_handlers
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("DELETE FROM sys_dict"))
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin')"))
@@ -1022,7 +1022,7 @@ async def test_settings_http_write_keeps_actor_lock_until_commit(postgres: Any, 
     from app.features.sys_dict import router
     from app.infra.extensions import get_session_factory
     from app.exceptions import register_exception_handlers
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("DELETE FROM sys_dict"))
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','admin')"))
@@ -1062,7 +1062,7 @@ async def test_inbox_owned_http_routes_preserve_message_ownership(postgres: Any)
     from app.features.inbox import router
     from app.infra.extensions import get_session_factory
     from app.exceptions import register_exception_handlers
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common'),(2,'other','x','common')"))
         db.execute(text("INSERT INTO inbox(id,user_id,content,is_read,is_deleted) VALUES (1,1,'own',false,false),(2,2,'private',false,false)"))
@@ -1093,7 +1093,7 @@ async def test_usage_owned_http_rejects_stale_admin_and_preserves_self_reads(pos
     from app.features.token_usage import router
     from app.infra.extensions import get_session_factory
     from app.exceptions import register_exception_handlers
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role,total_prompt_tokens,total_completion_tokens,total_tokens) VALUES (1,'actor','x','admin',2,3,5),(2,'other','x','common',7,11,18)"))
         db.execute(text("INSERT INTO token_usage_logs(user_id,action,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES (1,'chat',2,3,5,now()),(2,'chat',7,11,18,now())"))
@@ -1139,7 +1139,7 @@ async def test_assistant_owned_http_rechecks_committed_membership(postgres: Any,
     from app.infra.extensions import get_session_factory
     from app.models.workspace import Workspace
     from app.exceptions import register_exception_handlers
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -1208,7 +1208,7 @@ def test_assistant_recovery_retains_member_lock_until_outer_write_commit(postgre
     from app.features.assistant import service
     from app.models.workspace import Workspace
     from app.infra.datetime_utils import utc_now
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -1278,7 +1278,7 @@ async def test_runtime_model_owned_dependency_rejects_independent_revocation(pos
     from app.features.runtime_llm import router, tokens
     from app.infra.extensions import get_session_factory
     from app.models.opencode_runtime import OpenCodeRuntime
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -1316,7 +1316,7 @@ async def test_runtime_model_owned_dependency_rejects_independent_revocation(pos
 def test_accounting_faults_preserve_business_and_recover_actual_postgres(postgres: Any, monkeypatch: Any, phase: Any) -> None:
     from sqlalchemy.orm import Session
     from app.features.token_usage import service
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
     active: list[bool] = [True]
@@ -1368,7 +1368,7 @@ async def test_stream_close_fault_preserves_actual_postgres_outcome(postgres: An
     from app.features.assistant.event_protocol import AssistantEvent
     from app.models.workspace import Workspace
     from app.exceptions import ResourceNotFoundError
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'actor','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -1452,7 +1452,7 @@ async def test_prepared_response_header_failure_after_member_removal(postgres: A
     from starlette.requests import ClientDisconnect
     from app.features.assistant import repository, service
     from app.features.assistant.stream_response import PreparedStreamResponse
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -1523,7 +1523,7 @@ def test_prepared_compensation_serializes_with_native_lease_claim(postgres: Any)
     from types import SimpleNamespace
     from sqlalchemy.exc import DBAPIError
     from app.features.assistant import repository, service
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -1556,7 +1556,7 @@ async def test_http_preparation_abort_compensates_after_owned_transaction(postgr
     from sqlalchemy.orm import Session
     from app.features.assistant import router, service
     from app.features.assistant.schemas import AssistantMessageRequest
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -1671,7 +1671,7 @@ async def test_http_stream_initialization_abort_cleans_unclaimed_run(postgres: A
     from app.features.assistant import router, service
     from app.features.assistant.schemas import AssistantMessageRequest
     from app.models.workspace import Workspace
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -1768,7 +1768,7 @@ async def test_assistant_stream_rechecks_live_identity_and_membership(postgres: 
     from app.infra.extensions import SECRET_KEY, get_db, get_session_factory
     from app.infra.datetime_utils import utc_now
     from app.models.mcp_token import McpToken
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -1858,7 +1858,7 @@ async def test_ui_header_send_failure_closes_real_upstream_http(postgres: Any,in
     from app.features.workspace import ui_gateway,ui_tickets
     from app.infra.extensions import get_session_factory
     from tests.integration.test_expert_gateway import serve
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -1939,7 +1939,7 @@ async def test_model_stream_current_runtime_revocation(postgres: Any,monkeypatch
     from app.features.runtime_llm import router,tokens
     from app.infra.extensions import get_db,get_session_factory
     from app.models.opencode_runtime import OpenCodeRuntime
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -2007,7 +2007,7 @@ async def test_model_admission_wait_current_permission_and_timeout(postgres: Any
     from app.infra.extensions import get_db,get_session_factory
     from app.models.opencode_runtime import OpenCodeRuntime
     from app.infra.llm.config import get_chat_model_config
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -2073,7 +2073,7 @@ async def test_model_native_client_disconnect_releases_wait(postgres: Any,monkey
     from app.models.opencode_runtime import OpenCodeRuntime
     from app.infra.llm.config import get_chat_model_config
     from tests.integration.test_expert_gateway import serve
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -2143,7 +2143,7 @@ async def test_ui_admission_current_permission_and_timeout(postgres: Any,infrast
     from fastapi import FastAPI
     from app.features.workspace import ui_gateway,ui_tickets
     from app.infra.extensions import get_session_factory
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -2207,7 +2207,7 @@ async def test_ui_response_current_identity_after_forwarded_chunk(postgres: Any,
     from app.features.auth import refresh_sessions
     from app.features.auth.service import generate_token
     from app.infra.extensions import get_session_factory,SECRET_KEY
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -2293,7 +2293,7 @@ async def test_http_completed_header_teardown_cancel_closes_native_upstream(post
     from app.infra.llm.config import get_chat_model_config
     from app.models.opencode_runtime import OpenCodeRuntime
     from tests.integration.test_expert_gateway import serve
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))
@@ -2388,7 +2388,7 @@ async def test_ui_native_chain_current_identity_and_disconnect(postgres: Any,inf
     from runtime_controller import app as controller
     from runtime_controller.policy import Settings
     from tests.integration.test_expert_gateway import serve
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'reader','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))

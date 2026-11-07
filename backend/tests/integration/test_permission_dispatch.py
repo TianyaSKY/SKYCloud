@@ -20,12 +20,12 @@ from app.models.assistant import (
 )
 from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.workspace import WorkspaceMember
-from tests.integration.test_migrations import postgres
+from tests.integration.test_database_init import postgres
 
 __all__ = ["postgres"]
 from tests.integration.test_assistant_lease import create_run
 
-pytestmark=pytest.mark.skipif(os.getenv('RUN_MIGRATION_TESTS')!='1',reason='Opt-in isolated PostgreSQL ordering')
+pytestmark=pytest.mark.skipif(os.getenv('RUN_DATABASE_INIT_TESTS')!='1',reason='Opt-in isolated PostgreSQL ordering')
 
 
 def prepared(postgres: Any,monkeypatch: Any,entered: Any,release: Any,calls: Any):

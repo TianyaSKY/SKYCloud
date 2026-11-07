@@ -13,7 +13,7 @@ from app.models.file import File
 from app.models.folder import Folder
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
-from tests.integration.test_migrations import postgres  # noqa: F401
+from tests.integration.test_database_init import postgres  # noqa: F401
 from tests.integration.test_worker_outcomes import file_database  # noqa: F401
 from tests.integration.test_runtime_security import infrastructure  # noqa: F401
 

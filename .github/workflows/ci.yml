@@ -141,10 +141,10 @@ jobs:
             echo "SKYCLOUD_TEST_INFRA_IMAGE=$reference"
             echo "SKYCLOUD_TEST_CONTROLLER_IMAGE=skycloud-ci-cleanup-controller"
           } >> "$GITHUB_ENV"
-      - name: Migrations, delivery and crash recovery
+      - name: Database initialization, delivery and crash recovery
         working-directory: backend
         env:
-          RUN_MIGRATION_TESTS: '1'
+          RUN_DATABASE_INIT_TESTS: '1'
           RUN_RUNTIME_SECURITY_TESTS: '1'
           RUN_TASK_QUEUE_TESTS: '1'
           RUN_FILE_OUTBOX_TESTS: '1'
@@ -165,7 +165,7 @@ jobs:
           RUN_RUNTIME_LIFECYCLE_TESTS: '1'
         run: >-
           uv run --locked pytest -o addopts='' -q
-          tests/integration/test_migrations.py
+          tests/integration/test_database_init.py
           tests/integration/test_runtime_lifecycle_sql.py
           tests/integration/test_runtime_security.py::test_postgresql_has_no_seeded_admin_and_bootstraps_once
           tests/integration/test_runtime_security.py::test_quota_is_atomic_across_concurrent_requests
@@ -218,7 +218,7 @@ jobs:
       - name: Actual OpenCode provisioning, process crash recovery and MCP
         working-directory: backend
         env:
-          RUN_MIGRATION_TESTS: '1'
+          RUN_DATABASE_INIT_TESTS: '1'
           RUN_CONTAINER_DELETION_TESTS: '1'
           RUN_RUNTIME_SECURITY_TESTS: '1'
           RUN_EXPERT_GATEWAY_TESTS: '1'

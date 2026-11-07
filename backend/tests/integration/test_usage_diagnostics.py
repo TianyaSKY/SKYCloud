@@ -5,10 +5,10 @@ import os
 import pytest
 from loguru import logger
 from sqlalchemy.orm import sessionmaker
-from tests.integration.test_migrations import postgres
+from tests.integration.test_database_init import postgres
 
 __all__ = ["postgres"]
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 from app.features.token_usage import service
 from app.models.user import User
 from app.models.token_usage_log import TokenUsageLog
@@ -16,7 +16,7 @@ from app.models.token_usage_log import TokenUsageLog
 pytestmark=pytest.mark.skipif(os.getenv('RUN_USAGE_DIAGNOSTIC_TESTS')!='1',reason='Opt-in actual PostgreSQL failure diagnostics')
 
 def test_rejected_write_rolls_back_counters_and_keeps_sql_binds_private(postgres: Any,monkeypatch: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     factory=sessionmaker(bind=postgres)
     with factory() as seed:
         user=User(username='usage-log-owner',password_hash='isolated-test',role='common')

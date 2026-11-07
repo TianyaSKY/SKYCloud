@@ -9,14 +9,14 @@ import pytest
 from sqlalchemy import event, update
 from sqlalchemy.orm import Session
 
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 from app.features.workspace.service import create_workspace, get_user_workspace_rows
 from app.features.workspace.docker_service import list_summaries
 from app.infra.datetime_utils import beijing_now
 from app.models.user import User
 from app.models.opencode_runtime import OpenCodeRuntime
 from app.models.mcp_runtime_token import McpRuntimeToken
-from tests.integration.test_migrations import postgres
+from tests.integration.test_database_init import postgres
 
 __all__ = ["postgres"]
 
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(os.getenv('RUN_WORKSPACE_LIST_TESTS') != '1',
 
 @pytest.mark.parametrize('state', ['running', 'missing', 'recreated'])
 def test_postgres_bulk_list_and_concurrent_recreation(postgres: Any, state: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     with Session(postgres) as session:
         user = User(username='list-owner', password_hash='isolated-test-hash', role='common')
         session.add(user); session.commit()
@@ -87,7 +87,7 @@ def test_postgres_bulk_list_and_concurrent_recreation(postgres: Any, state: Any)
 def test_pending_candidate_observation_preserves_operation_and_identity(postgres: Any) -> None:
     from app.features.workspace import runtime_operation_repository as operations
     from app.models.runtime_operation import RuntimeOperation
-    upgrade(postgres)
+    initialize_database(postgres)
     with Session(postgres) as session:
         user = User(username='pending-start',password_hash='isolated-test-hash',role='common')
         session.add(user); session.commit()

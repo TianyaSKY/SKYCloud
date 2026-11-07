@@ -24,11 +24,11 @@ from sqlalchemy.orm import sessionmaker
 
 from tests.integration.fixture_paths import FIXTURE_DIR
 from tests.integration.test_runtime_security import infrastructure, controller, docker
-from tests.integration.test_migrations import postgres
+from tests.integration.test_database_init import postgres
 from tests.integration.test_upload_storage import minio_storage
 
 __all__ = ["infrastructure", "controller", "docker", "postgres", "minio_storage"]
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 from app.features.auth import user_service
 from app.infra.schema import check_schema
 from app.models.folder import Folder
@@ -191,7 +191,7 @@ def test_actual_frontend_auth_and_runtime(infrastructure: Any, controller: Any, 
     assert runtime_image, ('Build scripts/build-runtime-image.py and set SKYCLOUD_TEST_OPENCODE_IMAGE '
                            'to its immutable ID (or SKYCLOUD_TEST_RUNTIME_IMAGE when only the stand-in is needed)')
     assert minio_storage.integration_bucket, 'minio_storage fixture must expose integration_bucket'
-    upgrade(postgres); check_schema(postgres)
+    initialize_database(postgres); check_schema(postgres)
     factory = sessionmaker(bind=postgres)
     username, password = 'browser-' + uuid.uuid4().hex[:12], 'disposable-browser-password-32'
     admin_username = 'browser-admin-' + uuid.uuid4().hex[:12]

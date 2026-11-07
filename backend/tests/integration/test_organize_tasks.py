@@ -22,10 +22,10 @@ from app.features.folder.organize.tasks import (
 )
 from app.infra.task_queue import RabbitMQTaskConsumer, ORGANIZE_FILE_QUEUE, publish_organize_task as real_publish
 from app.models.organize_task import OrganizeTask
-from tests.integration.test_migrations import postgres  # noqa: F401
+from tests.integration.test_database_init import postgres  # noqa: F401
 
 __all__ = ["postgres", "broker"]
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_ORGANIZE_TASK_TESTS") != "1", reason="Opt-in isolated organizer control"
@@ -34,7 +34,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def tasks(postgres: Any):
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'organizer','synthetic','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'organize-space',1)"))

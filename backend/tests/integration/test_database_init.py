@@ -1,6 +1,6 @@
 from typing import Any
 # pyright: reportPrivateUsage=false
-"""与现有部署隔离的真实 PostgreSQL 迁移测试."""
+"""与现有部署隔离的真实 PostgreSQL 初始化测试."""
 
 import concurrent.futures
 import os
@@ -9,14 +9,14 @@ import time
 import uuid
 
 import pytest
-from alembic import command
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from app.infra.schema import EXPECTED_REVISION, check_schema
-from entry.migrate import migration_config, upgrade
+from entry.init_db import initialize_database
 from tests.integration.test_runtime_security import POSTGRES_IMAGE, docker
 
-pytestmark = pytest.mark.skipif(os.getenv("RUN_MIGRATION_TESTS") != "1", reason="Opt-in isolated PostgreSQL migrations")
+pytestmark = pytest.mark.skipif(os.getenv("RUN_DATABASE_INIT_TESTS") != "1", reason="Opt-in isolated PostgreSQL initialization")
 
 
 @pytest.mark.parametrize('denied', [False, True])
@@ -53,7 +53,7 @@ def test_lifecycle_lock_disconnect_keeps_outcome_and_allows_next_owner(postgres:
 
 @pytest.fixture
 def postgres():
-    name = "skycloud-migration-test-" + uuid.uuid4().hex[:12]
+    name = "skycloud-init-test-" + uuid.uuid4().hex[:12]
     password = uuid.uuid4().hex + uuid.uuid4().hex
     engine = None
     try:
@@ -78,152 +78,226 @@ def postgres():
         docker("rm", "-f", "-v", name, check=False)
 
 
-def test_fresh_upgrade_matches_models_and_supports_vectors(postgres: Any) -> None:
-    from app.infra.extensions import Base
-    import app.models
-    _ = app.models
-
+def test_fresh_initialization_supports_postgres_features(postgres: Any) -> None:
     with pytest.raises(RuntimeError, match="unversioned"):
         check_schema(postgres)
-    upgrade(postgres)
+    initialize_database(postgres)
     check_schema(postgres)
-    database = inspect(postgres)
-    for table in Base.metadata.sorted_tables:
-        assert database.has_table(table.name)
-        columns = {column["name"] for column in database.get_columns(table.name)}
-        assert set(table.columns.keys()) <= columns, table.name
-
-    run_columns = {
-        column["name"] for column in database.get_columns("assistant_runs")
-    }
-    assert {"pending_permission_id", "permission_response"}.isdisjoint(
-        run_columns,
-    )
-    permission_primary_key = database.get_pk_constraint("assistant_permissions")
-    assert permission_primary_key["constrained_columns"] == [
-        "run_id",
-        "permission_id",
-    ]
-    permission_checks = {
-        check["name"]
-        for check in database.get_check_constraints("assistant_permissions")
-    }
-    assert permission_checks == {
-        "ck_assistant_permission_state",
-        "ck_assistant_permission_response",
-    }
-    permission_foreign_keys = database.get_foreign_keys(
-        "assistant_permissions",
-    )
-    assert any(
-        foreign_key["referred_table"] == "assistant_runs"
-        and foreign_key["options"].get("ondelete") == "CASCADE"
-        for foreign_key in permission_foreign_keys
-    )
-    permission_index = next(
-        index
-        for index in database.get_indexes("assistant_permissions")
-        if index["name"] == "uq_assistant_permission_open_run"
-    )
-    assert permission_index["unique"] is True
-    with postgres.connect() as conn:
-        predicate = conn.scalar(text(
-            "SELECT indexdef FROM pg_indexes "
-            "WHERE indexname='uq_assistant_permission_open_run'"
+    with postgres.begin() as conn:
+        user_id = conn.scalar(text(
+            "INSERT INTO users (username, password_hash, role) "
+            "VALUES ('init-owner', 'x', 'common') RETURNING id"
         ))
-    assert "WHERE" in predicate and "pending" in predicate and "answered" in predicate
+        workspace_id = conn.scalar(
+            text("INSERT INTO workspaces (name, owner_id) VALUES ('init-workspace', :owner) RETURNING id"),
+            {"owner": user_id},
+        )
+        conversation_id = conn.scalar(
+            text("INSERT INTO assistant_conversations (workspace_id, user_id) VALUES (:workspace, :owner) RETURNING id"),
+            {"workspace": workspace_id, "owner": user_id},
+        )
+        run_id = conn.scalar(
+            text("INSERT INTO assistant_runs (conversation_id, engine) VALUES (:conversation, 'fast') RETURNING id"),
+            {"conversation": conversation_id},
+        )
+        conn.execute(
+            text("INSERT INTO assistant_permissions (run_id, permission_id, state, details_json) "
+                 "VALUES (:run, 'permission-one', 'pending', '{}')"),
+            {"run": run_id},
+        )
+    # 同一助手运行只允许一个未结束的权限请求; 完成后的请求不再占用唯一索引.
+    with pytest.raises(IntegrityError):
+        with postgres.begin() as conn:
+            conn.execute(
+                text("INSERT INTO assistant_permissions (run_id, permission_id, state, details_json) "
+                     "VALUES (:run, 'permission-two', 'pending', '{}')"),
+                {"run": run_id},
+            )
+    with postgres.begin() as conn:
+        conn.execute(
+            text("UPDATE assistant_permissions SET state='cancelled' "
+                 "WHERE run_id=:run AND permission_id='permission-one'"),
+            {"run": run_id},
+        )
+        conn.execute(
+            text("INSERT INTO assistant_permissions "
+                 "(run_id, permission_id, state, details_json, response) "
+                 "VALUES (:run, 'permission-three', 'answered', '{}', 'once')"),
+            {"run": run_id},
+        )
     with postgres.connect() as conn:
-        assert conn.scalar(text("SELECT count(*) FROM users")) == 0
+        assert conn.scalar(text("SELECT count(*) FROM users")) == 1
+        assert conn.scalar(text("SELECT count(*) FROM assistant_permissions")) == 2
         assert conn.scalar(text("SELECT value FROM sys_dict WHERE key='site_name'")) == "SKYCloud"
         assert conn.scalar(text("SELECT '[1,0,0]'::vector <=> '[0,1,0]'::vector")) == 1
         assert conn.scalar(text("SELECT version_num FROM alembic_version")) == EXPECTED_REVISION
-        cache_triggers = set(conn.scalars(text(
-            "SELECT tgname FROM pg_trigger "
-            "WHERE NOT tgisinternal AND tgname LIKE '%sql_cache_revision'"
-        )))
-        assert "sys_dict_sql_cache_revision" not in cache_triggers
-        assert {
-            "users_sql_cache_revision",
-            "files_sql_cache_revision",
-            "folder_sql_cache_revision",
-        } <= cache_triggers
-    upgrade(postgres)
-    check_schema(postgres)
-    with postgres.connect() as conn:
-        assert conn.scalar(text("SELECT count(*) FROM users")) == 0
-        assert conn.scalar(text("SELECT value FROM sys_dict WHERE key='site_name'")) == "SKYCloud"
 
-def test_unversioned_database_upgrade_is_rejected_without_changes(postgres: Any) -> None:
+    # 数据库触发器必须递增缓存版本，并在删除文件时暂存对象清理。
+    with postgres.begin() as conn:
+        assert conn.scalar(
+            text("SELECT revision FROM sql_cache_revisions WHERE scope=:scope"),
+            {"scope": f"user:profile:{user_id}"},
+        ) == 1
+        conn.execute(
+            text("INSERT INTO files (name, file_path, file_size, workspace_id, uploader_id) "
+                 "VALUES ('init.txt', 'objects/init.txt', 1, :workspace, :owner)"),
+            {"workspace": workspace_id, "owner": user_id},
+        )
+        assert conn.scalar(
+            text("SELECT revision FROM sql_cache_revisions WHERE scope=:scope"),
+            {"scope": f"workspace:tree:{workspace_id}"},
+        ) == 1
+        conn.execute(text("UPDATE users SET username='init-renamed' WHERE id=:id"), {"id": user_id})
+        assert conn.scalar(
+            text("SELECT revision FROM sql_cache_revisions WHERE scope=:scope"),
+            {"scope": f"user:profile:{user_id}"},
+        ) == 2
+        conn.execute(text("DELETE FROM files WHERE workspace_id=:workspace"), {"workspace": workspace_id})
+        assert conn.scalar(text("SELECT object_name FROM file_object_deletions")) == "objects/init.txt"
+        assert conn.scalar(
+            text("SELECT revision FROM sql_cache_revisions WHERE scope=:scope"),
+            {"scope": f"workspace:tree:{workspace_id}"},
+        ) == 2
+
+
+def test_initialized_schema_allows_only_one_active_mcp_token(postgres: Any) -> None:
+    initialize_database(postgres)
+    with postgres.begin() as conn:
+        user_id = conn.scalar(text(
+            "INSERT INTO users (username, password_hash) "
+            "VALUES ('token-owner', 'x') RETURNING id"
+        ))
+        conn.execute(
+            text("INSERT INTO mcp_tokens (user_id, token_hash, token_preview, expires_at) "
+                 "VALUES (:user_id, 'first-hash', 'first', now() + interval '1 day')"),
+            {"user_id": user_id},
+        )
+
+    with pytest.raises(IntegrityError):
+        with postgres.begin() as conn:
+            conn.execute(
+                text("INSERT INTO mcp_tokens (user_id, token_hash, token_preview, expires_at) "
+                     "VALUES (:user_id, 'second-hash', 'second', now() + interval '1 day')"),
+                {"user_id": user_id},
+            )
+
+    with postgres.begin() as conn:
+        conn.execute(text("UPDATE mcp_tokens SET revoked_at = now() WHERE user_id = :id"), {"id": user_id})
+        conn.execute(
+            text("INSERT INTO mcp_tokens (user_id, token_hash, token_preview, expires_at) "
+                 "VALUES (:user_id, 'second-hash', 'second', now() + interval '1 day')"),
+            {"user_id": user_id},
+        )
+        assert conn.scalar(text("SELECT count(*) FROM mcp_tokens WHERE revoked_at IS NULL")) == 1
+
+
+def test_initialization_is_repeatable_and_preserves_existing_data(postgres: Any) -> None:
+    from sqlalchemy.orm import Session
+    from app.models.user import User
+
+    initialize_database(postgres)
+    with Session(postgres) as session:
+        user = User(username="existing-owner", role="admin")
+        user.set_password("existing-owner-password")
+        session.add(user)
+        session.commit()
+        user_id = user.id
+    with postgres.begin() as conn:
+        conn.execute(text("INSERT INTO sys_dict (key, value) VALUES ('custom_marker', 'keep-me')"))
+        conn.execute(
+            text("INSERT INTO workspaces (name, owner_id) VALUES ('existing-workspace', :owner)"),
+            {"owner": user_id},
+        )
+        conn.execute(text("CREATE TABLE deployment_marker (note TEXT)"))
+        conn.execute(text("INSERT INTO deployment_marker VALUES ('untouched')"))
+
+    initialize_database(postgres)
+
+    check_schema(postgres)
+    with Session(postgres) as session:
+        existing = session.get(User, user_id)
+        assert existing is not None
+        assert existing.username == "existing-owner"
+    with postgres.connect() as conn:
+        assert conn.scalar(text("SELECT count(*) FROM users")) == 1
+        assert conn.scalar(text("SELECT value FROM sys_dict WHERE key='custom_marker'")) == "keep-me"
+        assert conn.scalar(text("SELECT count(*) FROM workspaces")) == 1
+        assert conn.scalar(text("SELECT note FROM deployment_marker")) == "untouched"
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == EXPECTED_REVISION
+
+def test_unversioned_database_initialization_is_rejected_without_changes(postgres: Any) -> None:
     with postgres.begin() as conn:
         conn.execute(text("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)"))
         conn.execute(text("INSERT INTO users VALUES (7, 'preserved')"))
 
-    with pytest.raises(RuntimeError, match="(?i)unversioned|empty database"):
-        upgrade(postgres)
+    with pytest.raises(RuntimeError, match="Unversioned"):
+        initialize_database(postgres)
 
     database = inspect(postgres)
     assert database.get_table_names() == ["users"]
     with postgres.connect() as conn:
         assert conn.execute(text("SELECT id, username FROM users")).one() == (7, "preserved")
 
-def test_old_revision_upgrade_is_rejected_without_changes(postgres: Any) -> None:
+
+def test_wrong_revision_initialization_is_rejected_without_changes(postgres: Any) -> None:
     with postgres.begin() as conn:
         conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
         conn.execute(text("INSERT INTO alembic_version VALUES ('0019_sql_cache_revisions')"))
 
-    with pytest.raises(RuntimeError, match="revision|version"):
-        upgrade(postgres)
+    with pytest.raises(RuntimeError, match="version"):
+        initialize_database(postgres)
 
     with postgres.connect() as conn:
         assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0019_sql_cache_revisions"
         assert conn.scalar(text("SELECT to_regclass('public.users')")) is None
 
 
+def test_failed_initialization_rolls_back_database_objects(postgres: Any) -> None:
+    with postgres.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE FUNCTION public.bump_sql_cache_revisions() RETURNS trigger "
+            "LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$"
+        )
+
+    with pytest.raises(ProgrammingError, match="already exists"):
+        initialize_database(postgres)
+
+    with postgres.connect() as conn:
+        assert inspect(conn).get_table_names(schema="public") == []
+        assert conn.scalar(text("SELECT to_regprocedure('public.bump_sql_cache_revisions()')")) is not None
+        assert not conn.scalar(text("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='vector')"))
 
 
-
-
-def test_concurrent_upgrade_is_serialized(postgres: Any) -> None:
-    # Alembic 的 Python 上下文是进程全局的; 在独立进程中执行.
+def test_concurrent_cli_initialization_is_serialized(postgres: Any) -> None:
+    # 初始化在独立进程中通过公共 CLI 执行, 保证咨询锁跨进程串行化.
     import subprocess
     import sys
     root = Path(__file__).resolve().parents[2]
     env = {**os.environ, "DATABASE_URL": postgres.url.render_as_string(hide_password=False)}
 
     def run(_: Any):
-        result = subprocess.run([sys.executable, "-m", "entry.migrate"], cwd=root, env=env, capture_output=True, text=True, timeout=40)
+        result = subprocess.run([sys.executable, "-m", "entry.init_db"], cwd=root, env=env, capture_output=True, text=True, timeout=40)
         assert result.returncode == 0, result.stderr
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
         list(workers.map(run, range(2)))
     check_schema(postgres)
-
-
-def test_standard_alembic_cli_upgrade(postgres: Any) -> None:
-    import subprocess
-    import sys
-    root = Path(__file__).resolve().parents[2]
-    result = subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", str(root / "alembic.ini"), "upgrade", "head"],
-        cwd=root, env={**os.environ, "DATABASE_URL": postgres.url.render_as_string(hide_password=False)},
-        capture_output=True, text=True, timeout=40,
-    )
-    assert result.returncode == 0, result.stderr
-    check_schema(postgres)
+    with postgres.connect() as conn:
+        assert conn.scalar(text("SELECT value FROM sys_dict WHERE key='site_name'")) == "SKYCloud"
 
 
 def test_application_startup_works_with_read_only_database_role(postgres: Any, tmp_path: Any) -> None:
     from unittest.mock import patch
     from app import initialize_application
 
-    upgrade(postgres)
+    initialize_database(postgres)
     password = uuid.uuid4().hex
     with postgres.begin() as conn:
-        conn.execute(text(f"CREATE ROLE migration_reader LOGIN PASSWORD '{password}'"))
-        conn.execute(text("ALTER ROLE migration_reader SET default_transaction_read_only=on"))
-        conn.execute(text("GRANT USAGE ON SCHEMA public TO migration_reader"))
-        conn.execute(text("GRANT SELECT ON alembic_version, users TO migration_reader"))
-    reader = create_engine(postgres.url.set(username="migration_reader", password=password))
+        conn.execute(text(f"CREATE ROLE init_reader LOGIN PASSWORD '{password}'"))
+        conn.execute(text("ALTER ROLE init_reader SET default_transaction_read_only=on"))
+        conn.execute(text("GRANT USAGE ON SCHEMA public TO init_reader"))
+        conn.execute(text("GRANT SELECT ON alembic_version, users TO init_reader"))
+    reader = create_engine(postgres.url.set(username="init_reader", password=password))
     try:
         with patch("app.engine", reader), patch("app.UPLOAD_FOLDER", str(tmp_path / "uploads")):
             initialize_application()
@@ -241,7 +315,7 @@ def test_password_change_is_atomic_and_concurrent_requests_cannot_reuse_old_pass
     from app.features.auth.service import generate_token, decode_token
     from app.mcp.token_service import ensure_user_mcp_token, get_active_mcp_token
 
-    upgrade(postgres)
+    initialize_database(postgres)
     with Session(postgres) as session:
         user = User(username="session-owner", role="common")
         user.set_password("old-long-password")
@@ -291,7 +365,7 @@ def test_legacy_admin_gate_and_operator_recovery_preserve_workspace_data(postgre
     from app.features.auth.service import authenticate_user
     from entry.reset_admin import reset_admin
 
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as conn:
         user_id = conn.scalar(text("INSERT INTO users (username,password_hash,role) VALUES ('admin',:hash,'admin') RETURNING id"), {"hash": LEGACY_ADMIN_HASH})
         conn.execute(text("INSERT INTO workspaces (name,owner_id) VALUES ('existing-workspace',:user)"), {"user": user_id})
@@ -306,23 +380,12 @@ def test_legacy_admin_gate_and_operator_recovery_preserve_workspace_data(postgre
         assert conn.scalar(text("SELECT count(*) FROM workspaces WHERE owner_id=:user"), {"user": user_id}) == 1
 
 
-def test_baseline_downgrade_is_rejected(postgres: Any) -> None:
-    upgrade(postgres)
-    with pytest.raises(RuntimeError, match="downgrade|backup"):
-        with postgres.begin() as conn:
-            command.downgrade(migration_config(conn), "base")
-    check_schema(postgres)
-    with postgres.connect() as conn:
-        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == EXPECTED_REVISION
-
-
-
 @pytest.mark.parametrize('shared', ['user', 'workspace', 'daily'])
 def test_upload_quota_concurrent_admission_cannot_overbook(postgres: Any, monkeypatch: Any, shared: Any) -> None:
     from sqlalchemy.orm import Session
     from app.features.file import upload_quota as quota
     from app.exceptions import BusinessRuleError
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as conn:
         conn.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'quota-one','x','common'),(2,'quota-two','x','common')"))
         conn.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'quota-one',1),(2,'quota-two',1)"))
@@ -356,7 +419,7 @@ def test_upload_consumption_rollback_and_concurrent_completion(postgres: Any) ->
     from app.models.file import File
     from app.models.upload_reservation import UploadReservation
     from app.exceptions import ConflictError
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as conn:
         conn.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'quota-owner','x','common')"))
         conn.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'quota-space',1)"))

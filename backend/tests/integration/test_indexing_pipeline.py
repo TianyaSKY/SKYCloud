@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from sqlalchemy import text
 
-from tests.integration.test_migrations import postgres  # noqa: F401
+from tests.integration.test_database_init import postgres  # noqa: F401
 from tests.integration.test_task_queue import broker  # noqa: F401
 from tests.integration.test_upload_storage import minio_storage, upload_api  # noqa: F401
 

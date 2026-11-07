@@ -17,8 +17,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests.integration.fixture_paths import FIXTURE_DIR
 from tests.integration.test_runtime_security import infrastructure, controller, docker
-from tests.integration.test_migrations import postgres
-from entry.migrate import upgrade
+from tests.integration.test_database_init import postgres
+from entry.init_db import initialize_database
 from app.infra.extensions import get_db, get_session_factory
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMember
@@ -37,7 +37,7 @@ pytestmark = pytest.mark.skipif(os.getenv('RUN_RUNTIME_UI_TESTS') != '1',
 @pytest.mark.parametrize('use_ticket', [False, True])
 @pytest.mark.parametrize('revocation', ['membership', 'refresh-replay'])
 def test_real_terminal_and_current_session_revocation(infrastructure: Any, controller: Any, postgres: Any, monkeypatch: Any, use_ticket: Any, revocation: Any, tmp_path: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(ui_tickets, 'redis_client', infrastructure['redis'])
     def global_factory():

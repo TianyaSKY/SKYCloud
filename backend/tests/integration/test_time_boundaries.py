@@ -7,8 +7,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from entry.migrate import upgrade
-from tests.integration.test_migrations import postgres  # noqa: F401
+from entry.init_db import initialize_database
+from tests.integration.test_database_init import postgres  # noqa: F401
 
 __all__ = ["postgres"]
 from tests.test_time_boundaries import assert_share_and_usage_times
@@ -21,7 +21,7 @@ pytestmark = pytest.mark.skipif(os.getenv("RUN_TIME_BOUNDARY_TESTS") != "1",
 
 @pytest.mark.parametrize("database_zone", ["UTC", "America/New_York"])
 def test_expiry_and_filters_ignore_database_session_timezone(postgres: Any, database_zone: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.connect() as connection:
         connection.execute(text("SELECT set_config('TimeZone', :zone, false)"), {"zone": database_zone})
         connection.commit()

@@ -16,8 +16,8 @@ from sqlalchemy.orm import sessionmaker
 from app.features.file import service
 from app.infra.file_object_deletion import delete_pending_objects
 from app.models.file import File
-from entry.migrate import upgrade
-from tests.integration.test_migrations import postgres
+from entry.init_db import initialize_database
+from tests.integration.test_database_init import postgres
 from tests.integration.test_upload_storage import minio_storage
 
 __all__ = ["postgres", "minio_storage"]
@@ -28,7 +28,7 @@ pytestmark = pytest.mark.skipif(os.getenv('RUN_OBJECT_DELETION_TESTS') != '1',
 
 @pytest.fixture
 def object_context(postgres: Any,minio_storage: Any,monkeypatch: Any,tmp_path: Any):
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'owner','x','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'one',1)"))

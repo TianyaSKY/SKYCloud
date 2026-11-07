@@ -25,7 +25,7 @@ SERVICES = (
     "redis",
     "rabbitmq",
     "minio",
-    "migrate",
+    "init-db",
     "runtime-controller",
     "backend-api",
     "backend-worker",
@@ -33,7 +33,7 @@ SERVICES = (
     "llm-gateway",
 )
 BACKEND_SERVICES = (
-    "migrate",
+    "init-db",
     "backend-api",
     "backend-worker",
     "backend-mcp",

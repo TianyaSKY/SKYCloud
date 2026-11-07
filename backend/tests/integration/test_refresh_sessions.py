@@ -11,8 +11,8 @@ from sqlalchemy import update
 from sqlalchemy.orm import sessionmaker
 
 from tests.integration.test_runtime_security import infrastructure
-from tests.integration.test_migrations import postgres
-from entry.migrate import upgrade
+from tests.integration.test_database_init import postgres
+from entry.init_db import initialize_database
 from app.features.auth import refresh_sessions as refresh
 from app.features.auth.service import generate_token
 from app.infra.extensions import SECRET_KEY
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(os.getenv('RUN_REFRESH_SESSION_TESTS') != '1', r
 
 @pytest.fixture
 def live(infrastructure: Any, postgres: Any, monkeypatch: Any):
-    upgrade(postgres)
+    initialize_database(postgres)
     factory = sessionmaker(bind=postgres)
     monkeypatch.setattr(refresh, 'redis_client', infrastructure['redis'])
     with factory() as db:

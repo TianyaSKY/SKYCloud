@@ -132,10 +132,7 @@ def test_production_ports_and_runtime_network_are_restricted(tmp_path: Any, deve
     assert minio['image'] == os.getenv('SKYCLOUD_TEST_MINIO_IMAGE', 'sha256:' + 'b' * 64)
     assert minio['pull_policy'] == 'never'
     assert minio['healthcheck']['test'][:2] == ['CMD', 'python']
-    assert config["services"]["migrate"]["command"] == ["python", "-m", "entry.migrate"]
     assert not any(mount.get("target", "").startswith("/docker-entrypoint-initdb.d") for mount in config["services"]["db"].get("volumes", []))
-    for service in ("backend-api", "backend-worker", "backend-mcp", "llm-gateway"):
-        assert config["services"][service]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
     worker = config["services"]["backend-worker"]
     assert worker["environment"]["RUNTIME_CONTROLLER_URL"] == "http://runtime-controller-control:5003"
     assert worker["depends_on"]["runtime-controller"]["condition"] == "service_healthy"
@@ -184,7 +181,7 @@ def test_postgresql_has_no_seeded_admin_and_bootstraps_once() -> None:
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import Session
     from entry.bootstrap_admin import bootstrap_admin
-    from entry.migrate import upgrade
+    from entry.init_db import initialize_database
 
     name = "skycloud-bootstrap-test-" + uuid.uuid4().hex[:12]
     password = uuid.uuid4().hex + uuid.uuid4().hex
@@ -216,7 +213,7 @@ def test_postgresql_has_no_seeded_admin_and_bootstraps_once() -> None:
         else:
             raise AssertionError("PostgreSQL initialization failed")
 
-        upgrade(engine)
+        initialize_database(engine)
         with engine.connect() as conn:
             assert conn.scalar(text("SELECT count(*) FROM users")) == 0
 

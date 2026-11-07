@@ -8,10 +8,10 @@ import time
 import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
-from tests.integration.test_migrations import postgres
+from tests.integration.test_database_init import postgres
 
 __all__ = ["postgres"]
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 from app.features.folder import repository, service, tree
 from app.features.folder.organize import tools
 from app.features.folder.organize.scope import OrganizeScope, bind_tools
@@ -24,7 +24,7 @@ pytestmark=pytest.mark.skipif(os.getenv('RUN_FOLDER_TREE_TESTS')!='1',reason='Op
 
 @pytest.fixture
 def graph(postgres: Any):
-    upgrade(postgres)
+    initialize_database(postgres)
     factory=sessionmaker(bind=postgres)
     with factory() as db:
         user=User(username='tree-owner',password_hash='isolated-test-hash',role='common')

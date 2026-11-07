@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from sqlalchemy import text
 
-from tests.integration.test_migrations import postgres  # noqa: F401
+from tests.integration.test_database_init import postgres  # noqa: F401
 from app.infra.task_queue import publish_organize_task as real_publish_organize
 from tests.integration.test_task_queue import broker  # noqa: F401
 from tests.integration.test_upload_storage import minio_storage, upload_api  # noqa: F401
@@ -211,9 +211,9 @@ def test_concurrent_checkpoint_creation_and_updates_never_regress(postgres: Any)
     import concurrent.futures
     from sqlalchemy.orm import sessionmaker
     from app.features.folder.change_log import update_checkpoint
-    from entry.migrate import upgrade
+    from entry.init_db import initialize_database
 
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash,role) VALUES (1,'checkpoint-user','synthetic','common')"))
         db.execute(text("INSERT INTO workspaces(id,name,owner_id) VALUES (1,'checkpoint-space',1)"))

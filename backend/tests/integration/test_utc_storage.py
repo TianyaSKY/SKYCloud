@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.features.token_usage import service as usage
 from app.models.user import User
-from entry.migrate import upgrade
-from tests.integration.test_migrations import postgres  # noqa: F401
+from entry.init_db import initialize_database
+from tests.integration.test_database_init import postgres  # noqa: F401
 
 __all__ = ["postgres"]
 
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.parametrize("database_zone", ["UTC", "America/New_York"])
 def test_usage_days_remain_beijing_days_with_utc_storage(postgres: Any, database_zone: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     with postgres.connect() as connection:
         connection.execute(
             text("SELECT set_config('TimeZone', :zone, false)"), {"zone": database_zone}

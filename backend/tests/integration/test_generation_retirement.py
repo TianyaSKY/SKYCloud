@@ -4,17 +4,17 @@ from typing import Any, cast
 import os
 import pytest
 from sqlalchemy import text, inspect
-from entry.migrate import upgrade
+from entry.init_db import initialize_database
 from app.infra.schema import check_schema
-from tests.integration.test_migrations import postgres
+from tests.integration.test_database_init import postgres
 
 __all__ = ["postgres", "infrastructure", "controller"]
 
-pytestmark = pytest.mark.skipif(os.getenv('RUN_MIGRATION_TESTS') != '1', reason='Opt-in isolated PostgreSQL migrations')
+pytestmark = pytest.mark.skipif(os.getenv('RUN_DATABASE_INIT_TESTS') != '1', reason='Opt-in isolated PostgreSQL initialization')
 
 
 def test_completed_generation_retires_after_last_reference(postgres: Any) -> None:
-    upgrade(postgres)
+    initialize_database(postgres)
     ids = {"current": "a" * 64, "shared": "b" * 64}
     with postgres.begin() as db:
         db.execute(text("INSERT INTO users(id,username,password_hash) VALUES (1,'generation','x')"))
@@ -71,7 +71,7 @@ def test_cancelled_generation_is_retired_after_last_reference_detaches(
     from app.infra.runtime_operation_cleanup import retire_cancelled_operations
     from runtime_controller.client import ControllerError
 
-    upgrade(postgres)
+    initialize_database(postgres)
     identity = int(uuid.uuid4().hex[:6], 16) + 1000
     generation = uuid.uuid4().hex
     infrastructure["cleanup"].append(

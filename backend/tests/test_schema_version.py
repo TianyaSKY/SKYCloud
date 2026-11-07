@@ -1,24 +1,13 @@
-"""Tests for Alembic schema version verification at startup."""
+"""Tests for schema version verification at startup."""
 
-from pathlib import Path
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import Engine
 
 from app.infra.schema import EXPECTED_REVISION, check_schema
 
 
-def test_startup_revision_matches_migration_head() -> None:
-    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    assert ScriptDirectory.from_config(config).get_heads() == [EXPECTED_REVISION]
-
-
-@pytest.mark.parametrize(
-    "revisions",
-    [[], ["older"], ["future"], [EXPECTED_REVISION, "branch"]],
-)
-def test_startup_rejects_schema_mismatch(revisions: list[str]) -> None:
+def _versioned_engine(revisions: list[str]) -> Engine:
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE alembic_version (version_num TEXT)"))
@@ -27,13 +16,31 @@ def test_startup_rejects_schema_mismatch(revisions: list[str]) -> None:
                 text("INSERT INTO alembic_version VALUES (:revision)"),
                 {"revision": revision},
             )
-    with pytest.raises(RuntimeError, match="version differs"):
-        check_schema(engine)
-    engine.dispose()
+    return engine
+
+
+@pytest.mark.parametrize(
+    "revisions",
+    [[], ["older"], ["future"], [EXPECTED_REVISION, "branch"]],
+)
+def test_startup_rejects_schema_mismatch(revisions: list[str]) -> None:
+    engine = _versioned_engine(revisions)
+    try:
+        with pytest.raises(RuntimeError, match="version differs"):
+            check_schema(engine)
+        with engine.connect() as conn:
+            stored = set(conn.scalars(text("SELECT version_num FROM alembic_version")))
+            assert stored == set(revisions)
+    finally:
+        engine.dispose()
 
 
 def test_startup_rejects_unversioned_database() -> None:
     engine = create_engine("sqlite:///:memory:")
-    with pytest.raises(RuntimeError, match="unversioned"):
-        check_schema(engine)
-    engine.dispose()
+    try:
+        with pytest.raises(RuntimeError, match="unversioned"):
+            check_schema(engine)
+        with engine.connect() as conn:
+            assert inspect(conn).get_table_names() == []
+    finally:
+        engine.dispose()
