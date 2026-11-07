@@ -38,7 +38,13 @@ def credential(session: Session, runtime: OpenCodeRuntime) -> str:
 
 
 @pytest.fixture
-def client(session: Session) -> Generator[TestClient, None, None]:
+def client(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> Generator[TestClient, None, None]:
+    # 显式使用合成供应商配置, 不依赖开发环境中的真实凭据.
+    monkeypatch.setenv("CHAT_API_URL", "https://provider.example.test/v1")
+    monkeypatch.setenv("CHAT_API_KEY", "test-runtime-provider-key")
+    monkeypatch.setenv("CHAT_API_MODEL", "test-runtime-model")
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(router)

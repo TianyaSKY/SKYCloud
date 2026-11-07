@@ -24,8 +24,10 @@ cd frontend && npm ci && npm run dev
 测试配置位于根 `pyproject.toml` 的 `[tool.pytest.ini_options]`：`testpaths = ["backend/tests"]`、`pythonpath = ["backend"]`，因此可在仓库根目录或 `backend` 中运行；`tests/real` 与各集成用例默认跳过。
 
 ```bash
-uv run --locked pytest --ignore=backend/tests/real
+PYTHON_DOTENV_DISABLED=1 uv run --locked pytest --ignore=backend/tests/real
 ```
+
+测试不应读取工作站 `.env` 或依赖真实供应商凭据；网关测试在自己的 fixture 中显式设置合成的 `CHAT_API_URL`、`CHAT_API_KEY`、`CHAT_API_MODEL`。排查 CI 环境差异时，还应清除工作站导出的环境变量，例如在仅保留 `HOME` 和 `PATH` 的 `env -i` 环境中运行上述命令。
 
 测试上传目录位于系统临时目录，并在测试进程退出时自动清理。
 

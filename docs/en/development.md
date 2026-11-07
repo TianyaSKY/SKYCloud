@@ -24,8 +24,10 @@ cd frontend && npm ci && npm run dev
 Test settings live in `[tool.pytest.ini_options]` in the root `pyproject.toml`: `testpaths = ["backend/tests"]` and `pythonpath = ["backend"]`, so the suite runs from either the repository root or `backend`. `tests/real` and integration cases are skipped by default.
 
 ```bash
-uv run --locked pytest --ignore=backend/tests/real
+PYTHON_DOTENV_DISABLED=1 uv run --locked pytest --ignore=backend/tests/real
 ```
+
+Tests must not read the workstation `.env` or depend on real provider credentials; gateway fixtures explicitly set synthetic `CHAT_API_URL`, `CHAT_API_KEY` and `CHAT_API_MODEL` values. When diagnosing CI differences, also clear exported workstation variables, for example by running the command in an `env -i` environment retaining only `HOME` and `PATH`.
 
 Test uploads use a system temporary directory that is cleaned up when the test process exits.
 
