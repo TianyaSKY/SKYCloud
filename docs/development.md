@@ -29,7 +29,7 @@ uv run --locked pytest --ignore=backend/tests/real
 
 测试上传目录位于系统临时目录，并在测试进程退出时自动清理。
 
-需要真实基础设施的集成用例通过 `RUN_*` 环境变量显式开启，例如 `RUN_MIGRATION_TESTS`、`RUN_VECTOR_TESTS`、`RUN_UPLOAD_STORAGE_TESTS`、`RUN_TASK_QUEUE_TESTS`、`RUN_RUNTIME_SECURITY_TESTS`；这些用例会创建并清理独立容器，完整清单见 `backend/tests/integration/`。前端在 `frontend` 目录运行 `npm run test:unit`、`npm run lint:check`、`npm run type-check` 和 `npm run build`。
+需要真实基础设施的集成用例通过 `RUN_*` 环境变量显式开启，例如 `RUN_DATABASE_INIT_TESTS`、`RUN_VECTOR_TESTS`、`RUN_UPLOAD_STORAGE_TESTS`、`RUN_TASK_QUEUE_TESTS`、`RUN_RUNTIME_SECURITY_TESTS`；这些用例会创建并清理独立容器，完整清单见 `backend/tests/integration/`。前端在 `frontend` 目录运行 `npm run test:unit`、`npm run lint:check`、`npm run type-check` 和 `npm run build`。
 
 ## Python 严格静态检查
 
@@ -58,6 +58,6 @@ uv sync --locked --no-default-groups --only-group controller
 
 前端依赖仍由 `frontend/package-lock.json` 锁定，与上述 uv 项目相互独立；CI 使用 `npm ci` 安装并以 `npm audit --audit-level=low` 审计全部依赖。出现安全公告时，在 `frontend` 目录运行 `npm audit fix` 更新兼容范围内的锁定版本，提交锁文件，并重新运行 `npm ci`、审计及上述前端检查；不要降低审计门槛或跳过开发依赖。
 
-CI 定义在 `.github/workflows/ci.yml`：后端安装 uv 0.13.0、以 `uv sync --locked` 安装依赖并运行测试，前端执行依赖审计、lint、类型检查、行为测试和构建；集成任务运行 PostgreSQL 迁移、RabbitMQ 交付/outbox/崩溃恢复检查，以及真实 OpenCode 沙箱启动、配置重载和历史 generation 回收；五个镜像（backend/controller/frontend/runtime/minio）独立构建。汇总检查固定为 `CI quality gate`，任一前置任务失败或跳过都不能通过。Actions 固定到已核实的提交 SHA，工作流默认仅 `contents:read`。`.github/branch-protection.json` 是供 master 使用的保护规则，需在远端取得成功运行后再应用。
+CI 定义在 `.github/workflows/ci.yml`：后端安装 uv 0.13.0、以 `uv sync --locked` 安装依赖并运行测试，前端执行依赖审计、lint、类型检查、行为测试和构建；集成任务运行 PostgreSQL 初始化、RabbitMQ 交付/outbox/崩溃恢复检查，以及真实 OpenCode 沙箱启动、配置重载和历史 generation 回收；五个镜像（backend/controller/frontend/runtime/minio）独立构建。汇总检查固定为 `CI quality gate`，任一前置任务失败或跳过都不能通过。Actions 固定到已核实的提交 SHA，工作流默认仅 `contents:read`。`.github/branch-protection.json` 是供 master 使用的保护规则，需在远端取得成功运行后再应用。
 
 [← 返回 README](../README.md)

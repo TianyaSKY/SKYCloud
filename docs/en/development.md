@@ -29,7 +29,7 @@ uv run --locked pytest --ignore=backend/tests/real
 
 Test uploads use a system temporary directory that is cleaned up when the test process exits.
 
-Integration cases that need real infrastructure are opt-in through `RUN_*` environment variables such as `RUN_MIGRATION_TESTS`, `RUN_VECTOR_TESTS`, `RUN_UPLOAD_STORAGE_TESTS`, `RUN_TASK_QUEUE_TESTS` and `RUN_RUNTIME_SECURITY_TESTS`; they create and clean up their own containers. The full list lives in `backend/tests/integration/`. From `frontend`, run `npm run test:unit`, `npm run lint:check`, `npm run type-check` and `npm run build`.
+Integration cases that need real infrastructure are opt-in through `RUN_*` environment variables such as `RUN_DATABASE_INIT_TESTS`, `RUN_VECTOR_TESTS`, `RUN_UPLOAD_STORAGE_TESTS`, `RUN_TASK_QUEUE_TESTS` and `RUN_RUNTIME_SECURITY_TESTS`; they create and clean up their own containers. The full list lives in `backend/tests/integration/`. From `frontend`, run `npm run test:unit`, `npm run lint:check`, `npm run type-check` and `npm run build`.
 
 ## Strict Python Static Checks
 
@@ -58,6 +58,6 @@ Production images install runtime dependencies with `uv sync --locked --no-dev`,
 
 Frontend dependencies remain locked in `frontend/package-lock.json`, independent of the uv project; CI installs them with `npm ci` and audits all dependencies with `npm audit --audit-level=low`. When security advisories appear, run `npm audit fix` from `frontend` to update locked versions within the declared compatibility ranges, commit the lockfile, and rerun `npm ci`, the audit and the frontend checks above. Do not lower the audit threshold or skip development dependencies.
 
-CI lives in `.github/workflows/ci.yml`: the backend installs uv 0.13.0 and its locked dependencies with `uv sync --locked` and runs the suite, the frontend runs the dependency audit, lint, type checks, behavior tests and build, and the integration job checks PostgreSQL migrations, RabbitMQ delivery/outbox/crash recovery, actual OpenCode sandbox startup and configuration reload, and historical generation retirement; five images (backend/controller/frontend/runtime/minio) build independently. The summary gate `CI quality gate` fails when any prerequisite fails or is skipped. Actions are pinned to verified commit SHAs and the workflow defaults to `contents:read` only. `.github/branch-protection.json` describes the master protection rule and should be applied after a successful remote run exists.
+CI lives in `.github/workflows/ci.yml`: the backend installs uv 0.13.0 and its locked dependencies with `uv sync --locked` and runs the suite, the frontend runs the dependency audit, lint, type checks, behavior tests and build, and the integration job checks PostgreSQL initialization, RabbitMQ delivery/outbox/crash recovery, actual OpenCode sandbox startup and configuration reload, and historical generation retirement; five images (backend/controller/frontend/runtime/minio) build independently. The summary gate `CI quality gate` fails when any prerequisite fails or is skipped. Actions are pinned to verified commit SHAs and the workflow defaults to `contents:read` only. `.github/branch-protection.json` describes the master protection rule and should be applied after a successful remote run exists.
 
 [← Back to README](../../README_EN.md)

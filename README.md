@@ -93,8 +93,7 @@ SKYCloud/
 │   │   ├── infra/              # 队列、缓存、上传、索引、模型调用
 │   │   ├── models/             # SQLAlchemy 模型
 │   │   └── exceptions.py       # 统一异常
-│   ├── entry/                  # 进程入口：API / Worker / MCP / migrate / 管理员命令
-│   ├── migrations/             # Alembic 基线（0001_rebuild，仅用于空库）
+│   ├── entry/                  # 进程入口：API / Worker / MCP / 数据库初始化 / 管理员命令
 │   ├── runtime_common/         # 后端与 Controller 共用协议/传输层
 │   ├── runtime_controller/     # 运行时容器控制器（独立服务）
 │   ├── runtime_image/          # 专家 Runtime 沙箱镜像

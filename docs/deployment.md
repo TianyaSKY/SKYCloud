@@ -39,7 +39,7 @@ MinIO 的原公共镜像地址已不可拉取，同样由构建脚本从 `backen
 
 启动后访问 `http://app.skycloud.localhost`（默认端口 80），使用显式创建的管理员账号登录。创建命令在终端交互读取密码，不接受命令行密码。系统不会自动创建管理员；JWT 密钥缺失、过短或仍为占位值时拒绝启动。
 
-历史版本自带的默认管理员账号会阻止应用启动，也无法登录。先备份数据库、完成迁移，再用部署终端交互重置密码：
+历史版本自带的默认管理员账号会阻止应用启动，也无法登录。先备份数据库并确认架构版本兼容，再用部署终端交互重置密码：
 
 ```bash
 docker compose run --rm --no-deps backend-api python -m entry.reset_admin --username admin
@@ -59,22 +59,24 @@ SKYCloud 采用分层配置架构：
 
 ## 数据库初始化与重建
 
-唯一 schema revision 为 `0001_rebuild`。API、Worker、MCP 和模型网关启动时只读取 Alembic 版本，不建表；版本缺失或不匹配时拒绝启动。该静态基线只初始化空 PostgreSQL 数据库。
+数据库由 `init-db` 服务通过 SQLAlchemy 模型初始化；pgvector 扩展、PostgreSQL 函数和触发器在同一事务中创建，并写入初始站点配置。初始化只适用于空 PostgreSQL 数据库，并通过事务级咨询锁防止并发初始化。
+
+API、Worker、MCP 和模型网关启动时只检查版本，不建表。为兼容既有数据库，继续读取 `alembic_version` 表中的 `0001_rebuild` 标记，但不再依赖 Alembic。已是该版本的数据库会原样保留；版本缺失或不匹配时拒绝启动。
 
 新部署或已明确授权的全量重建，先配置隔离的空数据库，再执行：
 
 ```bash
 docker compose build
-docker compose run --rm migrate
+docker compose run --rm init-db
 docker compose up -d
 ```
 
-宿主机开发先设置 `DATABASE_URL`，在 `backend` 中执行 `uv run --locked python -m entry.migrate`。既有 revision 或任何未版本化现存表都会被拒绝；不升级旧 schema、不修补旧列、不 stamp，也不转换历史业务数据。切换既有部署前必须停止所有旧写入方，验证备份恢复流程，并只在明确授权的项目范围重建数据库及关联文件/对象；部署配置与外部凭据另行保留。schema 基线禁止 downgrade，回退依赖经验证的整套备份。
+宿主机开发先设置 `DATABASE_URL` 和 `SECRET_KEY`（可使用 `.skycloud/generated.env` 中的系统密钥），在 `backend` 中执行 `uv run --locked python -m entry.init_db`。其他版本或任何未版本化现存表都会被拒绝；不升级旧 schema、不修补旧列，也不转换历史业务数据。SQLAlchemy 的 `create_all()` 不会升级已有表；未来结构变更需要显式的升级方案。切换既有部署前必须停止所有旧写入方并验证备份恢复流程；仅在明确授权的范围内重建数据库及关联文件/对象，部署配置与外部凭据另行保留。回退依赖经验证的整套备份。
 
-真实迁移测试会创建并清理独立 PostgreSQL 容器：
+真实初始化测试会创建并清理独立 PostgreSQL 容器：
 
 ```bash
-RUN_MIGRATION_TESTS=1 uv run --locked pytest backend/tests/integration/test_migrations.py
+RUN_DATABASE_INIT_TESTS=1 uv run --locked pytest backend/tests/integration/test_database_init.py
 ```
 
 ## 密码与会话变更

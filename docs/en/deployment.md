@@ -37,7 +37,7 @@ The upstream MinIO image is no longer pullable, so `build-minio-image.py` builds
 
 Visit `http://app.skycloud.localhost` (default port 80) and sign in using the administrator you explicitly created. The command prompts for a password in the terminal. No administrator is automatically seeded; missing, short or placeholder signing secrets prevent startup.
 
-The historical seeded administrator blocks startup and cannot log in. Back up the database, run migrations, then reset its password interactively from the deployment terminal:
+The historical seeded administrator blocks startup and cannot log in. Back up the database, confirm its schema version is compatible, then reset its password interactively from the deployment terminal:
 
 ```bash
 docker compose run --rm --no-deps backend-api python -m entry.reset_admin --username admin
@@ -57,22 +57,24 @@ Startup requires independent master secrets and explicit infrastructure password
 
 ## Database Initialization and Rebuild
 
-The only schema revision is `0001_rebuild`. API, Worker, MCP and model gateway startup only reads the Alembic revision and never creates tables; missing or mismatched versions prevent startup. This immutable SQL baseline initializes an empty PostgreSQL database only.
+The `init-db` service initializes an empty PostgreSQL database using SQLAlchemy models, installs the pgvector extension and PostgreSQL functions and triggers, and inserts the initial site configuration in one transaction. A transaction-level advisory lock serializes concurrent initialization.
+
+API, Worker, MCP and model gateway startup only checks the schema version; it never creates tables. For compatibility with existing databases, the `0001_rebuild` marker remains in `alembic_version`, but Alembic is no longer required. Databases with that version are left untouched; missing or mismatched versions prevent startup.
 
 For a new deployment or an explicitly authorized full rebuild, configure an isolated empty database first:
 
 ```bash
 docker compose build
-docker compose run --rm migrate
+docker compose run --rm init-db
 docker compose up -d
 ```
 
-For host development, set `DATABASE_URL` and run `uv run --locked python -m entry.migrate` from `backend`. Existing revisions and any unversioned tables are rejected; there is no old-schema upgrade, column repair, stamp, or historical business-data conversion. Before switching an existing deployment, stop every old writer, verify backup restoration, and rebuild the database and associated files/objects only within the explicitly authorized project scope; preserve deployment configuration and external credentials separately. The baseline rejects downgrades; rollback requires a verified full backup.
+For host development, set `DATABASE_URL` and `SECRET_KEY` (the system secret in `.skycloud/generated.env` can be used), then run `uv run --locked python -m entry.init_db` from `backend`. Other versions and any unversioned tables are rejected; there is no old-schema upgrade, column repair, or historical business-data conversion. SQLAlchemy `create_all()` does not upgrade existing tables; future schema changes require an explicit upgrade plan. Before switching an existing deployment, stop every old writer and verify backup restoration; rebuild the database and associated files/objects only within the explicitly authorized scope, preserving deployment configuration and external credentials separately. Rollback requires a verified full backup.
 
-Real migration tests create and clean up isolated PostgreSQL containers:
+Real initialization tests create and clean up isolated PostgreSQL containers:
 
 ```bash
-RUN_MIGRATION_TESTS=1 uv run --locked pytest backend/tests/integration/test_migrations.py
+RUN_DATABASE_INIT_TESTS=1 uv run --locked pytest backend/tests/integration/test_database_init.py
 ```
 
 ## Password and Session Changes

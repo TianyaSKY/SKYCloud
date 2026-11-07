@@ -100,8 +100,7 @@ SKYCloud/
 │   │   ├── infra/              # Queue, cache, uploads, indexing, model calls
 │   │   ├── models/             # SQLAlchemy models
 │   │   └── exceptions.py       # Shared exceptions
-│   ├── entry/                  # Process entry points: API / Worker / MCP / migrate / admin commands
-│   ├── migrations/             # Alembic baseline (0001_rebuild; fresh databases only)
+│   ├── entry/                  # Process entry points: API / Worker / MCP / database init / admin commands
 │   ├── runtime_common/         # Shared backend/Controller protocol and transport
 │   ├── runtime_controller/     # Runtime container controller (standalone service)
 │   ├── runtime_image/          # Expert Runtime sandbox image
